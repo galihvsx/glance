@@ -1,0 +1,10 @@
+# build artifacts
+web/dist/
+web/node_modules/
+
+# Go
+/glance
+*.test
+
+# editor / OS
+.DS_Store
