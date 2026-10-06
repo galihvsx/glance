@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v5"
 
 	"glance/internal/api"
 	"glance/internal/config"
+	"glance/internal/mail"
 	"glance/internal/store"
 	migrationsfs "glance/migrations"
 )
@@ -37,6 +39,27 @@ func main() {
 	if err := store.Migrate(ctx, pool, migrationsFS); err != nil {
 		log.Fatalf("glance: %v", err)
 	}
+
+	// Mail dispatcher: drains the transactional outbox (OTP emails, webhook
+	// deliveries) on a ticker. Without this the outbox rows written by
+	// mail.Enqueue would sit pending forever — in particular, OTP codes
+	// would never reach the user. LogSender (SMTP_HOST unset) prints each
+	// message to stdout, which is how the dev login flow surfaces the code.
+	mailDispatcher := mail.NewDispatcher(pool, mail.NewSender(cfg))
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := mailDispatcher.Run(ctx); err != nil {
+					log.Printf("glance: mail dispatch: %v", err)
+				}
+			}
+		}
+	}()
 
 	e := echo.New()
 	e.GET("/health", func(c *echo.Context) error {
