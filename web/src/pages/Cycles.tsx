@@ -16,6 +16,7 @@ import type {
 } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
 import { Badge } from "../components/ui/badge";
+import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
@@ -392,10 +393,12 @@ export default function Cycles() {
         ) : (
           <div className="space-y-3">
             {cycles.map((c) => (
-              <Card
+              <ActionCard
                 key={c.id}
-                className="cursor-pointer transition-colors hover:bg-accent"
-                onClick={() => setSelectedId(c.id)}
+                role="button"
+                label={`Select cycle ${c.name}`}
+                aria-pressed={selectedId === c.id}
+                onActivate={() => setSelectedId(c.id)}
               >
                 <CardHeader className="space-y-3">
                   <div className="flex items-center gap-2">
@@ -417,7 +420,7 @@ export default function Cycles() {
                     states={states}
                   />
                 </CardHeader>
-              </Card>
+              </ActionCard>
             ))}
           </div>
         )}

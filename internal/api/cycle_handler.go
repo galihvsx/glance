@@ -102,8 +102,12 @@ func (h *IssueHandler) listCycles(c *echo.Context) error {
 // getCycle implements GET .../cycles/{cycleID}. The response carries the
 // live progress_snapshot (computed in one query by the service).
 func (h *IssueHandler) getCycle(c *echo.Context) error {
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
 	cycle, err := service.GetCycle(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, c.Param("cycleID"))
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID)
 	if err != nil {
 		return cycleError(c, err)
 	}
@@ -136,8 +140,12 @@ func (h *IssueHandler) updateCycle(c *echo.Context) error {
 		}
 		patch.EndDate = &end
 	}
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
 	cycle, err := service.UpdateCycle(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, c.Param("cycleID"), patch)
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID, patch)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
@@ -149,8 +157,12 @@ func (h *IssueHandler) updateCycle(c *echo.Context) error {
 
 // deleteCycle implements DELETE .../cycles/{cycleID}. Member (15)+.
 func (h *IssueHandler) deleteCycle(c *echo.Context) error {
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
 	if err := service.DeleteCycle(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, c.Param("cycleID")); err != nil {
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID); err != nil {
 		return cycleError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -167,8 +179,12 @@ func (h *IssueHandler) addCycleIssues(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
 	if err := service.AddCycleIssues(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, c.Param("cycleID"), body.IssueIDs); err != nil {
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID, body.IssueIDs); err != nil {
 		return cycleError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"added": len(body.IssueIDs)})

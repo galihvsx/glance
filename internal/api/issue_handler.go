@@ -267,7 +267,11 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 
 // getIssue implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}.
 func (h *IssueHandler) getIssue(c *echo.Context) error {
-	iss, err := service.GetIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	iss, err := service.GetIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID)
 	if err != nil {
 		return issueError(c, err)
 	}
@@ -359,7 +363,11 @@ func (h *IssueHandler) updateIssue(c *echo.Context) error {
 	if err != nil {
 		return writePatchFieldError(c, err)
 	}
-	iss, err := service.UpdateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID, patch)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	iss, err := service.UpdateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID, patch)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
@@ -375,7 +383,11 @@ func (h *IssueHandler) updateIssue(c *echo.Context) error {
 // deleteIssue implements DELETE /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}:
 // soft delete (deleted_at) plus a _deleted activity row. 204.
 func (h *IssueHandler) deleteIssue(c *echo.Context) error {
-	if err := service.DeleteIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID); err != nil {
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -508,8 +520,12 @@ func (h *IssueHandler) listLabels(c *echo.Context) error {
 
 // getLabel implements GET /api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}.
 func (h *IssueHandler) getLabel(c *echo.Context) error {
+	labelID, ok := requireUUIDParam(c, "labelID", "label id")
+	if !ok {
+		return nil
+	}
 	l, err := service.GetLabel(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID)
+		c.Param("slug"), c.Param("identifier"), labelID, CurrentUser(c).ID)
 	if err != nil {
 		return issueError(c, err)
 	}
@@ -522,8 +538,12 @@ func (h *IssueHandler) updateLabel(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
+	labelID, ok := requireUUIDParam(c, "labelID", "label id")
+	if !ok {
+		return nil
+	}
 	l, err := service.UpdateLabel(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID,
+		c.Param("slug"), c.Param("identifier"), labelID, CurrentUser(c).ID,
 		service.LabelPatch{Name: body.Name, Color: body.Color, ParentID: body.ParentID})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
@@ -539,8 +559,12 @@ func (h *IssueHandler) updateLabel(c *echo.Context) error {
 
 // deleteLabel implements DELETE /api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}.
 func (h *IssueHandler) deleteLabel(c *echo.Context) error {
+	labelID, ok := requireUUIDParam(c, "labelID", "label id")
+	if !ok {
+		return nil
+	}
 	if err := service.DeleteLabel(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		c.Param("slug"), c.Param("identifier"), labelID, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -549,8 +573,16 @@ func (h *IssueHandler) deleteLabel(c *echo.Context) error {
 // assignLabel implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/labels/{labelID}.
 // Idempotent: assigning twice succeeds with no duplicate.
 func (h *IssueHandler) assignLabel(c *echo.Context) error {
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	labelID, ok := requireUUIDParam(c, "labelID", "label id")
+	if !ok {
+		return nil
+	}
 	if err := service.AssignLabel(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		c.Param("slug"), c.Param("identifier"), uuid, labelID, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -559,8 +591,16 @@ func (h *IssueHandler) assignLabel(c *echo.Context) error {
 // unassignLabel implements DELETE .../issues/{uuid}/labels/{labelID}.
 // Idempotent: unassigning an absent label succeeds silently.
 func (h *IssueHandler) unassignLabel(c *echo.Context) error {
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	labelID, ok := requireUUIDParam(c, "labelID", "label id")
+	if !ok {
+		return nil
+	}
 	if err := service.UnassignLabel(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		c.Param("slug"), c.Param("identifier"), uuid, labelID, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -569,8 +609,16 @@ func (h *IssueHandler) unassignLabel(c *echo.Context) error {
 // assignAssignee implements POST .../issues/{uuid}/assignees/{userID}.
 // Idempotent; the assignee must be a workspace member.
 func (h *IssueHandler) assignAssignee(c *echo.Context) error {
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	userID, ok := requireUUIDParam(c, "userID", "user id")
+	if !ok {
+		return nil
+	}
 	if err := service.AssignAssignee(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("userID"), CurrentUser(c).ID); err != nil {
+		c.Param("slug"), c.Param("identifier"), uuid, userID, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -579,8 +627,16 @@ func (h *IssueHandler) assignAssignee(c *echo.Context) error {
 // unassignAssignee implements DELETE .../issues/{uuid}/assignees/{userID}.
 // Idempotent.
 func (h *IssueHandler) unassignAssignee(c *echo.Context) error {
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	userID, ok := requireUUIDParam(c, "userID", "user id")
+	if !ok {
+		return nil
+	}
 	if err := service.UnassignAssignee(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("userID"), CurrentUser(c).ID); err != nil {
+		c.Param("slug"), c.Param("identifier"), uuid, userID, CurrentUser(c).ID); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -667,19 +723,30 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/versions/:n/restore", h.restoreVersion)
 }
 
-func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string) {
+func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string, ok bool) {
 	// The :uuid path param is lowercased once here: service code compares
 	// it as a string against Postgres-rendered (lowercase) UUID text in
 	// several places, and an uppercase URL UUID would corrupt those
 	// comparisons. SQL ::uuid casts are case-insensitive, so this is
 	// behavior-neutral for the query paths.
-	return c.Param("slug"), c.Param("identifier"), strings.ToLower(c.Param("uuid")), CurrentUser(c).ID
+	//
+	// The uuid is validated up front (400 on malformed) so no satellite
+	// route lets a client-controlled string reach a ::uuid cast (500).
+	// ok=false means the 400 was already written; the caller returns nil.
+	uuid, ok = requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return "", "", "", "", false
+	}
+	return c.Param("slug"), c.Param("identifier"), strings.ToLower(uuid), CurrentUser(c).ID, true
 }
 
 // listComments implements GET .../issues/{uuid}/comments: the threaded
 // comment tree, oldest first.
 func (h *IssueHandler) listComments(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	tree, err := service.ListComments(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -698,7 +765,10 @@ func (h *IssueHandler) createComment(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	comment, err := service.CreateComment(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Content, body.ParentID)
 	if err != nil {
 		return issueError(c, err)
@@ -717,8 +787,15 @@ func (h *IssueHandler) updateComment(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
-	comment, err := service.UpdateComment(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, body.Content)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	comment, err := service.UpdateComment(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor, body.Content)
 	if err != nil {
 		return issueError(c, err)
 	}
@@ -728,8 +805,15 @@ func (h *IssueHandler) updateComment(c *echo.Context) error {
 // deleteComment implements DELETE .../issues/{uuid}/comments/{commentID}:
 // soft delete, author or admin.
 func (h *IssueHandler) deleteComment(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
-	if err := service.DeleteComment(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor); err != nil {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteComment(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -746,7 +830,10 @@ func (h *IssueHandler) addIssueReaction(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.AddIssueReaction(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Emoji); err != nil {
 		return issueError(c, err)
 	}
@@ -756,7 +843,10 @@ func (h *IssueHandler) addIssueReaction(c *echo.Context) error {
 // removeIssueReaction implements DELETE .../issues/{uuid}/reactions?emoji=:
 // idempotent remove.
 func (h *IssueHandler) removeIssueReaction(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.RemoveIssueReaction(c.Request().Context(), h.Pool, slug, ident, uuid, actor, c.QueryParam("emoji")); err != nil {
 		return issueError(c, err)
 	}
@@ -766,7 +856,10 @@ func (h *IssueHandler) removeIssueReaction(c *echo.Context) error {
 // listIssueReactions implements GET .../issues/{uuid}/reactions: emoji
 // groups with counts and the caller's reacted state.
 func (h *IssueHandler) listIssueReactions(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	groups, err := service.ListIssueReactions(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -780,8 +873,15 @@ func (h *IssueHandler) addCommentReaction(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
-	if err := service.AddCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, body.Emoji); err != nil {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	if err := service.AddCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor, body.Emoji); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -789,8 +889,15 @@ func (h *IssueHandler) addCommentReaction(c *echo.Context) error {
 
 // removeCommentReaction implements DELETE .../issues/{uuid}/comments/{commentID}/reactions?emoji=.
 func (h *IssueHandler) removeCommentReaction(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
-	if err := service.RemoveCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, c.QueryParam("emoji")); err != nil {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	if err := service.RemoveCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor, c.QueryParam("emoji")); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -798,7 +905,10 @@ func (h *IssueHandler) removeCommentReaction(c *echo.Context) error {
 
 // getIssueVotes implements GET .../issues/{uuid}/votes: {count, voted}.
 func (h *IssueHandler) getIssueVotes(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	votes, err := service.GetIssueVotes(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -808,7 +918,10 @@ func (h *IssueHandler) getIssueVotes(c *echo.Context) error {
 
 // voteIssue implements POST .../issues/{uuid}/votes: idempotent upvote.
 func (h *IssueHandler) voteIssue(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.VoteIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
 		return issueError(c, err)
 	}
@@ -817,7 +930,10 @@ func (h *IssueHandler) voteIssue(c *echo.Context) error {
 
 // unvoteIssue implements DELETE .../issues/{uuid}/votes: idempotent remove.
 func (h *IssueHandler) unvoteIssue(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.UnvoteIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
 		return issueError(c, err)
 	}
@@ -826,7 +942,10 @@ func (h *IssueHandler) unvoteIssue(c *echo.Context) error {
 
 // listSubscribers implements GET .../issues/{uuid}/subscribers.
 func (h *IssueHandler) listSubscribers(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	subs, err := service.ListSubscribers(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -837,7 +956,10 @@ func (h *IssueHandler) listSubscribers(c *echo.Context) error {
 // subscribeIssue implements POST .../issues/{uuid}/subscribers: the
 // caller subscribes themselves; idempotent.
 func (h *IssueHandler) subscribeIssue(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.SubscribeIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
 		return issueError(c, err)
 	}
@@ -847,7 +969,10 @@ func (h *IssueHandler) subscribeIssue(c *echo.Context) error {
 // unsubscribeIssue implements DELETE .../issues/{uuid}/subscribers:
 // idempotent.
 func (h *IssueHandler) unsubscribeIssue(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.UnsubscribeIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
 		return issueError(c, err)
 	}
@@ -862,7 +987,10 @@ type createRelationBody struct {
 // listRelations implements GET .../issues/{uuid}/relations: canonical
 // rows plus derived reverses (A blocked_by B → B shows blocking A).
 func (h *IssueHandler) listRelations(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	rels, err := service.ListRelations(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -877,7 +1005,10 @@ func (h *IssueHandler) createRelation(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	if err := service.CreateRelation(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.RelatedIssueID, body.Type); err != nil {
 		return issueError(c, err)
 	}
@@ -888,8 +1019,15 @@ func (h *IssueHandler) createRelation(c *echo.Context) error {
 // the type is the label from this issue's side — a reverse label
 // (e.g. blocking) resolves to the canonical row stored from the other side.
 func (h *IssueHandler) deleteRelation(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
-	if err := service.DeleteRelation(c.Request().Context(), h.Pool, slug, ident, uuid, actor, c.Param("relatedID"), c.QueryParam("type")); err != nil {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	relatedID, ok := requireUUIDParam(c, "relatedID", "related issue id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteRelation(c.Request().Context(), h.Pool, slug, ident, uuid, actor, relatedID, c.QueryParam("type")); err != nil {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -898,7 +1036,10 @@ func (h *IssueHandler) deleteRelation(c *echo.Context) error {
 // getIssueHistory implements GET .../issues/{uuid}/history: the
 // issue_activities rows, chronological, with actor info.
 func (h *IssueHandler) getIssueHistory(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	hist, err := service.GetIssueHistory(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -908,7 +1049,10 @@ func (h *IssueHandler) getIssueHistory(c *echo.Context) error {
 
 // listVersions implements GET .../issues/{uuid}/versions: oldest first.
 func (h *IssueHandler) listVersions(c *echo.Context) error {
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	versions, err := service.ListVersions(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
 	if err != nil {
 		return issueError(c, err)
@@ -922,7 +1066,10 @@ func (h *IssueHandler) getVersion(c *echo.Context) error {
 	if err != nil || n < 1 {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid version number", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	ver, err := service.GetVersion(c.Request().Context(), h.Pool, slug, ident, uuid, actor, n)
 	if err != nil {
 		return issueError(c, err)
@@ -937,7 +1084,10 @@ func (h *IssueHandler) restoreVersion(c *echo.Context) error {
 	if err != nil || n < 1 {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid version number", nil)
 	}
-	slug, ident, uuid, actor := h.issueParams(c)
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
 	iss, err := service.RestoreIssueVersion(c.Request().Context(), h.Pool, slug, ident, uuid, actor, n)
 	if err != nil {
 		return issueError(c, err)

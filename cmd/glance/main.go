@@ -127,9 +127,9 @@ func main() {
 	api.RegisterIntakeRoutes(e, issueHandler)
 	api.RegisterCycleRoutes(e, issueHandler)
 
-	if cfg.OTPPepper == "" {
-		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")
-	}
+	// OTP_PEPPER enforcement lives in config.Load (fail closed; the
+	// ALLOW_INSECURE_OTP_PEPPER hatch warns loudly there). By this point a
+	// missing pepper without the hatch has already refused to boot.
 	if cfg.OAuthStateSecret == "" {
 		log.Println("glance: WARNING: OAUTH_STATE_SECRET is not set — OAuth login endpoints will refuse to operate; set it to enable Google/GitHub login")
 	}

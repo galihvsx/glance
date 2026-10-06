@@ -8,6 +8,7 @@ import {
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   closestCorners,
   useDroppable,
@@ -18,6 +19,7 @@ import {
 } from "@dnd-kit/core";
 import {
   SortableContext,
+  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
@@ -64,6 +66,10 @@ function SortableCard({
     isDragging,
   } = useSortable({ id: issue.id, disabled });
 
+  function openIssue() {
+    navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
+  }
+
   return (
     <Card
       ref={setNodeRef}
@@ -74,8 +80,16 @@ function SortableCard({
       }}
       {...attributes}
       {...listeners}
-      className="cursor-grab touch-none active:cursor-grabbing"
-      onClick={() => navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`)}
+      // Compose with dnd-kit's own onKeyDown (keyboard-drag): our handler
+      // runs second and only acts on Enter outside an active drag.
+      onKeyDown={(e) => {
+        listeners?.onKeyDown?.(e);
+        if (e.key === "Enter" && !e.defaultPrevented && !isDragging) {
+          openIssue();
+        }
+      }}
+      className="cursor-grab touch-none active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      onClick={openIssue}
     >
       <CardContent className="space-y-1.5 p-3">
         <div className="flex items-center gap-2">
@@ -348,10 +362,16 @@ export default function Board() {
     void applyDrop(activeIssueId, dragged.state_id, destStateId, destIndex);
   }
 
-  const sensors = useSensor(PointerSensor, {
+  const pointerSensor = useSensor(PointerSensor, {
     activationConstraint: { distance: 6 },
   });
-  const allSensors = useSensors(sensors);
+  // KeyboardSensor enables keyboard dragging: focus a card, Space lifts
+  // it, arrow keys move it between/within columns, Space drops, Esc
+  // cancels (dnd-kit default announcements narrate the moves).
+  const keyboardSensor = useSensor(KeyboardSensor, {
+    coordinateGetter: sortableKeyboardCoordinates,
+  });
+  const allSensors = useSensors(pointerSensor, keyboardSensor);
 
   const loading = projectQuery.isPending || statesQuery.isPending || boardQuery.isPending;
   const loadError =

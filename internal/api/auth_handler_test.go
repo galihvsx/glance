@@ -211,23 +211,25 @@ func TestVerifyEndpointWrongCode401(t *testing.T) {
 }
 
 // TestVerifyEndpointRateLimitedPerIP: 21 rapid wrong-code verifies from one
-// IP in an hour must trip the 20/hr/IP budget with 429 (pins the Task 7
-// review fix: the verify path previously had no rate limit, so an attacker
-// could burn each fresh code with 5 rapid wrong submits and deny login).
+// IP in an hour must trip the 20/hr/IP budget with 429. Emails rotate so
+// the tighter per-email budget (5/hr, Task 28) never trips first — this
+// test isolates the IP budget.
 func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 	pool := newTestPool(t)
 	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
-	email := uniqueEmail("h-verify-rl-ip")
-	insertVerifyCode(t, pool, email, "123456")
 	ip := uniqueIP()
 
 	for i := 0; i < 20; i++ {
+		email := uniqueEmail("h-verify-rl-ip")
+		insertVerifyCode(t, pool, email, "123456")
 		if rec := postVerifyFrom(t, e, email, "000000", ip); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("verify %d: status = %d, want 401", i+1, rec.Code)
 		}
 	}
+	email := uniqueEmail("h-verify-rl-ip")
+	insertVerifyCode(t, pool, email, "123456")
 	rec := postVerifyFrom(t, e, email, "000000", ip)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("21st verify from same IP in an hour: status = %d, want 429", rec.Code)
@@ -237,8 +239,10 @@ func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 	}
 }
 
-// TestVerifyEndpointRateLimitedPerEmail: the per-email budget (20/hr) must
-// trip even when the attacker rotates IPs, breaking the code-burn loop.
+// TestVerifyEndpointRateLimitedPerEmail: the per-email budget (5/hr, Task
+// 28 decision) must trip even when the attacker rotates IPs, breaking the
+// code-burn loop: the attacker's whole hourly budget burns at most one
+// code while the victim can request five.
 func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
 	pool := newTestPool(t)
 	migrateTestDB(t, pool)
@@ -247,14 +251,14 @@ func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
 	email := uniqueEmail("h-verify-rl-email")
 	insertVerifyCode(t, pool, email, "123456")
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 5; i++ {
 		if rec := postVerifyFrom(t, e, email, "000000", uniqueIP()); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("verify %d: status = %d, want 401", i+1, rec.Code)
 		}
 	}
 	rec := postVerifyFrom(t, e, email, "000000", uniqueIP())
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("21st verify for same email in an hour: status = %d, want 429", rec.Code)
+		t.Fatalf("6th verify for same email in an hour: status = %d, want 429", rec.Code)
 	}
 }
 

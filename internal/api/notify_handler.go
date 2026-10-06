@@ -91,7 +91,11 @@ func (h *NotifyHandler) markNotificationRead(c *echo.Context) error {
 	if u == nil {
 		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 	}
-	if err := service.MarkNotificationRead(c.Request().Context(), h.Pool, u.ID, c.Param("id")); err != nil {
+	id, ok := requireUUIDParam(c, "id", "notification id")
+	if !ok {
+		return nil
+	}
+	if err := service.MarkNotificationRead(c.Request().Context(), h.Pool, u.ID, id); err != nil {
 		return notifyError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -191,7 +195,11 @@ func (h *NotifyHandler) getWebhook(c *echo.Context) error {
 	if u == nil {
 		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 	}
-	w, err := service.GetWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, c.Param("id"))
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	w, err := service.GetWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id)
 	if err != nil {
 		return notifyError(c, err)
 	}
@@ -211,7 +219,11 @@ func (h *NotifyHandler) updateWebhook(c *echo.Context) error {
 	if b.URL != "" {
 		patch.URL = &b.URL
 	}
-	w, err := service.UpdateWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, c.Param("id"), patch)
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	w, err := service.UpdateWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id, patch)
 	if err != nil {
 		return notifyError(c, err)
 	}
@@ -223,7 +235,11 @@ func (h *NotifyHandler) deleteWebhook(c *echo.Context) error {
 	if u == nil {
 		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 	}
-	if err := service.DeleteWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, c.Param("id")); err != nil {
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteWebhook(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id); err != nil {
 		return notifyError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)

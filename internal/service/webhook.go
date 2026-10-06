@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -435,6 +436,13 @@ type WebhookDispatcher struct {
 	// previous pass is still delivering skips instead of piling up
 	// another claim + another long-lived pass.
 	inFlight atomic.Bool
+	// lookupIP resolves webhook target hostnames at delivery time, so the
+	// SSRF guard sees what the dial would see. Stubbed in tests.
+	lookupIP func(ctx context.Context, host string) ([]net.IP, error)
+	// allowPrivateTargets disables the SSRF guard. Tests only: the
+	// httptest delivery targets are loopback by construction. Never set
+	// in production code.
+	allowPrivateTargets bool
 }
 
 // NewWebhookDispatcher builds a dispatcher with a 10s per-attempt timeout.
@@ -442,6 +450,17 @@ func NewWebhookDispatcher(pool *pgxpool.Pool) *WebhookDispatcher {
 	return &WebhookDispatcher{
 		pool:   pool,
 		client: &http.Client{Timeout: webhookHTTPTimeout},
+		lookupIP: func(ctx context.Context, host string) ([]net.IP, error) {
+			addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			ips := make([]net.IP, 0, len(addrs))
+			for _, a := range addrs {
+				ips = append(ips, a.IP)
+			}
+			return ips, nil
+		},
 	}
 }
 
@@ -577,7 +596,29 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 	req.Header.Set("X-Glance-Delivery", fmt.Sprintf("%d", r.id))
 	req.Header.Set("X-Glance-Signature", "sha256="+webhookSignature(wd.Secret, body))
 
-	resp, err := d.client.Do(req)
+	// SSRF guard (Task 28): resolve the target at delivery time and refuse
+	// to dial non-public addresses — webhook URLs are admin-controlled, but
+	// v1 must not ship dialable-metadata-endpoint webhooks (169.254.169.254
+	// is the classic target; a string check on the URL would miss DNS
+	// indirection entirely).
+	var resp *http.Response
+	if d.allowPrivateTargets {
+		resp, err = d.client.Do(req) // tests only: httptest targets are loopback
+	} else {
+		var ips []net.IP
+		ips, err = d.guardTarget(ctx, wd.URL)
+		if err != nil {
+			if errors.Is(err, errWebhookTargetBlocked) {
+				// Permanently unsafe: a target resolving to private
+				// space will never become safe — fail the row instead
+				// of retrying it forever.
+				return d.markFailed(ctx, r.id, r.attempts, err)
+			}
+			// DNS failure: transient — backoff and retry.
+			return d.recordFailure(ctx, r.id, r.attempts, err)
+		}
+		resp, err = d.doPinned(ctx, req, ips)
+	}
 	if err != nil {
 		return d.recordFailure(ctx, r.id, r.attempts, err)
 	}
@@ -588,6 +629,94 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode))
 	}
 	return d.markDone(ctx, r.id)
+}
+
+// errWebhookTargetBlocked marks a delivery refused by the SSRF guard. It
+// is matched with errors.Is so the caller can fail the row permanently
+// (a target resolving to private space will never become safe) instead of
+// retrying it on backoff forever.
+var errWebhookTargetBlocked = errors.New("webhook: target resolves to a non-public IP (SSRF guard)")
+
+// webhookCGNAT is the shared address space (RFC 6598) used by carrier-
+// grade NAT: not public-routable, and internal in many deployments. Go's
+// net.IP.IsPrivate does not cover it, so it gets an explicit entry.
+var webhookCGNAT = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("100.64.0.0/10")
+	return n
+}()
+
+// webhookTargetBlocked reports whether ip must never receive a webhook
+// delivery: private nets, CGNAT shared space, loopback, link-local (cloud
+// metadata lives at 169.254.169.254), multicast, and unspecified. ANY
+// blocked address in a hostname's answer set blocks the whole target
+// (fail closed on mixed DNS answers).
+func webhookTargetBlocked(ip net.IP) bool {
+	return ip.IsPrivate() || webhookCGNAT.Contains(ip) || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified()
+}
+
+// guardTarget applies the SSRF guard to rawURL: it resolves the host at
+// delivery time (not a string check on the URL — DNS indirection would
+// defeat that) and rejects non-public targets. On success it returns the
+// validated IPs, which the caller must dial directly (doPinned) to close
+// the DNS-rebinding TOCTOU between resolution and connect.
+func (d *WebhookDispatcher) guardTarget(ctx context.Context, rawURL string) ([]net.IP, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("%w: unparseable url %q", errWebhookTargetBlocked, rawURL)
+	}
+	host := u.Hostname()
+	var ips []net.IP
+	if lit := net.ParseIP(host); lit != nil {
+		// Literal IP: no DNS involved, nothing to rebind.
+		ips = []net.IP{lit}
+	} else {
+		ips, err = d.lookupIP(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("webhook: DNS resolution failed for %q: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("webhook: DNS resolution returned no addresses for %q", host)
+		}
+	}
+	for _, ip := range ips {
+		if webhookTargetBlocked(ip) {
+			return nil, fmt.Errorf("%w: %q -> %s", errWebhookTargetBlocked, host, ip.String())
+		}
+	}
+	return ips, nil
+}
+
+// doPinned POSTs req dialing ONLY the guard-validated IPs. The stock
+// http.Client would re-resolve the hostname at dial time, reopening the
+// DNS-rebinding TOCTOU the guard just closed; pinning the dial to the
+// checked addresses keeps resolve and connect on the same answer set.
+func (d *WebhookDispatcher) doPinned(ctx context.Context, req *http.Request, ips []net.IP) (*http.Response, error) {
+	if len(ips) == 0 {
+		return nil, errors.New("webhook: no validated IPs to dial")
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			var dialer net.Dialer
+			var firstErr error
+			for _, ip := range ips {
+				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if err == nil {
+					return conn, nil
+				}
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			return nil, firstErr
+		},
+	}
+	return (&http.Client{Timeout: webhookHTTPTimeout, Transport: transport}).Do(req)
 }
 
 // webhookSignature is the hex HMAC-SHA256 of the body under the secret.

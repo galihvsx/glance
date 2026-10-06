@@ -268,10 +268,15 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 		}
 	}
 
-	// The code is burned: even the CORRECT code now fails generically.
+	// The code is burned: even the CORRECT code now fails. Note it fails
+	// with ErrRateLimited, not ErrInvalidCode — the 5 wrong guesses spent
+	// the email's entire aligned verify budget (Task 28: 5/hr), so the 6th
+	// call is rejected before the code lookup. The burn itself is intact
+	// (attempts = 5, consumed_at set): the attacker's budget is exhausted
+	// AND the code is dead — no further guesses are processed either way.
 	_, err := VerifyOTP(ctx, pool, cfg, email, "123456", "test-agent", ip)
-	if !errors.Is(err, ErrInvalidCode) {
-		t.Fatalf("correct code after 5 wrong attempts: err = %v, want ErrInvalidCode", err)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("correct code after budget exhaustion: err = %v, want ErrRateLimited", err)
 	}
 
 	var attempts int
@@ -286,6 +291,53 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 	}
 	if consumedAt == nil {
 		t.Errorf("consumed_at = NULL, want set (code burned)")
+	}
+}
+
+// TestVerifyBudgetExhaustionDoesNotBurnFreshCode pins the Task 28
+// decision's load-bearing property: guesses rejected by the verify rate
+// limit are answered BEFORE the code lookup, so they never consume code
+// attempts. An attacker who has spent the email's whole 5/hr budget
+// cannot touch a freshly requested code — the burn loop is broken.
+func TestVerifyBudgetExhaustionDoesNotBurnFreshCode(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-budget")
+	ip := uniqueIP()
+
+	// Burn the email's entire verify budget with 5 wrong guesses against
+	// code A (which also burns code A via the spec §7 5-attempt rule).
+	insertTestCode(t, pool, email, "111111", 0)
+	for i := 0; i < 5; i++ {
+		if _, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", ip); !errors.Is(err, ErrInvalidCode) {
+			t.Fatalf("attempt %d: err = %v, want ErrInvalidCode", i+1, err)
+		}
+	}
+
+	// Victim requests a fresh code; the attacker's next guess is over
+	// budget and must be rejected without touching the new code row.
+	insertTestCode(t, pool, email, "222222", 0)
+	if _, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", ip); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("over-budget guess: err = %v, want ErrRateLimited", err)
+	}
+
+	var attempts int
+	var consumedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT attempts, consumed_at FROM otp_codes
+		  WHERE email = $1 ORDER BY created_at DESC, id DESC LIMIT 1`,
+		email,
+	).Scan(&attempts, &consumedAt); err != nil {
+		t.Fatalf("query fresh code: %v", err)
+	}
+	if attempts != 0 {
+		t.Errorf("fresh code attempts = %d, want 0 (rate-limited guess must not consume attempts)", attempts)
+	}
+	if consumedAt != nil {
+		t.Errorf("fresh code consumed_at set — rate-limited guess burned a code it never reached")
 	}
 }
 
@@ -436,10 +488,24 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 	}
 	wg.Wait()
 
+	// Task 28: the aligned verify budget (5/hr/email) admits exactly 5 of
+	// the 10 concurrent guesses; the rest are rate-limited BEFORE the code
+	// lookup. Both the limiter and the attempt counter are atomic, so the
+	// split is exactly 5/5 and the code's attempts land on exactly 5 — no
+	// lost updates, no double-count past the burn.
+	var invalid, limited int
 	for i, err := range errs {
-		if !errors.Is(err, ErrInvalidCode) {
-			t.Fatalf("goroutine %d: err = %v, want ErrInvalidCode", i, err)
+		switch {
+		case errors.Is(err, ErrInvalidCode):
+			invalid++
+		case errors.Is(err, ErrRateLimited):
+			limited++
+		default:
+			t.Fatalf("goroutine %d: err = %v, want ErrInvalidCode or ErrRateLimited", i, err)
 		}
+	}
+	if invalid != 5 || limited != 5 {
+		t.Fatalf("invalid=%d limited=%d, want exactly 5 and 5", invalid, limited)
 	}
 
 	var attempts int

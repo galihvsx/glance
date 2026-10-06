@@ -146,9 +146,9 @@ func (h *WorkspaceHandler) upsertMember(c *echo.Context) error {
 // removeMember implements DELETE /api/v1/workspaces/{slug}/members/{user_id}.
 // Admin only; removing the last admin is refused.
 func (h *WorkspaceHandler) removeMember(c *echo.Context) error {
-	userID := c.Param("user_id")
-	if !validUUID(userID) {
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user_id", nil)
+	userID, ok := requireUUIDParam(c, "user_id", "user_id")
+	if !ok {
+		return nil
 	}
 	if err := service.RemoveMember(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, userID); err != nil {
 		return workspaceError(c, err)

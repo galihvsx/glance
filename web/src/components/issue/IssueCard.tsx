@@ -2,7 +2,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import type { Issue, IssueState } from "../../lib/types";
 import { priorityLabel } from "../../lib/types";
 import { Badge } from "../ui/badge";
-import { Card, CardHeader, CardTitle } from "../ui/card";
+import { CardHeader, CardTitle } from "../ui/card";
+import { ActionCard } from "../ui/action-card";
 import StateBadge from "./StateBadge";
 
 /** One row of the issue list: display_id badge, title, state, labels,
@@ -21,9 +22,10 @@ export default function IssueCard({
   const navigate = useNavigate();
 
   return (
-    <Card
-      className="cursor-pointer transition-colors hover:bg-accent"
-      onClick={() =>
+    <ActionCard
+      role="link"
+      label={`Open issue ${issue.display_id}: ${issue.name}`}
+      onActivate={() =>
         navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`)
       }
     >
@@ -62,6 +64,6 @@ export default function IssueCard({
           </div>
         )}
       </CardHeader>
-    </Card>
+    </ActionCard>
   );
 }

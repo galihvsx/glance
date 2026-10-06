@@ -3,6 +3,7 @@ package config
 
 import (
 	"errors"
+	"log"
 	"os"
 )
 
@@ -65,6 +66,17 @@ func Load() (*Config, error) {
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("config: DATABASE_URL is required")
+	}
+	// Task 28 (R7): fail closed on an empty OTP pepper. Without a pepper
+	// the code hashes are a plain unsalted SHA-256 of a 6-digit code —
+	// trivially brute-forced offline if the table ever leaks — so booting
+	// without one must be a deliberate, loud choice, never a silent
+	// default. The escape hatch exists for local dev only.
+	if cfg.OTPPepper == "" && os.Getenv("ALLOW_INSECURE_OTP_PEPPER") != "1" {
+		return nil, errors.New("config: OTP_PEPPER is required (refusing to boot with unpeppered OTP hashes); set OTP_PEPPER, or explicitly allow insecure dev mode with ALLOW_INSECURE_OTP_PEPPER=1")
+	}
+	if cfg.OTPPepper == "" {
+		log.Println("config: WARNING: ALLOW_INSECURE_OTP_PEPPER=1 — OTP code hashes are unpeppered and brute-forceable; NEVER use this in production")
 	}
 	return cfg, nil
 }

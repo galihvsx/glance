@@ -259,29 +259,6 @@ func (h *AuthHandler) listSessions(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"sessions": sessions})
 }
 
-// validUUID reports whether s is a canonical 8-4-4-4-12 hex UUID. The
-// delete-session endpoint 404s on malformed ids instead of letting the
-// database choke on a uuid parse error (which would surface as a 500).
-func validUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < 36; i++ {
-		ch := s[i]
-		switch i {
-		case 8, 13, 18, 23:
-			if ch != '-' {
-				return false
-			}
-		default:
-			if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F') {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 // deleteSession implements DELETE /api/v1/auth/sessions/{id}: revokes one
 // of the user's sessions. A session that does not exist, is already
 // revoked, belongs to another user, or is malformed all answer 404 — the

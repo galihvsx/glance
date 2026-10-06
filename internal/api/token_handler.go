@@ -84,9 +84,9 @@ func (h *TokenHandler) revokeToken(c *echo.Context) error {
 	if user == nil {
 		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 	}
-	id := c.Param("id")
-	if !validUUID(id) {
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid token id", nil)
+	id, ok := requireUUIDParam(c, "id", "token id")
+	if !ok {
+		return nil
 	}
 	ok, err := auth.RevokeToken(c.Request().Context(), h.Pool, user.ID, id)
 	if err != nil {

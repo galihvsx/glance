@@ -21,6 +21,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
+import { ActionCard } from "../components/ui/action-card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 
@@ -175,10 +176,11 @@ export default function Workspaces() {
       ) : (
         <div className="space-y-3">
           {workspaces.map((ws) => (
-            <Card
+            <ActionCard
               key={ws.id}
-              className="cursor-pointer transition-colors hover:bg-accent"
-              onClick={() => navigate(`/w/${ws.slug}`)}
+              role="link"
+              label={`Open workspace ${ws.name}`}
+              onActivate={() => navigate(`/w/${ws.slug}`)}
             >
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
                 <div>
@@ -187,7 +189,7 @@ export default function Workspaces() {
                 </div>
                 <Badge variant="secondary">{roleLabel(ws.role)}</Badge>
               </CardHeader>
-            </Card>
+            </ActionCard>
           ))}
         </div>
       )}

@@ -32,14 +32,38 @@ const (
 	otpRateLimitWindow = time.Hour
 	otpMaxPerEmail     = 5
 	otpMaxPerIP        = 20
-	// otpVerifyMaxPerEmail / otpVerifyMaxPerIP bound the verify path
-	// (Task 7 review fix: the verify path had no rate limit, so an attacker
-	// who knows a victim's email could burn each freshly requested code
-	// with 5 rapid wrong-code submits, persistently denying login). 20/hr
-	// is generous for legitimate retries — a code burns after 5 wrong
-	// guesses anyway — but breaks the burn loop: at most ~4 codes/hour
-	// can be killed per victim email.
-	otpVerifyMaxPerEmail = 20
+	// otpVerifyMaxPerEmail / otpVerifyMaxPerIP bound the verify path.
+	//
+	// Task 28 decision (deferred product call from the Task 7 review): the
+	// per-email verify budget is DELIBERATELY aligned with the per-code
+	// attempt budget (otpMaxAttempts = 5) and the request budget
+	// (otpMaxPerEmail = 5).
+	//
+	// The real threat, confirmed by reading VerifyOTP below: every wrong
+	// guess that passes the rate limit increments the victim code's
+	// `attempts` counter (FOR UPDATE-serialized), and 5 wrong guesses burn
+	// the code. An attacker who knows the victim's email can therefore burn
+	// codes out from under the victim — with a 20/hr verify budget the
+	// attacker could kill up to 4 of the victim's 5 requestable codes per
+	// hour (a near-total login DoS), and a per-cycle race (5 rapid guesses
+	// timed right after the victim requests) kills the exact code the
+	// victim is about to type.
+	//
+	// With the budget aligned at 5/hr/email the attacker's ENTIRE hourly
+	// budget can burn at most ONE code, while the victim can request five:
+	// persistent denial is mathematically impossible (floor(5/5) = 1 < 5).
+	// Guesses past the budget are rejected BEFORE the code lookup, so
+	// rate-limited attempts never consume code attempts (pinned by
+	// TestVerifyBudgetExhaustionDoesNotBurnFreshCode).
+	//
+	// Considered and rejected: dropping the 5-attempt burn (spec §7
+	// mandates it); binding burns to the request IP (mobile/CGNAT IP churn
+	// would lock out legitimate users).
+	//
+	// UX tradeoff, documented: a user who mistypes 5 codes in an hour is
+	// locked out of verify until the fixed window resets (worst case < 1h).
+	// Acceptable for a login endpoint; the alternative is a login DoS.
+	otpVerifyMaxPerEmail = 5
 	otpVerifyMaxPerIP    = 20
 	// otpMaxAttempts is the number of wrong guesses a code tolerates before
 	// it is burned (spec §7).

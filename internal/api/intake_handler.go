@@ -79,7 +79,11 @@ func (h *IssueHandler) getIntake(c *echo.Context) error {
 
 // acceptIntakeIssue implements POST .../intake/issues/{uuid}/accept.
 func (h *IssueHandler) acceptIntakeIssue(c *echo.Context) error {
-	ii, err := service.AcceptIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	ii, err := service.AcceptIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID)
 	if err != nil {
 		if handled, out := intakeError(c, err); handled {
 			return out
@@ -91,7 +95,11 @@ func (h *IssueHandler) acceptIntakeIssue(c *echo.Context) error {
 
 // rejectIntakeIssue implements POST .../intake/issues/{uuid}/reject.
 func (h *IssueHandler) rejectIntakeIssue(c *echo.Context) error {
-	ii, err := service.RejectIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	ii, err := service.RejectIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID)
 	if err != nil {
 		if handled, out := intakeError(c, err); handled {
 			return out
@@ -118,7 +126,11 @@ func (h *IssueHandler) snoozeIntakeIssue(c *echo.Context) error {
 	if err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid snoozed_till: want RFC3339", nil)
 	}
-	ii, err := service.SnoozeIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID, till)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	ii, err := service.SnoozeIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID, till)
 	if err != nil {
 		if handled, out := intakeError(c, err); handled {
 			return out
@@ -141,7 +153,11 @@ func (h *IssueHandler) duplicateIntakeIssue(c *echo.Context) error {
 	if body.DuplicateToID == nil || *body.DuplicateToID == "" {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "duplicate_to_id is required", nil)
 	}
-	ii, err := service.DuplicateIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID, *body.DuplicateToID)
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	ii, err := service.DuplicateIntakeIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID, *body.DuplicateToID)
 	if err != nil {
 		if handled, out := intakeError(c, err); handled {
 			return out

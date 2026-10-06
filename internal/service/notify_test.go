@@ -190,6 +190,7 @@ func TestWebhookDeliveryRetried(t *testing.T) {
 	}
 
 	d := NewWebhookDispatcher(pool)
+	d.allowPrivateTargets = true // httptest targets are loopback by construction
 	if err := d.Run(ctx); err != nil {
 		t.Fatalf("dispatcher run 1: %v", err)
 	}
@@ -622,6 +623,7 @@ func TestWebhookDispatchReleasesClaimTxDuringDelivery(t *testing.T) {
 	outboxID := enqueueOneWebhookRow(t, pool, ctx, wsSlug, actorID, srv.URL)
 
 	d := NewWebhookDispatcher(pool)
+	d.allowPrivateTargets = true // httptest targets are loopback by construction
 	runErr := make(chan error, 1)
 	go func() { runErr <- d.Run(ctx) }()
 
@@ -706,6 +708,7 @@ func TestWebhookDispatchSingleFlight(t *testing.T) {
 	outboxID := enqueueWebhookRow(t, pool, ctx, wsSlug)
 
 	d := NewWebhookDispatcher(pool)
+	d.allowPrivateTargets = true // httptest targets are loopback by construction
 	run1 := make(chan error, 1)
 	go func() { run1 <- d.Run(ctx) }()
 

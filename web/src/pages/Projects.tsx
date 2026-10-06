@@ -20,6 +20,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
+import { ActionCard } from "../components/ui/action-card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 
@@ -173,16 +174,17 @@ export default function Projects() {
       ) : (
         <div className="space-y-3">
           {projects.map((p) => (
-            <Card
+            <ActionCard
               key={p.id}
-              className="cursor-pointer transition-colors hover:bg-accent"
-              onClick={() => navigate(`/w/${slug}/p/${p.identifier}`)}
+              role="link"
+              label={`Open project ${p.name}`}
+              onActivate={() => navigate(`/w/${slug}/p/${p.identifier}`)}
             >
               <CardHeader className="flex flex-row items-center gap-3 space-y-0">
                 <Badge>{p.identifier}</Badge>
                 <CardTitle className="text-base">{p.name}</CardTitle>
               </CardHeader>
-            </Card>
+            </ActionCard>
           ))}
         </div>
       )}
