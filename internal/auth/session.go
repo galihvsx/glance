@@ -72,44 +72,41 @@ type SessionInfo struct {
 var ErrSessionInvalid = errors.New("auth: invalid session")
 
 // lastSeenRefreshInterval bounds the last_seen_at write: the column is
-// only rewritten when it is older than this, so hot requests skip the
-// write entirely (the conditional UPDATE below is a no-op for them).
+// only rewritten when it is older than this, so the hot path costs one
+// read and zero writes — AuthenticateSession issues the UPDATE only for
+// stale sessions (see below).
 const lastSeenRefreshInterval = 5 * time.Minute
 
-// AuthenticateSession validates a raw session token in a single round trip:
-// it looks the session up by SHA-256(token), rejects revoked and expired
-// rows, loads the user, and refreshes last_seen_at when stale. The refresh
-// is a conditional CASE inside the same UPDATE, so fresh sessions cost no
-// write. Any validation failure returns ErrSessionInvalid — callers must
-// not distinguish the cases.
+// AuthenticateSession validates a raw session token: it looks the session
+// up by SHA-256(token), rejects revoked and expired rows, loads the user,
+// and refreshes last_seen_at when stale. The refresh is a separate UPDATE
+// issued only when the value is older than lastSeenRefreshInterval, so
+// fresh sessions cost a single read and no write at all — no row lock, no
+// new tuple version, no WAL on the hottest middleware path. Concurrent
+// stale refreshes are idempotent (each writes now()), so the read-then-
+// write split is race-safe. Any validation failure returns
+// ErrSessionInvalid — callers must not distinguish the cases.
 func AuthenticateSession(ctx context.Context, pool *pgxpool.Pool, token string) (AuthResult, error) {
 	if token == "" {
 		return AuthResult{}, ErrSessionInvalid
 	}
 	sum := sha256.Sum256([]byte(token))
 	var (
-		user      User
-		sessionID string
+		user       User
+		sessionID  string
+		lastSeenAt time.Time
 	)
 	err := pool.QueryRow(ctx, `
-		WITH s AS (
-			UPDATE sessions
-			SET last_seen_at = CASE
-				WHEN last_seen_at < now() - ($2 * INTERVAL '1 second')
-				THEN now()
-				ELSE last_seen_at
-			END
-			WHERE token_hash = $1
-			  AND revoked_at IS NULL
-			  AND expires_at > now()
-			RETURNING id, user_id
-		)
-		SELECT s.id, u.id, u.email, u.name, u.avatar_url, u.is_active,
-		       u.last_login_at, u.created_at, u.updated_at
-		FROM s JOIN users u ON u.id = s.user_id`,
-		hex.EncodeToString(sum[:]), lastSeenRefreshInterval.Seconds(),
+		SELECT s.id, s.last_seen_at, u.id, u.email, u.name, u.avatar_url,
+		       u.is_active, u.last_login_at, u.created_at, u.updated_at
+		FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1
+		  AND s.revoked_at IS NULL
+		  AND s.expires_at > now()`,
+		hex.EncodeToString(sum[:]),
 	).Scan(
-		&sessionID, &user.ID, &user.Email, &user.Name, &user.AvatarURL,
+		&sessionID, &lastSeenAt,
+		&user.ID, &user.Email, &user.Name, &user.AvatarURL,
 		&user.IsActive, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
@@ -117,6 +114,13 @@ func AuthenticateSession(ctx context.Context, pool *pgxpool.Pool, token string) 
 			return AuthResult{}, ErrSessionInvalid
 		}
 		return AuthResult{}, fmt.Errorf("auth: authenticate session: %w", err)
+	}
+	if time.Since(lastSeenAt) > lastSeenRefreshInterval {
+		if _, err := pool.Exec(ctx,
+			`UPDATE sessions SET last_seen_at = now() WHERE id = $1`,
+			sessionID); err != nil {
+			return AuthResult{}, fmt.Errorf("auth: refresh last_seen_at: %w", err)
+		}
 	}
 	return AuthResult{User: &user, SessionID: sessionID}, nil
 }

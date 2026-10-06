@@ -446,10 +446,14 @@ func TestLastSeenAtUntouchedWhenFresh(t *testing.T) {
 
 	email := uniqueEmail("h-sess-notouch")
 	cookie := loginTestUser(t, e, pool, email, "agent-a/1.0", uniqueIP())
+	// xmin identifies the row's tuple version: any UPDATE — even one that
+	// writes back the same value — allocates a new version with a new xmin.
+	// Equal xmin before/after proves the hot path issued zero writes.
 	var before time.Time
+	var beforeXmin string
 	if err := pool.QueryRow(ctx,
-		`SELECT last_seen_at FROM sessions WHERE token_hash = $1`,
-		sessionTokenHash(cookie.Value)).Scan(&before); err != nil {
+		`SELECT last_seen_at, xmin::text FROM sessions WHERE token_hash = $1`,
+		sessionTokenHash(cookie.Value)).Scan(&before, &beforeXmin); err != nil {
 		t.Fatalf("query last_seen_at: %v", err)
 	}
 
@@ -457,12 +461,16 @@ func TestLastSeenAtUntouchedWhenFresh(t *testing.T) {
 		t.Fatalf("/me: status = %d, want 200", rec.Code)
 	}
 	var after time.Time
+	var afterXmin string
 	if err := pool.QueryRow(ctx,
-		`SELECT last_seen_at FROM sessions WHERE token_hash = $1`,
-		sessionTokenHash(cookie.Value)).Scan(&after); err != nil {
+		`SELECT last_seen_at, xmin::text FROM sessions WHERE token_hash = $1`,
+		sessionTokenHash(cookie.Value)).Scan(&after, &afterXmin); err != nil {
 		t.Fatalf("query last_seen_at: %v", err)
 	}
 	if !after.Equal(before) {
 		t.Errorf("fresh last_seen_at was rewritten (%v -> %v); the refresh must be conditional", before, after)
+	}
+	if afterXmin != beforeXmin {
+		t.Errorf("fresh session row was physically rewritten (xmin %s -> %s); the hot path must issue zero writes", beforeXmin, afterXmin)
 	}
 }
