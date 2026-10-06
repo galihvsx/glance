@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -26,6 +27,9 @@ var (
 	// is confirmed to exist and the caller confirmed a member on this
 	// path, so "workspace not found" would be actively misleading.
 	ErrProjectNotFound = errors.New("service: project not found")
+	// ErrNothingToUpdate is returned by UpdateProject when the patch carries
+	// no fields: PATCH with {} is a client error, not a no-op success.
+	ErrNothingToUpdate = errors.New("service: nothing to update")
 )
 
 // Project is an issue container inside a workspace, addressed by its
@@ -239,17 +243,47 @@ func GetProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	return p, nil
 }
 
-// UpdateProject renames a project and/or sets its description. Member (15)
-// or admin (20); guests get ErrForbidden. The role check and the update
-// run in one transaction so a concurrent demotion cannot slip between them.
-func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, name, description string) (*Project, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, ErrNameRequired
-	}
+// ProjectPatch is a partial project update: nil fields are left unchanged,
+// so PATCH carries true partial-update semantics (a body that omits
+// description does not wipe it). An explicit empty string is honored as a
+// clear — JSON null and "" stay distinct.
+type ProjectPatch struct {
+	Name        *string
+	Description *string
+}
+
+// UpdateProject applies a partial project update. Member (15) or admin
+// (20); guests get ErrForbidden. Only non-nil patch fields are written,
+// so omitting a field leaves it untouched — PATCH carries true
+// partial-update semantics. An explicit empty string is honored as a clear
+// (null and "" stay distinct). A patch with no fields is
+// ErrNothingToUpdate. The role check and the update run in one transaction
+// so a concurrent demotion cannot slip between them.
+func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, patch ProjectPatch) (*Project, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return nil, err
+	}
+
+	// Build the SET clause from non-nil fields only. args[0]/args[1] are
+	// reserved for wsID/ident in the WHERE clause, hence the +2 offset on
+	// the placeholder indices.
+	var sets []string
+	args := make([]any, 0, 4)
+	if patch.Name != nil {
+		name := strings.TrimSpace(*patch.Name)
+		if name == "" {
+			return nil, ErrNameRequired
+		}
+		args = append(args, name)
+		sets = append(sets, fmt.Sprintf("name = $%d", len(args)+2))
+	}
+	if patch.Description != nil {
+		args = append(args, *patch.Description)
+		sets = append(sets, fmt.Sprintf("description = $%d", len(args)+2))
+	}
+	if len(sets) == 0 {
+		return nil, ErrNothingToUpdate
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -272,10 +306,10 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 
 	p, err := scanProject(tx.QueryRow(ctx,
-		`UPDATE projects p SET name = $3, description = $4, updated_at = now()
+		`UPDATE projects p SET `+strings.Join(sets, ", ")+`, updated_at = now()
 		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2
 		 RETURNING `+projectColumns,
-		wsID, ident, name, description))
+		append([]any{wsID, ident}, args...)...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProjectNotFound

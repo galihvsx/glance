@@ -25,6 +25,10 @@ func uniqueTestIdentifier() string {
 	return fmt.Sprintf("P%05d%04d", os.Getpid()%100000, int(testSeq.Add(1))%10000)
 }
 
+// strPtr hands out a *string for patch tests: nil means "field omitted",
+// strPtr("") means "explicitly cleared".
+func strPtr(s string) *string { return &s }
+
 func createTestProject(t *testing.T, pool *pgxpool.Pool, wsSlug, actorID, name, identifier string) *Project {
 	t.Helper()
 	p, err := CreateProject(context.Background(), pool, wsSlug, actorID, name, identifier)
@@ -276,7 +280,9 @@ func TestUpdateProject(t *testing.T) {
 
 	p := createTestProject(t, pool, ws.Slug, admin, "Engineering", uniqueTestIdentifier())
 
-	updated, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, "Platform", "All platform work")
+	updated, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, ProjectPatch{
+		Name: strPtr("Platform"), Description: strPtr("All platform work"),
+	})
 	if err != nil {
 		t.Fatalf("UpdateProject (admin): %v", err)
 	}
@@ -284,23 +290,45 @@ func TestUpdateProject(t *testing.T) {
 		t.Fatalf("updated = %+v, want name/description changed", updated)
 	}
 
-	// Member (15) may update too.
-	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, member, "Platform Two", ""); err != nil {
-		t.Fatalf("UpdateProject (member): %v, want nil", err)
+	// PATCH with only name: description must survive (true partial update).
+	updated, err = UpdateProject(ctx, pool, ws.Slug, p.Identifier, member, ProjectPatch{
+		Name: strPtr("Platform Two"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject (member, name-only): %v, want nil", err)
+	}
+	if updated.Name != "Platform Two" || updated.Description != "All platform work" {
+		t.Fatalf("name-only patch = %+v, want name changed and description intact", updated)
+	}
+
+	// Explicit "" clears the description (null vs empty stays distinct).
+	updated, err = UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, ProjectPatch{
+		Description: strPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject (clear description): %v", err)
+	}
+	if updated.Description != "" || updated.Name != "Platform Two" {
+		t.Fatalf("clear patch = %+v, want description cleared and name intact", updated)
 	}
 
 	// Guest (5) may not.
-	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, guest, "Hacked", ""); !errors.Is(err, ErrForbidden) {
+	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, guest, ProjectPatch{Name: strPtr("Hacked")}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("guest update: err = %v, want ErrForbidden", err)
 	}
 
 	// Empty name is rejected.
-	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, "  ", ""); !errors.Is(err, ErrNameRequired) {
+	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, ProjectPatch{Name: strPtr("  ")}); !errors.Is(err, ErrNameRequired) {
 		t.Fatalf("empty name update: err = %v, want ErrNameRequired", err)
 	}
 
+	// No fields at all is a client error, not a no-op success.
+	if _, err := UpdateProject(ctx, pool, ws.Slug, p.Identifier, admin, ProjectPatch{}); !errors.Is(err, ErrNothingToUpdate) {
+		t.Fatalf("empty patch: err = %v, want ErrNothingToUpdate", err)
+	}
+
 	// Missing project.
-	if _, err := UpdateProject(ctx, pool, ws.Slug, "NOPE123", admin, "X", ""); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := UpdateProject(ctx, pool, ws.Slug, "NOPE123", admin, ProjectPatch{Name: strPtr("X")}); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("missing project update: err = %v, want ErrProjectNotFound", err)
 	}
 }

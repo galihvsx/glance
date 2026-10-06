@@ -94,8 +94,11 @@ func (h *ProjectHandler) getProject(c *echo.Context) error {
 }
 
 type updateProjectBody struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	// Pointers: PATCH is partial — a nil field means "not provided, leave
+	// untouched". An explicit "" is honored as a clear (null vs empty
+	// stays distinct).
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -105,10 +108,14 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.Name, body.Description)
+	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+		service.ProjectPatch{Name: body.Name, Description: body.Description})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+		}
+		if errors.Is(err, service.ErrNothingToUpdate) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
 		}
 		return projectError(c, err)
 	}
