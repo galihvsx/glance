@@ -94,37 +94,40 @@ type Issue struct {
 // "not provided" (defaults apply); StateID nil selects the project's
 // backlog-group state.
 type CreateIssueInput struct {
-	Name        string
-	Description json.RawMessage
-	Priority    *int
-	StateID     *string
-	ParentID    *string
-	SortOrder   *float64
-	StartDate   *time.Time
-	TargetDate  *time.Time
-	IsDraft     bool
+	Name            string
+	Description     json.RawMessage
+	Priority        *int
+	StateID         *string
+	ParentID        *string
+	SortOrder       *float64
+	StartDate       *time.Time
+	TargetDate      *time.Time
+	EstimatePointID *string
+	IsDraft         bool
 }
 
 // IssuePatch is a partial issue update: nil / Set=false fields are left
 // untouched, so PATCH carries true partial-update semantics. A patch with
 // no fields at all is ErrNothingToUpdate.
 type IssuePatch struct {
-	Name        *string
-	Description PatchField[json.RawMessage]
-	Priority    *int
-	StateID     *string
-	ParentID    PatchField[string]
-	SortOrder   *float64
-	StartDate   PatchField[time.Time]
-	TargetDate  PatchField[time.Time]
-	IsDraft     *bool
+	Name            *string
+	Description     PatchField[json.RawMessage]
+	Priority        *int
+	StateID         *string
+	ParentID        PatchField[string]
+	SortOrder       *float64
+	StartDate       PatchField[time.Time]
+	TargetDate      PatchField[time.Time]
+	EstimatePointID PatchField[string]
+	IsDraft         *bool
 }
 
 // hasFields reports whether the patch carries anything at all.
 func (p IssuePatch) hasFields() bool {
 	return p.Name != nil || p.Description.Set || p.Priority != nil ||
 		p.StateID != nil || p.ParentID.Set || p.SortOrder != nil ||
-		p.StartDate.Set || p.TargetDate.Set || p.IsDraft != nil
+		p.StartDate.Set || p.TargetDate.Set || p.EstimatePointID.Set ||
+		p.IsDraft != nil
 }
 
 // issueColumns is the bare column list for INSERT/UPDATE ... RETURNING and
@@ -315,6 +318,15 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		parentID = &pid
 	}
 
+	var estimatePointID *string
+	if in.EstimatePointID != nil {
+		epid, err := checkEstimatePoint(ctx, tx, projectID, *in.EstimatePointID)
+		if err != nil {
+			return nil, err
+		}
+		estimatePointID = &epid
+	}
+
 	// Atomic sequence increment, self-healing if the counter row is ever
 	// missing (hand-inserted project, failed backfill, a future path
 	// bypassing CreateProject). The INSERT ... ON CONFLICT ... DO UPDATE
@@ -347,11 +359,13 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 
 	iss, err := scanIssue(tx.QueryRow(ctx,
 		`INSERT INTO issues (project_id, sequence_id, name, description, priority,
-			state_id, parent_id, sort_order, start_date, target_date, is_draft, created_by)
-		 VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6::uuid, $7::uuid, $8, $9, $10, $11, $12::uuid)
+			state_id, parent_id, sort_order, start_date, target_date,
+			estimate_point_id, is_draft, created_by)
+		 VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6::uuid, $7::uuid, $8, $9, $10,
+			$11::uuid, $12, $13::uuid)
 		 RETURNING `+issueColumns,
 		projectID, seq, name, descParam, priority, stateID, parentID,
-		sortOrder, in.StartDate, in.TargetDate, in.IsDraft, actorID))
+		sortOrder, in.StartDate, in.TargetDate, estimatePointID, in.IsDraft, actorID))
 	if err != nil {
 		return nil, err
 	}
@@ -371,9 +385,10 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	return iss, nil
 }
 
-// GetIssue returns one live issue by UUID. Any workspace member (guest 5+)
-// may read; non-members get ErrNotFound, a missing UUID ErrIssueNotFound.
-func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*Issue, error) {
+// GetIssue returns one live issue by UUID, with its assignees and labels
+// aggregated in the same query. Any workspace member (guest 5+) may read;
+// non-members get ErrNotFound, a missing UUID ErrIssueNotFound.
+func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*IssueListItem, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return nil, err
@@ -383,18 +398,35 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 		return nil, err
 	}
 
-	iss, err := scanIssue(pool.QueryRow(ctx,
-		`SELECT `+issueColumns+` FROM issues
-		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
-		issueID, projectID))
+	var item IssueListItem
+	var description []byte
+	var assigneesJSON, labelsJSON []byte
+	err = pool.QueryRow(ctx,
+		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+` FROM issues i
+		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
+		issueID, projectID).Scan(
+		&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
+		&description,
+		&item.Priority, &item.StateID, &item.ParentID, &item.SortOrder,
+		&item.StartDate, &item.TargetDate, &item.EstimatePointID,
+		&item.IsDraft, &item.ArchivedAt,
+		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
+		&assigneesJSON, &labelsJSON,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 			return nil, ErrIssueNotFound
 		}
 		return nil, err
 	}
-	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
-	return iss, nil
+	if description != nil {
+		item.Description = json.RawMessage(description)
+	}
+	if err := unmarshalRelations(assigneesJSON, labelsJSON, &item); err != nil {
+		return nil, err
+	}
+	item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
+	return &item, nil
 }
 
 // toJSONBParam renders a Go value as a JSONB query parameter for the
@@ -511,6 +543,19 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		}
 	}
 
+	var estimatePointID PatchField[string]
+	if patch.EstimatePointID.Set {
+		if patch.EstimatePointID.Value != nil {
+			epid, err := checkEstimatePoint(ctx, tx, projectID, *patch.EstimatePointID.Value)
+			if err != nil {
+				return nil, err
+			}
+			estimatePointID = PatchField[string]{Set: true, Value: &epid}
+		} else {
+			estimatePointID = PatchField[string]{Set: true}
+		}
+	}
+
 	// Effective dates for the range check (patch wins over the old row).
 	effStart := old.StartDate
 	if patch.StartDate.Set {
@@ -584,6 +629,10 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	}
 	if patch.TargetDate.Set && !datePtrEq(old.TargetDate, patch.TargetDate.Value) {
 		add("target_date", "target_date", "", patch.TargetDate.Value, derefPtr(old.TargetDate), derefPtr(patch.TargetDate.Value))
+	}
+	if estimatePointID.Set && !strPtrEq(old.EstimatePointID, estimatePointID.Value) {
+		add("estimate_point_id", "estimate_point_id", "::uuid", estimatePointID.Value,
+			derefPtr(old.EstimatePointID), derefPtr(estimatePointID.Value))
 	}
 	if patch.IsDraft != nil && *patch.IsDraft != old.IsDraft {
 		add("is_draft", "is_draft", "", *patch.IsDraft, old.IsDraft, *patch.IsDraft)
@@ -832,19 +881,51 @@ type ListIssuesInput struct {
 	Fields       []string
 }
 
-// IssueAssignee is one assignee on a listed issue. Populated from
-// issue_assignees in Task 16; always [] until then.
+// IssueAssignee is one assignee on an issue, aggregated from
+// issue_assignees in the same query as the issue row (Task 16).
 type IssueAssignee struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// IssueLabel is one label on a listed issue. Populated from issue_labels
-// in Task 16; always [] until then.
+// IssueLabel is one label on an issue, aggregated from issue_labels in
+// the same query as the issue row (Task 16).
 type IssueLabel struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Color string `json:"color"`
+}
+
+// assigneesAgg / labelsAgg are correlated subqueries aggregating an
+// issue's relations as JSONB arrays inside the single list/detail query
+// — one query total, never per-row lookups (Review Focus #3). The outer
+// query must alias issues as i. COALESCE keeps the shape [] (never null)
+// for issues with no relations.
+const assigneesAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
+		'id', u.id::text,
+		'name', COALESCE(u.name, u.email::text))
+		ORDER BY COALESCE(u.name, u.email::text))::jsonb, '[]'::jsonb)
+	FROM issue_assignees ia JOIN users u ON u.id = ia.user_id
+	WHERE ia.issue_id = i.id)`
+
+const labelsAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
+		'id', l.id::text, 'name', l.name, 'color', l.color)
+		ORDER BY l.name)::jsonb, '[]'::jsonb)
+	FROM issue_labels il JOIN labels l ON l.id = il.label_id
+	WHERE il.issue_id = i.id)`
+
+// unmarshalRelations decodes the two aggregated JSONB columns into the
+// list item's Assignees/Labels slices.
+func unmarshalRelations(assigneesJSON, labelsJSON []byte, item *IssueListItem) error {
+	item.Assignees = []IssueAssignee{}
+	item.Labels = []IssueLabel{}
+	if err := json.Unmarshal(assigneesJSON, &item.Assignees); err != nil {
+		return fmt.Errorf("service: decode assignees: %w", err)
+	}
+	if err := json.Unmarshal(labelsJSON, &item.Labels); err != nil {
+		return fmt.Errorf("service: decode labels: %w", err)
+	}
+	return nil
 }
 
 // IssueListItem is one row of the list: the issue plus its aggregated
@@ -863,10 +944,9 @@ type ListIssuesResult struct {
 
 // ListIssues returns the project's live issues with filters, cursor
 // pagination, and delta sync. Assignees/labels are aggregated inside the
-// single list query (json_agg subqueries once the junction tables exist
-// in Task 16; literal [] until then), so the query count is constant in
-// the number of issues. Any workspace member (guest 5+) may read;
-// non-members get ErrNotFound via resolveIssueProject.
+// single list query (correlated json_agg subqueries), so the query count
+// is constant in the number of issues. Any workspace member (guest 5+)
+// may read; non-members get ErrNotFound via resolveIssueProject.
 func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in ListIssuesInput) (*ListIssuesResult, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -935,7 +1015,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
 		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
-		'[]'::jsonb AS assignees, '[]'::jsonb AS labels`
+		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
 
 	var conds []string
 	var args []any
@@ -952,12 +1032,17 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if in.Priority != nil {
 		conds = append(conds, "i.priority = "+arg(*in.Priority))
 	}
-	if in.Assignee != "" || in.Label != "" || in.Cycle != "" {
-		// No junction tables yet (Task 16: issue_assignees/issue_labels,
-		// Task 22: cycle_issues) — no issue can carry the relation, so the
-		// filter matches nothing. The parameter is still accepted and
-		// UUID-validated above, so the API contract is stable when the
-		// tables arrive.
+	if in.Assignee != "" {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = "+arg(in.Assignee)+"::uuid)")
+	}
+	if in.Label != "" {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = "+arg(in.Label)+"::uuid)")
+	}
+	if in.Cycle != "" {
+		// No cycle_issues table yet (Task 22) — no issue can carry the
+		// relation, so the filter matches nothing. The parameter is still
+		// accepted and UUID-validated above, so the API contract is stable
+		// when the table arrives.
 		conds = append(conds, "FALSE")
 	}
 	if in.Q != "" {
@@ -1013,11 +1098,8 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		if desc != nil {
 			item.Description = json.RawMessage(desc)
 		}
-		if err := json.Unmarshal(assigneesJSON, &item.Assignees); err != nil {
-			return nil, fmt.Errorf("service: decode assignees: %w", err)
-		}
-		if err := json.Unmarshal(labelsJSON, &item.Labels); err != nil {
-			return nil, fmt.Errorf("service: decode labels: %w", err)
+		if err := unmarshalRelations(assigneesJSON, labelsJSON, &item); err != nil {
+			return nil, err
 		}
 		item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
 		items = append(items, item)

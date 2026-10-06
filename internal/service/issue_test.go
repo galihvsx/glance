@@ -598,8 +598,9 @@ func TestListNoNPlusOne(t *testing.T) {
 	if len(r1.Issues) != 50 {
 		t.Fatalf("got %d issues, want 50", len(r1.Issues))
 	}
-	// Assignees/labels come back as empty arrays (junction tables land in
-	// Task 16) — but the shape is stable and costs no extra queries.
+	// Assignees/labels come back as empty arrays here (no relations were
+	// created for the bulk issues) — but the shape is stable and costs no
+	// extra queries: aggregation happens inside the single list query.
 	for _, it := range r1.Issues {
 		if it.Assignees == nil || it.Labels == nil {
 			t.Fatal("assignees/labels must be non-nil empty arrays")
@@ -763,34 +764,11 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
-// TestListRelationFiltersEmptyBeforeTaxonomy pins the documented contract:
-// assignee=/label=/cycle= are accepted today but match nothing, because
-// the junction tables (issue_assignees, issue_labels in 000008_taxonomy,
-// Task 16; cycle_issues in Task 22) do not exist yet. Revisit in Task 16.
-func TestListRelationFiltersEmptyBeforeTaxonomy(t *testing.T) {
-	s := setupListTest(t)
-	ctx := context.Background()
-
-	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "unassigned")
-	someUUID := "11111111-2222-3333-4444-555555555555"
-
-	for _, in := range []ListIssuesInput{
-		{Assignee: someUUID},
-		{Label: someUUID},
-		{Cycle: someUUID},
-	} {
-		r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor, in)
-		if err != nil {
-			t.Fatalf("ListIssues %+v: %v", in, err)
-		}
-		if len(r.Issues) != 0 {
-			t.Fatalf("ListIssues %+v: got %d issues, want 0 (no junction tables yet)", in, len(r.Issues))
-		}
-		if len(r.Issues) != 0 && r.NextCursor != "" {
-			t.Fatal("empty result must not carry a cursor")
-		}
-	}
-}
+// TestListRelationFiltersEmptyBeforeTaxonomy was the Task 15 contract
+// pinning assignee=/label=/cycle= to empty results before the junction
+// tables existed. It is superseded by TestListRelationFilters in
+// label_test.go (Task 16), which asserts the real filter behavior;
+// cycle= remains empty until Task 22.
 
 // TestListInvalidParams: bad order_by, bad cursor, bad priority, and a
 // cursor minted for a different order are all 400-class errors.

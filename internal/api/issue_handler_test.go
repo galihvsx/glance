@@ -29,7 +29,7 @@ func TestIssueHTTPCRUD(t *testing.T) {
 	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
-	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-http"), "test-agent", "127.0.0.1")
+	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-http"), "test-agent", uniqueIP())
 	slug := uniqueSlug("issue-http")
 	createWorkspaceHTTP(t, e, cookie, "Issue Co", slug)
 	ident := uniqueProjectIdentifier("HI")
@@ -179,7 +179,7 @@ func TestIssueHTTPList(t *testing.T) {
 	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
-	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-list-http"), "test-agent", "127.0.0.1")
+	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-list-http"), "test-agent", uniqueIP())
 	slug := uniqueSlug("issue-list-http")
 	createWorkspaceHTTP(t, e, cookie, "List Co", slug)
 	ident := uniqueProjectIdentifier("LI")

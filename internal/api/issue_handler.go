@@ -33,6 +33,25 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.DELETE("/:uuid", h.deleteIssue)
 }
 
+// RegisterTaxonomyRoutes mounts the label / assignee / estimate endpoints
+// (Task 16) nested under the project path. Labels are workspace-scoped
+// rows (spec §4); the project identifier in the route resolves the
+// workspace and the caller's membership. Call before the SPA catch-all.
+func RegisterTaxonomyRoutes(e *echo.Echo, h *IssueHandler) {
+	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier", RequireAuth(h.Pool))
+	g.POST("/labels", h.createLabel)
+	g.GET("/labels", h.listLabels)
+	g.GET("/labels/:labelID", h.getLabel)
+	g.PATCH("/labels/:labelID", h.updateLabel)
+	g.DELETE("/labels/:labelID", h.deleteLabel)
+	g.POST("/estimates", h.createEstimate)
+	g.GET("/estimates", h.listEstimates)
+	g.POST("/issues/:uuid/labels/:labelID", h.assignLabel)
+	g.DELETE("/issues/:uuid/labels/:labelID", h.unassignLabel)
+	g.POST("/issues/:uuid/assignees/:userID", h.assignAssignee)
+	g.DELETE("/issues/:uuid/assignees/:userID", h.unassignAssignee)
+}
+
 // issueError maps service sentinel errors to HTTP statuses. Unknown errors
 // are 500 with no detail leaked.
 func issueError(c *echo.Context, err error) error {
@@ -61,21 +80,39 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "start_date must not be after target_date", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid identifier: 1-12 letters and digits", nil)
+	// Task 16: taxonomy errors.
+	case errors.Is(err, service.ErrLabelNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "label not found", nil)
+	case errors.Is(err, service.ErrLabelConflict):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "label name already exists", nil)
+	case errors.Is(err, service.ErrLabelCycle):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "label parent would create a cycle", nil)
+	case errors.Is(err, service.ErrInvalidLabel):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid label", nil)
+	case errors.Is(err, service.ErrEstimateNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "estimate not found", nil)
+	case errors.Is(err, service.ErrEstimateConflict):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "estimate name already exists", nil)
+	case errors.Is(err, service.ErrInvalidEstimatePoint):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid estimate point", nil)
+	case errors.Is(err, service.ErrAssigneeNotMember):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "assignee is not a workspace member", nil)
 	default:
 		return WriteInternalError(c)
 	}
 }
 
 type createIssueBody struct {
-	Name        string          `json:"name"`
-	Description json.RawMessage `json:"description"`
-	Priority    *int            `json:"priority"`
-	StateID     *string         `json:"state_id"`
-	ParentID    *string         `json:"parent_id"`
-	SortOrder   *float64        `json:"sort_order"`
-	StartDate   *string         `json:"start_date"` // YYYY-MM-DD
-	TargetDate  *string         `json:"target_date"`
-	IsDraft     bool            `json:"is_draft"`
+	Name            string          `json:"name"`
+	Description     json.RawMessage `json:"description"`
+	Priority        *int            `json:"priority"`
+	StateID         *string         `json:"state_id"`
+	ParentID        *string         `json:"parent_id"`
+	SortOrder       *float64        `json:"sort_order"`
+	StartDate       *string         `json:"start_date"` // YYYY-MM-DD
+	TargetDate      *string         `json:"target_date"`
+	EstimatePointID *string         `json:"estimate_point_id"`
+	IsDraft         bool            `json:"is_draft"`
 }
 
 // parseDateBody parses an optional YYYY-MM-DD body field into a *time.Time.
@@ -111,15 +148,16 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 	}
 	iss, err := service.CreateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
 		service.CreateIssueInput{
-			Name:        body.Name,
-			Description: body.Description,
-			Priority:    body.Priority,
-			StateID:     body.StateID,
-			ParentID:    body.ParentID,
-			SortOrder:   body.SortOrder,
-			StartDate:   start,
-			TargetDate:  target,
-			IsDraft:     body.IsDraft,
+			Name:            body.Name,
+			Description:     body.Description,
+			Priority:        body.Priority,
+			StateID:         body.StateID,
+			ParentID:        body.ParentID,
+			SortOrder:       body.SortOrder,
+			StartDate:       start,
+			TargetDate:      target,
+			EstimatePointID: body.EstimatePointID,
+			IsDraft:         body.IsDraft,
 		})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
@@ -214,10 +252,11 @@ type updateIssueBody struct {
 	IsDraft   *bool    `json:"is_draft"`
 	// Tri-state fields: Set=false means omitted; Set with nil Value clears
 	// the column; Set with a Value assigns it.
-	Description service.PatchField[json.RawMessage] `json:"description"`
-	ParentID    service.PatchField[string]          `json:"parent_id"`
-	StartDate   service.PatchField[string]          `json:"start_date"` // YYYY-MM-DD
-	TargetDate  service.PatchField[string]          `json:"target_date"`
+	Description     service.PatchField[json.RawMessage] `json:"description"`
+	ParentID        service.PatchField[string]          `json:"parent_id"`
+	StartDate       service.PatchField[string]          `json:"start_date"` // YYYY-MM-DD
+	TargetDate      service.PatchField[string]          `json:"target_date"`
+	EstimatePointID service.PatchField[string]          `json:"estimate_point_id"`
 }
 
 // toDatePatch converts a tri-state YYYY-MM-DD string patch field into a
@@ -255,15 +294,16 @@ func (h *IssueHandler) updateIssue(c *echo.Context) error {
 	}
 	iss, err := service.UpdateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID,
 		service.IssuePatch{
-			Name:        body.Name,
-			Description: body.Description,
-			Priority:    body.Priority,
-			StateID:     body.StateID,
-			ParentID:    body.ParentID,
-			SortOrder:   body.SortOrder,
-			StartDate:   start,
-			TargetDate:  target,
-			IsDraft:     body.IsDraft,
+			Name:            body.Name,
+			Description:     body.Description,
+			Priority:        body.Priority,
+			StateID:         body.StateID,
+			ParentID:        body.ParentID,
+			SortOrder:       body.SortOrder,
+			StartDate:       start,
+			TargetDate:      target,
+			EstimatePointID: body.EstimatePointID,
+			IsDraft:         body.IsDraft,
 		})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
@@ -292,4 +332,176 @@ func strOrEmpty(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ---------- Task 16: labels ----------
+
+type createLabelBody struct {
+	Name     string  `json:"name"`
+	Color    *string `json:"color"`
+	ParentID *string `json:"parent_id"`
+}
+
+type updateLabelBody struct {
+	Name  *string `json:"name"`
+	Color *string `json:"color"`
+	// Tri-state: unset leaves the parent untouched, null clears it,
+	// a value reparents (cycle-checked).
+	ParentID service.PatchField[string] `json:"parent_id"`
+}
+
+// createLabel implements POST /api/v1/workspaces/{slug}/projects/{identifier}/labels.
+func (h *IssueHandler) createLabel(c *echo.Context) error {
+	var body createLabelBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	l, err := service.CreateLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+		service.LabelInput{Name: body.Name, Color: body.Color, ParentID: body.ParentID})
+	if err != nil {
+		if errors.Is(err, service.ErrNameRequired) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusCreated, l)
+}
+
+// listLabels implements GET /api/v1/workspaces/{slug}/projects/{identifier}/labels.
+func (h *IssueHandler) listLabels(c *echo.Context) error {
+	labels, err := service.ListLabels(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"labels": labels})
+}
+
+// getLabel implements GET /api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}.
+func (h *IssueHandler) getLabel(c *echo.Context) error {
+	l, err := service.GetLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, l)
+}
+
+// updateLabel implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}.
+func (h *IssueHandler) updateLabel(c *echo.Context) error {
+	var body updateLabelBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	l, err := service.UpdateLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID,
+		service.LabelPatch{Name: body.Name, Color: body.Color, ParentID: body.ParentID})
+	if err != nil {
+		if errors.Is(err, service.ErrNameRequired) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+		}
+		if errors.Is(err, service.ErrNothingToUpdate) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, l)
+}
+
+// deleteLabel implements DELETE /api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}.
+func (h *IssueHandler) deleteLabel(c *echo.Context) error {
+	if err := service.DeleteLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// assignLabel implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/labels/{labelID}.
+// Idempotent: assigning twice succeeds with no duplicate.
+func (h *IssueHandler) assignLabel(c *echo.Context) error {
+	if err := service.AssignLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// unassignLabel implements DELETE .../issues/{uuid}/labels/{labelID}.
+// Idempotent: unassigning an absent label succeeds silently.
+func (h *IssueHandler) unassignLabel(c *echo.Context) error {
+	if err := service.UnassignLabel(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("labelID"), CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// assignAssignee implements POST .../issues/{uuid}/assignees/{userID}.
+// Idempotent; the assignee must be a workspace member.
+func (h *IssueHandler) assignAssignee(c *echo.Context) error {
+	if err := service.AssignAssignee(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("userID"), CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// unassignAssignee implements DELETE .../issues/{uuid}/assignees/{userID}.
+// Idempotent.
+func (h *IssueHandler) unassignAssignee(c *echo.Context) error {
+	if err := service.UnassignAssignee(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), c.Param("uuid"), c.Param("userID"), CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ---------- Task 16: estimates ----------
+
+type estimatePointBody struct {
+	Key         string  `json:"key"`
+	Value       int     `json:"value"`
+	Description *string `json:"description"`
+}
+
+type createEstimateBody struct {
+	Name   string              `json:"name"`
+	Points []estimatePointBody `json:"points"`
+}
+
+// createEstimate implements POST /api/v1/workspaces/{slug}/projects/{identifier}/estimates:
+// creates a scale with its points in one call.
+func (h *IssueHandler) createEstimate(c *echo.Context) error {
+	var body createEstimateBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	points := make([]service.EstimatePointInput, 0, len(body.Points))
+	for _, p := range body.Points {
+		points = append(points, service.EstimatePointInput{
+			Key: p.Key, Value: p.Value, Description: p.Description,
+		})
+	}
+	est, err := service.CreateEstimate(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+		service.EstimateInput{Name: body.Name, Points: points})
+	if err != nil {
+		if errors.Is(err, service.ErrNameRequired) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusCreated, est)
+}
+
+// listEstimates implements GET /api/v1/workspaces/{slug}/projects/{identifier}/estimates.
+func (h *IssueHandler) listEstimates(c *echo.Context) error {
+	estimates, err := service.ListEstimates(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"estimates": estimates})
 }
