@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +27,7 @@ type IssueHandler struct {
 func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/issues", RequireAuth(h.Pool))
 	g.POST("", h.createIssue)
+	g.GET("", h.listIssues)
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
@@ -125,6 +128,72 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.JSON(http.StatusCreated, iss)
+}
+
+// listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
+// filters (?state=&assignee=&label=&priority=&cycle=&q=), ordering
+// (?order_by=-updated_at), cursor pagination (?cursor=&per_page=), delta
+// sync (?updated_after=), and sparse fieldsets (?fields=description).
+// 200 with the {results, next_cursor} envelope (spec §5).
+func (h *IssueHandler) listIssues(c *echo.Context) error {
+	qp := c.QueryParams()
+
+	var priority *int
+	if s := qp.Get("priority"); s != "" {
+		p, err := strconv.Atoi(s)
+		if err != nil {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid priority: want 0-4", nil)
+		}
+		priority = &p
+	}
+	perPage := 25
+	if s := qp.Get("per_page"); s != "" {
+		p, err := strconv.Atoi(s)
+		if err != nil || p < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
+		}
+		perPage = p
+	}
+	var updatedAfter *time.Time
+	if s := qp.Get("updated_after"); s != "" {
+		tm, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid updated_after: want RFC3339", nil)
+		}
+		updatedAfter = &tm
+	}
+	var fields []string
+	if s := qp.Get("fields"); s != "" {
+		fields = strings.Split(s, ",")
+	}
+
+	res, err := service.ListIssues(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+		service.ListIssuesInput{
+			State:        qp.Get("state"),
+			Assignee:     qp.Get("assignee"),
+			Label:        qp.Get("label"),
+			Priority:     priority,
+			Cycle:        qp.Get("cycle"),
+			Q:            qp.Get("q"),
+			OrderBy:      qp.Get("order_by"),
+			Cursor:       qp.Get("cursor"),
+			PerPage:      perPage,
+			UpdatedAfter: updatedAfter,
+			Fields:       fields,
+		})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidOrderBy):
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid order_by", nil)
+		case errors.Is(err, service.ErrInvalidCursor):
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid cursor", nil)
+		case errors.Is(err, service.ErrInvalidListFilter):
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid filter", nil)
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, res)
 }
 
 // getIssue implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}.

@@ -170,3 +170,100 @@ func TestIssueHTTPCRUD(t *testing.T) {
 		t.Fatalf("404 envelope: body=%s", rec.Body.String())
 	}
 }
+
+// TestIssueHTTPList covers the list endpoint (Task 15): the
+// {results, next_cursor} envelope, sparse fieldsets in JSON, cursor
+// pagination through HTTP, and 400 envelopes for bad params.
+func TestIssueHTTPList(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testIssueServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-list-http"), "test-agent", "127.0.0.1")
+	slug := uniqueSlug("issue-list-http")
+	createWorkspaceHTTP(t, e, cookie, "List Co", slug)
+	ident := uniqueProjectIdentifier("LI")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+
+	postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"name":"first","description":{"type":"doc","content":[]}}`)
+	postAuthedJSON(t, e, http.MethodPost, base, cookie, `{"name":"second"}`)
+	postAuthedJSON(t, e, http.MethodPost, base, cookie, `{"name":"third"}`)
+
+	// Default list: 200, envelope shape, description omitted.
+	rec := getAuthed(t, e, http.MethodGet, base+"?per_page=2", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Results []struct {
+			ID        string `json:"id"`
+			DisplayID string `json:"display_id"`
+			Name      string `json:"name"`
+		} `json:"results"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(page.Results) != 2 || page.NextCursor == "" {
+		t.Fatalf("page = %+v, want 2 results + next_cursor", page)
+	}
+	if page.Results[0].Name != "third" || page.Results[1].Name != "second" {
+		t.Fatalf("order = %q,%q, want third,second (-updated_at)",
+			page.Results[0].Name, page.Results[1].Name)
+	}
+	if page.Results[0].DisplayID != ident+"-3" {
+		t.Fatalf("display_id = %q, want %s-3", page.Results[0].DisplayID, ident)
+	}
+	if strings.Contains(rec.Body.String(), `"description"`) {
+		t.Fatal("description must be omitted from the list by default")
+	}
+
+	// Follow the cursor: the last page has no next_cursor.
+	rec = getAuthed(t, e, http.MethodGet, base+"?per_page=2&cursor="+page.NextCursor, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list page 2: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var page2 struct {
+		Results    []map[string]any `json:"results"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page2); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+	if len(page2.Results) != 1 || page2.NextCursor != "" {
+		t.Fatalf("page2 = %+v, want 1 result, no next_cursor", page2)
+	}
+
+	// fields=description includes it.
+	rec = getAuthed(t, e, http.MethodGet, base+"?fields=description&q=first", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list fields: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"description":{"type":"doc"`) {
+		t.Fatalf("fields=description: body missing description: %s", rec.Body.String())
+	}
+
+	// Bad params → 400 with the error envelope.
+	for _, path := range []string{
+		base + "?order_by=bogus",
+		base + "?per_page=0",
+		base + "?cursor=not-a-cursor",
+		base + "?updated_after=yesterday",
+	} {
+		rec = getAuthed(t, e, http.MethodGet, path, cookie)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s: status = %d, want 400 (body: %s)", path, rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil || env.Error.Code == "" {
+			t.Fatalf("GET %s: body is not the error envelope: %s", path, rec.Body.String())
+		}
+	}
+}

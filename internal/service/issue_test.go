@@ -11,12 +11,18 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -428,5 +434,405 @@ func TestCreateIssueSelfHealsMissingSequenceRow(t *testing.T) {
 	b := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "Second")
 	if a.SequenceID != 1 || b.SequenceID != 2 {
 		t.Fatalf("sequence_ids = %d,%d, want 1,2", a.SequenceID, b.SequenceID)
+	}
+}
+
+// ---------- Task 15: issue list — filters, cursor pagination, delta sync ----------
+
+type listTestSetup struct {
+	pool  *pgxpool.Pool
+	slug  string
+	ident string
+	actor string
+}
+
+func setupListTest(t *testing.T) listTestSetup {
+	t.Helper()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	actor := createTestUser(t, pool, uniqueTestEmail("issue-list"))
+	slug := uniqueTestSlug("list-ws")
+	createTestWorkspace(t, pool, "List Co", slug, actor)
+	ident := uniqueTestIdentifier()
+	createTestProject(t, pool, slug, actor, "Eng", ident)
+	return listTestSetup{pool: pool, slug: slug, ident: ident, actor: actor}
+}
+
+func listIssueIDs(items []IssueListItem) []string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	return ids
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestListCursorStable: inserting issues mid-pagination must not cause
+// duplicates or skips. Uses -sequence_id (strictly increasing, no ties)
+// for the mid-insert scenario so the test is deterministic.
+func TestListCursorStable(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	for _, n := range []string{"A", "B", "C", "D", "E"} {
+		createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "issue-"+n)
+	}
+
+	// Page 1: the two highest sequence_ids.
+	r1, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{OrderBy: "-sequence_id", PerPage: 2})
+	if err != nil {
+		t.Fatalf("ListIssues page 1: %v", err)
+	}
+	if len(r1.Issues) != 2 || r1.NextCursor == "" {
+		t.Fatalf("page 1: got %d issues next=%q, want 2 + cursor", len(r1.Issues), r1.NextCursor)
+	}
+	if r1.Issues[0].SequenceID != 5 || r1.Issues[1].SequenceID != 4 {
+		t.Fatalf("page 1 sequences = %d,%d, want 5,4",
+			r1.Issues[0].SequenceID, r1.Issues[1].SequenceID)
+	}
+	// Every listed issue carries the derived display ID (Task 14 carry).
+	for _, it := range r1.Issues {
+		if want := s.ident + "-" + strconv.Itoa(it.SequenceID); it.DisplayID != want {
+			t.Fatalf("display_id = %q, want %q", it.DisplayID, want)
+		}
+	}
+
+	// Insert mid-pagination: strictly newer, sorts before the cursor.
+	for _, n := range []string{"F", "G", "H"} {
+		createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "issue-"+n)
+	}
+
+	var got []string
+	got = append(got, listIssueIDs(r1.Issues)...)
+	cursor := r1.NextCursor
+	for {
+		r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+			ListIssuesInput{OrderBy: "-sequence_id", PerPage: 2, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("ListIssues cursor page: %v", err)
+		}
+		got = append(got, listIssueIDs(r.Issues)...)
+		if r.NextCursor == "" {
+			break
+		}
+		cursor = r.NextCursor
+	}
+	if len(got) != 5 {
+		t.Fatalf("paginated ids = %d, want 5 (no dupes/skips): %v", len(got), got)
+	}
+	// The 5 pre-insert issues, in order, must be exactly what pagination
+	// produced (inserts 6-8 sort before the cursor, never disturb it).
+	full, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{OrderBy: "-sequence_id", PerPage: 100})
+	if err != nil {
+		t.Fatalf("ListIssues full: %v", err)
+	}
+	wantAll := listIssueIDs(full.Issues)[3:]
+	if !equalStrings(got, wantAll) {
+		t.Fatalf("paginated = %v, want %v", got, wantAll)
+	}
+}
+
+// queryCounter is a pgx.QueryTracer that counts executed queries — the
+// N+1 detector for TestListNoNPlusOne.
+type queryCounter struct{ n atomic.Int64 }
+
+func (c *queryCounter) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (c *queryCounter) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	c.n.Add(1)
+}
+
+func tracedTestPool(t *testing.T) (*pgxpool.Pool, *queryCounter) {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Fatal("TEST_DATABASE_URL must be set; refusing to skip")
+	}
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	c := &queryCounter{}
+	cfg.ConnConfig.Tracer = c
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool, c
+}
+
+// TestListNoNPlusOne: the list must run a constant number of queries no
+// matter how many issues exist — assignees/labels are aggregated in the
+// single list query (Review Focus #3), never per-row lookups.
+func TestListNoNPlusOne(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+	traced, counter := tracedTestPool(t)
+
+	for i := 0; i < 50; i++ {
+		createTestIssue(t, s.pool, s.slug, s.ident, s.actor, fmt.Sprintf("bulk-%d", i))
+	}
+
+	counter.n.Store(0)
+	r1, err := ListIssues(ctx, traced, s.slug, s.ident, s.actor, ListIssuesInput{PerPage: 50})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	n1 := counter.n.Load()
+	if len(r1.Issues) != 50 {
+		t.Fatalf("got %d issues, want 50", len(r1.Issues))
+	}
+	// Assignees/labels come back as empty arrays (junction tables land in
+	// Task 16) — but the shape is stable and costs no extra queries.
+	for _, it := range r1.Issues {
+		if it.Assignees == nil || it.Labels == nil {
+			t.Fatal("assignees/labels must be non-nil empty arrays")
+		}
+	}
+
+	for i := 0; i < 50; i++ {
+		createTestIssue(t, s.pool, s.slug, s.ident, s.actor, fmt.Sprintf("bulk2-%d", i))
+	}
+
+	counter.n.Store(0)
+	r2, err := ListIssues(ctx, traced, s.slug, s.ident, s.actor, ListIssuesInput{PerPage: 50})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	n2 := counter.n.Load()
+	if len(r2.Issues) != 50 || r2.NextCursor == "" {
+		t.Fatalf("got %d issues next=%q, want 50 + cursor", len(r2.Issues), r2.NextCursor)
+	}
+	if n1 != n2 {
+		t.Fatalf("query count grew with issue count: %d (50 issues) → %d (100 issues)", n1, n2)
+	}
+	if n1 > 5 {
+		t.Fatalf("list took %d queries, want ≤ 5 (membership + project + single list query)", n1)
+	}
+	t.Logf("list query count constant at %d queries for 50 and 100 issues", n1)
+}
+
+// TestListOmitsDescriptionByDefault: sparse fieldsets — description is
+// only selected when ?fields=description asks for it (spec §5).
+func TestListOmitsDescriptionByDefault(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	desc := json.RawMessage(`{"type":"doc","content":[]}`)
+	if _, err := CreateIssue(ctx, s.pool, s.slug, s.ident, s.actor,
+		CreateIssueInput{Name: "with desc", Description: desc}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor, ListIssuesInput{})
+	if err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if len(r.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1", len(r.Issues))
+	}
+	if r.Issues[0].Description != nil {
+		t.Fatalf("description present by default: %s", r.Issues[0].Description)
+	}
+
+	r2, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Fields: []string{"description"}})
+	if err != nil {
+		t.Fatalf("ListIssues fields=description: %v", err)
+	}
+	if r2.Issues[0].Description == nil {
+		t.Fatal("description missing when fields=description requested")
+	}
+}
+
+// TestListDeltaSync: ?updated_after returns only issues touched since the
+// timestamp — the polling primitive behind Task 24's SSE resync.
+func TestListDeltaSync(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	a := createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "stale")
+	marker := time.Now()
+	b := createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "fresh")
+
+	r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{UpdatedAfter: &marker})
+	if err != nil {
+		t.Fatalf("ListIssues updated_after: %v", err)
+	}
+	if len(r.Issues) != 1 || r.Issues[0].ID != b.ID {
+		t.Fatalf("delta sync returned %d issues, want only the fresh one", len(r.Issues))
+	}
+
+	// Touching the stale issue (PATCH bumps updated_at) re-includes it.
+	name := "stale-renamed"
+	if _, err := UpdateIssue(ctx, s.pool, s.slug, s.ident, a.ID, s.actor,
+		IssuePatch{Name: &name}); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+	r2, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{UpdatedAfter: &marker})
+	if err != nil {
+		t.Fatalf("ListIssues updated_after: %v", err)
+	}
+	if len(r2.Issues) != 2 {
+		t.Fatalf("delta sync returned %d issues, want 2 after touch", len(r2.Issues))
+	}
+}
+
+// TestListFilters: state, priority, and full-text q filters narrow the
+// result set.
+func TestListFilters(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	backlog := backlogStateID(t, s.pool, s.slug, s.ident, s.actor)
+	states, err := ListStates(ctx, s.pool, s.slug, s.ident, s.actor)
+	if err != nil {
+		t.Fatalf("ListStates: %v", err)
+	}
+	var todoID string
+	for _, st := range states {
+		if st.Group == "unstarted" {
+			todoID = st.ID
+		}
+	}
+	if todoID == "" {
+		t.Fatal("no unstarted state seeded")
+	}
+
+	hi := 3
+	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "alpha login bug")
+	if _, err := CreateIssue(ctx, s.pool, s.slug, s.ident, s.actor,
+		CreateIssueInput{Name: "beta payment flow", Priority: &hi, StateID: &todoID}); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "gamma docs")
+
+	byState, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{State: todoID})
+	if err != nil {
+		t.Fatalf("ListIssues state: %v", err)
+	}
+	if len(byState.Issues) != 1 || byState.Issues[0].Name != "beta payment flow" {
+		t.Fatalf("state filter: got %d issues, want the todo one", len(byState.Issues))
+	}
+
+	byPrio, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Priority: &hi})
+	if err != nil {
+		t.Fatalf("ListIssues priority: %v", err)
+	}
+	if len(byPrio.Issues) != 1 || byPrio.Issues[0].Name != "beta payment flow" {
+		t.Fatalf("priority filter: got %d issues, want the urgent one", len(byPrio.Issues))
+	}
+
+	byQ, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Q: "payment"})
+	if err != nil {
+		t.Fatalf("ListIssues q: %v", err)
+	}
+	if len(byQ.Issues) != 1 || byQ.Issues[0].Name != "beta payment flow" {
+		t.Fatalf("q filter: got %d issues, want the payment one", len(byQ.Issues))
+	}
+
+	// The default backlog state holds the other two.
+	byBacklog, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{State: backlog})
+	if err != nil {
+		t.Fatalf("ListIssues backlog state: %v", err)
+	}
+	if len(byBacklog.Issues) != 2 {
+		t.Fatalf("backlog filter: got %d issues, want 2", len(byBacklog.Issues))
+	}
+}
+
+// TestListRelationFiltersEmptyBeforeTaxonomy pins the documented contract:
+// assignee=/label=/cycle= are accepted today but match nothing, because
+// the junction tables (issue_assignees, issue_labels in 000008_taxonomy,
+// Task 16; cycle_issues in Task 22) do not exist yet. Revisit in Task 16.
+func TestListRelationFiltersEmptyBeforeTaxonomy(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "unassigned")
+	someUUID := "11111111-2222-3333-4444-555555555555"
+
+	for _, in := range []ListIssuesInput{
+		{Assignee: someUUID},
+		{Label: someUUID},
+		{Cycle: someUUID},
+	} {
+		r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor, in)
+		if err != nil {
+			t.Fatalf("ListIssues %+v: %v", in, err)
+		}
+		if len(r.Issues) != 0 {
+			t.Fatalf("ListIssues %+v: got %d issues, want 0 (no junction tables yet)", in, len(r.Issues))
+		}
+		if len(r.Issues) != 0 && r.NextCursor != "" {
+			t.Fatal("empty result must not carry a cursor")
+		}
+	}
+}
+
+// TestListInvalidParams: bad order_by, bad cursor, bad priority, and a
+// cursor minted for a different order are all 400-class errors.
+func TestListInvalidParams(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "one")
+	createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "two")
+
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{OrderBy: "bogus"}); !errors.Is(err, ErrInvalidOrderBy) {
+		t.Fatalf("bad order_by: err = %v, want ErrInvalidOrderBy", err)
+	}
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Cursor: "not-base64!!!"}); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("bad cursor: err = %v, want ErrInvalidCursor", err)
+	}
+	badJSON := base64.RawURLEncoding.EncodeToString([]byte(`{"oops":true}`))
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Cursor: badJSON}); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("malformed cursor: err = %v, want ErrInvalidCursor", err)
+	}
+
+	// A cursor minted for created_at must not be honored under -updated_at.
+	r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{OrderBy: "created_at", PerPage: 1})
+	if err != nil {
+		t.Fatalf("ListIssues created_at: %v", err)
+	}
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Cursor: r.NextCursor}); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("cross-order cursor: err = %v, want ErrInvalidCursor", err)
+	}
+
+	badPrio := 99
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Priority: &badPrio}); !errors.Is(err, ErrInvalidListFilter) {
+		t.Fatalf("bad priority: err = %v, want ErrInvalidListFilter", err)
+	}
+	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{State: "not-a-uuid"}); !errors.Is(err, ErrInvalidListFilter) {
+		t.Fatalf("bad state uuid: err = %v, want ErrInvalidListFilter", err)
 	}
 }

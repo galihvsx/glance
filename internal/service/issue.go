@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -669,4 +670,368 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// ---------- Task 15: issue list — filters, cursor pagination, delta sync ----------
+
+var (
+	// ErrInvalidOrderBy is returned when order_by names no whitelisted sort.
+	ErrInvalidOrderBy = errors.New("service: invalid order_by")
+	// ErrInvalidCursor is returned when the cursor is malformed, fails to
+	// parse for its sort kind, or was minted for a different order_by.
+	ErrInvalidCursor = errors.New("service: invalid cursor")
+	// ErrInvalidListFilter is returned when a list filter parameter is
+	// malformed (bad UUID, priority outside 0-4, negative per_page).
+	ErrInvalidListFilter = errors.New("service: invalid list filter")
+)
+
+// listSortKind classifies a whitelisted sort column so cursor values can
+// be (de)serialized with the right type.
+type listSortKind int
+
+const (
+	listSortTime listSortKind = iota
+	listSortInt
+	listSortFloat
+)
+
+// sqlCast returns the Postgres cast for a cursor value of this kind.
+func (k listSortKind) sqlCast() string {
+	switch k {
+	case listSortTime:
+		return "::timestamptz"
+	case listSortInt:
+		return "::int"
+	default:
+		return "::float8"
+	}
+}
+
+type listOrder struct {
+	column string // qualified SQL column — from the whitelist below, never user input
+	desc   bool
+	kind   listSortKind
+}
+
+// listOrders is the complete whitelist for ?order_by=. The column strings
+// are interpolated into SQL, so this map — not user input — is the source.
+var listOrders = map[string]listOrder{
+	"updated_at":   {"i.updated_at", false, listSortTime},
+	"-updated_at":  {"i.updated_at", true, listSortTime},
+	"created_at":   {"i.created_at", false, listSortTime},
+	"-created_at":  {"i.created_at", true, listSortTime},
+	"sequence_id":  {"i.sequence_id", false, listSortInt},
+	"-sequence_id": {"i.sequence_id", true, listSortInt},
+	"sort_order":   {"i.sort_order", false, listSortFloat},
+	"-sort_order":  {"i.sort_order", true, listSortFloat},
+	"priority":     {"i.priority", false, listSortInt},
+	"-priority":    {"i.priority", true, listSortInt},
+}
+
+const (
+	defaultListPerPage = 25
+	maxListPerPage     = 100
+)
+
+// listCursor is the opaque pagination cursor: the sort key of the last
+// row on the page plus its id (tiebreak), minted for one order_by. JSON →
+// base64url, no padding.
+type listCursor struct {
+	Order string `json:"o"`
+	Value string `json:"v"`
+	ID    string `json:"i"`
+}
+
+func encodeListCursor(order, value, id string) string {
+	b, _ := json.Marshal(listCursor{Order: order, Value: value, ID: id})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeListCursor(s, wantOrder string) (listCursor, error) {
+	var c listCursor
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return c, ErrInvalidCursor
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return c, ErrInvalidCursor
+	}
+	if c.Order != wantOrder || c.Value == "" || c.ID == "" || !isUUIDFormat(c.ID) {
+		return c, ErrInvalidCursor
+	}
+	return c, nil
+}
+
+// validCursorValue rejects hand-crafted cursors whose value does not parse
+// for the sort kind (which would otherwise 500 on the SQL cast).
+func validCursorValue(kind listSortKind, v string) bool {
+	switch kind {
+	case listSortTime:
+		_, err := time.Parse(time.RFC3339Nano, v)
+		return err == nil
+	case listSortInt:
+		_, err := strconv.Atoi(v)
+		return err == nil
+	default:
+		_, err := strconv.ParseFloat(v, 64)
+		return err == nil
+	}
+}
+
+// isUUIDFormat is a dependency-free syntactic UUID check (8-4-4-4-12 hex).
+func isUUIDFormat(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		switch i {
+		case 8, 13, 18, 23:
+			if s[i] != '-' {
+				return false
+			}
+		default:
+			c := s[i]
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// listSortKey serializes the row's sort key for the cursor, in the same
+// textual form the cursor predicate parses back.
+func listSortKey(o listOrder, iss *Issue) string {
+	switch o.column {
+	case "i.updated_at":
+		return iss.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	case "i.created_at":
+		return iss.CreatedAt.UTC().Format(time.RFC3339Nano)
+	case "i.sequence_id":
+		return strconv.Itoa(iss.SequenceID)
+	case "i.priority":
+		return strconv.Itoa(iss.Priority)
+	default: // i.sort_order
+		return strconv.FormatFloat(iss.SortOrder, 'g', -1, 64)
+	}
+}
+
+// ListIssuesInput carries the list filters. Empty/zero values mean "no
+// filter". State/Assignee/Label/Cycle take UUIDs.
+type ListIssuesInput struct {
+	State        string
+	Assignee     string
+	Label        string
+	Priority     *int
+	Cycle        string
+	Q            string
+	OrderBy      string
+	Cursor       string
+	PerPage      int
+	UpdatedAfter *time.Time
+	Fields       []string
+}
+
+// IssueAssignee is one assignee on a listed issue. Populated from
+// issue_assignees in Task 16; always [] until then.
+type IssueAssignee struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// IssueLabel is one label on a listed issue. Populated from issue_labels
+// in Task 16; always [] until then.
+type IssueLabel struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// IssueListItem is one row of the list: the issue plus its aggregated
+// relations — one query, never per-row lookups (Review Focus #3).
+type IssueListItem struct {
+	Issue
+	Assignees []IssueAssignee `json:"assignees"`
+	Labels    []IssueLabel    `json:"labels"`
+}
+
+// ListIssuesResult is the paginated list envelope (spec §5).
+type ListIssuesResult struct {
+	Issues     []IssueListItem `json:"results"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+}
+
+// ListIssues returns the project's live issues with filters, cursor
+// pagination, and delta sync. Assignees/labels are aggregated inside the
+// single list query (json_agg subqueries once the junction tables exist
+// in Task 16; literal [] until then), so the query count is constant in
+// the number of issues. Any workspace member (guest 5+) may read;
+// non-members get ErrNotFound via resolveIssueProject.
+func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in ListIssuesInput) (*ListIssuesResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	orderKey := in.OrderBy
+	if orderKey == "" {
+		orderKey = "-updated_at"
+	}
+	ord, ok := listOrders[orderKey]
+	if !ok {
+		return nil, ErrInvalidOrderBy
+	}
+
+	perPage := in.PerPage
+	switch {
+	case perPage < 0:
+		return nil, ErrInvalidListFilter
+	case perPage == 0:
+		perPage = defaultListPerPage
+	case perPage > maxListPerPage:
+		perPage = maxListPerPage
+	}
+
+	if in.Priority != nil && (*in.Priority < 0 || *in.Priority > 4) {
+		return nil, ErrInvalidListFilter
+	}
+	for _, f := range []string{in.State, in.Assignee, in.Label, in.Cycle} {
+		if f != "" && !isUUIDFormat(f) {
+			return nil, ErrInvalidListFilter
+		}
+	}
+
+	var cur *listCursor
+	if in.Cursor != "" {
+		c, err := decodeListCursor(in.Cursor, orderKey)
+		if err != nil {
+			return nil, err
+		}
+		if !validCursorValue(ord.kind, c.Value) {
+			return nil, ErrInvalidCursor
+		}
+		cur = &c
+	}
+
+	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sparse fieldsets (spec §5): description is only selected when
+	// ?fields=description asks for it.
+	wantDesc := false
+	for _, f := range in.Fields {
+		if strings.TrimSpace(f) == "description" {
+			wantDesc = true
+			break
+		}
+	}
+	descCol := "NULL::jsonb"
+	if wantDesc {
+		descCol = "i.description"
+	}
+
+	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
+		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
+		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
+		'[]'::jsonb AS assignees, '[]'::jsonb AS labels`
+
+	var conds []string
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	conds = append(conds, "i.project_id = "+arg(projectID)+"::uuid")
+	conds = append(conds, "i.deleted_at IS NULL")
+	if in.State != "" {
+		conds = append(conds, "i.state_id = "+arg(in.State)+"::uuid")
+	}
+	if in.Priority != nil {
+		conds = append(conds, "i.priority = "+arg(*in.Priority))
+	}
+	if in.Assignee != "" || in.Label != "" || in.Cycle != "" {
+		// No junction tables yet (Task 16: issue_assignees/issue_labels,
+		// Task 22: cycle_issues) — no issue can carry the relation, so the
+		// filter matches nothing. The parameter is still accepted and
+		// UUID-validated above, so the API contract is stable when the
+		// tables arrive.
+		conds = append(conds, "FALSE")
+	}
+	if in.Q != "" {
+		conds = append(conds, "i.search @@ plainto_tsquery('english', "+arg(in.Q)+")")
+	}
+	if in.UpdatedAfter != nil {
+		conds = append(conds, "i.updated_at > "+arg(in.UpdatedAfter)+"::timestamptz")
+	}
+	if cur != nil {
+		op := ">"
+		if ord.desc {
+			op = "<"
+		}
+		// Tuple comparison on (sort key, id): strictly after the cursor
+		// row in the page order — new rows sorting before the cursor
+		// never cause dupes or skips.
+		conds = append(conds, fmt.Sprintf("(i.%s, i.id) %s (%s%s, %s::uuid)",
+			strings.TrimPrefix(ord.column, "i."), op,
+			arg(cur.Value), ord.kind.sqlCast(), arg(cur.ID)))
+	}
+
+	dir := "ASC"
+	if ord.desc {
+		dir = "DESC"
+	}
+	// ord.column comes from the whitelist above — never user input.
+	query := `SELECT ` + cols + ` FROM issues i WHERE ` + strings.Join(conds, " AND ") +
+		` ORDER BY ` + ord.column + ` ` + dir + `, i.id ` + dir +
+		` LIMIT ` + arg(perPage+1)
+
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []IssueListItem{}
+	for rows.Next() {
+		var item IssueListItem
+		var desc []byte
+		var assigneesJSON, labelsJSON []byte
+		if err := rows.Scan(
+			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
+			&desc,
+			&item.Priority, &item.StateID, &item.ParentID, &item.SortOrder,
+			&item.StartDate, &item.TargetDate, &item.EstimatePointID,
+			&item.IsDraft, &item.ArchivedAt,
+			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
+			&assigneesJSON, &labelsJSON,
+		); err != nil {
+			return nil, err
+		}
+		if desc != nil {
+			item.Description = json.RawMessage(desc)
+		}
+		if err := json.Unmarshal(assigneesJSON, &item.Assignees); err != nil {
+			return nil, fmt.Errorf("service: decode assignees: %w", err)
+		}
+		if err := json.Unmarshal(labelsJSON, &item.Labels); err != nil {
+			return nil, fmt.Errorf("service: decode labels: %w", err)
+		}
+		item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	res := &ListIssuesResult{Issues: items}
+	if len(items) > perPage {
+		items = items[:perPage]
+		last := items[len(items)-1]
+		res.Issues = items
+		res.NextCursor = encodeListCursor(orderKey, listSortKey(ord, &last.Issue), last.ID)
+	}
+	return res, nil
 }
