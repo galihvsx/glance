@@ -36,7 +36,11 @@ func uniqueEmail(prefix string) string {
 // uniqueEmail).
 func uniqueIP() string {
 	n := testSeq.Add(1)
-	return fmt.Sprintf("10.210.%d.%d", os.Getpid()%250+1, n%250+1)
+	// Unique per (process, call): the pid separates runs — the
+	// rate_limits table persists between runs — and the sequence spreads
+	// across two octets so it cannot wrap for 65k calls (a single %250
+	// octet reuses IPs and makes rate-limit tests flaky).
+	return fmt.Sprintf("10.210.%d.%d", (os.Getpid()+int(n>>8))%256, n&0xff)
 }
 
 func newTestPool(t *testing.T) *pgxpool.Pool {

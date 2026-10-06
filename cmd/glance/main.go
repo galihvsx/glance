@@ -70,6 +70,9 @@ func main() {
 	authHandler := &api.AuthHandler{Pool: pool, Config: cfg}
 	api.RegisterAuthRoutes(e, authHandler)
 
+	workspaceHandler := &api.WorkspaceHandler{Pool: pool}
+	api.RegisterWorkspaceRoutes(e, workspaceHandler)
+
 	if cfg.OTPPepper == "" {
 		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")
 	}
