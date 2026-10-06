@@ -26,7 +26,11 @@ services:
       retries: 10
 
   glance:
-    build: .
+    build:
+      context: .
+      args:
+        # Stamped into the binary, reported by /health.
+        VERSION: ${VERSION:-dev}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -37,6 +41,12 @@ services:
       DATABASE_URL: postgres://glance:glance@postgres:5432/glance?sslmode=disable
       PORT: "8080"
       APP_URL: http://localhost:8080
+      # OTP_PEPPER is REQUIRED since v0.1.0 — the server refuses to boot
+      # without it (fail closed). Generate one with:
+      #   openssl rand -base64 32
+      # and export it (or put it in a .env file next to this compose file)
+      # before running `docker compose up`.
+      OTP_PEPPER: ${OTP_PEPPER:?Set OTP_PEPPER before starting (e.g. export OTP_PEPPER=$(openssl rand -base64 32))}
       # SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM are
       # optional — when unset, outbound mail falls back to logging (Phase 1+).
 

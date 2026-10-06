@@ -307,10 +307,14 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 }
 
 // TestVerifyBudgetExhaustionDoesNotBurnFreshCode pins the Task 28
-// decision's load-bearing property: guesses rejected by the verify rate
-// limit are answered BEFORE the code lookup, so they never consume code
-// attempts. An attacker who has spent the email's whole 5/hr budget
-// cannot touch a freshly requested code — the burn loop is broken.
+// decision's load-bearing property: the verify:email: budget is consumed
+// only when a guess reaches a live code row (after the SELECT ... FOR
+// UPDATE), so an over-budget guess rejected before the attempt increment
+// never consumes code attempts. An attacker who has spent the email's
+// whole 5/hr budget cannot touch a freshly requested code — the burn
+// loop is broken. (A guess with no live code row at all returns
+// ErrInvalidCode without touching the budget — see
+// TestVerifySquatGuessesDoNotConsumeBudget.)
 func TestVerifyBudgetExhaustionDoesNotBurnFreshCode(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)

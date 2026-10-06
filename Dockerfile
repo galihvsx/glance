@@ -30,12 +30,17 @@ RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Stage 2: build the Go server
-# Local equivalent (PATH=/usr/local/go/bin, GOTOOLCHAIN=local):
+# go.mod requires go >= 1.26 — the builder image must match (with
+# GOTOOLCHAIN=local a 1.25 toolchain would refuse to compile this module).
+# Local equivalent:
 #   go mod download && go build -o glance ./cmd/glance
 # ---------------------------------------------------------------------------
-FROM golang:1.25-bookworm AS go-builder
+FROM golang:1.26-bookworm AS go-builder
 
 WORKDIR /app
+
+# Release version stamped into the binary (reported by /health).
+ARG VERSION=dev
 
 ENV GOTOOLCHAIN=local \
     CGO_ENABLED=0 \
@@ -54,7 +59,7 @@ COPY web/embed.go ./web/
 # go:embed (web/embed.go) requires web/dist at COMPILE time.
 COPY --from=web-builder /app/web/dist ./web/dist
 
-RUN go build -trimpath -ldflags="-s -w" -o /glance ./cmd/glance
+RUN go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /glance ./cmd/glance
 
 # ---------------------------------------------------------------------------
 # Stage 3: minimal runtime
