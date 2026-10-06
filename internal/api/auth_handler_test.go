@@ -142,13 +142,20 @@ func postOTPFrom(t *testing.T, e *echo.Echo, email, ip string) *httptest.Respons
 	return rec
 }
 
-// postVerify issues a POST /api/v1/auth/otp/verify.
+// postVerify issues a POST /api/v1/auth/otp/verify from a unique client IP
+// (Echo's RealIP reads RemoteAddr), so per-IP rate-limit counters never
+// leak between tests or consecutive runs.
 func postVerify(t *testing.T, e *echo.Echo, email, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	return postVerifyFrom(t, e, email, code, uniqueIP())
+}
+
+func postVerifyFrom(t *testing.T, e *echo.Echo, email, code, ip string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := fmt.Sprintf(`{"email":%q,"code":%q}`, email, code)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/otp/verify", strings.NewReader(body))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
-	req.RemoteAddr = uniqueIP() + ":1234"
+	req.RemoteAddr = ip + ":1234"
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	return rec
@@ -193,6 +200,54 @@ func TestVerifyEndpointWrongCode401(t *testing.T) {
 	}
 	if !strings.Contains(body, "invalid or expired code") {
 		t.Fatalf("body = %q, want generic message", body)
+	}
+}
+
+// TestVerifyEndpointRateLimitedPerIP: 21 rapid wrong-code verifies from one
+// IP in an hour must trip the 20/hr/IP budget with 429 (pins the Task 7
+// review fix: the verify path previously had no rate limit, so an attacker
+// could burn each fresh code with 5 rapid wrong submits and deny login).
+func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+
+	email := uniqueEmail("h-verify-rl-ip")
+	insertVerifyCode(t, pool, email, "123456")
+	ip := uniqueIP()
+
+	for i := 0; i < 20; i++ {
+		if rec := postVerifyFrom(t, e, email, "000000", ip); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("verify %d: status = %d, want 401", i+1, rec.Code)
+		}
+	}
+	rec := postVerifyFrom(t, e, email, "000000", ip)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("21st verify from same IP in an hour: status = %d, want 429", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"error":"too many requests, try again later"}` {
+		t.Fatalf("429 body = %q, want the same message as the request endpoint", body)
+	}
+}
+
+// TestVerifyEndpointRateLimitedPerEmail: the per-email budget (20/hr) must
+// trip even when the attacker rotates IPs, breaking the code-burn loop.
+func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+
+	email := uniqueEmail("h-verify-rl-email")
+	insertVerifyCode(t, pool, email, "123456")
+
+	for i := 0; i < 20; i++ {
+		if rec := postVerifyFrom(t, e, email, "000000", uniqueIP()); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("verify %d: status = %d, want 401", i+1, rec.Code)
+		}
+	}
+	rec := postVerifyFrom(t, e, email, "000000", uniqueIP())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("21st verify for same email in an hour: status = %d, want 429", rec.Code)
 	}
 }
 

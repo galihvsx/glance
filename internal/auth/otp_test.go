@@ -219,7 +219,7 @@ func TestVerifyWrongCode401(t *testing.T) {
 	email := uniqueEmail("verify-wrong")
 	insertTestCode(t, pool, email, "123456", 0)
 
-	_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", "127.0.0.1")
+	_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", uniqueIP())
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("wrong code: err = %v, want ErrInvalidCode", err)
 	}
@@ -255,16 +255,17 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 
 	email := uniqueEmail("verify-burn")
 	insertTestCode(t, pool, email, "123456", 0)
+	ip := uniqueIP()
 
 	for i := 0; i < 5; i++ {
-		_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", "127.0.0.1")
+		_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", ip)
 		if !errors.Is(err, ErrInvalidCode) {
 			t.Fatalf("attempt %d: err = %v, want ErrInvalidCode", i+1, err)
 		}
 	}
 
 	// The code is burned: even the CORRECT code now fails generically.
-	_, err := VerifyOTP(ctx, pool, cfg, email, "123456", "test-agent", "127.0.0.1")
+	_, err := VerifyOTP(ctx, pool, cfg, email, "123456", "test-agent", ip)
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("correct code after 5 wrong attempts: err = %v, want ErrInvalidCode", err)
 	}
@@ -292,8 +293,9 @@ func TestVerifySuccessSetsCookie(t *testing.T) {
 
 	email := uniqueEmail("verify-ok")
 	insertTestCode(t, pool, email, "654321", 0)
+	wantIP := uniqueIP()
 
-	token, err := VerifyOTP(ctx, pool, cfg, email, "654321", "test-agent/1.0", "127.0.0.1")
+	token, err := VerifyOTP(ctx, pool, cfg, email, "654321", "test-agent/1.0", wantIP)
 	if err != nil {
 		t.Fatalf("VerifyOTP: %v", err)
 	}
@@ -331,8 +333,8 @@ func TestVerifySuccessSetsCookie(t *testing.T) {
 	if tokenHash == token {
 		t.Errorf("plain token stored in token_hash")
 	}
-	if ua != "test-agent/1.0" || ip != "127.0.0.1" {
-		t.Errorf("session metadata = (%q, %q), want (test-agent/1.0, 127.0.0.1)", ua, ip)
+	if ua != "test-agent/1.0" || ip != wantIP {
+		t.Errorf("session metadata = (%q, %q), want (test-agent/1.0, %q)", ua, ip, wantIP)
 	}
 	ttl := time.Until(expiresAt)
 	if ttl < 29*24*time.Hour || ttl > 30*24*time.Hour {
@@ -367,10 +369,11 @@ func TestVerifyNewestCodeSupersedes(t *testing.T) {
 	email := uniqueEmail("verify-supersede")
 	insertTestCode(t, pool, email, "111111", time.Minute) // older
 	insertTestCode(t, pool, email, "222222", 0)           // newer (candidate)
+	ip := uniqueIP()
 
 	// The older code is NOT the candidate: it fails, and the failed attempt
 	// is counted against the newest code.
-	_, err := VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", "127.0.0.1")
+	_, err := VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", ip)
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("older code: err = %v, want ErrInvalidCode", err)
 	}
@@ -386,7 +389,7 @@ func TestVerifyNewestCodeSupersedes(t *testing.T) {
 	}
 
 	// Newest code succeeds…
-	if _, err := VerifyOTP(ctx, pool, cfg, email, "222222", "test-agent", "127.0.0.1"); err != nil {
+	if _, err := VerifyOTP(ctx, pool, cfg, email, "222222", "test-agent", ip); err != nil {
 		t.Fatalf("newer code: %v", err)
 	}
 
@@ -400,7 +403,7 @@ func TestVerifyNewestCodeSupersedes(t *testing.T) {
 	if outstanding != 0 {
 		t.Errorf("outstanding codes after success = %d, want 0", outstanding)
 	}
-	_, err = VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", "127.0.0.1")
+	_, err = VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", ip)
 	if !errors.Is(err, ErrInvalidCode) {
 		t.Fatalf("superseded older code: err = %v, want ErrInvalidCode (code-confusion bypass)", err)
 	}
@@ -415,6 +418,7 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 
 	email := uniqueEmail("verify-conc")
 	insertTestCode(t, pool, email, "123456", 0)
+	ip := uniqueIP()
 
 	const n = 10
 	errs := make([]error, n)
@@ -423,7 +427,7 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = VerifyOTP(context.Background(), pool, cfg, email, "000000", "conc", "127.0.0.1")
+			_, errs[i] = VerifyOTP(context.Background(), pool, cfg, email, "000000", "conc", ip)
 		}(i)
 	}
 	wg.Wait()

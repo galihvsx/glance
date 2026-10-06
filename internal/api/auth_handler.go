@@ -77,6 +77,9 @@ func (h *AuthHandler) verifyOTP(c *echo.Context) error {
 		if errors.Is(err, auth.ErrInvalidCode) {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired code"})
 		}
+		if errors.Is(err, auth.ErrRateLimited) {
+			return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many requests, try again later"})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 	c.SetCookie(&http.Cookie{

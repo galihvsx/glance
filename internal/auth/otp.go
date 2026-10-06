@@ -32,6 +32,15 @@ const (
 	otpRateLimitWindow = time.Hour
 	otpMaxPerEmail     = 5
 	otpMaxPerIP        = 20
+	// otpVerifyMaxPerEmail / otpVerifyMaxPerIP bound the verify path
+	// (Task 7 review fix: the verify path had no rate limit, so an attacker
+	// who knows a victim's email could burn each freshly requested code
+	// with 5 rapid wrong-code submits, persistently denying login). 20/hr
+	// is generous for legitimate retries — a code burns after 5 wrong
+	// guesses anyway — but breaks the burn loop: at most ~4 codes/hour
+	// can be killed per victim email.
+	otpVerifyMaxPerEmail = 20
+	otpVerifyMaxPerIP    = 20
 	// otpMaxAttempts is the number of wrong guesses a code tolerates before
 	// it is burned (spec §7).
 	otpMaxAttempts = 5
@@ -171,6 +180,17 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 	email = strings.ToLower(strings.TrimSpace(email))
 	if _, err := netmail.ParseAddress(email); err != nil {
 		return "", ErrInvalidCode
+	}
+
+	// Throttle the verify path (Task 7 review fix). Key namespaces are
+	// distinct from the request endpoint ("verify:" vs "otp:") so the two
+	// budgets never eat each other. Checked here — inside VerifyOTP rather
+	// than the handler — so every caller gets the protection.
+	if err := checkRateLimit(ctx, pool, "verify:email:"+email, otpVerifyMaxPerEmail); err != nil {
+		return "", err
+	}
+	if err := checkRateLimit(ctx, pool, "verify:ip:"+ip, otpVerifyMaxPerIP); err != nil {
+		return "", err
 	}
 
 	tx, err := pool.Begin(ctx)
