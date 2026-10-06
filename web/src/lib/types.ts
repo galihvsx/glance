@@ -139,7 +139,6 @@ export interface HistoryEntry {
 
 /** Priority labels (0–4). */
 export const PRIORITY_LABELS = ["None", "Low", "Medium", "High", "Urgent"] as const;
-
 export function priorityLabel(p: number): string {
   return PRIORITY_LABELS[p] ?? `P${p}`;
 }
@@ -185,4 +184,21 @@ export interface IntakeInbox {
   items: IntakeItem[];
   /** Still-snoozed items (snoozed_till in the future), ordered by wake-up. */
   snoozed: IntakeItem[];
+}
+
+// ---------- Cycles (Task 22–23) ----------
+
+/** A cycle: start_date/end_date arrive as RFC3339 strings; the backend
+ *  parses YYYY-MM-DD on write. progress_snapshot counts live issues by
+ *  state group: triage, backlog, unstarted, started, completed, cancelled. */
+export interface Cycle {
+  id: string;
+  project_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: "upcoming" | "current" | "completed";
+  progress_snapshot: Record<string, number>;
+  created_at: string;
+  updated_at: string;
 }

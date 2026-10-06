@@ -42,6 +42,7 @@ import { Textarea } from "../components/ui/textarea";
 import IssueCard from "../components/issue/IssueCard";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import StatePicker from "../components/issue/StatePicker";
+import ProjectNav from "../components/project/ProjectNav";
 
 const PER_PAGE = 25;
 
@@ -300,7 +301,10 @@ export default function Issues() {
       </div>
 
       {/* Filter toolbar */}
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="mt-4">
+        <ProjectNav />
+      </div>
+      <div className="mb-4 mt-4 flex flex-wrap items-center gap-2">
         <form onSubmit={onSearchSubmit} className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input

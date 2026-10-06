@@ -30,6 +30,7 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("", h.listIssues)
 	g.POST("/bulk-update", h.bulkUpdateIssues)
 	g.POST("/bulk-delete", h.bulkDeleteIssues)
+	g.POST("/rebalance", h.rebalanceIssues)
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
@@ -413,6 +414,25 @@ func (h *IssueHandler) bulkUpdateIssues(c *echo.Context) error {
 		}
 		return http.StatusOK, map[string]any{"results": results}, nil
 	})
+}
+
+// rebalanceIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/rebalance
+// {state_id}: re-spaces sort_order within one state to even 1024-steps.
+// The board's density escape hatch — see service.RebalanceSortOrder.
+// Member (15)+.
+func (h *IssueHandler) rebalanceIssues(c *echo.Context) error {
+	var body struct {
+		StateID string `json:"state_id"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	n, err := service.RebalanceSortOrder(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.StateID)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"rebalanced": n})
 }
 
 // bulkDeleteIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-delete:

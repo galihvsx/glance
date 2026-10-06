@@ -747,6 +747,87 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	return tx.Commit(ctx)
 }
 
+// rebalanceSpacing is the even gap RebalanceSortOrder leaves between
+// consecutive issues in a state. It must match the client-side
+// SORT_ORDER_STEP in web/src/lib/sortOrder.ts.
+const rebalanceSpacing = 1024
+
+// RebalanceSortOrder re-spaces the sort_order values of all live issues in
+// one state to even multiples of rebalanceSpacing (1024, 2048, ...),
+// preserving their current relative order (sort_order, then sequence_id).
+// It is the board's density escape hatch: when repeated midpoint drops
+// collapse the gap between two neighbors below the client's threshold, the
+// client calls this, refetches, and retries the drop. Member (15)+.
+// Returns the number of issues respaced.
+//
+// updated_at is deliberately left untouched: rebalance is a maintenance
+// op and the caller refetches the board explicitly afterwards, so it
+// stays out of the delta-sync stream.
+func RebalanceSortOrder(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, stateID string) (int, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return 0, err
+	}
+	if role < RoleMember {
+		return 0, ErrForbidden
+	}
+
+	sid, err := checkStateInProject(ctx, tx, projectID, stateID)
+	if err != nil {
+		return 0, err
+	}
+
+	// FOR UPDATE serializes concurrent rebalances and racing midpoint
+	// drops on the same state's rows.
+	rows, err := tx.Query(ctx,
+		`SELECT id::text FROM issues
+		  WHERE project_id = $1::uuid AND state_id = $2::uuid AND deleted_at IS NULL
+		  ORDER BY sort_order, sequence_id
+		  FOR UPDATE`,
+		projectID, sid)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	for i, id := range ids {
+		if _, err := tx.Exec(ctx,
+			`UPDATE issues SET sort_order = $1 WHERE id = $2::uuid`,
+			float64(i+1)*rebalanceSpacing, id); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 // deleteIssueTx is the tx-scoped core of DeleteIssue: soft-delete plus the
 // _deleted activity row plus a version snapshot of the deleted state. It
 // neither begins nor commits — callers own the transaction. Role checks

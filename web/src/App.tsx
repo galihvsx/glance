@@ -8,6 +8,8 @@ import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
 import IssueDetail from "./pages/IssueDetail";
 import Intake from "./pages/Intake";
+import Board from "./pages/Board";
+import Cycles from "./pages/Cycles";
 
 export default function App() {
   return (
@@ -27,6 +29,14 @@ export default function App() {
               <Route
                 path="/w/:slug/p/:identifier/intake"
                 element={<Intake />}
+              />
+              <Route
+                path="/w/:slug/p/:identifier/board"
+                element={<Board />}
+              />
+              <Route
+                path="/w/:slug/p/:identifier/cycles"
+                element={<Cycles />}
               />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
