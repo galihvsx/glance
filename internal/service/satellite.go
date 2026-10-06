@@ -505,7 +505,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return nil, err
 	}
 	announce(
-		[]string{issueChannel(issueID), projectChannel(ident), workspaceChannel(wsSlug)},
+		[]string{issueChannel(issueID), projectChannel(wsSlug, ident), workspaceChannel(wsSlug)},
 		EventCommentCreated,
 		map[string]string{"id": c.ID, "issue_id": issueID},
 	)

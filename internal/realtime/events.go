@@ -6,7 +6,7 @@
 //   - client → server: {"action":"subscribe"|"unsubscribe","channel":"..."}
 //   - server → client: {"action":"subscribed"|"unsubscribed","channel":"..."}
 //     or {"action":"error","message":"..."}
-//   - server → client events: {"event":"issue.created","channel":"project:ENG",
+//   - server → client events: {"event":"issue.created","channel":"project:acme:ENG",
 //     "data":{...},"at":"2026-10-06T..."}. data is the minimal resource JSON,
 //     never the full object — the client refetches via REST.
 //
@@ -17,7 +17,8 @@ package realtime
 
 import "time"
 
-// Channel prefixes. Full channel names: workspace:{slug}, project:{ENG},
+// Channel prefixes. Full channel names: workspace:{slug},
+// project:{slug}:{identifier} (workspace-qualified, spec §6 R11),
 // issue:{uuid}, user:{id}.
 const (
 	ChannelWorkspace = "workspace"
@@ -28,8 +29,8 @@ const (
 
 // Event is the wire payload for a broadcast (spec §6: {event, channel,
 // data, at}). Channel names which subscription the event matched — a client
-// subscribed to both issue:{uuid} and project:ENG receives one Event per
-// matching channel.
+// subscribed to both issue:{uuid} and project:{slug}:{identifier} receives one
+// Event per matching channel.
 type Event struct {
 	Event   string    `json:"event"`
 	Channel string    `json:"channel"`

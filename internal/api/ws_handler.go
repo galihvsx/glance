@@ -177,12 +177,22 @@ func (h *WSHandler) authorizeChannel(ctx context.Context, userID, channel string
 			 WHERE w.slug = $1 AND m.user_id = $2::uuid`, rest, userID).Scan(&one)
 		return authorizeErr(err)
 	case realtime.ChannelProject:
+		// Amended spec §6 (R11): project channels are workspace-qualified,
+		// project:{slug}:{identifier}. Identifiers are unique per workspace
+		// only, so the bare project:ENG scheme would leak events across
+		// workspaces sharing an identifier. Slugs and identifiers cannot
+		// contain colons, so anything but exactly two parts after the
+		// prefix is malformed.
+		slug, ident, ok := strings.Cut(rest, ":")
+		if !ok || slug == "" || ident == "" || strings.Contains(ident, ":") {
+			return errWSBadChannel
+		}
 		var one int
 		err := h.Pool.QueryRow(ctx,
 			`SELECT 1 FROM workspace_members m
 			  JOIN workspaces w ON w.id = m.workspace_id
 			  JOIN projects p ON p.workspace_id = w.id
-			 WHERE UPPER(p.identifier) = UPPER($1) AND m.user_id = $2::uuid`, rest, userID).Scan(&one)
+			 WHERE w.slug = $1 AND UPPER(p.identifier) = UPPER($2) AND m.user_id = $3::uuid`, slug, ident, userID).Scan(&one)
 		return authorizeErr(err)
 	case realtime.ChannelIssue:
 		var one int

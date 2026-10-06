@@ -426,7 +426,7 @@ func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actor
 	// One interception point for all triage actions (accept / reject /
 	// snooze / duplicate): the intake issue changed.
 	announce(
-		[]string{projectChannel(ident), workspaceChannel(wsSlug)},
+		[]string{projectChannel(wsSlug, ident), workspaceChannel(wsSlug)},
 		EventIntakeUpdated,
 		map[string]any{
 			"id":          ii.ID,

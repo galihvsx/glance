@@ -26,17 +26,17 @@ func TestHubBroadcastFanout(t *testing.T) {
 	s2 := h.AddSubscriber("u2")
 	defer h.RemoveSubscriber(s2)
 
-	h.Subscribe(s1, "project:ENG")
+	h.Subscribe(s1, "project:acme:ENG")
 	h.Subscribe(s1, "workspace:acme")
 	h.Subscribe(s2, "workspace:acme")
 
-	h.Broadcast([]string{"project:ENG", "workspace:acme"}, "issue.created",
+	h.Broadcast([]string{"project:acme:ENG", "workspace:acme"}, "issue.created",
 		map[string]any{"id": "issue-1"})
 
 	// s1 subscribed to both channels → one event per channel.
 	e1 := recvEvent(t, s1)
-	if e1.Event != "issue.created" || e1.Channel != "project:ENG" {
-		t.Fatalf("s1 first = %+v, want issue.created on project:ENG", e1)
+	if e1.Event != "issue.created" || e1.Channel != "project:acme:ENG" {
+		t.Fatalf("s1 first = %+v, want issue.created on project:acme:ENG", e1)
 	}
 	e2 := recvEvent(t, s1)
 	if e2.Event != "issue.created" || e2.Channel != "workspace:acme" {
@@ -67,9 +67,9 @@ func TestHubUnsubscribe(t *testing.T) {
 	s := h.AddSubscriber("u1")
 	defer h.RemoveSubscriber(s)
 
-	h.Subscribe(s, "project:ENG")
-	h.Unsubscribe(s, "project:ENG")
-	h.Broadcast([]string{"project:ENG"}, "issue.created", nil)
+	h.Subscribe(s, "project:acme:ENG")
+	h.Unsubscribe(s, "project:acme:ENG")
+	h.Broadcast([]string{"project:acme:ENG"}, "issue.created", nil)
 
 	select {
 	case e := <-s.send:
@@ -81,22 +81,22 @@ func TestHubUnsubscribe(t *testing.T) {
 func TestHubRemoveSubscriberStopsDelivery(t *testing.T) {
 	h := NewHub()
 	s := h.AddSubscriber("u1")
-	h.Subscribe(s, "project:ENG")
+	h.Subscribe(s, "project:acme:ENG")
 	h.RemoveSubscriber(s)
 
 	// Must not panic or block on a removed subscriber.
-	h.Broadcast([]string{"project:ENG"}, "issue.created", nil)
+	h.Broadcast([]string{"project:acme:ENG"}, "issue.created", nil)
 }
 
 func TestHubBroadcastNeverBlocksOnSlowSubscriber(t *testing.T) {
 	h := NewHub()
 	slow := h.AddSubscriber("slow")
 	defer h.RemoveSubscriber(slow)
-	h.Subscribe(slow, "project:ENG")
+	h.Subscribe(slow, "project:acme:ENG")
 
 	// Fill the slow subscriber's buffer; nobody ever reads.
 	for i := 0; i < sendBufferSize; i++ {
-		h.Broadcast([]string{"project:ENG"}, "issue.updated", nil)
+		h.Broadcast([]string{"project:acme:ENG"}, "issue.updated", nil)
 	}
 	if l := len(slow.send); l != sendBufferSize {
 		t.Fatalf("slow buffer = %d, want %d (full)", l, sendBufferSize)
@@ -108,7 +108,7 @@ func TestHubBroadcastNeverBlocksOnSlowSubscriber(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 1000; i++ {
-			h.Broadcast([]string{"project:ENG"}, "issue.updated", nil)
+			h.Broadcast([]string{"project:acme:ENG"}, "issue.updated", nil)
 		}
 	}()
 	select {
@@ -122,17 +122,17 @@ func TestHubDeliversInChannelOrder(t *testing.T) {
 	h := NewHub()
 	s := h.AddSubscriber("u1")
 	defer h.RemoveSubscriber(s)
-	h.Subscribe(s, "project:ENG")
+	h.Subscribe(s, "project:acme:ENG")
 	h.Subscribe(s, "workspace:acme")
 
 	// Below the buffer size: nothing drops, and events arrive in the
 	// channel order Broadcast was given.
 	const n = 10
 	for i := 0; i < n; i++ {
-		h.Broadcast([]string{"project:ENG", "workspace:acme"}, "issue.updated", map[string]any{"n": i})
+		h.Broadcast([]string{"project:acme:ENG", "workspace:acme"}, "issue.updated", map[string]any{"n": i})
 	}
 	for i := 0; i < n; i++ {
-		for _, wantCh := range []string{"project:ENG", "workspace:acme"} {
+		for _, wantCh := range []string{"project:acme:ENG", "workspace:acme"} {
 			select {
 			case e := <-s.send:
 				if e.Event != "issue.updated" || e.Channel != wantCh {

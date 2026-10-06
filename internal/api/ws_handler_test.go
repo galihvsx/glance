@@ -173,7 +173,7 @@ func TestBroadcastReachesSubscriber(t *testing.T) {
 	base := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
 
 	conn := dialWS(t, url, cookie)
-	subscribeWS(t, conn, "project:"+ident)
+	subscribeWS(t, conn, "project:"+slug+":"+ident)
 	subscribeWS(t, conn, "workspace:"+slug)
 
 	// Create via HTTP → issue.created fanned out to project + workspace.
@@ -204,7 +204,7 @@ func TestBroadcastReachesSubscriber(t *testing.T) {
 			t.Fatal("event missing at timestamp")
 		}
 	}
-	for _, ch := range []string{"project:" + ident, "workspace:" + slug} {
+	for _, ch := range []string{"project:" + slug + ":" + ident, "workspace:" + slug} {
 		if !seenCreated[ch] {
 			t.Fatalf("no issue.created on %s (seen %v)", ch, seenCreated)
 		}
@@ -225,11 +225,93 @@ func TestBroadcastReachesSubscriber(t *testing.T) {
 		ch, _ := m["channel"].(string)
 		seen[ch] = true
 	}
-	for _, ch := range []string{"issue:" + created.ID, "project:" + ident, "workspace:" + slug} {
+	for _, ch := range []string{"issue:" + created.ID, "project:" + slug + ":" + ident, "workspace:" + slug} {
 		if !seen[ch] {
 			t.Fatalf("no issue.updated on %s (seen %v)", ch, seen)
 		}
 	}
+}
+
+// expectNoWSMessage asserts no event arrives on conn within d. Used to prove
+// a cross-workspace broadcast does not leak to an unauthorized subscriber.
+// NOTE: nhooyr closes the whole connection when a read's context expires
+// (see timeoutLoop in nhooyr.io/websocket), so this must be the LAST read on
+// conn — the connection is unusable afterwards.
+func expectNoWSMessage(t *testing.T, conn *websocket.Conn, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	var v map[string]any
+	if err := wsjson.Read(ctx, conn, &v); err == nil {
+		t.Fatalf("got unexpected ws message %+v, want none", v)
+	}
+}
+
+// TestProjectChannelIsWorkspaceQualified is the regression test for the
+// cross-workspace leak (review finding, spec §6 R11): project identifiers
+// are unique per workspace only, so the bare project:ENG scheme fanned both
+// workspaces' events to one literal channel. The amended scheme is
+// project:{slug}:{identifier}.
+func TestProjectChannelIsWorkspaceQualified(t *testing.T) {
+	// Two workspaces, the SAME project identifier ENG in each. U is a
+	// member of ws-a only.
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e, _ := testWSServer(t, pool)
+
+	cookieU := loginTestUser(t, e, pool, uniqueEmail("pqa"), "ws-test", uniqueIP())
+	slugA := uniqueSlug("pqa")
+	createWorkspaceHTTP(t, e, cookieU, "A Co", slugA)
+	createProjectHTTP(t, e, cookieU, slugA, "Engineering A", "ENG")
+
+	cookieB := loginTestUser(t, e, pool, uniqueEmail("pqb"), "ws-test", uniqueIP())
+	slugB := uniqueSlug("pqb")
+	createWorkspaceHTTP(t, e, cookieB, "B Co", slugB)
+	createProjectHTTP(t, e, cookieB, slugB, "Engineering B", "ENG")
+
+	url := testWSURL(t, e, "/ws")
+	conn := dialWS(t, url, cookieU)
+
+	// U subscribes to ws-a's qualified project channel — legitimate.
+	subscribeWS(t, conn, "project:"+slugA+":ENG")
+
+	// U cannot subscribe to ws-b's project channel — not a member there.
+	sendWS(t, conn, map[string]string{"action": "subscribe", "channel": "project:" + slugB + ":ENG"})
+	if m := readWS(t, conn); m["action"] != "error" {
+		t.Fatalf("subscribe foreign project channel: got %+v, want error", m)
+	}
+
+	// The old bare scheme is rejected as malformed, not authorized.
+	sendWS(t, conn, map[string]string{"action": "subscribe", "channel": "project:ENG"})
+	if m := readWS(t, conn); m["action"] != "error" {
+		t.Fatalf("subscribe bare project channel: got %+v, want error", m)
+	}
+
+	// An issue created in ws-a's ENG MUST reach U on the qualified channel.
+	rec := postAuthedJSON(t, e, http.MethodPost,
+		"/api/v1/workspaces/"+slugA+"/projects/ENG/issues", cookieU, `{"name":"A public"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create issue in ws-a: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	m := readWS(t, conn)
+	if m["event"] != service.EventIssueCreated {
+		t.Fatalf("got %+v, want issue.created", m)
+	}
+	if ch, _ := m["channel"].(string); ch != "project:"+slugA+":ENG" {
+		t.Fatalf("channel = %q, want %q", ch, "project:"+slugA+":ENG")
+	}
+
+	// An issue created in ws-b's ENG must NOT reach U (the leak this test
+	// pins down). The broadcast is synchronous inside postAuthedJSON, so if
+	// the leak existed the event would already be queued — the 500ms window
+	// only guards against async flakiness. Last read: the timed-out read
+	// closes the connection (nhooyr), so nothing follows.
+	rec = postAuthedJSON(t, e, http.MethodPost,
+		"/api/v1/workspaces/"+slugB+"/projects/ENG/issues", cookieB, `{"name":"B secret"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create issue in ws-b: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	expectNoWSMessage(t, conn, 500*time.Millisecond)
 }
 
 func TestTicketSingleUse(t *testing.T) {

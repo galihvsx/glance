@@ -30,9 +30,9 @@ const (
 )
 
 // Broadcaster is the realtime fan-out sink. channels are fully-qualified
-// channel names (workspace:{slug}, project:{ENG}, issue:{uuid}, user:{id});
-// / eventType is one of the Event* constants; data is the minimal resource
-// JSON (never the full object — clients refetch via REST).
+// channel names (workspace:{slug}, project:{slug}:{identifier}, issue:{uuid},
+// user:{id}); eventType is one of the Event* constants; data is the minimal
+// resource JSON (never the full object — clients refetch via REST).
 type Broadcaster interface {
 	Broadcast(channels []string, eventType string, data any)
 }
@@ -48,11 +48,13 @@ func announce(channels []string, eventType string, data any) {
 	}
 }
 
-// Channel name builders (spec §6).
-func workspaceChannel(slug string) string     { return "workspace:" + slug }
-func projectChannel(identifier string) string { return "project:" + identifier }
-func issueChannel(id string) string           { return "issue:" + id }
-func userChannel(id string) string            { return "user:" + id }
+// Channel name builders (spec §6, amended R11: project channels are
+// workspace-qualified — identifiers are unique per workspace only, so the
+// bare project:{identifier} scheme would leak events across workspaces).
+func workspaceChannel(slug string) string             { return "workspace:" + slug }
+func projectChannel(wsSlug, identifier string) string { return "project:" + wsSlug + ":" + identifier }
+func issueChannel(id string) string                   { return "issue:" + id }
+func userChannel(id string) string                    { return "user:" + id }
 
 // issueEventData is the minimal issue JSON carried by issue.* events.
 type issueEventData struct {
@@ -64,7 +66,7 @@ type issueEventData struct {
 
 func announceIssueCreated(wsSlug, identifier string, iss *Issue) {
 	announce(
-		[]string{projectChannel(identifier), workspaceChannel(wsSlug)},
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventIssueCreated,
 		issueEventData{ID: iss.ID, DisplayID: iss.DisplayID, Name: iss.Name, StateID: iss.StateID},
 	)
@@ -72,7 +74,7 @@ func announceIssueCreated(wsSlug, identifier string, iss *Issue) {
 
 func announceIssueUpdated(wsSlug, identifier, issueID string, iss *Issue) {
 	announce(
-		[]string{issueChannel(issueID), projectChannel(identifier), workspaceChannel(wsSlug)},
+		[]string{issueChannel(issueID), projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventIssueUpdated,
 		issueEventData{ID: iss.ID, DisplayID: iss.DisplayID, Name: iss.Name, StateID: iss.StateID},
 	)
@@ -80,7 +82,7 @@ func announceIssueUpdated(wsSlug, identifier, issueID string, iss *Issue) {
 
 func announceIssueDeleted(wsSlug, identifier, issueID string) {
 	announce(
-		[]string{issueChannel(issueID), projectChannel(identifier), workspaceChannel(wsSlug)},
+		[]string{issueChannel(issueID), projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventIssueDeleted,
 		map[string]string{"id": issueID},
 	)
@@ -99,7 +101,7 @@ func announceCycleUpdated(ctx context.Context, pool *pgxpool.Pool, cycleID, proj
 		return
 	}
 	announce(
-		[]string{projectChannel(identifier), workspaceChannel(wsSlug)},
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventCycleUpdated,
 		map[string]string{"id": cycleID, "status": status},
 	)
