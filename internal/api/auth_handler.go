@@ -23,7 +23,15 @@ type AuthHandler struct {
 func RegisterAuthRoutes(e *echo.Echo, h *AuthHandler) {
 	g := e.Group("/api/v1/auth")
 	g.POST("/otp/request", h.requestOTP)
+	g.POST("/otp/verify", h.verifyOTP)
 }
+
+// Session cookie attributes for the token returned by VerifyOTP (spec §7:
+// HttpOnly, Secure, SameSite=Lax; 30-day expiry).
+const (
+	sessionCookieName   = "glance_session"
+	sessionCookieMaxAge = 30 * 24 * 3600 // 2592000
+)
 
 type otpRequestBody struct {
 	Email string `json:"email"`
@@ -44,5 +52,41 @@ func (h *AuthHandler) requestOTP(c *echo.Context) error {
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
+	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
+}
+
+type otpVerifyBody struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+
+// verifyOTP implements POST /api/v1/auth/otp/verify. Every failure —
+// unknown email, expired/consumed/burned code, wrong code — answers 401
+// with the same generic message (no enumeration). Success sets the
+// session cookie and answers 200 {"ok":true}.
+func (h *AuthHandler) verifyOTP(c *echo.Context) error {
+	var body otpVerifyBody
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	token, err := auth.VerifyOTP(
+		c.Request().Context(), h.Pool, h.Config,
+		body.Email, body.Code, c.Request().UserAgent(), c.RealIP(),
+	)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidCode) {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired code"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   sessionCookieMaxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
 }

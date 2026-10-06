@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -137,4 +140,116 @@ func postOTPFrom(t *testing.T, e *echo.Echo, email, ip string) *httptest.Respons
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	return rec
+}
+
+// postVerify issues a POST /api/v1/auth/otp/verify.
+func postVerify(t *testing.T, e *echo.Echo, email, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := fmt.Sprintf(`{"email":%q,"code":%q}`, email, code)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/otp/verify", strings.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.RemoteAddr = uniqueIP() + ":1234"
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	return rec
+}
+
+// insertVerifyCode stores a known code (the api package cannot reuse the
+// auth package's test helper, so the hash is computed inline with the same
+// pepper the test server uses).
+func insertVerifyCode(t *testing.T, pool *pgxpool.Pool, email, code string) {
+	t.Helper()
+	sum := sha256.Sum256([]byte("test-pepper-do-not-use-in-prod" + code))
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO otp_codes (email, code_hash, expires_at) VALUES ($1, $2, $3)`,
+		strings.ToLower(email), hex.EncodeToString(sum[:]), time.Now().Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("insert verify code: %v", err)
+	}
+}
+
+func TestVerifyEndpointWrongCode401(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+
+	email := uniqueEmail("h-verify-wrong")
+	insertVerifyCode(t, pool, email, "123456")
+
+	rec := postVerify(t, e, email, "000000")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong code: status = %d, want 401", rec.Code)
+	}
+	body := strings.TrimSpace(rec.Body.String())
+
+	// Unknown email, expired and wrong code must be indistinguishable —
+	// same status AND same body (no enumeration).
+	rec2 := postVerify(t, e, uniqueEmail("h-verify-nobody"), "123456")
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown email: status = %d, want 401", rec2.Code)
+	}
+	if strings.TrimSpace(rec2.Body.String()) != body {
+		t.Fatalf("unknown email body = %q, wrong-code body = %q — enumeration leak", rec2.Body.String(), body)
+	}
+	if !strings.Contains(body, "invalid or expired code") {
+		t.Fatalf("body = %q, want generic message", body)
+	}
+}
+
+func TestVerifyEndpointSuccessSetsCookie(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+
+	email := uniqueEmail("h-verify-ok")
+	insertVerifyCode(t, pool, email, "654321")
+
+	rec := postVerify(t, e, email, "654321")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var sc *http.Cookie
+	for _, ck := range rec.Result().Cookies() {
+		if ck.Name == "glance_session" {
+			sc = ck
+		}
+	}
+	if sc == nil {
+		t.Fatalf("no glance_session cookie in response")
+	}
+	if !sc.HttpOnly {
+		t.Errorf("cookie HttpOnly = false, want true")
+	}
+	if !sc.Secure {
+		t.Errorf("cookie Secure = false, want true")
+	}
+	if sc.SameSite != http.SameSiteLaxMode {
+		t.Errorf("cookie SameSite = %v, want Lax", sc.SameSite)
+	}
+	if sc.MaxAge != 2592000 {
+		t.Errorf("cookie MaxAge = %d, want 2592000 (30 days)", sc.MaxAge)
+	}
+	if sc.Path != "/" {
+		t.Errorf("cookie Path = %q, want /", sc.Path)
+	}
+	if len(sc.Value) != 64 {
+		t.Fatalf("cookie value length = %d, want 64 hex chars", len(sc.Value))
+	}
+
+	// The cookie value's SHA-256 must match the stored session token_hash —
+	// the plain token is never persisted.
+	sum := sha256.Sum256([]byte(sc.Value))
+	var tokenHash string
+	err := pool.QueryRow(ctx,
+		`SELECT s.token_hash FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = $1`,
+		strings.ToLower(email),
+	).Scan(&tokenHash)
+	if err != nil {
+		t.Fatalf("query session: %v", err)
+	}
+	if tokenHash != hex.EncodeToString(sum[:]) {
+		t.Errorf("session token_hash does not match SHA-256(cookie value)")
+	}
 }

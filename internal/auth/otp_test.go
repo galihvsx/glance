@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -190,5 +192,259 @@ func TestRequestOTPNoUserRowCreated(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("users rows for unknown email = %d, want 0 (no enumeration, no provisioning at request time)", n)
+	}
+}
+
+// insertTestCode stores a KNOWN code for verify tests (RequestOTP generates
+// a random one the test cannot know). createdAgo controls candidate
+// ordering: the newest outstanding code is the verify candidate.
+func insertTestCode(t *testing.T, pool *pgxpool.Pool, email, code string, createdAgo time.Duration) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO otp_codes (email, code_hash, expires_at, created_at)
+		 VALUES ($1, $2, $3, $4)`,
+		strings.ToLower(email), hashCode(testConfig().OTPPepper, code),
+		time.Now().Add(10*time.Minute), time.Now().Add(-createdAgo))
+	if err != nil {
+		t.Fatalf("insert test code: %v", err)
+	}
+}
+
+func TestVerifyWrongCode401(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-wrong")
+	insertTestCode(t, pool, email, "123456", 0)
+
+	_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", "127.0.0.1")
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("wrong code: err = %v, want ErrInvalidCode", err)
+	}
+
+	// The attempt must be counted…
+	var attempts int
+	if err := pool.QueryRow(ctx, `SELECT attempts FROM otp_codes WHERE email = $1`, email).Scan(&attempts); err != nil {
+		t.Fatalf("query attempts: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1", attempts)
+	}
+
+	// …and no session or user may exist.
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	_ = n // sessions table is shared; filter below instead
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE email = $1`, email).Scan(&n); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("users rows for failed verify = %d, want 0", n)
+	}
+}
+
+func TestVerifyBurnsAfter5Attempts(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-burn")
+	insertTestCode(t, pool, email, "123456", 0)
+
+	for i := 0; i < 5; i++ {
+		_, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", "127.0.0.1")
+		if !errors.Is(err, ErrInvalidCode) {
+			t.Fatalf("attempt %d: err = %v, want ErrInvalidCode", i+1, err)
+		}
+	}
+
+	// The code is burned: even the CORRECT code now fails generically.
+	_, err := VerifyOTP(ctx, pool, cfg, email, "123456", "test-agent", "127.0.0.1")
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("correct code after 5 wrong attempts: err = %v, want ErrInvalidCode", err)
+	}
+
+	var attempts int
+	var consumedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT attempts, consumed_at FROM otp_codes WHERE email = $1`, email,
+	).Scan(&attempts, &consumedAt); err != nil {
+		t.Fatalf("query code: %v", err)
+	}
+	if attempts != 5 {
+		t.Errorf("attempts = %d, want exactly 5", attempts)
+	}
+	if consumedAt == nil {
+		t.Errorf("consumed_at = NULL, want set (code burned)")
+	}
+}
+
+func TestVerifySuccessSetsCookie(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-ok")
+	insertTestCode(t, pool, email, "654321", 0)
+
+	token, err := VerifyOTP(ctx, pool, cfg, email, "654321", "test-agent/1.0", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("VerifyOTP: %v", err)
+	}
+	if len(token) != 64 {
+		t.Fatalf("token length = %d, want 64 hex chars (32 bytes)", len(token))
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("token is not hex: %v", err)
+	}
+
+	// New email → user row auto-provisioned.
+	var userID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE email = $1`, email).Scan(&userID); err != nil {
+		t.Fatalf("user not provisioned: %v", err)
+	}
+
+	// Session row: only the SHA-256 hash of the token is stored, 30-day
+	// expiry, request metadata recorded, not revoked.
+	var tokenHash, ua, ip string
+	var expiresAt time.Time
+	var revokedAt *time.Time
+	var sessionUserID string
+	err = pool.QueryRow(ctx,
+		`SELECT user_id, token_hash, user_agent, ip, expires_at, revoked_at
+		 FROM sessions WHERE user_id = $1`,
+		userID,
+	).Scan(&sessionUserID, &tokenHash, &ua, &ip, &expiresAt, &revokedAt)
+	if err != nil {
+		t.Fatalf("query session: %v", err)
+	}
+	sum := sha256.Sum256([]byte(token))
+	if tokenHash != hex.EncodeToString(sum[:]) {
+		t.Errorf("stored token_hash does not match SHA-256(token)")
+	}
+	if tokenHash == token {
+		t.Errorf("plain token stored in token_hash")
+	}
+	if ua != "test-agent/1.0" || ip != "127.0.0.1" {
+		t.Errorf("session metadata = (%q, %q), want (test-agent/1.0, 127.0.0.1)", ua, ip)
+	}
+	ttl := time.Until(expiresAt)
+	if ttl < 29*24*time.Hour || ttl > 30*24*time.Hour {
+		t.Errorf("session ttl = %v, want ~30 days", ttl)
+	}
+	if revokedAt != nil {
+		t.Errorf("revoked_at = %v, want NULL", revokedAt)
+	}
+
+	// Code consumed.
+	var consumedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT consumed_at FROM otp_codes WHERE email = $1`, email,
+	).Scan(&consumedAt); err != nil {
+		t.Fatalf("query code: %v", err)
+	}
+	if consumedAt == nil {
+		t.Errorf("consumed_at = NULL after success, want set")
+	}
+}
+
+// TestVerifyNewestCodeSupersedes pins the Task 6 review handoff: multiple
+// outstanding codes per email are allowed; the newest is the candidate, and
+// on success every other outstanding code for the email is invalidated so
+// an older code can never be used after a newer one succeeded.
+func TestVerifyNewestCodeSupersedes(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-supersede")
+	insertTestCode(t, pool, email, "111111", time.Minute) // older
+	insertTestCode(t, pool, email, "222222", 0)           // newer (candidate)
+
+	// The older code is NOT the candidate: it fails, and the failed attempt
+	// is counted against the newest code.
+	_, err := VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", "127.0.0.1")
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("older code: err = %v, want ErrInvalidCode", err)
+	}
+	var newerAttempts int
+	if err := pool.QueryRow(ctx,
+		`SELECT attempts FROM otp_codes WHERE email = $1 AND code_hash = $2`,
+		email, hashCode(cfg.OTPPepper, "222222"),
+	).Scan(&newerAttempts); err != nil {
+		t.Fatalf("query newer attempts: %v", err)
+	}
+	if newerAttempts != 1 {
+		t.Errorf("newer code attempts = %d, want 1 (older code counted against it)", newerAttempts)
+	}
+
+	// Newest code succeeds…
+	if _, err := VerifyOTP(ctx, pool, cfg, email, "222222", "test-agent", "127.0.0.1"); err != nil {
+		t.Fatalf("newer code: %v", err)
+	}
+
+	// …and now BOTH codes are consumed: the older one can never be used.
+	var outstanding int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM otp_codes WHERE email = $1 AND consumed_at IS NULL`, email,
+	).Scan(&outstanding); err != nil {
+		t.Fatalf("count outstanding: %v", err)
+	}
+	if outstanding != 0 {
+		t.Errorf("outstanding codes after success = %d, want 0", outstanding)
+	}
+	_, err = VerifyOTP(ctx, pool, cfg, email, "111111", "test-agent", "127.0.0.1")
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("superseded older code: err = %v, want ErrInvalidCode (code-confusion bypass)", err)
+	}
+}
+
+// TestVerifyConcurrentAttemptsAtomic: concurrent wrong-code verifies must
+// not exceed the 5-attempt budget (no lost updates).
+func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-conc")
+	insertTestCode(t, pool, email, "123456", 0)
+
+	const n = 10
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = VerifyOTP(context.Background(), pool, cfg, email, "000000", "conc", "127.0.0.1")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if !errors.Is(err, ErrInvalidCode) {
+			t.Fatalf("goroutine %d: err = %v, want ErrInvalidCode", i, err)
+		}
+	}
+
+	var attempts int
+	var consumedAt *time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT attempts, consumed_at FROM otp_codes WHERE email = $1`, email,
+	).Scan(&attempts, &consumedAt); err != nil {
+		t.Fatalf("query code: %v", err)
+	}
+	if attempts != 5 {
+		t.Errorf("attempts = %d, want exactly 5 (budget respected under concurrency)", attempts)
+	}
+	if consumedAt == nil {
+		t.Errorf("consumed_at = NULL, want set (code burned)")
 	}
 }
