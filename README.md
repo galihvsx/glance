@@ -6,7 +6,14 @@ Apache-2.0. Built to be boring to deploy and fast to run.
 
 ## 5-minute quickstart
 
-**Prereqs:** Docker (recommended) — or Go 1.25+, Node 20+, Postgres 14+ for local dev.
+**Prereqs:** Docker (recommended) — or Go 1.26+, Node 20+, Postgres 14+ for local dev.
+
+`OTP_PEPPER` is **required** — the server refuses to boot without it (fail closed).
+Generate one first:
+
+```bash
+export OTP_PEPPER=$(openssl rand -base64 32)
+```
 
 ### Option A: Docker (easiest)
 
@@ -14,7 +21,9 @@ Apache-2.0. Built to be boring to deploy and fast to run.
 docker compose up --build
 ```
 
-Open http://localhost:8080. The server runs its own DB migrations on startup — nothing to set up manually.
+The compose file reads `OTP_PEPPER` from your environment (or a `.env` file next
+to it). Open http://localhost:8080. The server runs its own DB migrations on
+startup — nothing to set up manually.
 
 ### Option B: local dev
 
@@ -28,6 +37,7 @@ go build -o glance ./cmd/glance
 
 # 3. Point at Postgres and run (migrations run automatically)
 export DATABASE_URL=postgres://glance:glance@localhost:5432/glance?sslmode=disable
+export OTP_PEPPER=$(openssl rand -base64 32)
 ./glance
 ```
 
@@ -40,6 +50,7 @@ All config is via environment variables:
 | Variable        | Required | Default | Description                                              |
 |-----------------|----------|---------|----------------------------------------------------------|
 | `DATABASE_URL`  | yes      | —       | Postgres connection string                               |
+| `OTP_PEPPER`    | yes      | —       | Server-side secret for OTP hashes; server refuses to boot without it (generate with `openssl rand -base64 32`) |
 | `PORT`          | no       | `8080`  | HTTP listen port                                         |
 | `APP_URL`       | no       | —       | Public base URL (used for links in emails)               |
 | `SMTP_HOST`     | no       | —       | SMTP host for outbound mail                              |

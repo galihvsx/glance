@@ -9,6 +9,7 @@ package mail
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"net/smtp"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -78,11 +80,24 @@ func (s *LogSender) Send(_ context.Context, msg Message) error {
 	return nil
 }
 
+// smtpDialTimeout bounds the TCP connect; smtpOpTimeout bounds the whole
+// SMTP session after connect. Without these, a blackholed SMTP_HOST hangs
+// the dispatch pass and wedges the dispatcher (pool exhaustion).
+const (
+	smtpDialTimeout = 10 * time.Second
+	smtpOpTimeout   = 30 * time.Second
+)
+
 // SMTPSender delivers mail through the SMTP server described by config.
 // It uses STARTTLS when the server advertises it (port 587); implicit-TLS
 // port 465 is not supported by net/smtp — operators should use 587.
+//
+// The dial and session timeouts are struct fields (zero = defaults) so
+// tests can pin fast failure against a blackholed host.
 type SMTPSender struct {
-	cfg *config.Config
+	cfg         *config.Config
+	dialTimeout time.Duration
+	opTimeout   time.Duration
 }
 
 func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
@@ -92,6 +107,14 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	dialTimeout := s.dialTimeout
+	if dialTimeout == 0 {
+		dialTimeout = smtpDialTimeout
+	}
+	opTimeout := s.opTimeout
+	if opTimeout == 0 {
+		opTimeout = smtpOpTimeout
+	}
 	port := s.cfg.SMTPPort
 	if port == "" {
 		port = "587"
@@ -100,13 +123,51 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	if from == "" {
 		from = s.cfg.SMTPUser
 	}
-	var auth smtp.Auth
-	if s.cfg.SMTPUser != "" {
-		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPassword, s.cfg.SMTPHost)
-	}
 	addr := net.JoinHostPort(s.cfg.SMTPHost, port)
-	if err := smtp.SendMail(addr, auth, from, []string{msg.To}, buildMessage(from, msg)); err != nil {
-		return fmt.Errorf("mail: smtp send to %s: %w", msg.To, err)
+	conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("mail: smtp dial %s: %w", addr, err)
+	}
+	// One deadline for the whole session, set BEFORE the greeting read:
+	// a server that accepts the TCP connection but never speaks must fail
+	// the delivery instead of hanging the dispatch pass forever.
+	if err := conn.SetDeadline(time.Now().Add(opTimeout)); err != nil {
+		conn.Close()
+		return fmt.Errorf("mail: set smtp deadline: %w", err)
+	}
+	c, err := smtp.NewClient(conn, s.cfg.SMTPHost)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("mail: smtp handshake with %s: %w", addr, err)
+	}
+	defer c.Quit()
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: s.cfg.SMTPHost}); err != nil {
+			return fmt.Errorf("mail: smtp STARTTLS: %w", err)
+		}
+	}
+	if s.cfg.SMTPUser != "" {
+		auth := smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPassword, s.cfg.SMTPHost)
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("mail: smtp auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("mail: smtp MAIL FROM: %w", err)
+	}
+	if err := c.Rcpt(msg.To); err != nil {
+		return fmt.Errorf("mail: smtp RCPT TO %s: %w", msg.To, err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("mail: smtp DATA: %w", err)
+	}
+	if _, err := w.Write(buildMessage(from, msg)); err != nil {
+		w.Close()
+		return fmt.Errorf("mail: smtp write body: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("mail: smtp end data: %w", err)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -84,4 +85,26 @@ func TestNewSenderWithSMTP(t *testing.T) {
 	if _, ok := s.(*SMTPSender); !ok {
 		t.Fatalf("NewSender with SMTP_HOST = %T, want *SMTPSender", s)
 	}
+}
+
+// TestSMTPSenderBlackholedHostFailsFast pins the dial/session timeouts:
+// 192.0.2.1 is TEST-NET-1 (RFC 5737) — guaranteed unroutable, so a
+// blackholed SMTP host must fail fast instead of hanging the dispatch
+// pass. Without the net.Dialer timeout this Send would block for minutes.
+func TestSMTPSenderBlackholedHostFailsFast(t *testing.T) {
+	s := &SMTPSender{
+		cfg:         &config.Config{SMTPHost: "192.0.2.1", SMTPPort: "587", SMTPFrom: "noreply@example.com"},
+		dialTimeout: 500 * time.Millisecond,
+		opTimeout:   2 * time.Second,
+	}
+	start := time.Now()
+	err := s.Send(context.Background(), Message{To: "a@example.com", Subject: "s", Body: "b"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Send to blackholed SMTP host succeeded, want dial error")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("Send to blackholed host took %v, want fast failure (<10s)", elapsed)
+	}
+	t.Logf("blackholed host failed in %v: %v", elapsed, err)
 }
