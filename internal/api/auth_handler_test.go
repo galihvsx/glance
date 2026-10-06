@@ -205,6 +205,9 @@ func TestVerifyEndpointWrongCode401(t *testing.T) {
 	if !strings.Contains(body, "invalid or expired code") {
 		t.Fatalf("body = %q, want generic message", body)
 	}
+	if !strings.Contains(body, `"code":"unauthorized"`) {
+		t.Fatalf("body = %q, want spec §5 envelope code unauthorized", body)
+	}
 }
 
 // TestVerifyEndpointRateLimitedPerIP: 21 rapid wrong-code verifies from one
@@ -229,7 +232,7 @@ func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("21st verify from same IP in an hour: status = %d, want 429", rec.Code)
 	}
-	if body := strings.TrimSpace(rec.Body.String()); body != `{"error":"too many requests, try again later"}` {
+	if body := strings.TrimSpace(rec.Body.String()); body != `{"error":{"code":"rate_limited","message":"too many requests, try again later"}}` {
 		t.Fatalf("429 body = %q, want the same message as the request endpoint", body)
 	}
 }

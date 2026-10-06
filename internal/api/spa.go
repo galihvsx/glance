@@ -34,7 +34,7 @@ func RegisterSPA(e *echo.Echo) error {
 	e.GET("/*", func(c *echo.Context) error {
 		p := c.Request().URL.Path
 		if p == "/api" || strings.HasPrefix(p, "/api/") {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+			return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "not found", nil)
 		}
 		rel := strings.TrimPrefix(path.Clean("/"+p), "/")
 		if info, err := fs.Stat(dist, rel); err == nil && !info.IsDir() {

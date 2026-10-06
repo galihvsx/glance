@@ -250,19 +250,25 @@ func randomAbsentUUID(t *testing.T, pool *pgxpool.Pool) string {
 	return id
 }
 
-// assertErrorMessage pins the flat {"error": "..."} message of an error
-// response (R10: the spec §5 envelope retrofit happens later; until then
-// messages stay flat and must stay accurate).
-func assertErrorMessage(t *testing.T, body []byte, want string) {
+// assertErrorMessage pins the spec §5 envelope {"error":{"code":…,"message":…}}
+// of an error response: both the machine-readable code and the human
+// message must be exact.
+func assertErrorMessage(t *testing.T, body []byte, wantCode, wantMessage string) {
 	t.Helper()
 	var decoded struct {
-		Error string `json:"error"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("decode error body %q: %v", body, err)
 	}
-	if decoded.Error != want {
-		t.Fatalf("error message = %q, want %q", decoded.Error, want)
+	if decoded.Error.Code != wantCode {
+		t.Fatalf("error code = %q, want %q", decoded.Error.Code, wantCode)
+	}
+	if decoded.Error.Message != wantMessage {
+		t.Fatalf("error message = %q, want %q", decoded.Error.Message, wantMessage)
 	}
 }
 
@@ -282,7 +288,7 @@ func TestUpsertMemberUnknownUser404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("upsert unknown user: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
-	assertErrorMessage(t, rec.Body.Bytes(), "user not found")
+	assertErrorMessage(t, rec.Body.Bytes(), "user_not_found", "user not found")
 }
 
 func TestRemoveNonMember404(t *testing.T) {
@@ -301,7 +307,7 @@ func TestRemoveNonMember404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("remove non-member: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
-	assertErrorMessage(t, rec.Body.Bytes(), "member not found")
+	assertErrorMessage(t, rec.Body.Bytes(), "member_not_found", "member not found")
 
 	// Nonexistent user entirely → same "member not found".
 	rec = postAuthedJSON(t, e, http.MethodDelete,
@@ -309,7 +315,7 @@ func TestRemoveNonMember404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("remove unknown user: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
-	assertErrorMessage(t, rec.Body.Bytes(), "member not found")
+	assertErrorMessage(t, rec.Body.Bytes(), "member_not_found", "member not found")
 }
 
 func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
@@ -324,5 +330,5 @@ func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing workspace: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
-	assertErrorMessage(t, rec.Body.Bytes(), "workspace not found")
+	assertErrorMessage(t, rec.Body.Bytes(), "not_found", "workspace not found")
 }

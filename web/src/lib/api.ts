@@ -2,7 +2,8 @@
 //
 // Cookie auth (glance_session) — credentials: "include" is always set so the
 // session cookie is sent on every request. Non-2xx responses throw ApiError
-// with the {"error": ...} message parsed when present.
+// with the spec §5 envelope's error.message parsed when present
+// ({"error":{"code":…,"message":…,"details":…}}).
 
 export class ApiError extends Error {
   readonly status: number;
@@ -26,23 +27,29 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const text = await res.text();
   if (!res.ok) {
-    let message = text;
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "error" in parsed &&
-        typeof (parsed as { error: unknown }).error === "string"
-      ) {
-        message = (parsed as { error: string }).error;
-      }
-    } catch {
-      // Keep the raw body as the message.
-    }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, errorMessage(res, text));
   }
   return (text ? (JSON.parse(text) as T) : (undefined as T));
+}
+
+// errorMessage extracts the human message from an error response: prefer
+// the spec §5 envelope's error.message, fall back to a legacy flat string
+// error, then to the HTTP status text.
+function errorMessage(res: Response, text: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "error" in parsed) {
+      const err = (parsed as { error: unknown }).error;
+      if (typeof err === "object" && err !== null && "message" in err) {
+        const message = (err as { message: unknown }).message;
+        if (typeof message === "string" && message.length > 0) return message;
+      }
+      if (typeof err === "string" && err.length > 0) return err;
+    }
+  } catch {
+    // Not JSON — fall through to the status text.
+  }
+  return res.statusText || `Request failed with status ${res.status}`;
 }
 
 export const api = {

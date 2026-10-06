@@ -38,23 +38,23 @@ func workspaceError(c *echo.Context, err error) error {
 	// "workspace not found" (that message is reserved for the
 	// actor-resolution path: bad slug or non-member caller).
 	case errors.Is(err, service.ErrUserNotFound):
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "user not found"})
+		return WriteError(c, http.StatusNotFound, ErrCodeUserNotFound, "user not found", nil)
 	case errors.Is(err, service.ErrMemberNotFound):
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "member not found"})
+		return WriteError(c, http.StatusNotFound, ErrCodeMemberNotFound, "member not found", nil)
 	case errors.Is(err, service.ErrNotFound):
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "workspace not found"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "workspace not found", nil)
 	case errors.Is(err, service.ErrForbidden):
-		return c.JSON(http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return WriteError(c, http.StatusForbidden, ErrCodeForbidden, "forbidden", nil)
 	case errors.Is(err, service.ErrSlugConflict):
-		return c.JSON(http.StatusConflict, map[string]string{"error": "slug already taken"})
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "slug already taken", nil)
 	case errors.Is(err, service.ErrInvalidSlug):
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid slug: use lowercase letters, numbers and hyphens"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid slug: use lowercase letters, numbers and hyphens", nil)
 	case errors.Is(err, service.ErrInvalidRole):
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid role: must be 5 (guest), 15 (member) or 20 (admin)"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid role: must be 5 (guest), 15 (member) or 20 (admin)", nil)
 	case errors.Is(err, service.ErrLastAdmin):
-		return c.JSON(http.StatusConflict, map[string]string{"error": "cannot remove or demote the last admin"})
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cannot remove or demote the last admin", nil)
 	default:
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 }
 
@@ -68,12 +68,12 @@ type createWorkspaceBody struct {
 func (h *WorkspaceHandler) createWorkspace(c *echo.Context) error {
 	var body createWorkspaceBody
 	if err := c.Bind(&body); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	ws, err := service.CreateWorkspace(c.Request().Context(), h.Pool, body.Name, body.Slug, CurrentUser(c).ID)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 		}
 		return workspaceError(c, err)
 	}
@@ -85,7 +85,7 @@ func (h *WorkspaceHandler) createWorkspace(c *echo.Context) error {
 func (h *WorkspaceHandler) listWorkspaces(c *echo.Context) error {
 	workspaces, err := service.ListWorkspaces(c.Request().Context(), h.Pool, CurrentUser(c).ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"workspaces": workspaces})
 }
@@ -109,12 +109,12 @@ type updateWorkspaceBody struct {
 func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 	var body updateWorkspaceBody
 	if err := c.Bind(&body); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	ws, err := service.UpdateWorkspace(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 		}
 		return workspaceError(c, err)
 	}
@@ -131,10 +131,10 @@ type upsertMemberBody struct {
 func (h *WorkspaceHandler) upsertMember(c *echo.Context) error {
 	var body upsertMemberBody
 	if err := c.Bind(&body); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	if !validUUID(body.UserID) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user_id", nil)
 	}
 	if err := service.UpsertMember(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.UserID, body.Role); err != nil {
 		return workspaceError(c, err)
@@ -147,7 +147,7 @@ func (h *WorkspaceHandler) upsertMember(c *echo.Context) error {
 func (h *WorkspaceHandler) removeMember(c *echo.Context) error {
 	userID := c.Param("user_id")
 	if !validUUID(userID) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user_id", nil)
 	}
 	if err := service.RemoveMember(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, userID); err != nil {
 		return workspaceError(c, err)

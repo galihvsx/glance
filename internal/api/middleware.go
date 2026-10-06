@@ -36,11 +36,11 @@ func RequireAuth(pool *pgxpool.Pool) echo.MiddlewareFunc {
 		return func(c *echo.Context) error {
 			cookie, err := c.Cookie(auth.SessionCookieName)
 			if err != nil || cookie.Value == "" {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 			}
 			result, err := auth.AuthenticateSession(c.Request().Context(), pool, cookie.Value)
 			if err != nil {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 			}
 			ctx := context.WithValue(c.Request().Context(), authUserKey, result.User)
 			ctx = context.WithValue(ctx, authSessionIDKey, result.SessionID)

@@ -83,13 +83,13 @@ type otpRequestBody struct {
 func (h *AuthHandler) requestOTP(c *echo.Context) error {
 	var body otpRequestBody
 	if err := c.Bind(&body); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	if err := auth.RequestOTP(c.Request().Context(), h.Pool, h.Config, body.Email, c.RealIP()); err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
-			return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many requests, try again later"})
+			return WriteError(c, http.StatusTooManyRequests, ErrCodeRateLimited, "too many requests, try again later", nil)
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
 }
@@ -106,7 +106,7 @@ type otpVerifyBody struct {
 func (h *AuthHandler) verifyOTP(c *echo.Context) error {
 	var body otpVerifyBody
 	if err := c.Bind(&body); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	token, err := auth.VerifyOTP(
 		c.Request().Context(), h.Pool, h.Config,
@@ -114,12 +114,12 @@ func (h *AuthHandler) verifyOTP(c *echo.Context) error {
 	)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidCode) {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired code"})
+			return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "invalid or expired code", nil)
 		}
 		if errors.Is(err, auth.ErrRateLimited) {
-			return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many requests, try again later"})
+			return WriteError(c, http.StatusTooManyRequests, ErrCodeRateLimited, "too many requests, try again later", nil)
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	SetSessionCookie(c, token)
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -144,24 +144,24 @@ func oauthRedirectURL(cfg *config.Config, c *echo.Context, p auth.Provider) stri
 func (h *AuthHandler) oauthLogin(c *echo.Context) error {
 	provider, ok := auth.ParseProvider(c.Param("provider"))
 	if !ok {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "unknown oauth provider"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "unknown oauth provider", nil)
 	}
 	// Unconfigured provider → 404 before any state or crypto work.
 	if !auth.ProviderConfigured(h.Config, provider) {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "oauth provider not configured"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "oauth provider not configured", nil)
 	}
 	redirectURL := oauthRedirectURL(h.Config, c, provider)
 	raw, signed, err := auth.NewOAuthState(h.Config)
 	if err != nil {
 		// OAUTH_STATE_SECRET empty (or RNG failure): fail fast, no redirect.
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "oauth not configured"})
+		return WriteInternalError(c)
 	}
 	authURL, err := auth.AuthorizationURL(h.Config, provider, redirectURL, raw)
 	if err != nil {
 		if errors.Is(err, auth.ErrOAuthNotConfigured) {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "oauth provider not configured"})
+			return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "oauth provider not configured", nil)
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	c.SetCookie(&http.Cookie{
 		Name:     oauthStateCookieName,
@@ -196,20 +196,20 @@ func clearOAuthStateCookie(c *echo.Context) {
 func (h *AuthHandler) oauthCallback(c *echo.Context) error {
 	provider, ok := auth.ParseProvider(c.Param("provider"))
 	if !ok {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "unknown oauth provider"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "unknown oauth provider", nil)
 	}
 	// Unconfigured provider → 404 before touching state or the DB.
 	if !auth.ProviderConfigured(h.Config, provider) {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "oauth provider not configured"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "oauth provider not configured", nil)
 	}
 	cookie, cookieErr := c.Cookie(oauthStateCookieName)
 	clearOAuthStateCookie(c)
 	if cookieErr != nil || !auth.VerifyOAuthState(h.Config, cookie.Value, c.QueryParam("state")) {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid oauth state"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid oauth state", nil)
 	}
 	code := c.QueryParam("code")
 	if code == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing oauth code"})
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "missing oauth code", nil)
 	}
 	token, err := auth.CompleteOAuthLogin(
 		c.Request().Context(), h.Pool, h.Config,
@@ -219,13 +219,13 @@ func (h *AuthHandler) oauthCallback(c *echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrOAuthNotConfigured):
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "oauth provider not configured"})
+			return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "oauth provider not configured", nil)
 		case errors.Is(err, auth.ErrOAuthEmailUnverified):
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "oauth provider did not return a verified email"})
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "oauth provider did not return a verified email", nil)
 		case errors.Is(err, auth.ErrOAuthAlreadyLinked):
-			return c.JSON(http.StatusConflict, map[string]string{"error": "oauth account is already linked to another user"})
+			return WriteError(c, http.StatusConflict, ErrCodeConflict, "oauth account is already linked to another user", nil)
 		default:
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return WriteInternalError(c)
 		}
 	}
 	SetSessionCookie(c, token)
@@ -243,7 +243,7 @@ func (h *AuthHandler) me(c *echo.Context) error {
 // log out without one.
 func (h *AuthHandler) logout(c *echo.Context) error {
 	if err := auth.RevokeSession(c.Request().Context(), h.Pool, CurrentSessionID(c)); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	ClearSessionCookie(c)
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -254,7 +254,7 @@ func (h *AuthHandler) logout(c *echo.Context) error {
 func (h *AuthHandler) listSessions(c *echo.Context) error {
 	sessions, err := auth.ListSessions(c.Request().Context(), h.Pool, CurrentUser(c).ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"sessions": sessions})
 }
@@ -290,14 +290,14 @@ func validUUID(s string) bool {
 func (h *AuthHandler) deleteSession(c *echo.Context) error {
 	id := c.Param("id")
 	if !validUUID(id) {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "session not found", nil)
 	}
 	revoked, err := auth.RevokeSessionForUser(c.Request().Context(), h.Pool, CurrentUser(c).ID, id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return WriteInternalError(c)
 	}
 	if !revoked {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "session not found", nil)
 	}
 	// EqualFold, not ==: UUIDs are case-insensitive, and the client may echo
 	// the id back in a different case than Postgres stored.
