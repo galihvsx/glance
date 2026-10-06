@@ -767,8 +767,9 @@ func TestListFilters(t *testing.T) {
 // TestListRelationFiltersEmptyBeforeTaxonomy was the Task 15 contract
 // pinning assignee=/label=/cycle= to empty results before the junction
 // tables existed. It is superseded by TestListRelationFilters in
-// label_test.go (Task 16), which asserts the real filter behavior;
-// cycle= remains empty until Task 22.
+// label_test.go (Task 16), which asserts the real filter behavior for
+// assignee= and label=, and by TestListCycleFilter in cycle_test.go
+// (Task 22), which asserts the real behavior for cycle=.
 
 // TestListInvalidParams: bad order_by, bad cursor, bad priority, and a
 // cursor minted for a different order are all 400-class errors.

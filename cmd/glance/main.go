@@ -15,6 +15,7 @@ import (
 	"glance/internal/config"
 	"glance/internal/mail"
 	"glance/internal/store"
+	"glance/internal/ticker"
 	migrationsfs "glance/migrations"
 )
 
@@ -61,6 +62,16 @@ func main() {
 		}
 	}()
 
+	// Cycle rollover ticker: activates upcoming cycles whose start_date
+	// has arrived and completes ended cycles (freezing the progress
+	// snapshot, transferring/detaching incomplete issues per the
+	// project's close_in_days rule) on a 1-minute interval. In-process by
+	// design (spec §3): one instance only in v1. Start is explicit here —
+	// a ticker that is built but never started is the Task 10 dispatcher
+	// bug all over again.
+	cycleTicker := &ticker.Ticker{Pool: pool, Interval: time.Minute}
+	cycleTicker.Start(ctx)
+
 	e := echo.New()
 	e.GET("/health", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -81,6 +92,7 @@ func main() {
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
+	api.RegisterCycleRoutes(e, issueHandler)
 
 	if cfg.OTPPepper == "" {
 		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")

@@ -99,6 +99,11 @@ type updateProjectBody struct {
 	// stays distinct).
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	// CloseInDays is the cycle-rollover grace (Task 22): days after a
+	// cycle's end_date before incomplete issues detach to the backlog
+	// when no next cycle exists. Nil = untouched; 0 detaches at
+	// completion; negative is a 400.
+	CloseInDays *int `json:"close_in_days"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -109,13 +114,16 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
-		service.ProjectPatch{Name: body.Name, Description: body.Description})
+		service.ProjectPatch{Name: body.Name, Description: body.Description, CloseInDays: body.CloseInDays})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 		}
 		if errors.Is(err, service.ErrNothingToUpdate) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+		}
+		if errors.Is(err, service.ErrInvalidCloseInDays) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "close_in_days must be >= 0", nil)
 		}
 		return projectError(c, err)
 	}

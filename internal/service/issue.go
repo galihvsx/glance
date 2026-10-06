@@ -1269,11 +1269,10 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		conds = append(conds, "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = "+arg(in.Label)+"::uuid)")
 	}
 	if in.Cycle != "" {
-		// No cycle_issues table yet (Task 22) — no issue can carry the
-		// relation, so the filter matches nothing. The parameter is still
-		// accepted and UUID-validated above, so the API contract is stable
-		// when the table arrives.
-		conds = append(conds, "FALSE")
+		// Task 22: cycle_issues exists now — a real EXISTS filter on the
+		// junction table (spec §4 schema, not a cycle_id column on
+		// issues).
+		conds = append(conds, "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = "+arg(in.Cycle)+"::uuid)")
 	}
 	if in.Q != "" {
 		conds = append(conds, "i.search @@ plainto_tsquery('english', "+arg(in.Q)+")")

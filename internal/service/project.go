@@ -265,6 +265,11 @@ func GetProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 type ProjectPatch struct {
 	Name        *string
 	Description *string
+	// CloseInDays is the ticker's rollover rule (Task 22): days after a
+	// cycle's end_date before incomplete issues detach to the backlog
+	// when no next cycle exists. Nil = untouched; explicit 0 (or a NULL
+	// column) detaches at completion. Negative is rejected.
+	CloseInDays *int
 }
 
 // UpdateProject applies a partial project update. Member (15) or admin
@@ -296,6 +301,13 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if patch.Description != nil {
 		args = append(args, *patch.Description)
 		sets = append(sets, fmt.Sprintf("description = $%d", len(args)+2))
+	}
+	if patch.CloseInDays != nil {
+		if *patch.CloseInDays < 0 {
+			return nil, ErrInvalidCloseInDays
+		}
+		args = append(args, *patch.CloseInDays)
+		sets = append(sets, fmt.Sprintf("close_in_days = $%d", len(args)+2))
 	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
