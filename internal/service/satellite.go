@@ -373,10 +373,12 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 
 	patch := diffIssuePatch(cur, &snap)
 	var updated *Issue
+	var notified []*Notification
 	if patch.hasFields() {
 		// Reuses the PATCH machinery: per-field activity rows plus the
-		// new version snapshot, all inside this tx.
-		updated, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+		// new version snapshot, all inside this tx. State changes and
+		// webhook fan-out ride along; broadcast after commit.
+		updated, notified, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
 		if err != nil {
 			return nil, err
 		}
@@ -401,6 +403,7 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	announceNotifications(notified)
 	return updated, nil
 }
 
@@ -457,7 +460,13 @@ func getComment(ctx context.Context, q queryRower, issueID, commentID string) (*
 // CreateComment posts a comment; parentID nests it as a reply. The parent
 // must belong to the same issue and not be deleted. Member (15)+.
 func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string, content json.RawMessage, parentID *string) (*Comment, error) {
-	ident, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	ident, projectID, role, err := resolveSatelliteIssue(ctx, tx, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +484,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return nil, ErrInvalidComment
 		}
 		var ok bool
-		err := pool.QueryRow(ctx,
+		err := tx.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM comments
 			 WHERE id = $1::uuid AND issue_id = $2::uuid AND deleted_at IS NULL)`,
 			pid, issueID).Scan(&ok)
@@ -492,7 +501,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 
 	var id string
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO comments (issue_id, parent_id, actor_id, content)
 		 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb)
 		 RETURNING id::text`,
@@ -500,8 +509,51 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if err != nil {
 		return nil, err
 	}
-	c, err := getComment(ctx, pool, issueID, id)
+	c, err := getComment(ctx, tx, issueID, id)
 	if err != nil {
+		return nil, err
+	}
+
+	// Notify the issue's watchers (subscribers + assignees), minus the
+	// commenter; fan the comment.created domain event out to webhooks.
+	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+	if err != nil {
+		return nil, err
+	}
+	watchers, err := issueWatchersTx(ctx, tx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	actorName := actorDisplayName(ctx, tx, actorID)
+	notified, err := notifyTx(ctx, tx, NotifyCommentCreated,
+		fmt.Sprintf("%s commented on %s", actorName, displayID),
+		fmt.Sprintf("Issue: %s", name),
+		map[string]any{
+			"comment_id": c.ID,
+			"issue_id":   issueID,
+			"display_id": displayID,
+			"issue_name": name,
+			"actor_id":   actorID,
+			"project_id": projectID,
+		},
+		actorID, watchers)
+	if err != nil {
+		return nil, err
+	}
+	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventCommentCreated, map[string]any{
+		"id":         c.ID,
+		"issue_id":   issueID,
+		"display_id": displayID,
+		"actor_id":   actorID,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	announce(
@@ -509,6 +561,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		EventCommentCreated,
 		map[string]string{"id": c.ID, "issue_id": issueID},
 	)
+	announceNotifications(notified)
 	return c, nil
 }
 

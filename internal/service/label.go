@@ -480,16 +480,27 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 // The assignee must be a member of the workspace (any role — guests can
 // be assigned work). Member (15)+ to mutate.
 func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, userID, actorID string) error {
-	wsID, _, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
+	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
 	}
 	if role < RoleMember {
 		return ErrForbidden
 	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
 	uid := strings.ToLower(strings.TrimSpace(userID))
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	var one int
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
 		wsID, uid).Scan(&one)
 	if err != nil {
@@ -498,31 +509,106 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 		}
 		return err
 	}
-	_, err = pool.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1::uuid, $2::uuid)
 		 ON CONFLICT DO NOTHING`,
 		issueID, uid)
-	return err
+	if err != nil {
+		return err
+	}
+	var notified []*Notification
+	if tag.RowsAffected() > 0 {
+		// New assignment: notify the assignee (in-app row + optional
+		// email per prefs). Idempotent re-assign notifies nobody.
+		displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+		if err != nil {
+			return err
+		}
+		actorName := actorDisplayName(ctx, tx, actorID)
+		notified, err = notifyTx(ctx, tx, NotifyIssueAssigned,
+			fmt.Sprintf("%s assigned you to %s", actorName, displayID),
+			fmt.Sprintf("Issue: %s", name),
+			map[string]any{
+				"issue_id":     issueID,
+				"display_id":   displayID,
+				"issue_name":   name,
+				"actor_id":     actorID,
+				"workspace_id": wsID,
+				"project_id":   projectID,
+			},
+			actorID, []string{uid})
+		if err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceNotifications(notified)
+	return nil
 }
 
 // UnassignAssignee removes an assignee from an issue. Idempotent:
-// unassigning an absent assignee succeeds silently. Member (15)+.
+// unassigning an absent assignee succeeds silently (and notifies nobody).
+// Member (15)+.
 func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, userID, actorID string) error {
-	_, _, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
+	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
 	}
 	if role < RoleMember {
 		return ErrForbidden
 	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
 	if !isUUIDFormat(strings.TrimSpace(userID)) {
 		// Malformed ids match nothing — the idempotent no-op answer.
 		return nil
 	}
-	_, err = pool.Exec(ctx,
+	uid := strings.ToLower(strings.TrimSpace(userID))
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_assignees WHERE issue_id = $1::uuid AND user_id = $2::uuid`,
-		issueID, userID)
-	return err
+		issueID, uid)
+	if err != nil {
+		return err
+	}
+	var notified []*Notification
+	if tag.RowsAffected() > 0 {
+		displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+		if err != nil {
+			return err
+		}
+		actorName := actorDisplayName(ctx, tx, actorID)
+		notified, err = notifyTx(ctx, tx, NotifyIssueUnassigned,
+			fmt.Sprintf("%s unassigned you from %s", actorName, displayID),
+			fmt.Sprintf("Issue: %s", name),
+			map[string]any{
+				"issue_id":     issueID,
+				"display_id":   displayID,
+				"issue_name":   name,
+				"actor_id":     actorID,
+				"workspace_id": wsID,
+				"project_id":   projectID,
+			},
+			actorID, []string{uid})
+		if err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceNotifications(notified)
+	return nil
 }
 
 // ---------- Estimates ----------

@@ -397,7 +397,7 @@ func readIntakeIssueTx(ctx context.Context, tx pgx.Tx, id string) (*IntakeIssue,
 
 // triageTx opens the transaction shared by all four actions: resolve the
 // project + member+ role gate, then run fn inside the tx.
-func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, fn func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, error)) (*IntakeIssue, error) {
+func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, fn func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error)) (*IntakeIssue, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return nil, err
@@ -416,9 +416,43 @@ func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actor
 		return nil, ErrForbidden
 	}
 
-	ii, err := fn(tx, projectID, ident)
+	ii, fnNotified, err := fn(tx, projectID, ident)
 	if err != nil {
 		return nil, err
+	}
+	// Non-accept triage actions (reject / snooze / duplicate) notify the
+	// issue's watchers as intake.triaged. Accept is covered by the
+	// issue.state_changed notification updateIssueTx already wrote — the
+	// state visibly changed to backlog. (If the state didn't change, there
+	// is nothing new for watchers.)
+	var triageNotified []*Notification
+	if ii.Status != IntakeAccepted {
+		watchers, err := issueWatchersTx(ctx, tx, ii.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		displayID, name, err := issueNotifyContextTx(ctx, tx, ident, ii.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		actorName := actorDisplayName(ctx, tx, actorID)
+		triageNotified, err = notifyTx(ctx, tx, NotifyIntakeTriaged,
+			fmt.Sprintf("%s marked %s as %s in intake", actorName, displayID, ii.StatusName),
+			fmt.Sprintf("Issue: %s", name),
+			map[string]any{
+				"intake_issue_id": ii.ID,
+				"issue_id":        ii.IssueID,
+				"display_id":      displayID,
+				"issue_name":      name,
+				"status":          ii.Status,
+				"status_name":     ii.StatusName,
+				"actor_id":        actorID,
+				"project_id":      projectID,
+			},
+			actorID, watchers)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -435,6 +469,7 @@ func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actor
 			"status_name": ii.StatusName,
 		},
 	)
+	announceNotifications(append(fnNotified, triageNotified...))
 	return ii, nil
 }
 
@@ -443,40 +478,50 @@ func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actor
 // row is marked accepted. Re-accepting is a no-op success; a different
 // action on the terminal row is ErrIntakeAlreadyTriaged.
 func AcceptIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*IntakeIssue, error) {
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, error) {
+	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if r.status == IntakeAccepted {
-			return readIntakeIssueTx(ctx, tx, r.id)
+			ii, err := readIntakeIssueTx(ctx, tx, r.id)
+			if err != nil {
+				return nil, nil, err
+			}
+			return ii, nil, nil
 		}
 		if intakeStatusTerminal(r.status) {
-			return nil, ErrIntakeAlreadyTriaged
+			return nil, nil, ErrIntakeAlreadyTriaged
 		}
 		if r.issueDeleted {
-			return nil, ErrIntakeNotFound
+			return nil, nil, ErrIntakeNotFound
 		}
 
 		backlog, err := backlogState(ctx, tx, projectID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// updateIssueTx writes the state_id activity row only when the
 		// state actually changes, plus a version snapshot of the
-		// post-mutation row.
-		if _, err := updateIssueTx(ctx, tx, projectID, ident, r.issueID, actorID,
-			IssuePatch{StateID: &backlog}); err != nil {
-			return nil, err
+		// post-mutation row. Its state-change notifications ride along to
+		// triageTx, which broadcasts them after commit.
+		_, notified, err := updateIssueTx(ctx, tx, projectID, ident, r.issueID, actorID,
+			IssuePatch{StateID: &backlog})
+		if err != nil {
+			return nil, nil, err
 		}
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_accepted",
 			map[string]any{"status": "accepted"}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := markIntakeTx(ctx, tx, r.id, IntakeAccepted, nil, nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return readIntakeIssueTx(ctx, tx, r.id)
+		ii, err := readIntakeIssueTx(ctx, tx, r.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ii, notified, nil
 	})
 }
 
@@ -484,16 +529,20 @@ func AcceptIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 // marked rejected and the issue itself is soft-deleted (reads report
 // ErrIssueNotFound, including a second reject — which is a no-op).
 func RejectIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*IntakeIssue, error) {
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, error) {
+	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if r.status == IntakeRejected {
-			return readIntakeIssueTx(ctx, tx, r.id)
+			ii, err := readIntakeIssueTx(ctx, tx, r.id)
+			if err != nil {
+				return nil, nil, err
+			}
+			return ii, nil, nil
 		}
 		if intakeStatusTerminal(r.status) {
-			return nil, ErrIntakeAlreadyTriaged
+			return nil, nil, ErrIntakeAlreadyTriaged
 		}
 
 		// The issue may already be gone (deleted directly while pending):
@@ -501,16 +550,20 @@ func RejectIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		// ("out of the inbox") still holds, so tolerate it.
 		if err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID); err != nil &&
 			!errors.Is(err, ErrIssueNotFound) {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_rejected",
 			map[string]any{"status": "rejected"}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := markIntakeTx(ctx, tx, r.id, IntakeRejected, nil, nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return readIntakeIssueTx(ctx, tx, r.id)
+		ii, err := readIntakeIssueTx(ctx, tx, r.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ii, nil, nil
 	})
 }
 
@@ -521,31 +574,39 @@ func SnoozeIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 	if !till.After(time.Now()) {
 		return nil, ErrSnoozeDatePast
 	}
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, error) {
+	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if r.status == IntakeSnoozed && r.snoozedTill != nil &&
 			r.snoozedTill.Truncate(time.Second).Equal(till.Truncate(time.Second)) {
-			return readIntakeIssueTx(ctx, tx, r.id)
+			ii, err := readIntakeIssueTx(ctx, tx, r.id)
+			if err != nil {
+				return nil, nil, err
+			}
+			return ii, nil, nil
 		}
 		if intakeStatusTerminal(r.status) {
-			return nil, ErrIntakeAlreadyTriaged
+			return nil, nil, ErrIntakeAlreadyTriaged
 		}
 		if r.issueDeleted {
-			return nil, ErrIntakeNotFound
+			return nil, nil, ErrIntakeNotFound
 		}
 
 		tillUTC := till.UTC()
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_snoozed",
 			map[string]any{"status": "snoozed", "snoozed_till": tillUTC.Format(time.RFC3339)}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := markIntakeTx(ctx, tx, r.id, IntakeSnoozed, &tillUTC, nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return readIntakeIssueTx(ctx, tx, r.id)
+		ii, err := readIntakeIssueTx(ctx, tx, r.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ii, nil, nil
 	})
 }
 
@@ -556,25 +617,29 @@ func SnoozeIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 // ErrIntakeAlreadyTriaged.
 func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, targetID string) (*IntakeIssue, error) {
 	target := strings.ToLower(strings.TrimSpace(targetID))
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, error) {
+	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if r.status == IntakeDuplicate && r.duplicateToID != nil && *r.duplicateToID == target {
-			return readIntakeIssueTx(ctx, tx, r.id)
+			ii, err := readIntakeIssueTx(ctx, tx, r.id)
+			if err != nil {
+				return nil, nil, err
+			}
+			return ii, nil, nil
 		}
 		if intakeStatusTerminal(r.status) {
-			return nil, ErrIntakeAlreadyTriaged
+			return nil, nil, ErrIntakeAlreadyTriaged
 		}
 		if r.issueDeleted {
-			return nil, ErrIntakeNotFound
+			return nil, nil, ErrIntakeNotFound
 		}
 
 		// The target must be a live issue of this project and not the
 		// issue itself.
 		if target == "" || strings.EqualFold(target, r.issueID) {
-			return nil, ErrDuplicateTargetInvalid
+			return nil, nil, ErrDuplicateTargetInvalid
 		}
 		var one int
 		err = tx.QueryRow(ctx,
@@ -583,23 +648,27 @@ func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 			target, projectID).Scan(&one)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-				return nil, ErrDuplicateTargetInvalid
+				return nil, nil, ErrDuplicateTargetInvalid
 			}
-			return nil, err
+			return nil, nil, err
 		}
 
 		if err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID); err != nil &&
 			!errors.Is(err, ErrIssueNotFound) {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_duplicate",
 			map[string]any{"status": "duplicate", "duplicate_to_id": target}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := markIntakeTx(ctx, tx, r.id, IntakeDuplicate, nil, &target); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return readIntakeIssueTx(ctx, tx, r.id)
+		ii, err := readIntakeIssueTx(ctx, tx, r.id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ii, nil, nil
 	})
 }
 

@@ -64,6 +64,26 @@ func main() {
 		}
 	}()
 
+	// Webhook dispatcher (Task 26): drains the "webhook.%" outbox
+	// namespace with HMAC-signed POSTs and exponential-backoff retry. It
+	// runs on its OWN ticker goroutine — webhook endpoints can be slow or
+	// down, and that must never starve the mail pass above.
+	webhookDispatcher := service.NewWebhookDispatcher(pool)
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := webhookDispatcher.Run(ctx); err != nil {
+					log.Printf("glance: webhook dispatch: %v", err)
+				}
+			}
+		}
+	}()
+
 	// Cycle rollover ticker: activates upcoming cycles whose start_date
 	// has arrived and completes ended cycles (freezing the progress
 	// snapshot, transferring/detaching incomplete issues per the
@@ -100,6 +120,7 @@ func main() {
 
 	issueHandler := &api.IssueHandler{Pool: pool}
 	api.RegisterIssueRoutes(e, issueHandler)
+	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
