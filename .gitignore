@@ -11,3 +11,6 @@ web/node_modules/
 
 # local secrets (never commit) — see .env.example
 .env
+
+# local-only reference material (competitor screenshots etc.)
+docs/reference/
