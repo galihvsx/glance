@@ -9,7 +9,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -462,5 +464,164 @@ func TestConcurrentPatchVersionsSequential(t *testing.T) {
 		if v.VersionNo != i+1 {
 			t.Fatalf("versions[%d].VersionNo = %d, want %d (gap or duplicate)", i, v.VersionNo, i+1)
 		}
+	}
+}
+
+// TestRelationUUIDCaseNormalization pins the mixed-case UUID handling at
+// the relation boundary (Task 18 fix round 1): Postgres renders
+// uuid::text in lowercase, and an uppercase UUID from the URL must not
+// corrupt direction derivation, self-relation guards, symmetric
+// normalization, or delete resolution.
+func TestRelationUUIDCaseNormalization(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	wsSlug, ident, _, actor := testSatelliteFixture(t, pool, "case")
+	a := createTestIssue(t, pool, wsSlug, ident, actor, "A")
+	b := createTestIssue(t, pool, wsSlug, ident, actor, "B")
+	upperA, upperB := strings.ToUpper(a.ID), strings.ToUpper(b.ID)
+
+	pairRows := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM issue_relations
+			 WHERE (issue_id = $1::uuid AND related_issue_id = $2::uuid)
+			    OR (issue_id = $2::uuid AND related_issue_id = $1::uuid)`,
+			a.ID, b.ID).Scan(&n); err != nil {
+			t.Fatalf("count pair rows: %v", err)
+		}
+		return n
+	}
+
+	// Create with UPPERCASE UUIDs on both sides: exactly one canonical row.
+	if err := CreateRelation(ctx, pool, wsSlug, ident, upperA, actor, upperB, "blocked_by"); err != nil {
+		t.Fatalf("CreateRelation uppercase: %v", err)
+	}
+	// Mixed-case re-create is idempotent, not a second row (before the
+	// fix the mixed-case symmetric normalization stored a duplicate).
+	if err := CreateRelation(ctx, pool, wsSlug, ident, a.ID, actor, upperB, "blocked_by"); err != nil {
+		t.Fatalf("CreateRelation mixed-case duplicate: %v", err)
+	}
+	if n := pairRows(); n != 1 {
+		t.Fatalf("canonical rows for the pair = %d, want exactly 1", n)
+	}
+
+	// Direction derivation with an uppercase URL UUID: A's side must show
+	// the OUTGOING canonical type (before the fix it showed the reverse
+	// label "blocking"/"incoming" — the headline corruption).
+	relsA, err := ListRelations(ctx, pool, wsSlug, ident, upperA, actor)
+	if err != nil {
+		t.Fatalf("ListRelations uppercase A: %v", err)
+	}
+	if len(relsA) != 1 || relsA[0].Type != "blocked_by" || relsA[0].Direction != "outgoing" {
+		t.Fatalf("A relations = %+v, want one outgoing blocked_by", relsA)
+	}
+	relsB, err := ListRelations(ctx, pool, wsSlug, ident, upperB, actor)
+	if err != nil {
+		t.Fatalf("ListRelations uppercase B: %v", err)
+	}
+	if len(relsB) != 1 || relsB[0].Type != "blocking" || relsB[0].Direction != "incoming" {
+		t.Fatalf("B relations = %+v, want one incoming blocking", relsB)
+	}
+
+	// Self-relation with mixed case is a 400 (ErrInvalidRelation), not a
+	// 500 from the CHECK constraint (before the fix the guard compared a
+	// lowered relatedID against the raw uppercase issueID and missed).
+	if err := CreateRelation(ctx, pool, wsSlug, ident, upperA, actor, a.ID, "blocked_by"); !errors.Is(err, ErrInvalidRelation) {
+		t.Fatalf("self-relation mixed case: got %v, want ErrInvalidRelation", err)
+	}
+
+	// Symmetric type with mixed case collapses to one canonical row, and
+	// delete from the other side with an uppercase UUID resolves it
+	// (before the fix the delete's normalization compared mixed case and
+	// 404'd on a row that existed).
+	if err := CreateRelation(ctx, pool, wsSlug, ident, upperB, actor, a.ID, "relates_to"); err != nil {
+		t.Fatalf("CreateRelation symmetric uppercase: %v", err)
+	}
+	if err := CreateRelation(ctx, pool, wsSlug, ident, upperA, actor, upperB, "relates_to"); err != nil {
+		t.Fatalf("CreateRelation symmetric mixed-case duplicate: %v", err)
+	}
+	if n := pairRows(); n != 2 { // blocked_by + relates_to
+		t.Fatalf("pair rows = %d, want 2 (blocked_by + relates_to)", n)
+	}
+	if err := DeleteRelation(ctx, pool, wsSlug, ident, upperA, actor, upperB, "relates_to"); err != nil {
+		t.Fatalf("DeleteRelation uppercase symmetric: %v", err)
+	}
+	if n := pairRows(); n != 1 {
+		t.Fatalf("pair rows after symmetric delete = %d, want 1", n)
+	}
+
+	// Delete the blocked_by relation with uppercase UUIDs on both sides.
+	if err := DeleteRelation(ctx, pool, wsSlug, ident, upperA, actor, upperB, "blocked_by"); err != nil {
+		t.Fatalf("DeleteRelation uppercase: %v", err)
+	}
+	if n := pairRows(); n != 0 {
+		t.Fatalf("pair rows after delete = %d, want 0", n)
+	}
+}
+
+// TestRestoreVersionUUIDCaseCycleGuards pins the parent-cycle guards in
+// RestoreIssueVersion against uppercase URL UUIDs (Task 18 fix round 1):
+// the self-parent guard and isIssueDescendant both compare against
+// DB-rendered lowercase IDs, so an uppercase issueID must still reject
+// cyclic restores instead of weakening the guards.
+func TestRestoreVersionUUIDCaseCycleGuards(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	wsSlug, ident, _, actor := testSatelliteFixture(t, pool, "casever")
+	p := createTestIssue(t, pool, wsSlug, ident, actor, "Parent")
+	c := createTestIssue(t, pool, wsSlug, ident, actor, "Child")
+
+	// C becomes a child of P through the real PATCH path.
+	pid := p.ID
+	if _, err := UpdateIssue(ctx, pool, wsSlug, ident, c.ID, actor,
+		IssuePatch{ParentID: PatchField[string]{Set: true, Value: &pid}}); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+
+	// Grab a full Issue struct to seed hand-crafted snapshots.
+	renamed := "Parent renamed"
+	cur, err := UpdateIssue(ctx, pool, wsSlug, ident, p.ID, actor, IssuePatch{Name: &renamed})
+	if err != nil {
+		t.Fatalf("rename parent: %v", err)
+	}
+
+	seedSnapshot := func(t *testing.T, issueID, parentID string) int {
+		t.Helper()
+		snap := *cur
+		snap.ParentID = &parentID
+		raw, err := json.Marshal(&snap)
+		if err != nil {
+			t.Fatalf("marshal snapshot: %v", err)
+		}
+		var nextNo int
+		if err := pool.QueryRow(ctx,
+			`SELECT COALESCE(MAX(version_no), 0) + 1 FROM issue_versions WHERE issue_id = $1::uuid`,
+			issueID).Scan(&nextNo); err != nil {
+			t.Fatalf("next version_no: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO issue_versions (issue_id, version_no, snapshot, created_by)
+			 VALUES ($1::uuid, $2, $3::jsonb, $4::uuid)`,
+			issueID, nextNo, string(raw), actor); err != nil {
+			t.Fatalf("seed snapshot: %v", err)
+		}
+		return nextNo
+	}
+
+	// Snapshot making P a child of C would close the cycle P -> C -> P.
+	cycleNo := seedSnapshot(t, p.ID, c.ID)
+	if _, err := RestoreIssueVersion(ctx, pool, wsSlug, ident, strings.ToUpper(p.ID), actor, cycleNo); !errors.Is(err, ErrInvalidParent) {
+		t.Fatalf("cyclic restore with uppercase UUID: got %v, want ErrInvalidParent", err)
+	}
+
+	// Snapshot making P its own parent must be rejected too (before the
+	// fix the `pid == issueID` guard compared lowercase against the raw
+	// uppercase URL UUID and missed).
+	selfNo := seedSnapshot(t, p.ID, p.ID)
+	if _, err := RestoreIssueVersion(ctx, pool, wsSlug, ident, strings.ToUpper(p.ID), actor, selfNo); !errors.Is(err, ErrInvalidParent) {
+		t.Fatalf("self-parent restore with uppercase UUID: got %v, want ErrInvalidParent", err)
 	}
 }

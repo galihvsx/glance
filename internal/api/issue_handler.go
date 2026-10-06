@@ -644,7 +644,12 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 }
 
 func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string) {
-	return c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID
+	// The :uuid path param is lowercased once here: service code compares
+	// it as a string against Postgres-rendered (lowercase) UUID text in
+	// several places, and an uppercase URL UUID would corrupt those
+	// comparisons. SQL ::uuid casts are case-insensitive, so this is
+	// behavior-neutral for the query paths.
+	return c.Param("slug"), c.Param("identifier"), strings.ToLower(c.Param("uuid")), CurrentUser(c).ID
 }
 
 // listComments implements GET .../issues/{uuid}/comments: the threaded

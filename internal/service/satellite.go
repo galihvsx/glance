@@ -59,6 +59,18 @@ type ActorRef struct {
 // and asserts the issue is live: soft-deleted (or missing) issues surface
 // as ErrIssueNotFound, exactly like GetIssue. Every satellite op funnels
 // through here.
+//
+// normalizeIssueID lowercases a UUID path parameter once at the service
+// boundary. Postgres renders uuid::text in lowercase, so every string
+// comparison against a DB-rendered ID (relation direction derivation,
+// self-relation guards, symmetric normalization, parent-cycle guards)
+// must use the lowercase form. SQL $N::uuid casts are case-insensitive,
+// so normalizing first is behavior-neutral for the query paths and
+// closes the mixed-case hole for the compare paths. Non-HTTP callers get
+// the same canonical form.
+func normalizeIssueID(id string) string {
+	return strings.ToLower(strings.TrimSpace(id))
+}
 func resolveSatelliteIssue(ctx context.Context, q queryRower, wsSlug, identifier, issueID, actorID string) (ident, projectID string, role int, err error) {
 	ident, err = normalizeIdentifier(identifier)
 	if err != nil {
@@ -283,6 +295,11 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	if err != nil {
 		return nil, err
 	}
+	// Canonical lowercase BEFORE the self-parent (`pid == issueID`) and
+	// cycle (`isIssueDescendant`) guards: both compare against
+	// DB-rendered lowercase IDs, and an uppercase URL UUID would weaken
+	// them.
+	issueID = normalizeIssueID(issueID)
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -861,6 +878,7 @@ func isSymmetricRelationType(t string) bool {
 // no-ops. The related issue must be live and in the same project.
 // Member (15)+.
 func CreateRelation(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, relatedID, relType string) error {
+	issueID = normalizeIssueID(issueID)
 	_, projectID, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
@@ -905,6 +923,7 @@ func CreateRelation(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 // the outgoing row, a reverse label (e.g. "blocking") resolves to the
 // canonical row stored from the other side. Member (15)+.
 func DeleteRelation(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, otherID, typeAsSeen string) error {
+	issueID = normalizeIssueID(issueID)
 	if _, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID); err != nil {
 		return err
 	} else if err := requireSatelliteWriter(role); err != nil {
@@ -952,6 +971,7 @@ func DeleteRelation(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 // stored from this issue (outgoing) plus rows stored from the other side
 // with the reverse label derived (incoming). Any member may read.
 func ListRelations(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) ([]*Relation, error) {
+	issueID = normalizeIssueID(issueID)
 	ident, projectID, _, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return nil, err
