@@ -33,6 +33,15 @@ var (
 	// neither be removed nor demoted. Without it an admin could orphan a
 	// workspace with no one able to manage it.
 	ErrLastAdmin = errors.New("service: cannot remove or demote the last admin")
+	// ErrUserNotFound is returned by member-management calls whose target
+	// user_id matches no user. It is deliberately distinct from ErrNotFound
+	// (missing workspace / non-member caller): only confirmed admins of a
+	// confirmed-existing workspace reach these branches, so "workspace not
+	// found" would be actively misleading when they typo a user_id.
+	ErrUserNotFound = errors.New("service: user not found")
+	// ErrMemberNotFound is returned by RemoveMember when the target is not
+	// a member of the workspace (whether or not the user exists at all).
+	ErrMemberNotFound = errors.New("service: member not found")
 	// ErrNameRequired is returned when a workspace name is empty.
 	ErrNameRequired = errors.New("service: name is required")
 )
@@ -277,14 +286,15 @@ func UpsertMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	}
 
 	// The target must be a real user — otherwise the FK would 500. Map it
-	// to ErrNotFound instead.
+	// to ErrUserNotFound (not ErrNotFound: the workspace is confirmed to
+	// exist here, so "workspace not found" would mislead).
 	var exists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1::uuid)`,
 		targetUserID).Scan(&exists); err != nil {
 		return err
 	}
 	if !exists {
-		return ErrNotFound
+		return ErrUserNotFound
 	}
 
 	_, err = tx.Exec(ctx,
@@ -299,7 +309,8 @@ func UpsertMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 }
 
 // RemoveMember drops a membership. Only an admin may call it; removing the
-// last admin is refused (ErrLastAdmin). Removing a non-member is ErrNotFound.
+// last admin is refused (ErrLastAdmin). Removing a non-member is
+// ErrMemberNotFound (not ErrNotFound — see ErrUserNotFound's rationale).
 func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, targetUserID string) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -327,7 +338,7 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 		wsID, targetUserID).Scan(&targetRole)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
+			return ErrMemberNotFound
 		}
 		return err
 	}

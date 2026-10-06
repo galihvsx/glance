@@ -33,6 +33,14 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 // errors are 500 with no detail leaked.
 func workspaceError(c *echo.Context, err error) error {
 	switch {
+	// Admin-only failure modes: the workspace is confirmed to exist and
+	// the caller is a confirmed admin here, so these must not surface as
+	// "workspace not found" (that message is reserved for the
+	// actor-resolution path: bad slug or non-member caller).
+	case errors.Is(err, service.ErrUserNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "user not found"})
+	case errors.Is(err, service.ErrMemberNotFound):
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "member not found"})
 	case errors.Is(err, service.ErrNotFound):
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "workspace not found"})
 	case errors.Is(err, service.ErrForbidden):

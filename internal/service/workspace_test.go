@@ -302,3 +302,63 @@ func TestUpsertMemberInvalidRole(t *testing.T) {
 		}
 	}
 }
+
+// randomAbsentUserID returns a UUID guaranteed to match no user row —
+// gen_random_uuid never collides with an inserted id in practice.
+func randomAbsentUserID(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(), `SELECT gen_random_uuid()::text`).Scan(&id); err != nil {
+		t.Fatalf("gen_random_uuid: %v", err)
+	}
+	return id
+}
+
+func TestUpsertMemberUnknownUser(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-nouser-admin"))
+	nfSlug := uniqueTestSlug("ws-nouser")
+	createTestWorkspace(t, pool, "NoUser", nfSlug, admin)
+
+	// A confirmed admin of a confirmed-existing workspace typoing a
+	// user_id must get ErrUserNotFound — never the workspace-shaped
+	// ErrNotFound.
+	unknown := randomAbsentUserID(t, pool)
+	err := UpsertMember(ctx, pool, nfSlug, admin, unknown, RoleMember)
+	if !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("unknown user upsert: err = %v, want ErrUserNotFound", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown user upsert: err = %v, must not be ErrNotFound", err)
+	}
+}
+
+func TestRemoveMemberNonMember(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-nomem-admin"))
+	outsider := createTestUser(t, pool, uniqueTestEmail("ws-nomem-outsider"))
+	nmSlug := uniqueTestSlug("ws-nomember")
+	createTestWorkspace(t, pool, "NoMember", nmSlug, admin)
+
+	// Existing user, not a member → ErrMemberNotFound.
+	err := RemoveMember(ctx, pool, nmSlug, admin, outsider)
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("remove non-member: err = %v, want ErrMemberNotFound", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("remove non-member: err = %v, must not be ErrNotFound", err)
+	}
+
+	// Nonexistent user entirely → also ErrMemberNotFound (from the admin's
+	// view they tried to remove a member that isn't there).
+	err = RemoveMember(ctx, pool, nmSlug, admin, randomAbsentUserID(t, pool))
+	if !errors.Is(err, ErrMemberNotFound) {
+		t.Fatalf("remove unknown user: err = %v, want ErrMemberNotFound", err)
+	}
+}

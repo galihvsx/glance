@@ -8,6 +8,7 @@ package api
 // is run-unique (uniqueSlug); fixed slugs would collide across runs.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -237,4 +238,91 @@ func TestAdminCannotRemoveLastAdminHTTP(t *testing.T) {
 	if len(list.Workspaces) != 1 {
 		t.Fatalf("workspaces after blocked removal = %d, want 1", len(list.Workspaces))
 	}
+}
+
+// randomAbsentUUID returns a UUID guaranteed to match no user row.
+func randomAbsentUUID(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(), `SELECT gen_random_uuid()::text`).Scan(&id); err != nil {
+		t.Fatalf("gen_random_uuid: %v", err)
+	}
+	return id
+}
+
+// assertErrorMessage pins the flat {"error": "..."} message of an error
+// response (R10: the spec §5 envelope retrofit happens later; until then
+// messages stay flat and must stay accurate).
+func assertErrorMessage(t *testing.T, body []byte, want string) {
+	t.Helper()
+	var decoded struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode error body %q: %v", body, err)
+	}
+	if decoded.Error != want {
+		t.Fatalf("error message = %q, want %q", decoded.Error, want)
+	}
+}
+
+func TestUpsertMemberUnknownUser404(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nouser"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("nouser-http")
+	createWorkspaceHTTP(t, e, cookie, "NoUser", slug)
+
+	// Admin typoing a user_id: 404 "user not found" — NOT "workspace not
+	// found" (the workspace exists and the caller is a confirmed admin).
+	unknown := randomAbsentUUID(t, pool)
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", cookie,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, unknown))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("upsert unknown user: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorMessage(t, rec.Body.Bytes(), "user not found")
+}
+
+func TestRemoveNonMember404(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nomem"), "test-agent/1.0", uniqueIP())
+	outsiderCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nomem-out"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("nomem-http")
+	createWorkspaceHTTP(t, e, adminCookie, "NoMember", slug)
+
+	// Existing user who is not a member → 404 "member not found".
+	outsiderID := authedUserID(t, e, outsiderCookie)
+	rec := postAuthedJSON(t, e, http.MethodDelete,
+		"/api/v1/workspaces/"+slug+"/members/"+outsiderID, adminCookie, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("remove non-member: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorMessage(t, rec.Body.Bytes(), "member not found")
+
+	// Nonexistent user entirely → same "member not found".
+	rec = postAuthedJSON(t, e, http.MethodDelete,
+		"/api/v1/workspaces/"+slug+"/members/"+randomAbsentUUID(t, pool), adminCookie, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("remove unknown user: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorMessage(t, rec.Body.Bytes(), "member not found")
+}
+
+func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nfmsg"), "test-agent/1.0", uniqueIP())
+
+	// The actor-resolution path (bad slug) still reports "workspace not
+	// found" — the new sentinels must not have disturbed it.
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/workspaces/no-such-workspace-xyz", cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing workspace: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorMessage(t, rec.Body.Bytes(), "workspace not found")
 }
