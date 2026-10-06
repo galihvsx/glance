@@ -332,3 +332,64 @@ func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
 	}
 	assertErrorMessage(t, rec.Body.Bytes(), "not_found", "workspace not found")
 }
+
+func TestListMembersHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+
+	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lm-admin"), "test-agent/1.0", uniqueIP())
+	guestCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lm-guest"), "test-agent/1.0", uniqueIP())
+	outsiderCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lm-out"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("corp-members")
+	membersPath := "/api/v1/workspaces/" + slug + "/members"
+
+	createWorkspaceHTTP(t, e, adminCookie, "Corp", slug)
+	guestID := authedUserID(t, e, guestCookie)
+	rec := postAuthedJSON(t, e, http.MethodPost, membersPath, adminCookie,
+		fmt.Sprintf(`{"user_id":%q,"role":5}`, guestID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin add guest: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin sees both members, wrapped shape {"members": [...]}.
+	grec := getAuthed(t, e, http.MethodGet, membersPath, adminCookie)
+	if grec.Code != http.StatusOK {
+		t.Fatalf("list members: status = %d, want 200 (body: %s)", grec.Code, grec.Body.String())
+	}
+	var body struct {
+		Members []struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+			Role  int    `json:"role"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(grec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode members: %v", err)
+	}
+	if len(body.Members) != 2 {
+		t.Fatalf("members = %d, want 2", len(body.Members))
+	}
+	roles := map[string]int{}
+	for _, m := range body.Members {
+		roles[m.ID] = m.Role
+		if m.Email == "" {
+			t.Fatalf("member %s has empty email", m.ID)
+		}
+	}
+	if roles[guestID] != 5 {
+		t.Fatalf("guest role = %d, want 5", roles[guestID])
+	}
+
+	// Guest (member of workspace) may read too.
+	grec = getAuthed(t, e, http.MethodGet, membersPath, guestCookie)
+	if grec.Code != http.StatusOK {
+		t.Fatalf("guest list members: status = %d, want 200", grec.Code)
+	}
+
+	// Outsider gets 404 (tenancy: never reveal the workspace exists).
+	orec := getAuthed(t, e, http.MethodGet, membersPath, outsiderCookie)
+	if orec.Code != http.StatusNotFound {
+		t.Fatalf("outsider list members: status = %d, want 404", orec.Code)
+	}
+}

@@ -59,4 +59,11 @@ export const api = {
       method: "POST",
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
+  patch: <T>(path: string, body?: unknown): Promise<T> =>
+    request<T>(path, {
+      method: "PATCH",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
+  del: <T = void>(path: string): Promise<T> =>
+    request<T>(path, { method: "DELETE" }),
 };

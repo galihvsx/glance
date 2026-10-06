@@ -359,3 +359,48 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	}
 	return tx.Commit(ctx)
 }
+
+// Member is one workspace member with their user identity, for the
+// assignee picker (Task 19).
+type Member struct {
+	ID    string  `json:"id"`
+	Name  *string `json:"name,omitempty"`
+	Email string  `json:"email"`
+	Role  int     `json:"role"`
+}
+
+// ListMembers returns every member of the workspace with their user
+// identity, ordered by name/email. Any member (guest 5+) may read;
+// non-members get ErrNotFound (same tenancy rule as GetWorkspace).
+func ListMembers(ctx context.Context, pool *pgxpool.Pool, slug, actorID string) ([]Member, error) {
+	wsID, _, err := workspaceIDForActor(
+		pool.QueryRow(ctx,
+			`SELECT w.id::text, m.role
+			 FROM workspaces w
+			 JOIN workspace_members m ON m.workspace_id = w.id
+			 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+			slug, actorID))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT u.id::text, u.name, u.email, m.role
+		 FROM workspace_members m
+		 JOIN users u ON u.id = m.user_id
+		 WHERE m.workspace_id = $1::uuid
+		 ORDER BY COALESCE(u.name, u.email)`,
+		wsID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Member{}
+	for rows.Next() {
+		var mb Member
+		if err := rows.Scan(&mb.ID, &mb.Name, &mb.Email, &mb.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, mb)
+	}
+	return out, rows.Err()
+}

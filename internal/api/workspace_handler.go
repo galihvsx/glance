@@ -26,6 +26,7 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.GET("/:slug", h.getWorkspace)
 	g.PATCH("/:slug", h.updateWorkspace)
 	g.POST("/:slug/members", h.upsertMember)
+	g.GET("/:slug/members", h.listMembers)
 	g.DELETE("/:slug/members/:user_id", h.removeMember)
 }
 
@@ -153,4 +154,15 @@ func (h *WorkspaceHandler) removeMember(c *echo.Context) error {
 		return workspaceError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
+}
+
+// listMembers implements GET /api/v1/workspaces/{slug}/members: the
+// workspace's members with their user identity. Any member may read — the
+// issue page's assignee picker needs it. Wrapped shape: {"members": [...]}.
+func (h *WorkspaceHandler) listMembers(c *echo.Context) error {
+	members, err := service.ListMembers(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID)
+	if err != nil {
+		return workspaceError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"members": members})
 }
