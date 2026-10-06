@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,48 @@ func TestTokenPlaintextNeverStored(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatal("plaintext token found in api_tokens.token_hash — must store only the hash")
+	}
+}
+
+func TestCreateTokenRejectsPastExpiry(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	userID := createUserRow(t, pool)
+	past := time.Now().Add(-time.Hour)
+	if _, err := CreateToken(ctx, pool, userID, "ci", []string{ScopeRead}, &past); !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("CreateToken with past expires_at: err = %v, want ErrInvalidScope", err)
+	}
+	// Exactly-now is not "in the future" either.
+	now := time.Now()
+	if _, err := CreateToken(ctx, pool, userID, "ci", []string{ScopeRead}, &now); !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("CreateToken with now expires_at: err = %v, want ErrInvalidScope", err)
+	}
+}
+
+func TestExpiredTokenRejected(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	userID := createUserRow(t, pool)
+	created, err := CreateToken(ctx, pool, userID, "ci", []string{ScopeRead}, nil)
+	if err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	// Sanity: live token authenticates.
+	if _, err := AuthenticateToken(ctx, pool, created.Plaintext); err != nil {
+		t.Fatalf("AuthenticateToken before expiry: %v", err)
+	}
+	// Expire it directly — deterministic, no clock games.
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_tokens SET expires_at = now() - interval '1 second' WHERE id = $1::uuid`, created.ID); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+	// Expired token → ErrTokenInvalid, indistinguishable from unknown.
+	if _, err := AuthenticateToken(ctx, pool, created.Plaintext); err != ErrTokenInvalid {
+		t.Fatalf("expired token: err = %v, want ErrTokenInvalid", err)
 	}
 }
 

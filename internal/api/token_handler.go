@@ -74,15 +74,21 @@ func (h *TokenHandler) listTokens(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"tokens": tokens})
 }
 
-// revokeToken revokes one of the user's tokens. Idempotent within
-// ownership: revoking an unknown, already-revoked, or foreign token is
-// 404, never distinguishing the cases.
+// revokeToken revokes one of the user's tokens. A malformed id is a
+// 400 — client-controlled input must never reach the database cast (a
+// uuid parse error would surface as a 500). Idempotent within ownership:
+// revoking an unknown, already-revoked, or foreign token is 404, never
+// distinguishing the cases.
 func (h *TokenHandler) revokeToken(c *echo.Context) error {
 	user := CurrentUser(c)
 	if user == nil {
 		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
 	}
-	ok, err := auth.RevokeToken(c.Request().Context(), h.Pool, user.ID, c.Param("id"))
+	id := c.Param("id")
+	if !validUUID(id) {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid token id", nil)
+	}
+	ok, err := auth.RevokeToken(c.Request().Context(), h.Pool, user.ID, id)
 	if err != nil {
 		return WriteInternalError(c)
 	}

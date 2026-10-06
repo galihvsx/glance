@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -204,6 +205,7 @@ func TestCreateTokenValidation(t *testing.T) {
 		{"empty scopes", `{"name":"x","scopes":[]}`},
 		{"empty name", `{"name":"","scopes":["read"]}`},
 		{"bad json", `{"name":`},
+		{"past expires_at", `{"name":"x","scopes":["read"],"expires_at":"2000-01-01T00:00:00Z"}`},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tokens", strings.NewReader(tc.body))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
@@ -212,6 +214,60 @@ func TestCreateTokenValidation(t *testing.T) {
 		e.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d, want 400 (body: %s)", tc.name, rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec, "bad_request")
+	}
+}
+
+func TestExpiredBearerTokenGives401(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := tokenTestServerFull(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-exp"), "test-agent/1.0", uniqueIP())
+	id, plaintext := createTokenViaAPIWithID(t, e, cookie, "ci", []string{"read", "write"})
+
+	// Expire the token out from under it — deterministic, no clock games.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE api_tokens SET expires_at = now() - interval '1 second' WHERE id = $1::uuid`, id); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil)
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expired bearer: status = %d, want 401 (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "unauthorized")
+}
+
+func TestRevokeTokenMalformedIDGives400(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := tokenTestServerFull(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-badid"), "test-agent/1.0", uniqueIP())
+
+	// Garbage in the :id slot must never reach the database's uuid cast —
+	// a client-controlled 500 is not acceptable.
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{"plain garbage", "not-a-uuid"},
+		// URL-encoded injection probe — Echo decodes the param to
+		// "'; DROP TABLE api_tokens; --" before the handler sees it.
+		{"injection probe", "%27%3B%20DROP%20TABLE%20api_tokens%3B%20--"},
+		{"too short", "12345"},
+	} {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/tokens/"+tc.id, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("revoke %s %q: status = %d, want 400 (body: %s)", tc.name, tc.id, rec.Code, rec.Body.String())
 		}
 		assertErrorCode(t, rec, "bad_request")
 	}
