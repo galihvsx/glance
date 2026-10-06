@@ -189,7 +189,7 @@ GET       /api/v1/search?q=                                            # tsvecto
 ## 6. Realtime
 
 - **Endpoint `/ws`**, in-process hub. Web clients auth via session cookie; token clients fetch a single-use ticket (`POST /api/v1/ws/ticket`) and connect with `?ticket=`.
-- **Channels:** `workspace:{slug}`, `project:ENG`, `issue:{uuid}`, `user:{id}` (personal notifications). Client sends `{action:"subscribe", channel}`.
+- **Channels:** `workspace:{slug}`, `project:{slug}:{identifier}` (workspace-qualified — project identifiers are unique per workspace, so the bare `project:ENG` scheme would leak events across workspaces sharing an identifier), `issue:{uuid}`, `user:{id}` (personal notifications). Client sends `{action:"subscribe", channel}`.
 - **Events:** `issue.created/updated/deleted`, `comment.created`, `cycle.updated`, `intake.updated`, `notification.created`. Payload `{event, channel, data, at}`; `data` carries the changed entity or changed fields for optimistic reconciliation.
 - **No replay buffer.** Reconnect → resync via `?updated_after=` delta endpoint (see §5).
 - Last-writer-wins for concurrent edits in v1; CRDT collaborative editing deferred (version snapshots already cover history).
