@@ -19,23 +19,22 @@ type AuthHandler struct {
 	Config *config.Config
 }
 
-// RegisterAuthRoutes mounts the auth endpoints under /api/v1/auth. Call this
-// before the SPA catch-all so API routes are never shadowed.
+// RegisterAuthRoutes mounts the auth endpoints under /api/v1/auth, plus
+// GET /api/v1/me. Call this before the SPA catch-all so API routes are
+// never shadowed. Session endpoints (/me, /logout, /sessions*) sit behind
+// RequireAuth; the login endpoints must stay public.
 func RegisterAuthRoutes(e *echo.Echo, h *AuthHandler) {
 	g := e.Group("/api/v1/auth")
 	g.POST("/otp/request", h.requestOTP)
 	g.POST("/otp/verify", h.verifyOTP)
 	g.GET("/oauth/:provider/login", h.oauthLogin)
 	g.GET("/oauth/:provider/callback", h.oauthCallback)
-}
+	g.POST("/logout", h.logout, RequireAuth(h.Pool))
+	g.GET("/sessions", h.listSessions, RequireAuth(h.Pool))
+	g.DELETE("/sessions/:id", h.deleteSession, RequireAuth(h.Pool))
 
-// Session cookie attributes for the token returned by every login path
-// (OTP verify, OAuth callback). Spec §7: HttpOnly, Secure, SameSite=Lax;
-// 30-day expiry.
-const (
-	sessionCookieName   = "glance_session"
-	sessionCookieMaxAge = 30 * 24 * 3600 // 2592000
-)
+	e.Group("/api/v1").GET("/me", h.me, RequireAuth(h.Pool))
+}
 
 // oauthStateCookieName holds the HMAC-signed OAuth state between the login
 // redirect and the callback. Scoped to the OAuth endpoints, single-use
@@ -44,12 +43,29 @@ const oauthStateCookieName = "glance_oauth_state"
 
 // SetSessionCookie sets the glance_session cookie. Shared by every login
 // path so OTP and OAuth can never drift apart on cookie attributes.
+// Attributes live in the auth package (auth.SessionCookieName/MaxAge) —
+// this resolves the Task 7/8 deferred note by keeping them in one place.
 func SetSessionCookie(c *echo.Context, token string) {
 	c.SetCookie(&http.Cookie{
-		Name:     sessionCookieName,
+		Name:     auth.SessionCookieName,
 		Value:    token,
 		Path:     "/",
-		MaxAge:   sessionCookieMaxAge,
+		MaxAge:   auth.SessionCookieMaxAge,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// ClearSessionCookie expires the session cookie with the same attributes
+// it was set with, so the browser reliably drops it on logout and on
+// self-revocation of the current session.
+func ClearSessionCookie(c *echo.Context) {
+	c.SetCookie(&http.Cookie{
+		Name:     auth.SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
@@ -214,4 +230,79 @@ func (h *AuthHandler) oauthCallback(c *echo.Context) error {
 	}
 	SetSessionCookie(c, token)
 	return c.Redirect(http.StatusFound, "/")
+}
+
+// me implements GET /api/v1/me: the current user as JSON, straight from
+// the *auth.User the RequireAuth middleware injected. Cookie auth only.
+func (h *AuthHandler) me(c *echo.Context) error {
+	return c.JSON(http.StatusOK, CurrentUser(c))
+}
+
+// logout implements POST /api/v1/auth/logout: revokes the current session
+// row and clears the cookie. It requires auth — there is no session to
+// log out without one.
+func (h *AuthHandler) logout(c *echo.Context) error {
+	if err := auth.RevokeSession(c.Request().Context(), h.Pool, CurrentSessionID(c)); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	ClearSessionCookie(c)
+	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
+}
+
+// listSessions implements GET /api/v1/auth/sessions: the user's active
+// sessions for the settings page. Never includes token hashes.
+func (h *AuthHandler) listSessions(c *echo.Context) error {
+	sessions, err := auth.ListSessions(c.Request().Context(), h.Pool, CurrentUser(c).ID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+// validUUID reports whether s is a canonical 8-4-4-4-12 hex UUID. The
+// delete-session endpoint 404s on malformed ids instead of letting the
+// database choke on a uuid parse error (which would surface as a 500).
+func validUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		ch := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		default:
+			if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// deleteSession implements DELETE /api/v1/auth/sessions/{id}: revokes one
+// of the user's sessions. A session that does not exist, is already
+// revoked, belongs to another user, or is malformed all answer 404 — the
+// endpoint never reveals which case hit. Revoking the current session also
+// clears its cookie (it is a logout by another name).
+func (h *AuthHandler) deleteSession(c *echo.Context) error {
+	id := c.Param("id")
+	if !validUUID(id) {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+	}
+	revoked, err := auth.RevokeSessionForUser(c.Request().Context(), h.Pool, CurrentUser(c).ID, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	if !revoked {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+	}
+	// EqualFold, not ==: UUIDs are case-insensitive, and the client may echo
+	// the id back in a different case than Postgres stored.
+	if strings.EqualFold(id, CurrentSessionID(c)) {
+		ClearSessionCookie(c)
+	}
+	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
 }
