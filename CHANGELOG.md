@@ -22,13 +22,14 @@ Postgres-only, passwordless auth, Apache-2.0.
   code, per-email/per-IP rate limits. `OTP_PEPPER` is required at boot —
   the server refuses to start without it (fail closed).
 - Google and GitHub OAuth login (PKCE/state, account linking).
-- Cookie sessions with rotation, idle-timeout refresh, and
-  `GET /workspaces/{slug}/members` for member management.
+- Cookie sessions with rotation and idle-timeout refresh.
 
 **Workspaces & projects**
 - Workspaces with slugs as immutable addressing keys; projects with
   identifiers unique per workspace; role-based membership
   (owner/admin/member/guest).
+- `GET /workspaces/{slug}/members` for member management (assignee
+  picker).
 
 **Issues**
 - Issue CRUD with atomic per-project sequences, sub-issues, priorities,
