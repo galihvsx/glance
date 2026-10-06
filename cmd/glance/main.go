@@ -80,6 +80,7 @@ func main() {
 	api.RegisterIssueRoutes(e, issueHandler)
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterSatelliteRoutes(e, issueHandler)
+	api.RegisterIntakeRoutes(e, issueHandler)
 
 	if cfg.OTPPepper == "" {
 		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")

@@ -139,6 +139,9 @@ type createIssueBody struct {
 	TargetDate      *string         `json:"target_date"`
 	EstimatePointID *string         `json:"estimate_point_id"`
 	IsDraft         bool            `json:"is_draft"`
+	// Intake opts the new issue into the project's intake inbox as
+	// pending (Task 20). Default false: direct-to-backlog.
+	Intake bool `json:"intake"`
 }
 
 // parseDateBody parses an optional YYYY-MM-DD body field into a *time.Time.
@@ -186,6 +189,7 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 				TargetDate:      target,
 				EstimatePointID: body.EstimatePointID,
 				IsDraft:         body.IsDraft,
+				Intake:          body.Intake,
 			})
 		if err != nil {
 			return 0, nil, err

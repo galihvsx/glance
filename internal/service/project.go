@@ -180,6 +180,12 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, nam
 		return nil, err
 	}
 
+	// The default intake inbox (Task 20) is born with the project in the
+	// same tx — every project is triage-ready from creation.
+	if err := seedIntakeTx(ctx, tx, p.ID); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

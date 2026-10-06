@@ -104,6 +104,10 @@ type CreateIssueInput struct {
 	TargetDate      *time.Time
 	EstimatePointID *string
 	IsDraft         bool
+	// Intake opts the new issue into the project's intake inbox (Task 20):
+	// a pending intake_issues row is written in the same tx. Default false
+	// preserves the direct-to-backlog behavior.
+	Intake bool
 }
 
 // IssuePatch is a partial issue update: nil / Set=false fields are left
@@ -383,6 +387,14 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
 	if err := snapshotVersionTx(ctx, tx, iss.ID, actorID, iss); err != nil {
 		return nil, err
+	}
+
+	// Intake opt-in (Task 20): land the new issue in the inbox as pending,
+	// atomically with the issue itself.
+	if in.Intake {
+		if err := addIntakeIssueTx(ctx, tx, projectID, iss.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
