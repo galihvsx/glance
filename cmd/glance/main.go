@@ -76,6 +76,9 @@ func main() {
 	projectHandler := &api.ProjectHandler{Pool: pool}
 	api.RegisterProjectRoutes(e, projectHandler)
 
+	issueHandler := &api.IssueHandler{Pool: pool}
+	api.RegisterIssueRoutes(e, issueHandler)
+
 	if cfg.OTPPepper == "" {
 		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")
 	}

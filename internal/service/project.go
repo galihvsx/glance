@@ -171,6 +171,15 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, nam
 		seq += 10000
 	}
 
+	// The per-project issue sequence counter (Task 14) is born with the
+	// project, so the atomic UPDATE..RETURNING in CreateIssue is
+	// unconditional — no "row missing" branch in the hot path.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_sequences (project_id) VALUES ($1::uuid)`,
+		p.ID); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
