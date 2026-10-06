@@ -163,18 +163,29 @@ func TestCycleProgressSnapshot(t *testing.T) {
 		t.Fatalf("CreateCycle: %v", err)
 	}
 
-	// One issue per group: backlog, unstarted, started, completed, cancelled.
-	groups := []string{"backlog", "unstarted", "started", "completed", "cancelled"}
+	// One issue per group: triage, backlog, unstarted, started, completed,
+	// cancelled. The triage state is seeded by hand — the project defaults
+	// only cover the other five groups.
+	var triageStateID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO states (project_id, name, "group", color, sequence)
+		 VALUES ($1::uuid, 'Triage', 'triage', '#8b5cf6', 0)
+		 RETURNING id::text`, proj.ID).Scan(&triageStateID); err != nil {
+		t.Fatalf("create triage state: %v", err)
+	}
+	groups := []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"}
 	var ids []string
-	for i, g := range groups {
+	for _, g := range groups {
 		iss := createTestIssue(t, pool, slug, ident, actor, "issue-"+g)
-		sid := stateIDByGroup(t, pool, proj.ID, g)
+		sid := triageStateID
+		if g != "triage" {
+			sid = stateIDByGroup(t, pool, proj.ID, g)
+		}
 		if _, err := UpdateIssue(ctx, pool, slug, ident, iss.ID, actor,
 			IssuePatch{StateID: &sid}); err != nil {
 			t.Fatalf("set state %s: %v", g, err)
 		}
 		ids = append(ids, iss.ID)
-		_ = i
 	}
 	if err := AddCycleIssues(ctx, pool, slug, ident, actor, c.ID, ids); err != nil {
 		t.Fatalf("AddCycleIssues: %v", err)
@@ -184,7 +195,7 @@ func TestCycleProgressSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCycle: %v", err)
 	}
-	want := map[string]int64{"backlog": 1, "unstarted": 1, "started": 1, "completed": 1, "cancelled": 1}
+	want := map[string]int64{"triage": 1, "backlog": 1, "unstarted": 1, "started": 1, "completed": 1, "cancelled": 1}
 	for g, w := range want {
 		if got.ProgressSnapshot[g] != w {
 			t.Fatalf("snapshot[%s] = %d, want %d (full: %+v)", g, got.ProgressSnapshot[g], w, got.ProgressSnapshot)
@@ -206,6 +217,119 @@ func TestCycleProgressSnapshot(t *testing.T) {
 		v, ok := empty.ProgressSnapshot[g]
 		if !ok || v != 0 {
 			t.Fatalf("empty snapshot[%s] = %d, present=%v; want 0 present", g, v, ok)
+		}
+	}
+}
+
+// TestCycleFrozenSnapshotKeepsTriage: completing a cycle with a
+// triage-grouped issue must freeze triage into progress_snapshot — the
+// completed cycle's final report card must not silently drop it.
+func TestCycleFrozenSnapshotKeepsTriage(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	actor := createTestUser(t, pool, uniqueTestEmail("cycle-frozen"))
+	slug := uniqueTestSlug("cycle-frozen-ws")
+	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
+	ident := uniqueTestIdentifier()
+	proj := createTestProject(t, pool, slug, actor, "Eng", ident)
+
+	var triageStateID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO states (project_id, name, "group", color, sequence)
+		 VALUES ($1::uuid, 'Triage', 'triage', '#8b5cf6', 0)
+		 RETURNING id::text`, proj.ID).Scan(&triageStateID); err != nil {
+		t.Fatalf("create triage state: %v", err)
+	}
+
+	now := time.Now()
+	c, err := CreateCycle(ctx, pool, slug, ident, actor, CycleInput{
+		Name: "S1", StartDate: now.AddDate(0, 0, -14), EndDate: now.AddDate(0, 0, -1),
+	})
+	if err != nil {
+		t.Fatalf("CreateCycle: %v", err)
+	}
+
+	iss := createTestIssue(t, pool, slug, ident, actor, "triage-issue")
+	if _, err := UpdateIssue(ctx, pool, slug, ident, iss.ID, actor,
+		IssuePatch{StateID: &triageStateID}); err != nil {
+		t.Fatalf("set triage state: %v", err)
+	}
+	if err := AddCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{iss.ID}); err != nil {
+		t.Fatalf("AddCycleIssues: %v", err)
+	}
+
+	// Live snapshot already counts triage.
+	live, err := GetCycle(ctx, pool, slug, ident, actor, c.ID)
+	if err != nil {
+		t.Fatalf("GetCycle: %v", err)
+	}
+	if live.ProgressSnapshot["triage"] != 1 {
+		t.Fatalf("live snapshot[triage] = %d, want 1 (full: %+v)",
+			live.ProgressSnapshot["triage"], live.ProgressSnapshot)
+	}
+
+	// Complete the cycle; the freeze must keep triage.
+	if err := CompleteCycle(ctx, pool, c.ID, proj.ID, now); err != nil {
+		t.Fatalf("CompleteCycle: %v", err)
+	}
+	got, err := GetCycle(ctx, pool, slug, ident, actor, c.ID)
+	if err != nil {
+		t.Fatalf("GetCycle after complete: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("status = %q, want completed", got.Status)
+	}
+	if got.ProgressSnapshot["triage"] != 1 {
+		t.Fatalf("frozen snapshot[triage] = %d, want 1 (full: %+v)",
+			got.ProgressSnapshot["triage"], got.ProgressSnapshot)
+	}
+	// All six groups present in the frozen report card.
+	for _, g := range []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"} {
+		if _, ok := got.ProgressSnapshot[g]; !ok {
+			t.Fatalf("frozen snapshot missing group %q (full: %+v)", g, got.ProgressSnapshot)
+		}
+	}
+}
+
+// TestCycleMalformedUUID: malformed cycle/issue ids are 400-grade client
+// errors (ErrInvalidCycleID), never a 500 from the ::uuid cast.
+func TestCycleMalformedUUID(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	actor := createTestUser(t, pool, uniqueTestEmail("cycle-badid"))
+	slug := uniqueTestSlug("cycle-badid-ws")
+	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
+	ident := uniqueTestIdentifier()
+	createTestProject(t, pool, slug, actor, "Eng", ident)
+
+	now := time.Now()
+	c, err := CreateCycle(ctx, pool, slug, ident, actor, CycleInput{
+		Name: "S1", StartDate: now.AddDate(0, 0, -1), EndDate: now.AddDate(0, 0, 13),
+	})
+	if err != nil {
+		t.Fatalf("CreateCycle: %v", err)
+	}
+	iss := createTestIssue(t, pool, slug, ident, actor, "one")
+	name := "renamed"
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"GetCycle", func() error { _, err := GetCycle(ctx, pool, slug, ident, actor, "not-a-uuid"); return err }},
+		{"UpdateCycle", func() error {
+			_, err := UpdateCycle(ctx, pool, slug, ident, actor, "not-a-uuid", CyclePatch{Name: &name})
+			return err
+		}},
+		{"DeleteCycle", func() error { return DeleteCycle(ctx, pool, slug, ident, actor, "not-a-uuid") }},
+		{"AddCycleIssues bad cycle", func() error { return AddCycleIssues(ctx, pool, slug, ident, actor, "not-a-uuid", []string{iss.ID}) }},
+		{"AddCycleIssues bad issue", func() error { return AddCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{"not-a-uuid"}) }},
+	}
+	for _, tc := range cases {
+		if err := tc.call(); !errors.Is(err, ErrInvalidCycleID) {
+			t.Fatalf("%s: err = %v, want ErrInvalidCycleID", tc.name, err)
 		}
 	}
 }

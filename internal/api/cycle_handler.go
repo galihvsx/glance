@@ -39,6 +39,8 @@ func cycleError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cycle name already exists", nil)
 	case errors.Is(err, service.ErrInvalidCycle):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid cycle: name is required and start_date must not be after end_date", nil)
+	case errors.Is(err, service.ErrInvalidCycleID):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid id", nil)
 	default:
 		return issueError(c, err)
 	}

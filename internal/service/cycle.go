@@ -51,10 +51,16 @@ var (
 	ErrInvalidCycle = errors.New("service: invalid cycle")
 	// ErrInvalidCloseInDays is returned when close_in_days is negative.
 	ErrInvalidCloseInDays = errors.New("service: close_in_days must be >= 0")
+	// ErrInvalidCycleID is returned when a cycle id — or an issue id
+	// passed to a cycle endpoint — is not a syntactically valid UUID.
+	// The handler maps it to 400 bad_request.
+	ErrInvalidCycleID = errors.New("service: invalid cycle id")
 )
 
-// state groups counted in a progress snapshot.
-var snapshotGroups = []string{"backlog", "unstarted", "started", "completed", "cancelled"}
+// state groups counted in a progress snapshot. All six groups from the
+// states CHECK vocabulary — triage counts as incomplete, and the frozen
+// snapshot keeps it so a completed cycle's final report card is whole.
+var snapshotGroups = []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"}
 
 // queryQuerier abstracts *pgxpool.Pool and pgx.Tx for the multi-row reads
 // below (the shared queryRower only covers QueryRow).
@@ -143,6 +149,10 @@ func scanCycle(row pgx.Row) (Cycle, error) {
 }
 
 func resolveCycle(ctx context.Context, q queryRower, projectID, cycleID string) (Cycle, error) {
+	if !isUUIDFormat(cycleID) {
+		// Malformed ids match nothing — 400, not a 500 from the ::uuid cast.
+		return Cycle{}, ErrInvalidCycleID
+	}
 	c, err := scanCycle(q.QueryRow(ctx,
 		`SELECT `+cycleColumns+`
 		 FROM cycles WHERE id = $1::uuid AND project_id = $2::uuid`,
@@ -379,6 +389,11 @@ func AddCycleIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 	// Validate ownership + liveness for every id first: a partial add
 	// that silently drops foreign issues would be worse than a 404.
 	for _, id := range issueIDs {
+		if !isUUIDFormat(id) {
+			// Malformed ids are a client error — 400, not a 500 from
+			// the ::uuid cast.
+			return ErrInvalidCycleID
+		}
 		var owner string
 		err := pool.QueryRow(ctx,
 			`SELECT project_id::text FROM issues

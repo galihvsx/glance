@@ -112,3 +112,63 @@ func TestCycleHTTP(t *testing.T) {
 		t.Fatalf("negative close_in_days: status = %d, want 400", rec.Code)
 	}
 }
+
+// TestCycleMalformedUUIDHTTP: malformed cycle/issue ids on the cycle
+// endpoints return 400 bad_request envelopes, never 500.
+func TestCycleMalformedUUIDHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
+	RegisterIssueRoutes(e, &IssueHandler{Pool: pool})
+	RegisterCycleRoutes(e, &IssueHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("cycle-badid-http"), "test-agent", uniqueIP())
+
+	slug := uniqueSlug("cycle-badid-http")
+	createWorkspaceHTTP(t, e, cookie, "Cycle Co", slug)
+	ident := uniqueProjectIdentifier("CB")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	cycleBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/cycles"
+
+	// One valid cycle, for the bad-issue-id case.
+	start := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	end := time.Now().AddDate(0, 0, 13).Format("2006-01-02")
+	rec := postAuthedJSON(t, e, http.MethodPost, cycleBase, cookie,
+		`{"name":"S1","start_date":"`+start+`","end_date":"`+end+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create cycle: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode cycle: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"GET malformed cycle", http.MethodGet, cycleBase + "/not-a-uuid", ""},
+		{"POST issues malformed cycle", http.MethodPost, cycleBase + "/not-a-uuid/issues", `{"issue_ids":["00000000-0000-0000-0000-000000000000"]}`},
+		{"POST issues malformed issue", http.MethodPost, cycleBase + "/" + created.ID + "/issues", `{"issue_ids":["not-a-uuid"]}`},
+		{"DELETE malformed cycle", http.MethodDelete, cycleBase + "/not-a-uuid", ""},
+	}
+	for _, tc := range cases {
+		if tc.body != "" {
+			rec = postAuthedJSON(t, e, tc.method, tc.path, cookie, tc.body)
+		} else {
+			rec = getAuthed(t, e, tc.method, tc.path, cookie)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body: %s)", tc.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"code":"bad_request"`) {
+			t.Fatalf("%s: missing bad_request envelope (body: %s)", tc.name, rec.Body.String())
+		}
+	}
+}
