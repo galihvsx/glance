@@ -22,7 +22,7 @@ docker compose up --build
 ```
 
 The compose file reads `OTP_PEPPER` from your environment (or a `.env` file next
-to it). Open http://localhost:8080. The server runs its own DB migrations on
+to it — copy `.env.example` to `.env` and fill it in). Open http://localhost:8080. The server runs its own DB migrations on
 startup — nothing to set up manually.
 
 ### Option B: local dev
