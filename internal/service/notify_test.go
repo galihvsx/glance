@@ -10,11 +10,14 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -464,5 +467,292 @@ func TestWebhookRetryBackoff(t *testing.T) {
 	}
 	if webhookMaxAttempts != 8 {
 		t.Fatalf("max attempts = %d, want 8", webhookMaxAttempts)
+	}
+}
+
+// TestWebhookSecretHiddenInListGetUpdate: the signing secret is
+// show-on-create only. CreateWebhook returns it in the Go struct and the
+// 201 wire shape carries it; the list/get/update wire shapes must not
+// contain a "secret" key (no leakage into logs, devtools, or caches).
+func TestWebhookSecretHiddenInListGetUpdate(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	wh, err := CreateWebhook(ctx, pool, wsSlug, actorID, WebhookInput{
+		URL: "https://example.com/hook", Secret: strPtr2("topsecret"),
+	})
+	if err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+	if wh.Secret != "topsecret" {
+		t.Fatalf("create returned secret = %q, want topsecret", wh.Secret)
+	}
+	// The 201 wire shape carries the secret exactly once.
+	raw, err := json.Marshal(wh.CreateResponse())
+	if err != nil {
+		t.Fatalf("marshal create response: %v", err)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created["secret"] != "topsecret" {
+		t.Fatalf("create response secret = %v, want topsecret", created["secret"])
+	}
+
+	assertNoSecret := func(name string, v any) {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		if strings.Contains(string(raw), `"secret"`) {
+			t.Fatalf("%s wire shape leaks secret: %s", name, raw)
+		}
+	}
+
+	list, err := ListWebhooks(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		t.Fatalf("ListWebhooks: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %d, want 1", len(list))
+	}
+	assertNoSecret("list", map[string]any{"webhooks": list})
+
+	got, err := GetWebhook(ctx, pool, wsSlug, actorID, wh.ID)
+	if err != nil {
+		t.Fatalf("GetWebhook: %v", err)
+	}
+	assertNoSecret("get", got)
+
+	f := false
+	upd, err := UpdateWebhook(ctx, pool, wsSlug, actorID, wh.ID, WebhookPatch{Active: &f})
+	if err != nil {
+		t.Fatalf("UpdateWebhook: %v", err)
+	}
+	assertNoSecret("update", upd)
+}
+
+// createTestWebhook registers one webhook against srvURL subscribed to
+// issue.created.
+func createTestWebhook(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
+	wsSlug, actorID, srvURL string) *Webhook {
+	t.Helper()
+	wh, err := CreateWebhook(ctx, pool, wsSlug, actorID, WebhookInput{
+		URL: srvURL, Events: []string{"issue.created"},
+	})
+	if err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+	return wh
+}
+
+// enqueueWebhookRow enqueues webhook.deliver rows for every active
+// subscribed webhook in the workspace and returns the latest outbox row
+// id. The test DB is shared across runs, so rows are captured by id.
+func enqueueWebhookRow(t *testing.T, pool *pgxpool.Pool, ctx context.Context, wsSlug string) int64 {
+	t.Helper()
+	wsID := workspaceIDForTest(t, pool, wsSlug)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueCreated,
+		map[string]any{"id": "x"}); err != nil {
+		tx.Rollback(ctx)
+		t.Fatalf("enqueueWebhookDeliveryTx: %v", err)
+	}
+	var outboxID int64
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM outbox WHERE event = 'webhook.deliver' ORDER BY id DESC LIMIT 1`,
+	).Scan(&outboxID); err != nil {
+		tx.Rollback(ctx)
+		t.Fatalf("outbox id: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	return outboxID
+}
+
+// enqueueOneWebhookRow creates a webhook against srvURL and enqueues one
+// webhook.deliver row, returning the outbox row id.
+func enqueueOneWebhookRow(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
+	wsSlug, actorID, srvURL string) int64 {
+	t.Helper()
+	createTestWebhook(t, pool, ctx, wsSlug, actorID, srvURL)
+	return enqueueWebhookRow(t, pool, ctx, wsSlug)
+}
+
+// TestWebhookDispatchReleasesClaimTxDuringDelivery: the claim tx commits
+// BEFORE the HTTP delivery starts. While a delivery is in flight against
+// a slow endpoint, the outbox row lock must be free (FOR UPDATE NOWAIT
+// succeeds) and the row must already be marked 'delivering'.
+func TestWebhookDispatchReleasesClaimTxDuringDelivery(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		<-release // hold the delivery open: black-holing endpoint
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	// Always release the slow endpoint, even on early failure: this
+	// defer is registered AFTER srv.Close so it runs FIRST (LIFO);
+	// otherwise srv.Close() would hang on the blocked handler.
+	defer func() {
+		select {
+		case <-release: // already closed on the success path
+		default:
+			close(release)
+		}
+	}()
+
+	outboxID := enqueueOneWebhookRow(t, pool, ctx, wsSlug, actorID, srv.URL)
+
+	d := NewWebhookDispatcher(pool)
+	runErr := make(chan error, 1)
+	go func() { runErr <- d.Run(ctx) }()
+
+	select {
+	case <-received:
+	case <-time.After(15 * time.Second):
+		t.Fatal("delivery never started")
+	}
+	// Delivery is in flight against the slow endpoint. The claim tx must
+	// be committed: the row lock is free...
+	lockTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lock probe: %v", err)
+	}
+	var one int64
+	if err := lockTx.QueryRow(ctx,
+		`SELECT id FROM outbox WHERE id = $1 FOR UPDATE NOWAIT`, outboxID).Scan(&one); err != nil {
+		lockTx.Rollback(ctx)
+		t.Fatalf("row still locked mid-delivery (claim tx spans HTTP): %v", err)
+	}
+	lockTx.Rollback(ctx)
+	// ...and the claim was durably marked.
+	var status string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM outbox WHERE id = $1`, outboxID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "delivering" {
+		t.Fatalf("status mid-delivery = %q, want delivering", status)
+	}
+
+	close(release) // let the endpoint respond
+	if err := <-runErr; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM outbox WHERE id = $1`, outboxID).Scan(&status); err != nil {
+		t.Fatalf("read final status: %v", err)
+	}
+	if status != "done" {
+		t.Fatalf("final status = %q, want done", status)
+	}
+}
+
+// TestWebhookDispatchSingleFlight: a tick that fires while a previous
+// pass is still delivering is skipped — overlapping runs never pile up
+// pool connections behind a slow endpoint. A second row enqueued
+// mid-flight proves the point: without single-flight the overlapping run
+// would claim it (SKIP LOCKED skips only the first pass's locked rows)
+// and block on the slow endpoint too.
+func TestWebhookDispatchSingleFlight(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	var calls atomic.Int64
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	// Always release the slow endpoint, even on early failure: this
+	// defer is registered AFTER srv.Close so it runs FIRST (LIFO);
+	// otherwise srv.Close() would hang on the blocked handler.
+	defer func() {
+		select {
+		case <-release: // already closed on the success path
+		default:
+			close(release)
+		}
+	}()
+
+	createTestWebhook(t, pool, ctx, wsSlug, actorID, srv.URL)
+	outboxID := enqueueWebhookRow(t, pool, ctx, wsSlug)
+
+	d := NewWebhookDispatcher(pool)
+	run1 := make(chan error, 1)
+	go func() { run1 <- d.Run(ctx) }()
+
+	select {
+	case <-received:
+	case <-time.After(15 * time.Second):
+		t.Fatal("delivery never started")
+	}
+	// Row B arrives while the first pass is mid-delivery (same single
+	// webhook, so exactly one new row).
+	rowB := enqueueWebhookRow(t, pool, ctx, wsSlug)
+
+	// A second tick now must skip fast instead of claiming row B and
+	// blocking behind the slow endpoint. Run it in a goroutine: under
+	// the old behavior it would block until release, so a timeout here
+	// is the failure signal (never a deadlock).
+	run2done := make(chan error, 1)
+	go func() { run2done <- d.Run(ctx) }()
+	select {
+	case err := <-run2done:
+		if err != nil {
+			t.Fatalf("overlapping run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("overlapping Run did not skip — piling up behind the in-flight pass")
+	}
+
+	close(release)
+	if err := <-run1; err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("deliveries = %d, want 1 (overlapping run delivered row B)", n)
+	}
+	var statusA, statusB string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM outbox WHERE id = $1`, outboxID).Scan(&statusA); err != nil {
+		t.Fatalf("read status A: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM outbox WHERE id = $1`, rowB).Scan(&statusB); err != nil {
+		t.Fatalf("read status B: %v", err)
+	}
+	if statusA != "done" {
+		t.Fatalf("row A status = %q, want done", statusA)
+	}
+	if statusB != "pending" {
+		t.Fatalf("row B status = %q, want pending (untouched by the skipped tick)", statusB)
 	}
 }

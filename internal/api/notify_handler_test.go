@@ -198,11 +198,22 @@ func TestWebhookHTTPCRUD(t *testing.T) {
 		t.Fatalf("bad url: status = %d, want 400", rec.Code)
 	}
 
-	// List → 1; get → 200; patch active=false → 200; delete → 204;
+	// List → 1 (no secret in the wire shape); get → 200 (no secret);
+	// patch active=false → 200 (no secret); delete → 204;
 	// get after delete → 404.
+	assertNoSecretKey := func(name string, body []byte) {
+		t.Helper()
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		if _, ok := m["secret"]; ok {
+			t.Fatalf("%s response leaks secret: %s", name, body)
+		}
+	}
 	rec = getAuthed(t, e, http.MethodGet, base, cookieA)
 	var list struct {
-		Webhooks []any `json:"webhooks"`
+		Webhooks []map[string]any `json:"webhooks"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode list: %v", err)
@@ -210,14 +221,19 @@ func TestWebhookHTTPCRUD(t *testing.T) {
 	if len(list.Webhooks) != 1 {
 		t.Fatalf("webhooks = %d, want 1", len(list.Webhooks))
 	}
+	if _, ok := list.Webhooks[0]["secret"]; ok {
+		t.Fatalf("list response leaks secret: %s", rec.Body.String())
+	}
 	rec = getAuthed(t, e, http.MethodGet, base+"/"+wh.ID, cookieA)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get webhook: status = %d", rec.Code)
 	}
+	assertNoSecretKey("get", rec.Body.Bytes())
 	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+wh.ID, cookieA, `{"active":false}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
 	}
+	assertNoSecretKey("patch", rec.Body.Bytes())
 	rec = postAuthedJSON(t, e, http.MethodDelete, base+"/"+wh.ID, cookieA, ``)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete webhook: status = %d, want 204", rec.Code)

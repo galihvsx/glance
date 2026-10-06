@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,27 @@ var (
 
 // Webhook is one workspace delivery target.
 type Webhook struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	URL         string `json:"url"`
+	// Secret is the HMAC signing secret. It is stored in PLAINTEXT by
+	// design: the dispatcher recomputes HMAC-SHA256 over every delivery
+	// body, which needs the raw key — a hash would be unusable for
+	// signing. It is never serialized in list/get/update responses
+	// (json:"-"): the only response that carries it is the 201 create
+	// response (WebhookCreateResponse), shown once at creation time, so
+	// routine GETs can't leak it into logs, devtools, or caches.
+	Secret    string    `json:"-"`
+	Events    []string  `json:"events"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WebhookCreateResponse is the POST 201 response shape: the single
+// response that reveals the signing secret (show-on-create). Every other
+// webhook response omits it.
+type WebhookCreateResponse struct {
 	ID          string    `json:"id"`
 	WorkspaceID string    `json:"workspace_id"`
 	URL         string    `json:"url"`
@@ -70,6 +92,20 @@ type Webhook struct {
 	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// CreateResponse renders the show-on-create shape for a new webhook.
+func (w *Webhook) CreateResponse() *WebhookCreateResponse {
+	return &WebhookCreateResponse{
+		ID:          w.ID,
+		WorkspaceID: w.WorkspaceID,
+		URL:         w.URL,
+		Secret:      w.Secret,
+		Events:      w.Events,
+		Active:      w.Active,
+		CreatedAt:   w.CreatedAt,
+		UpdatedAt:   w.UpdatedAt,
+	}
 }
 
 // WebhookInput carries webhook creation fields. Secret nil/empty → a random
@@ -374,6 +410,10 @@ const (
 	// webhookHTTPTimeout bounds a single delivery attempt so one slow
 	// endpoint cannot stall the whole pass.
 	webhookHTTPTimeout = 10 * time.Second
+	// webhookClaimLease bounds how long a claimed row may sit
+	// 'delivering' before another pass reclaims it (crashed-pass
+	// recovery). Well above the worst-case pass (batch × timeout).
+	webhookClaimLease = 5 * time.Minute
 )
 
 // webhookDelivery is the outbox payload for WebhookDeliverEvent.
@@ -391,6 +431,10 @@ type webhookDelivery struct {
 type WebhookDispatcher struct {
 	pool   *pgxpool.Pool
 	client *http.Client
+	// inFlight is the single-flight guard: a tick that fires while a
+	// previous pass is still delivering skips instead of piling up
+	// another claim + another long-lived pass.
+	inFlight atomic.Bool
 }
 
 // NewWebhookDispatcher builds a dispatcher with a 10s per-attempt timeout.
@@ -407,75 +451,113 @@ type webhookOutboxRow struct {
 	attempts int
 }
 
-// Run claims due webhook rows with FOR UPDATE SKIP LOCKED and delivers
-// each. Per-message failures are recorded on the row; Run only returns an
-// error when the database itself fails.
+// Run performs one dispatch pass: claim due rows, commit the claim,
+// deliver each row OUTSIDE any transaction, and record each outcome with
+// a short single-statement write. The claim tx never spans slow HTTP, so
+// a black-holing endpoint holds no pool connection. A tick arriving while
+// a pass is in flight is skipped (single-flight). Per-row outcome-write
+// failures are collected and returned after the remaining rows deliver;
+// only database failures surface as Run errors.
 func (d *WebhookDispatcher) Run(ctx context.Context) error {
+	if !d.inFlight.CompareAndSwap(false, true) {
+		return nil // previous pass still in flight; skip this tick
+	}
+	defer d.inFlight.Store(false)
+
+	claimed, err := d.claimDue(ctx)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, r := range claimed {
+		if err := d.deliverRow(ctx, r); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// claimDue claims due webhook rows inside ONE short tx: rows are locked
+// (FOR UPDATE SKIP LOCKED — safe across dispatcher instances), marked
+// 'delivering' with a lease, and the tx commits BEFORE any HTTP happens.
+// Rows stuck 'delivering' past their lease (a crashed pass) are reclaimed
+// here; deliveries stay at-least-once.
+func (d *WebhookDispatcher) claimDue(ctx context.Context) ([]webhookOutboxRow, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("webhook: begin dispatch tx: %w", err)
+		return nil, fmt.Errorf("webhook: begin claim tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
 	rows, err := tx.Query(ctx, `
 		SELECT id, payload, attempts
 		FROM outbox
-		WHERE status = 'pending'
+		WHERE event LIKE $2
 		  AND next_retry_at <= now()
-		  AND event LIKE $2
+		  AND (status = 'pending' OR status = 'delivering')
 		ORDER BY id
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED`, webhookBatchSize, webhookEventPrefix+"%")
 	if err != nil {
-		return fmt.Errorf("webhook: claim due rows: %w", err)
+		return nil, fmt.Errorf("webhook: claim due rows: %w", err)
 	}
 	var claimed []webhookOutboxRow
 	for rows.Next() {
 		var r webhookOutboxRow
 		if err := rows.Scan(&r.id, &r.payload, &r.attempts); err != nil {
 			rows.Close()
-			return fmt.Errorf("webhook: scan claimed row: %w", err)
+			return nil, fmt.Errorf("webhook: scan claimed row: %w", err)
 		}
 		claimed = append(claimed, r)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("webhook: iterate claimed rows: %w", err)
+		return nil, fmt.Errorf("webhook: iterate claimed rows: %w", err)
 	}
 
-	for _, r := range claimed {
-		if err := d.deliver(ctx, tx, r); err != nil {
-			return err // tx rolls back via defer
+	if len(claimed) > 0 {
+		ids := make([]int64, len(claimed))
+		for i, r := range claimed {
+			ids[i] = r.id
+		}
+		// Mark 'delivering' with a lease: next_retry_at doubles as the
+		// lease expiry for delivering rows (recovery predicate above).
+		if _, err := tx.Exec(ctx,
+			`UPDATE outbox SET status = 'delivering', next_retry_at = $2
+			  WHERE id = ANY($1)`,
+			ids, time.Now().Add(webhookClaimLease)); err != nil {
+			return nil, fmt.Errorf("webhook: mark rows delivering: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("webhook: commit dispatch tx: %w", err)
+		return nil, fmt.Errorf("webhook: commit claim tx: %w", err)
 	}
-	return nil
+	return claimed, nil
 }
 
-// deliver POSTs one claimed row and records the outcome on it.
-func (d *WebhookDispatcher) deliver(ctx context.Context, tx pgx.Tx, r webhookOutboxRow) error {
+// deliverRow POSTs one claimed row and records the outcome with short
+// single-statement writes — no transaction spans the HTTP call.
+func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) error {
 	var wd webhookDelivery
 	if err := json.Unmarshal(r.payload, &wd); err != nil {
 		// Poison row: never decodes, fail permanently.
-		return d.markFailed(ctx, tx, r.id, r.attempts, fmt.Errorf("webhook: bad payload: %w", err))
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: bad payload: %w", err))
 	}
 	if wd.URL == "" || wd.Event == "" {
-		return d.markFailed(ctx, tx, r.id, r.attempts, errors.New("webhook: missing url or event"))
+		return d.markFailed(ctx, r.id, r.attempts, errors.New("webhook: missing url or event"))
 	}
 	// A webhook deleted or deactivated after enqueue must not fire:
 	// mark the row done (skip), not failed.
 	var active bool
-	if err := tx.QueryRow(ctx,
+	if err := d.pool.QueryRow(ctx,
 		`SELECT active FROM webhooks WHERE id = $1::uuid`, wd.WebhookID).Scan(&active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return d.markDone(ctx, tx, r.id)
+			return d.markDone(ctx, r.id)
 		}
 		return fmt.Errorf("webhook: lookup webhook: %w", err)
 	}
 	if !active {
-		return d.markDone(ctx, tx, r.id)
+		return d.markDone(ctx, r.id)
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -484,11 +566,11 @@ func (d *WebhookDispatcher) deliver(ctx context.Context, tx pgx.Tx, r webhookOut
 		"delivered_at": time.Now().UTC(),
 	})
 	if err != nil {
-		return d.markFailed(ctx, tx, r.id, r.attempts, fmt.Errorf("webhook: marshal body: %w", err))
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: marshal body: %w", err))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wd.URL, bytes.NewReader(body))
 	if err != nil {
-		return d.markFailed(ctx, tx, r.id, r.attempts, fmt.Errorf("webhook: build request: %w", err))
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: build request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Glance-Event", wd.Event)
@@ -497,15 +579,15 @@ func (d *WebhookDispatcher) deliver(ctx context.Context, tx pgx.Tx, r webhookOut
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return d.recordFailure(ctx, tx, r.id, r.attempts, err)
+		return d.recordFailure(ctx, r.id, r.attempts, err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return d.recordFailure(ctx, tx, r.id, r.attempts,
+		return d.recordFailure(ctx, r.id, r.attempts,
 			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode))
 	}
-	return d.markDone(ctx, tx, r.id)
+	return d.markDone(ctx, r.id)
 }
 
 // webhookSignature is the hex HMAC-SHA256 of the body under the secret.
@@ -515,33 +597,37 @@ func webhookSignature(secret string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (d *WebhookDispatcher) markDone(ctx context.Context, tx pgx.Tx, id int64) error {
-	if _, err := tx.Exec(ctx,
+// Outcome writes are single statements on the pool (short-lived, no tx
+// spans the HTTP call). A failed outcome write leaves the row
+// 'delivering' with its lease — a later pass reclaims and redelivers
+// (at-least-once is preserved).
+func (d *WebhookDispatcher) markDone(ctx context.Context, id int64) error {
+	if _, err := d.pool.Exec(ctx,
 		`UPDATE outbox SET status = 'done', processed_at = now() WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("webhook: mark row %d done: %w", id, err)
 	}
 	return nil
 }
 
-// recordFailure bumps attempts; the row stays pending with backoff, or is
-// marked failed once it exhausts webhookMaxAttempts.
-func (d *WebhookDispatcher) recordFailure(ctx context.Context, tx pgx.Tx, id int64, attempts int, sendErr error) error {
+// recordFailure bumps attempts; the row goes back to pending with
+// backoff, or is marked failed once it exhausts webhookMaxAttempts.
+func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempts int, sendErr error) error {
 	attempts++
 	if attempts >= webhookMaxAttempts {
-		return d.markFailed(ctx, tx, id, attempts, sendErr)
+		return d.markFailed(ctx, id, attempts, sendErr)
 	}
 	retryAt := time.Now().Add(webhookRetryBackoff(attempts))
-	if _, err := tx.Exec(ctx, `
+	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
-		SET attempts = $2, last_error = $3, next_retry_at = $4
+		SET status = 'pending', attempts = $2, last_error = $3, next_retry_at = $4
 		WHERE id = $1`, id, attempts, sendErr.Error(), retryAt); err != nil {
 		return fmt.Errorf("webhook: record failure for row %d: %w", id, err)
 	}
 	return nil
 }
 
-func (d *WebhookDispatcher) markFailed(ctx context.Context, tx pgx.Tx, id int64, attempts int, sendErr error) error {
-	if _, err := tx.Exec(ctx, `
+func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts int, sendErr error) error {
+	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
 		SET status = 'failed', attempts = $2, last_error = $3
 		WHERE id = $1`, id, attempts, sendErr.Error()); err != nil {

@@ -169,7 +169,9 @@ func (h *NotifyHandler) createWebhook(c *echo.Context) error {
 	if err != nil {
 		return notifyError(c, err)
 	}
-	return c.JSON(http.StatusCreated, w)
+	// The 201 is the only response that reveals the signing secret
+	// (show-on-create); list/get/update omit it.
+	return c.JSON(http.StatusCreated, w.CreateResponse())
 }
 
 func (h *NotifyHandler) listWebhooks(c *echo.Context) error {
