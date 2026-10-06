@@ -262,19 +262,11 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 		return "", fmt.Errorf("auth: provision user: %w", err)
 	}
 
-	// Opaque 32-byte session token (spec §7); only its SHA-256 hash is
-	// stored — the plain token never touches the database.
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("auth: generate session token: %w", err)
-	}
-	token := hex.EncodeToString(raw)
-	tokenSum := sha256.Sum256([]byte(token))
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO sessions (user_id, token_hash, user_agent, ip, expires_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		userID, hex.EncodeToString(tokenSum[:]), userAgent, ip, time.Now().Add(sessionTTL)); err != nil {
-		return "", fmt.Errorf("auth: create session: %w", err)
+	// Session creation is shared with the OAuth callback (internal/auth/session.go)
+	// so both login paths mint tokens identically.
+	token, err := CreateSessionTx(ctx, tx, userID, userAgent, ip)
+	if err != nil {
+		return "", err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

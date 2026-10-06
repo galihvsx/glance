@@ -25,6 +25,16 @@ type Config struct {
 	// env var keeps it out of every other secret's blast radius.
 	// Required in production — an empty pepper weakens code hashing.
 	OTPPepper string
+	// Google/GitHub OAuth client credentials. A provider with empty
+	// credentials is disabled: its endpoints answer 404, never 500.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GitHubClientID     string
+	GitHubClientSecret string
+	// OAuthStateSecret signs the OAuth state cookie (HMAC-SHA256). The spec
+	// does not name it; dedicated env var like OTP_PEPPER. Empty → the
+	// OAuth endpoints fail fast instead of signing with a nil key.
+	OAuthStateSecret string
 }
 
 func getenv(key, def string) string {
@@ -46,6 +56,12 @@ func Load() (*Config, error) {
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 		OTPPepper:    os.Getenv("OTP_PEPPER"),
+
+		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		OAuthStateSecret:   os.Getenv("OAUTH_STATE_SECRET"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("config: DATABASE_URL is required")

@@ -50,6 +50,9 @@ func main() {
 	if cfg.OTPPepper == "" {
 		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")
 	}
+	if cfg.OAuthStateSecret == "" {
+		log.Println("glance: WARNING: OAUTH_STATE_SECRET is not set — OAuth login endpoints will refuse to operate; set it to enable Google/GitHub login")
+	}
 
 	// SPA catch-all goes LAST so it never shadows API or health routes.
 	if err := api.RegisterSPA(e); err != nil {

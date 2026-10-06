@@ -1,10 +1,11 @@
 module glance
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/labstack/echo/v5 v5.4.0
+	golang.org/x/oauth2 v0.37.0
 )
 
 require (
