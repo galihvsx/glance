@@ -1,0 +1,9 @@
+# Build context hygiene — keep `docker build` fast.
+.git
+.superpowers
+node_modules
+web/node_modules
+web/dist
+plans
+spec
+*.md
