@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -193,10 +194,110 @@ func TestOAuthStateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestOAuthAccountHijackRejected: a provider_uid already linked to user A
-// must NOT be re-linkable to user B (verified-email collision across
-// accounts). The link is sticky to the first user.
-func TestOAuthAccountHijackRejected(t *testing.T) {
+// TestOAuthProviderEmailChangeLogsInAsOriginalUser: the provider_uid is the
+// stable identity. When the provider reports a new verified email for an
+// already-linked uid (a provider-side email change), the login succeeds AS
+// the original linked user — no 409, no duplicate user row, the link never
+// moves, and the (unclaimed) new email is synced onto the user row.
+func TestOAuthProviderEmailChangeLogsInAsOriginalUser(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	oldExchange, oldFetch := exchangeCode, fetchUserInfo
+	defer func() { exchangeCode, fetchUserInfo = oldExchange, oldFetch }()
+	exchangeCode = func(ctx context.Context, cfg *oauth2.Config, code string) (*oauth2.Token, error) {
+		return &oauth2.Token{AccessToken: "tok"}, nil
+	}
+	oldEmail := uniqueEmail("oauth-old")
+	newEmail := uniqueEmail("oauth-new")
+	// Unique per run — see the note in TestOAuthCallbackLinksAccount.
+	uid := fmt.Sprintf("emailchange-uid-%d-%d", os.Getpid(), testSeq.Add(1))
+	currentEmail := oldEmail
+	fetchUserInfo = func(ctx context.Context, p Provider, tok *oauth2.Token) (OAuthUserInfo, error) {
+		return OAuthUserInfo{ID: uid, Email: currentEmail, VerifiedEmail: true}, nil
+	}
+
+	cfg := testConfig()
+	cfg.GoogleClientID = "id"
+	cfg.GoogleClientSecret = "secret"
+
+	token1, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGoogle, "c",
+		"https://app.example/cb", "ua", "10.0.0.21")
+	if err != nil {
+		t.Fatalf("first link: %v", err)
+	}
+	var originalUserID string
+	err = pool.QueryRow(ctx,
+		`SELECT user_id FROM sessions WHERE token_hash = encode(sha256($1::bytea), 'hex')`,
+		token1,
+	).Scan(&originalUserID)
+	if err != nil {
+		t.Fatalf("first session lookup: %v", err)
+	}
+
+	// The provider now reports a DIFFERENT verified email for the same uid.
+	currentEmail = newEmail
+	token2, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGoogle, "c",
+		"https://app.example/cb", "ua", "10.0.0.21")
+	if err != nil {
+		t.Fatalf("email-change login: %v (must succeed as the linked user)", err)
+	}
+
+	// The returned session must belong to the ORIGINAL user…
+	var sessionUserID string
+	err = pool.QueryRow(ctx,
+		`SELECT user_id FROM sessions WHERE token_hash = encode(sha256($1::bytea), 'hex')`,
+		token2,
+	).Scan(&sessionUserID)
+	if err != nil {
+		t.Fatalf("second session lookup: %v", err)
+	}
+	if sessionUserID != originalUserID {
+		t.Errorf("session user = %s, want original user %s", sessionUserID, originalUserID)
+	}
+
+	// …the oauth_accounts row must still point at the original user…
+	var linkedUserID string
+	err = pool.QueryRow(ctx,
+		`SELECT user_id FROM oauth_accounts WHERE provider_uid = $1`, uid,
+	).Scan(&linkedUserID)
+	if err != nil {
+		t.Fatalf("link lookup: %v", err)
+	}
+	if linkedUserID != originalUserID {
+		t.Errorf("link moved to %s, must stay with %s", linkedUserID, originalUserID)
+	}
+
+	// …no duplicate user row may exist, and the unclaimed new email is
+	// synced onto the original user's row.
+	var userCount int
+	err = pool.QueryRow(ctx,
+		`SELECT count(*) FROM users WHERE email IN ($1, $2)`, oldEmail, newEmail,
+	).Scan(&userCount)
+	if err != nil {
+		t.Fatalf("user count: %v", err)
+	}
+	if userCount != 1 {
+		t.Errorf("users with old/new email = %d, want exactly 1 (no duplicate)", userCount)
+	}
+	var syncedEmail string
+	err = pool.QueryRow(ctx,
+		`SELECT email FROM users WHERE id = $1`, originalUserID,
+	).Scan(&syncedEmail)
+	if err != nil {
+		t.Fatalf("email lookup: %v", err)
+	}
+	if !strings.EqualFold(syncedEmail, newEmail) {
+		t.Errorf("user email = %q, want %q synced (unclaimed)", syncedEmail, newEmail)
+	}
+}
+
+// TestOAuthEmailChangeToClaimedEmailKeepsOldEmail: when the provider's new
+// email is already claimed by ANOTHER glance user, the uid-first login still
+// succeeds as the linked user — but the linked user's email is NOT
+// overwritten (that would merge two accounts).
+func TestOAuthEmailChangeToClaimedEmailKeepsOldEmail(t *testing.T) {
 	pool := newTestPool(t)
 	migrateTestDB(t, pool)
 	ctx := context.Background()
@@ -207,39 +308,77 @@ func TestOAuthAccountHijackRejected(t *testing.T) {
 		return &oauth2.Token{AccessToken: "tok"}, nil
 	}
 	victimEmail := uniqueEmail("oauth-victim")
-	attackerEmail := uniqueEmail("oauth-attacker")
-	// Unique per run — see the note in TestOAuthCallbackLinksAccount.
-	sharedUID := fmt.Sprintf("shared-uid-%d-%d", os.Getpid(), testSeq.Add(1))
+	otherEmail := uniqueEmail("oauth-other")
+	uid := fmt.Sprintf("claimed-email-uid-%d-%d", os.Getpid(), testSeq.Add(1))
 	currentEmail := victimEmail
 	fetchUserInfo = func(ctx context.Context, p Provider, tok *oauth2.Token) (OAuthUserInfo, error) {
-		return OAuthUserInfo{ID: sharedUID, Email: currentEmail, VerifiedEmail: true}, nil
+		return OAuthUserInfo{ID: uid, Email: currentEmail, VerifiedEmail: true}, nil
 	}
 
 	cfg := testConfig()
-	cfg.GoogleClientID = "id"
-	cfg.GoogleClientSecret = "secret"
+	cfg.GitHubClientID = "id"
+	cfg.GitHubClientSecret = "secret"
 
-	if _, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGoogle, "c",
-		"https://app.example/cb", "ua", "10.0.0.12"); err != nil {
-		t.Fatalf("victim link: %v", err)
+	if _, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGitHub, "c",
+		"https://app.example/cb", "ua", "10.0.0.22"); err != nil {
+		t.Fatalf("first link: %v", err)
 	}
-	// Attacker presents the same provider_uid but a different verified email.
-	currentEmail = attackerEmail
-	_, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGoogle, "c",
-		"https://app.example/cb", "ua", "10.0.0.12")
-	if !errors.Is(err, ErrOAuthAlreadyLinked) {
-		t.Fatalf("err = %v, want ErrOAuthAlreadyLinked", err)
-	}
-	// The oauth_accounts row must still point at the victim.
-	var linkedEmail string
-	err = pool.QueryRow(ctx,
-		`SELECT u.email FROM oauth_accounts oa JOIN users u ON u.id = oa.user_id
-		 WHERE oa.provider_uid = $1`, sharedUID,
-	).Scan(&linkedEmail)
+
+	// Another glance user owns otherEmail outright.
+	var otherUserID string
+	err := pool.QueryRow(ctx,
+		`INSERT INTO users (email) VALUES ($1) RETURNING id`, otherEmail,
+	).Scan(&otherUserID)
 	if err != nil {
-		t.Fatalf("link lookup: %v", err)
+		t.Fatalf("seed other user: %v", err)
 	}
-	if linkedEmail != victimEmail {
-		t.Errorf("link moved to %s, must stay with %s", linkedEmail, victimEmail)
+
+	// The provider now reports the claimed email for the same uid.
+	currentEmail = otherEmail
+	token, err := CompleteOAuthLogin(ctx, pool, cfg, ProviderGitHub, "c",
+		"https://app.example/cb", "ua", "10.0.0.22")
+	if err != nil {
+		t.Fatalf("login with claimed email: %v (must succeed as the linked user)", err)
+	}
+
+	// The session belongs to the victim, whose email is untouched…
+	var sessionUserID, victimEmailNow string
+	err = pool.QueryRow(ctx,
+		`SELECT user_id FROM sessions WHERE token_hash = encode(sha256($1::bytea), 'hex')`,
+		token,
+	).Scan(&sessionUserID)
+	if err != nil {
+		t.Fatalf("session lookup: %v", err)
+	}
+	err = pool.QueryRow(ctx,
+		`SELECT email FROM users WHERE email = $1`, victimEmail,
+	).Scan(&victimEmailNow)
+	if err != nil {
+		t.Fatalf("victim email lookup: %v", err)
+	}
+	var victimUserID string
+	err = pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE email = $1`, victimEmail,
+	).Scan(&victimUserID)
+	if err != nil {
+		t.Fatalf("victim id lookup: %v", err)
+	}
+	if sessionUserID != victimUserID {
+		t.Errorf("session user = %s, want victim %s", sessionUserID, victimUserID)
+	}
+	if !strings.EqualFold(victimEmailNow, victimEmail) {
+		t.Errorf("victim email changed to %q, must stay %q", victimEmailNow, victimEmail)
+	}
+
+	// …and the other user's account is untouched.
+	var stillOtherID string
+	err = pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE email = $1`, otherEmail,
+	).Scan(&stillOtherID)
+	if err != nil {
+		t.Fatalf("other user lookup: %v", err)
+	}
+	if stillOtherID != otherUserID {
+		t.Errorf("other user row changed: %s != %s", stillOtherID, otherUserID)
 	}
 }

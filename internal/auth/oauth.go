@@ -2,12 +2,15 @@
 // path (spec §7). The flow is the standard authorization-code flow via
 // x/oauth2: login → 302 to the provider with an unguessable state value
 // (HMAC-signed, stored in a single-use cookie) → callback → validate state →
-// exchange code → fetch the VERIFIED email → find-or-create the user by that
-// email → link the oauth_accounts row → mint a session exactly like OTP.
+// exchange code → fetch the verified identity → look up oauth_accounts by
+// provider_uid → authenticate as the linked user (or find-or-create the user
+// by verified email when the uid is new) → mint a session exactly like OTP.
 //
-// The verified EMAIL is the account link key. The provider's name/avatar
-// are profile conveniences: they fill empty profile fields on first link
-// and are never trusted for identity.
+// The provider_uid is the stable identity — once linked, the email is just
+// a profile attribute that may change at the provider. The verified email
+// is only the provisioning key for a uid never seen before. The provider's
+// name/avatar are profile conveniences: they fill empty profile fields on
+// first link and are never trusted for identity.
 package auth
 
 import (
@@ -26,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 
@@ -71,9 +75,10 @@ var (
 	// ErrOAuthEmailUnverified is returned when the provider does not vouch
 	// for the email address. Without a verified email there is no link key.
 	ErrOAuthEmailUnverified = errors.New("auth: oauth provider did not return a verified email")
-	// ErrOAuthAlreadyLinked is returned when the provider_uid is already
-	// linked to a DIFFERENT user — a potential account-takeover attempt.
-	// The original link is kept.
+	// ErrOAuthAlreadyLinked is returned when the provider_uid got linked to a
+	// DIFFERENT user between our lookup and our insert — a concurrent-link
+	// race (or a genuine takeover attempt racing a legitimate login). The
+	// original link is kept and the transaction rolls back.
 	ErrOAuthAlreadyLinked = errors.New("auth: oauth account is already linked to another user")
 )
 
@@ -304,10 +309,13 @@ func nullString(s string) any {
 }
 
 // CompleteOAuthLogin runs the callback half of the flow: exchange the code,
-// fetch the verified identity, find-or-create the user by verified email,
-// link the oauth_accounts row, and mint a session. Everything runs in one
-// transaction — a partial link (user without oauth row, or vice versa) can
-// never be committed.
+// fetch the verified identity, then authenticate. The provider_uid is the
+// stable identity: if it is already linked, the linked user logs in (their
+// email is synced only when the new verified email is unclaimed). A uid
+// never seen before falls through to find-or-create-by-verified-email and
+// then links the oauth_accounts row. Everything runs in one transaction —
+// a partial link (user without oauth row, or vice versa) can never be
+// committed.
 func CompleteOAuthLogin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, provider Provider, code, redirectURL, userAgent, ip string) (string, error) {
 	ocfg, err := oauth2Config(cfg, provider, redirectURL)
 	if err != nil {
@@ -338,42 +346,95 @@ func CompleteOAuthLogin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 	}
 	defer tx.Rollback(ctx)
 
-	// Find-or-create the user by verified email — the link key (spec §7).
-	// Provider name/avatar fill the profile only when empty; they are never
-	// identity and never overwrite values the user already has.
+	// provider_uid first: it is the stable identity. A uid linked to a user
+	// authenticates AS that user even when the provider reports a different
+	// verified email than before (provider-side email change) — the email
+	// is a profile attribute, not the identity.
 	var userID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO users (email, name, avatar_url) VALUES ($1, $2, $3)
-		ON CONFLICT (email) DO UPDATE SET
-			last_login_at = now(),
-			updated_at = now(),
-			name = COALESCE(NULLIF(users.name, ''), EXCLUDED.name),
-			avatar_url = COALESCE(NULLIF(users.avatar_url, ''), EXCLUDED.avatar_url)
-		RETURNING id`,
-		email, nullString(info.Name), nullString(info.AvatarURL),
+	linked := true
+	if err := tx.QueryRow(ctx,
+		`SELECT user_id FROM oauth_accounts WHERE provider_uid = $1`, info.ID,
 	).Scan(&userID); err != nil {
-		return "", fmt.Errorf("auth: provision user: %w", err)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("auth: lookup oauth account: %w", err)
+		}
+		linked = false
 	}
 
-	// Link the oauth account. provider_uid is globally unique: if the row
-	// already belongs to a DIFFERENT user this is a takeover attempt — the
-	// INSERT's DO UPDATE keeps the original user_id, the mismatch is
-	// detected below, and the transaction rolls back with the link intact.
-	//
-	// tokens stays '{}': v1 makes no provider API calls after login, so
-	// there is nothing worth storing — and no secret worth leaking.
-	var linkedUserID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO oauth_accounts (user_id, provider, provider_uid, tokens)
-		VALUES ($1, $2, $3, '{}'::jsonb)
-		ON CONFLICT (provider_uid) DO UPDATE SET tokens = EXCLUDED.tokens
-		RETURNING user_id`,
-		userID, string(provider), info.ID,
-	).Scan(&linkedUserID); err != nil {
-		return "", fmt.Errorf("auth: link oauth account: %w", err)
-	}
-	if linkedUserID != userID {
-		return "", ErrOAuthAlreadyLinked
+	if linked {
+		// Authenticate as the linked user. Touch last_login_at; sync the
+		// email onto the user row only when it is unclaimed — overwriting
+		// an email that belongs to another user would merge two accounts.
+		var currentEmail string
+		if err := tx.QueryRow(ctx,
+			`SELECT email FROM users WHERE id = $1`, userID,
+		).Scan(&currentEmail); err != nil {
+			return "", fmt.Errorf("auth: load linked user: %w", err)
+		}
+		if !strings.EqualFold(currentEmail, email) {
+			var claimedBy string
+			err := tx.QueryRow(ctx,
+				`SELECT id FROM users WHERE email = $1 AND id <> $2`, email, userID,
+			).Scan(&claimedBy)
+			switch {
+			case err == nil:
+				// Claimed by someone else: keep the linked user's email.
+				// The uid decides identity, never the email.
+			case errors.Is(err, pgx.ErrNoRows):
+				if _, err := tx.Exec(ctx,
+					`UPDATE users SET email = $1, updated_at = now() WHERE id = $2`,
+					email, userID,
+				); err != nil {
+					return "", fmt.Errorf("auth: sync oauth email: %w", err)
+				}
+			default:
+				return "", fmt.Errorf("auth: check email claim: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1`,
+			userID,
+		); err != nil {
+			return "", fmt.Errorf("auth: touch last_login: %w", err)
+		}
+	} else {
+		// New uid: find-or-create the user by verified email — the
+		// provisioning key (spec §7). Provider name/avatar fill the
+		// profile only when empty; they are never identity and never
+		// overwrite values the user already has.
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO users (email, name, avatar_url) VALUES ($1, $2, $3)
+			ON CONFLICT (email) DO UPDATE SET
+				last_login_at = now(),
+				updated_at = now(),
+				name = COALESCE(NULLIF(users.name, ''), EXCLUDED.name),
+				avatar_url = COALESCE(NULLIF(users.avatar_url, ''), EXCLUDED.avatar_url)
+			RETURNING id`,
+			email, nullString(info.Name), nullString(info.AvatarURL),
+		).Scan(&userID); err != nil {
+			return "", fmt.Errorf("auth: provision user: %w", err)
+		}
+
+		// Link the oauth account. provider_uid is globally unique: if a
+		// concurrent transaction linked this uid first, the INSERT's DO
+		// UPDATE keeps the original user_id, the mismatch is detected
+		// below, and the transaction rolls back with the link intact.
+		//
+		// tokens stays '{}': v1 makes no provider API calls after login,
+		// so there is nothing worth storing — and no secret worth leaking.
+		var linkedUserID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO oauth_accounts (user_id, provider, provider_uid, tokens)
+			VALUES ($1, $2, $3, '{}'::jsonb)
+			ON CONFLICT (provider_uid) DO UPDATE SET tokens = EXCLUDED.tokens
+			RETURNING user_id`,
+			userID, string(provider), info.ID,
+		).Scan(&linkedUserID); err != nil {
+			return "", fmt.Errorf("auth: link oauth account: %w", err)
+		}
+		if linkedUserID != userID {
+			return "", ErrOAuthAlreadyLinked
+		}
 	}
 
 	// Same session minting as OTP (internal/auth/session.go).
