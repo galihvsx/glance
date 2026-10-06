@@ -14,6 +14,8 @@ import (
 	"glance/internal/api"
 	"glance/internal/config"
 	"glance/internal/mail"
+	"glance/internal/realtime"
+	"glance/internal/service"
 	"glance/internal/store"
 	"glance/internal/ticker"
 	migrationsfs "glance/migrations"
@@ -77,9 +79,18 @@ func main() {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Realtime hub (Task 24, spec §6): in-process websocket fan-out.
+	// service.Realtime is the service layer's broadcast sink (ruling R1) —
+	// set before any route can trigger a mutation.
+	hub := realtime.NewHub()
+	service.Realtime = hub
+
 	// /api/v1/* routes land here (Tasks 5+). /ws lands here (Task 24).
 	authHandler := &api.AuthHandler{Pool: pool, Config: cfg}
 	api.RegisterAuthRoutes(e, authHandler)
+
+	wsHandler := &api.WSHandler{Pool: pool, Hub: hub}
+	api.RegisterWSRoutes(e, wsHandler)
 
 	workspaceHandler := &api.WorkspaceHandler{Pool: pool}
 	api.RegisterWorkspaceRoutes(e, workspaceHandler)

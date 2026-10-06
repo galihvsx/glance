@@ -400,6 +400,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	announceIssueCreated(wsSlug, ident, iss)
 	return iss, nil
 }
 
@@ -524,6 +525,7 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	announceIssueUpdated(wsSlug, ident, issueID, iss)
 	return iss, nil
 }
 
@@ -744,7 +746,11 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if err := deleteIssueTx(ctx, tx, projectID, ident, issueID, actorID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceIssueDeleted(wsSlug, ident, issueID)
+	return nil
 }
 
 // rebalanceSpacing is the even gap RebalanceSortOrder leaves between
@@ -944,13 +950,15 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	}
 
 	results := make([]BulkItemResult, 0, len(ids))
+	announced := make([]*Issue, 0, len(ids))
 	for i, id := range ids {
 		sp := fmt.Sprintf("bulk_item_%d", i)
 		// The savepoint name is internally generated (never user input).
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, err
 		}
-		if _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch); err != nil {
+		updated, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		if err != nil {
 			// Per-item failure: roll back this item only, record the
 			// reason, keep going.
 			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
@@ -967,9 +975,13 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 			return nil, err
 		}
 		results = append(results, BulkItemResult{ID: id, OK: true})
+		announced = append(announced, updated)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
+	}
+	for _, u := range announced {
+		announceIssueUpdated(wsSlug, ident, u.ID, u)
 	}
 	return results, nil
 }
@@ -1005,6 +1017,7 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	}
 
 	results := make([]BulkItemResult, 0, len(ids))
+	deletedIDs := make([]string, 0, len(ids))
 	for i, id := range ids {
 		sp := fmt.Sprintf("bulk_item_%d", i)
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
@@ -1025,9 +1038,13 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 			return nil, err
 		}
 		results = append(results, BulkItemResult{ID: id, OK: true})
+		deletedIDs = append(deletedIDs, id)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
+	}
+	for _, id := range deletedIDs {
+		announceIssueDeleted(wsSlug, ident, id)
 	}
 	return results, nil
 }

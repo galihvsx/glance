@@ -423,6 +423,18 @@ func triageTx(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actor
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	// One interception point for all triage actions (accept / reject /
+	// snooze / duplicate): the intake issue changed.
+	announce(
+		[]string{projectChannel(ident), workspaceChannel(wsSlug)},
+		EventIntakeUpdated,
+		map[string]any{
+			"id":          ii.ID,
+			"issue_id":    ii.IssueID,
+			"status":      ii.Status,
+			"status_name": ii.StatusName,
+		},
+	)
 	return ii, nil
 }
 

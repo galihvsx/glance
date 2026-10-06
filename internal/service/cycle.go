@@ -353,6 +353,7 @@ func UpdateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, err
 	}
 	c.ProgressSnapshot = snap
+	announceCycleUpdated(ctx, pool, c.ID, projectID, c.Status)
 	return &c, nil
 }
 
@@ -473,7 +474,11 @@ func CompleteCycle(ctx context.Context, pool *pgxpool.Pool, cycleID, projectID s
 	if err := moveIncompleteIssuesTx(ctx, tx, cycleID, projectID, endDate, now); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceCycleUpdated(ctx, pool, cycleID, projectID, "completed")
+	return nil
 }
 
 // moveIncompleteIssuesTx moves a cycle's incomplete issues (state group not

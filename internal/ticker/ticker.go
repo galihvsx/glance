@@ -35,22 +35,42 @@ type Ticker struct {
 // time.Now(), tests pass a fake.
 func (t *Ticker) RunOnce(ctx context.Context, now time.Time) error {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	type ended struct{ id, projectID string }
 
-	// Activate: upcoming cycles whose start_date has arrived.
-	if _, err := t.Pool.Exec(ctx,
+	// Activate: upcoming cycles whose start_date has arrived. RETURNING
+	// feeds the realtime fan-out (cycle.updated) via the service layer —
+	// the ticker otherwise bypasses service mutations entirely.
+	rows, err := t.Pool.Query(ctx,
 		`UPDATE cycles SET status = 'current', updated_at = now()
-		 WHERE status = 'upcoming' AND start_date <= $1::date`, today); err != nil {
+		 WHERE status = 'upcoming' AND start_date <= $1::date
+		 RETURNING id::text, project_id::text`, today)
+	if err != nil {
 		return err
+	}
+	var activated []ended
+	for rows.Next() {
+		var a ended
+		if err := rows.Scan(&a.id, &a.projectID); err != nil {
+			rows.Close()
+			return err
+		}
+		activated = append(activated, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, a := range activated {
+		service.BroadcastCycleUpdated(ctx, t.Pool, a.id, a.projectID, "current")
 	}
 
 	// Complete: live cycles whose end_date has passed.
-	rows, err := t.Pool.Query(ctx,
+	rows, err = t.Pool.Query(ctx,
 		`SELECT id::text, project_id::text FROM cycles
 		 WHERE status IN ('current', 'upcoming') AND end_date < $1::date`, today)
 	if err != nil {
 		return err
 	}
-	type ended struct{ id, projectID string }
 	var toComplete []ended
 	for rows.Next() {
 		var e ended

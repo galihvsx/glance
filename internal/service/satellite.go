@@ -457,9 +457,11 @@ func getComment(ctx context.Context, q queryRower, issueID, commentID string) (*
 // CreateComment posts a comment; parentID nests it as a reply. The parent
 // must belong to the same issue and not be deleted. Member (15)+.
 func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string, content json.RawMessage, parentID *string) (*Comment, error) {
-	if _, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID); err != nil {
+	ident, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	if err != nil {
 		return nil, err
-	} else if err := requireSatelliteWriter(role); err != nil {
+	}
+	if err := requireSatelliteWriter(role); err != nil {
 		return nil, err
 	}
 	content = bytes.TrimSpace(content)
@@ -490,7 +492,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 
 	var id string
-	err := pool.QueryRow(ctx,
+	err = pool.QueryRow(ctx,
 		`INSERT INTO comments (issue_id, parent_id, actor_id, content)
 		 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb)
 		 RETURNING id::text`,
@@ -498,7 +500,16 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if err != nil {
 		return nil, err
 	}
-	return getComment(ctx, pool, issueID, id)
+	c, err := getComment(ctx, pool, issueID, id)
+	if err != nil {
+		return nil, err
+	}
+	announce(
+		[]string{issueChannel(issueID), projectChannel(ident), workspaceChannel(wsSlug)},
+		EventCommentCreated,
+		map[string]string{"id": c.ID, "issue_id": issueID},
+	)
+	return c, nil
 }
 
 // ListComments returns the issue's comments as a nested tree, oldest
