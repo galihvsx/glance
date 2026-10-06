@@ -28,6 +28,8 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/issues", RequireAuth(h.Pool))
 	g.POST("", h.createIssue)
 	g.GET("", h.listIssues)
+	g.POST("/bulk-update", h.bulkUpdateIssues)
+	g.POST("/bulk-delete", h.bulkDeleteIssues)
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
@@ -80,6 +82,15 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "start_date must not be after target_date", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid identifier: 1-12 letters and digits", nil)
+	case errors.Is(err, service.ErrNameRequired):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+	case errors.Is(err, service.ErrNothingToUpdate):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+	// Task 17: bulk errors.
+	case errors.Is(err, service.ErrBulkEmptyIDs):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "ids is required", nil)
+	case errors.Is(err, service.ErrBulkTooManyIDs):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "too many ids: max 100", nil)
 	// Task 16: taxonomy errors.
 	case errors.Is(err, service.ErrLabelNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "label not found", nil)
@@ -132,7 +143,8 @@ func parseDateBody(field, v string) (*time.Time, error) {
 // createIssue implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues:
 // creates the issue with the next atomic sequence_id (display ID
 // {IDENTIFIER}-{sequence_id}) and a _created activity row. 201 with the
-// issue JSON.
+// issue JSON. Honors Idempotency-Key: a replayed key returns the stored
+// response byte-identical without creating a second issue.
 func (h *IssueHandler) createIssue(c *echo.Context) error {
 	var body createIssueBody
 	if err := c.Bind(&body); err != nil {
@@ -146,26 +158,25 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 	if err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid target_date: want YYYY-MM-DD", nil)
 	}
-	iss, err := service.CreateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
-		service.CreateIssueInput{
-			Name:            body.Name,
-			Description:     body.Description,
-			Priority:        body.Priority,
-			StateID:         body.StateID,
-			ParentID:        body.ParentID,
-			SortOrder:       body.SortOrder,
-			StartDate:       start,
-			TargetDate:      target,
-			EstimatePointID: body.EstimatePointID,
-			IsDraft:         body.IsDraft,
-		})
-	if err != nil {
-		if errors.Is(err, service.ErrNameRequired) {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+	return withIdempotency(c, h.Pool, "POST /issues", issueError, func() (int, any, error) {
+		iss, err := service.CreateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+			service.CreateIssueInput{
+				Name:            body.Name,
+				Description:     body.Description,
+				Priority:        body.Priority,
+				StateID:         body.StateID,
+				ParentID:        body.ParentID,
+				SortOrder:       body.SortOrder,
+				StartDate:       start,
+				TargetDate:      target,
+				EstimatePointID: body.EstimatePointID,
+				IsDraft:         body.IsDraft,
+			})
+		if err != nil {
+			return 0, nil, err
 		}
-		return issueError(c, err)
-	}
-	return c.JSON(http.StatusCreated, iss)
+		return http.StatusCreated, iss, nil
+	})
 }
 
 // listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
@@ -275,6 +286,46 @@ func toDatePatch(field string, p service.PatchField[string]) (service.PatchField
 	return service.PatchField[time.Time]{Set: true, Value: t}, nil
 }
 
+// patchFieldError is a date-parse failure on a PATCH body field.
+type patchFieldError struct{ field string }
+
+func (e *patchFieldError) Error() string { return "invalid " + e.field + ": want YYYY-MM-DD" }
+
+// bindIssuePatch converts an updateIssueBody into a service.IssuePatch,
+// preserving the tri-state semantics (nil = omitted, explicit null =
+// clear). A malformed date yields a *patchFieldError naming the field.
+func bindIssuePatch(body updateIssueBody) (service.IssuePatch, error) {
+	start, err := toDatePatch("start_date", body.StartDate)
+	if err != nil {
+		return service.IssuePatch{}, &patchFieldError{field: "start_date"}
+	}
+	target, err := toDatePatch("target_date", body.TargetDate)
+	if err != nil {
+		return service.IssuePatch{}, &patchFieldError{field: "target_date"}
+	}
+	return service.IssuePatch{
+		Name:            body.Name,
+		Description:     body.Description,
+		Priority:        body.Priority,
+		StateID:         body.StateID,
+		ParentID:        body.ParentID,
+		SortOrder:       body.SortOrder,
+		StartDate:       start,
+		TargetDate:      target,
+		EstimatePointID: body.EstimatePointID,
+		IsDraft:         body.IsDraft,
+	}, nil
+}
+
+// writePatchFieldError answers a *patchFieldError with the 400 envelope.
+func writePatchFieldError(c *echo.Context, err error) error {
+	var pfe *patchFieldError
+	if errors.As(err, &pfe) {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid "+pfe.field+": want YYYY-MM-DD", nil)
+	}
+	return WriteInternalError(c)
+}
+
 // updateIssue implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}.
 // Partial semantics: only provided fields are touched, and only actual
 // changes write activity rows. Member (15) or admin (20); the service
@@ -284,27 +335,11 @@ func (h *IssueHandler) updateIssue(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	start, err := toDatePatch("start_date", body.StartDate)
+	patch, err := bindIssuePatch(body)
 	if err != nil {
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid start_date: want YYYY-MM-DD", nil)
+		return writePatchFieldError(c, err)
 	}
-	target, err := toDatePatch("target_date", body.TargetDate)
-	if err != nil {
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid target_date: want YYYY-MM-DD", nil)
-	}
-	iss, err := service.UpdateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID,
-		service.IssuePatch{
-			Name:            body.Name,
-			Description:     body.Description,
-			Priority:        body.Priority,
-			StateID:         body.StateID,
-			ParentID:        body.ParentID,
-			SortOrder:       body.SortOrder,
-			StartDate:       start,
-			TargetDate:      target,
-			EstimatePointID: body.EstimatePointID,
-			IsDraft:         body.IsDraft,
-		})
+	iss, err := service.UpdateIssue(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID, patch)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
@@ -324,6 +359,60 @@ func (h *IssueHandler) deleteIssue(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// ---------- Task 17: bulk operations ----------
+
+type bulkUpdateBody struct {
+	IDs   []string        `json:"ids"`
+	Patch updateIssueBody `json:"patch"`
+}
+
+type bulkDeleteBody struct {
+	IDs []string `json:"ids"`
+}
+
+// bulkUpdateIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update:
+// applies one tri-state patch to many issues inside a single transaction
+// (per-item savepoints → partial success). 200 with
+// {results:[{id, ok, error?}]}. Member (15)+; the service enforces it.
+// Honors Idempotency-Key.
+func (h *IssueHandler) bulkUpdateIssues(c *echo.Context) error {
+	var body bulkUpdateBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	patch, err := bindIssuePatch(body.Patch)
+	if err != nil {
+		return writePatchFieldError(c, err)
+	}
+	return withIdempotency(c, h.Pool, "POST /issues/bulk-update", issueError, func() (int, any, error) {
+		results, err := service.BulkUpdateIssues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IDs, patch)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, map[string]any{"results": results}, nil
+	})
+}
+
+// bulkDeleteIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-delete:
+// soft-deletes many issues with the same per-item savepoint semantics as
+// bulk-update. 200 with {results:[{id, ok, error?}]}. Member (15)+.
+// Honors Idempotency-Key.
+func (h *IssueHandler) bulkDeleteIssues(c *echo.Context) error {
+	var body bulkDeleteBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	return withIdempotency(c, h.Pool, "POST /issues/bulk-delete", issueError, func() (int, any, error) {
+		results, err := service.BulkDeleteIssues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IDs)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, map[string]any{"results": results}, nil
+	})
 }
 
 // strOrEmpty dereferences an optional string body field.

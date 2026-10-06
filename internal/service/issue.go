@@ -481,14 +481,8 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if err != nil {
 		return nil, err
 	}
-	if !patch.hasFields() {
-		return nil, ErrNothingToUpdate
-	}
-	if patch.Name != nil && strings.TrimSpace(*patch.Name) == "" {
-		return nil, ErrNameRequired
-	}
-	if patch.Priority != nil && (*patch.Priority < 0 || *patch.Priority > 4) {
-		return nil, ErrInvalidPriority
+	if err := validateIssuePatch(patch); err != nil {
+		return nil, err
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -505,6 +499,36 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return nil, ErrForbidden
 	}
 
+	iss, err := updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return iss, nil
+}
+
+// validateIssuePatch rejects patches with no fields at all, blank names,
+// or out-of-range priorities before any DB work runs.
+func validateIssuePatch(patch IssuePatch) error {
+	if !patch.hasFields() {
+		return ErrNothingToUpdate
+	}
+	if patch.Name != nil && strings.TrimSpace(*patch.Name) == "" {
+		return ErrNameRequired
+	}
+	if patch.Priority != nil && (*patch.Priority < 0 || *patch.Priority > 4) {
+		return ErrInvalidPriority
+	}
+	return nil
+}
+
+// updateIssueTx is the tx-scoped core of UpdateIssue. It neither begins nor
+// commits: callers own the transaction (UpdateIssue for single updates,
+// BulkUpdateIssues wraps each item in a savepoint). Role checks stay with
+// the callers.
+func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string, patch IssuePatch) (*Issue, error) {
 	// Lock the row and read the before-image for per-field comparison.
 	old, err := scanIssue(tx.QueryRow(ctx,
 		`SELECT `+issueColumns+` FROM issues
@@ -641,10 +665,8 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if len(sets) == 0 {
 		// Fields were sent but nothing actually changed: return the
 		// current row, no activity rows. (A patch with no fields at all
-		// was already rejected above with ErrNothingToUpdate.)
-		if err := tx.Commit(ctx); err != nil {
-			return nil, err
-		}
+		// was already rejected by validateIssuePatch with
+		// ErrNothingToUpdate.) The caller commits.
 		old.DisplayID = ident + "-" + strconv.Itoa(old.SequenceID)
 		return old, nil
 	}
@@ -667,9 +689,6 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
 	updated.DisplayID = ident + "-" + strconv.Itoa(updated.SequenceID)
 	return updated, nil
 }
@@ -698,8 +717,18 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return ErrForbidden
 	}
 
+	if err := deleteIssueTx(ctx, tx, projectID, issueID, actorID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// deleteIssueTx is the tx-scoped core of DeleteIssue: soft-delete plus the
+// _deleted activity row. It neither begins nor commits — callers own the
+// transaction. Role checks stay with the callers.
+func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID string) error {
 	var id string
-	err = tx.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`UPDATE issues SET deleted_at = now(), updated_at = now()
 		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
 		 RETURNING id::text`,
@@ -718,7 +747,179 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		id, actorID, string(newVal)); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
+}
+
+// ---------- Task 17: bulk operations ----------
+
+var (
+	// ErrBulkEmptyIDs is returned when a bulk call carries no ids.
+	ErrBulkEmptyIDs = errors.New("service: bulk ids must not be empty")
+	// ErrBulkTooManyIDs is returned when a bulk call exceeds maxBulkItems.
+	ErrBulkTooManyIDs = errors.New("service: too many bulk ids")
+)
+
+// maxBulkItems caps a single bulk call — a DoS guard on the per-item
+// savepoint loop.
+const maxBulkItems = 100
+
+// BulkItemResult is the per-item outcome of a bulk call. Error is nil when
+// OK; otherwise a short human-readable reason (the item failed, the rest
+// still ran).
+type BulkItemResult struct {
+	ID    string  `json:"id"`
+	OK    bool    `json:"ok"`
+	Error *string `json:"error,omitempty"`
+}
+
+// bulkItemErrMessage maps a per-item failure to a client-facing message.
+// Unknown errors stay generic — no internals leak through bulk results.
+func bulkItemErrMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrIssueNotFound):
+		return "issue not found"
+	case errors.Is(err, ErrInvalidState):
+		return "invalid state_id: state does not exist or belongs to another project"
+	case errors.Is(err, ErrInvalidPriority):
+		return "invalid priority: must be 0-4"
+	case errors.Is(err, ErrParentNotFound):
+		return "parent issue not found"
+	case errors.Is(err, ErrInvalidParent):
+		return "invalid parent_id"
+	case errors.Is(err, ErrInvalidDateRange):
+		return "start_date must not be after target_date"
+	case errors.Is(err, ErrInvalidEstimatePoint):
+		return "invalid estimate point"
+	case errors.Is(err, ErrNameRequired):
+		return "name is required"
+	case errors.Is(err, ErrNothingToUpdate):
+		return "nothing to update"
+	default:
+		return "internal error"
+	}
+}
+
+// BulkUpdateIssues applies the same tri-state patch to many issues in ONE
+// transaction: each item runs inside its own savepoint, so a failing item
+// rolls back to its savepoint while the valid ones still commit (partial
+// success across items, atomicity per item). Member (15)+; the role is
+// checked once for the whole call.
+func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, ids []string, patch IssuePatch) ([]BulkItemResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrBulkEmptyIDs
+	}
+	if len(ids) > maxBulkItems {
+		return nil, ErrBulkTooManyIDs
+	}
+	if err := validateIssuePatch(patch); err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrForbidden
+	}
+
+	results := make([]BulkItemResult, 0, len(ids))
+	for i, id := range ids {
+		sp := fmt.Sprintf("bulk_item_%d", i)
+		// The savepoint name is internally generated (never user input).
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		if _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch); err != nil {
+			// Per-item failure: roll back this item only, record the
+			// reason, keep going.
+			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
+				return nil, rbErr
+			}
+			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); relErr != nil {
+				return nil, relErr
+			}
+			msg := bulkItemErrMessage(err)
+			results = append(results, BulkItemResult{ID: id, OK: false, Error: &msg})
+			continue
+		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		results = append(results, BulkItemResult{ID: id, OK: true})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// BulkDeleteIssues soft-deletes many issues in ONE transaction with the
+// same per-item savepoint semantics as BulkUpdateIssues: invalid or
+// already-deleted ids report per-item errors while the valid ones are
+// deleted. Member (15)+.
+func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, ids []string) ([]BulkItemResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrBulkEmptyIDs
+	}
+	if len(ids) > maxBulkItems {
+		return nil, ErrBulkTooManyIDs
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrForbidden
+	}
+
+	results := make([]BulkItemResult, 0, len(ids))
+	for i, id := range ids {
+		sp := fmt.Sprintf("bulk_item_%d", i)
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		if err := deleteIssueTx(ctx, tx, projectID, id, actorID); err != nil {
+			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
+				return nil, rbErr
+			}
+			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); relErr != nil {
+				return nil, relErr
+			}
+			msg := bulkItemErrMessage(err)
+			results = append(results, BulkItemResult{ID: id, OK: false, Error: &msg})
+			continue
+		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		results = append(results, BulkItemResult{ID: id, OK: true})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // ---------- Task 15: issue list — filters, cursor pagination, delta sync ----------
