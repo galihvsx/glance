@@ -143,3 +143,46 @@ export const PRIORITY_LABELS = ["None", "Low", "Medium", "High", "Urgent"] as co
 export function priorityLabel(p: number): string {
   return PRIORITY_LABELS[p] ?? `P${p}`;
 }
+
+/** Intake status codes (mirror of the Go SMALLINT vocabulary). */
+export const INTAKE_STATUS = {
+  pending: 0,
+  rejected: 1,
+  snoozed: 2,
+  accepted: 3,
+  duplicate: 4,
+} as const;
+
+/**
+ * One inbox item: an intake_issues row with the full issue JSON embedded
+ * under `issue`. Note the intake query does not populate
+ * assignees/labels on the embedded issue — they arrive as null, not [].
+ */
+export interface IntakeItem {
+  id: string;
+  issue_id: string;
+  issue?: {
+    id: string;
+    display_id: string;
+    name: string;
+    created_at: string;
+  } | null;
+  status: number;
+  status_name: string;
+  snoozed_till?: string | null;
+  duplicate_to_id?: string | null;
+  created_at: string;
+}
+
+/** GET .../intake envelope. */
+export interface IntakeInbox {
+  intake: {
+    id: string;
+    project_id: string;
+    name: string;
+    is_default: boolean;
+  };
+  items: IntakeItem[];
+  /** Still-snoozed items (snoozed_till in the future), ordered by wake-up. */
+  snoozed: IntakeItem[];
+}

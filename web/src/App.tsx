@@ -7,6 +7,7 @@ import Workspaces from "./pages/Workspaces";
 import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
 import IssueDetail from "./pages/IssueDetail";
+import Intake from "./pages/Intake";
 
 export default function App() {
   return (
@@ -22,6 +23,10 @@ export default function App() {
               <Route
                 path="/w/:slug/p/:identifier/i/:uuid"
                 element={<IssueDetail />}
+              />
+              <Route
+                path="/w/:slug/p/:identifier/intake"
+                element={<Intake />}
               />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

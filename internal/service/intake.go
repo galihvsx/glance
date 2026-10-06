@@ -255,6 +255,16 @@ func ListIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	}
 	defer rows.Close()
 
+	out, err := scanIntakeIssues(rows, ident)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// scanIntakeIssues scans the shared intake_issues + issues column list
+// (SELECT must list the intake columns first, then issueColumnsI).
+func scanIntakeIssues(rows pgx.Rows, ident string) ([]IntakeIssue, error) {
 	out := []IntakeIssue{}
 	for rows.Next() {
 		var ii IntakeIssue
@@ -284,6 +294,45 @@ func ListIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		return nil, err
 	}
 	return out, nil
+}
+
+// ListSnoozedIntakeIssues returns the still-snoozed inbox items: status
+// snoozed with snoozed_till in the future. Ordered by snoozed_till ASC —
+// the one waking up soonest first. Any workspace member may read.
+// (Task 21: powers the web inbox's "Snoozed" section; the main inbox
+// query deliberately excludes these.)
+func ListSnoozedIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, limit int) ([]IntakeIssue, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT ii.id::text, ii.issue_id::text, ii.status, ii.snoozed_till,
+		        ii.duplicate_to_id::text, ii.created_at, `+issueColumnsI+`
+		 FROM intake_issues ii
+		 JOIN intake t ON t.id = ii.intake_id AND t.is_default AND t.project_id = $1::uuid
+		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL
+		 WHERE ii.status = $2 AND ii.snoozed_till > now()
+		 ORDER BY ii.snoozed_till ASC
+		 LIMIT $3`,
+		projectID, IntakeSnoozed, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanIntakeIssues(rows, ident)
 }
 
 // intakeRow is the locked triage row plus the issue's liveness.

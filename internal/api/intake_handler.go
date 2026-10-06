@@ -67,7 +67,14 @@ func (h *IssueHandler) getIntake(c *echo.Context) error {
 		}
 		return issueError(c, err)
 	}
-	return c.JSON(http.StatusOK, map[string]any{"intake": in, "items": items})
+	snoozed, err := service.ListSnoozedIntakeIssues(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, perPage)
+	if err != nil {
+		if handled, out := intakeError(c, err); handled {
+			return out
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"intake": in, "items": items, "snoozed": snoozed})
 }
 
 // acceptIntakeIssue implements POST .../intake/issues/{uuid}/accept.

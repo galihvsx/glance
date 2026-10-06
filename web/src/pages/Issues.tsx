@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
   useMutation,
@@ -99,6 +99,7 @@ export default function Issues() {
     identifier: string;
   }>();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [searchInput, setSearchInput] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -220,7 +221,14 @@ export default function Issues() {
             Issues for this project.
           </p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/w/${slug}/p/${identifier}/intake`)}
+          >
+            Intake inbox
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <Button onClick={() => setDialogOpen(true)} className="gap-2">
             <Plus className="h-4 w-4" />
             New issue
@@ -287,7 +295,8 @@ export default function Issues() {
               </DialogFooter>
             </form>
           </DialogContent>
-        </Dialog>
+          </Dialog>
+        </div>
       </div>
 
       {/* Filter toolbar */}
