@@ -1,9 +1,9 @@
 package api
 
 // Issue HTTP endpoint tests (Task 14): create → 201 with derived display_id,
-// get → 200, partial PATCH (tri-state parent_id clear), delete → 204 then
-// 404, and the spec §5 error envelope on a missing issue. Real test
-// database, no skips.
+// get → 200, partial PATCH (tri-state description clear and parent_id
+// clear through the JSON layer), delete → 204 then 404, and the spec §5
+// error envelope on a missing issue. Real test database, no skips.
 
 import (
 	"encoding/json"
@@ -103,6 +103,44 @@ func TestIssueHTTPCRUD(t *testing.T) {
 	}
 	if len(got.Description) != 0 {
 		t.Fatalf("description after explicit null: %s, want cleared", got.Description)
+	}
+
+	// PATCH explicit null parent_id clears it (tri-state through JSON):
+	// create a parent, create a child with parent_id, clear it, and the
+	// key must disappear from the JSON (omitempty) — i.e. the column is
+	// SQL NULL, not a dangling reference.
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookie, `{"name":"Parent issue"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create parent issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var parent struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parent); err != nil {
+		t.Fatalf("decode parent: %v", err)
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"name":"Child issue","parent_id":"`+parent.ID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create child issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var child struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &child); err != nil {
+		t.Fatalf("decode child: %v", err)
+	}
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+child.ID, cookie, `{"parent_id":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear parent_id: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+child.ID, cookie)
+	var childMap map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &childMap); err != nil {
+		t.Fatalf("decode child after clear: %v", err)
+	}
+	if _, present := childMap["parent_id"]; present {
+		t.Fatalf("parent_id still present after explicit null: %v", childMap["parent_id"])
 	}
 
 	// PATCH {} → 400 bad_request (ErrNothingToUpdate).

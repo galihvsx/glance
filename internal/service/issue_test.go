@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -314,5 +315,118 @@ func TestGetIssueNotFoundDistinct(t *testing.T) {
 	// Missing project stays ErrProjectNotFound.
 	if _, err := GetIssue(ctx, pool, ws.Slug, "NOPE", "00000000-0000-0000-0000-000000000000", creator); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("missing project: err = %v, want ErrProjectNotFound", err)
+	}
+}
+
+func TestPatchTriStateClear(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("issue-clear"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-clear"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	// Set up: a child issue with parent_id and both dates populated.
+	parent := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "Parent")
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	target := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+	iss, err := CreateIssue(ctx, pool, ws.Slug, p.Identifier, creator, CreateIssueInput{
+		Name: "Child", ParentID: &parent.ID, StartDate: &start, TargetDate: &target,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if iss.ParentID == nil || *iss.ParentID != parent.ID {
+		t.Fatalf("child parent_id = %v, want %s", iss.ParentID, parent.ID)
+	}
+	if iss.StartDate == nil || iss.TargetDate == nil {
+		t.Fatal("child dates not populated")
+	}
+
+	before := countActivities(t, pool, iss.ID, "")
+
+	// Explicit null (Set=true, Value=nil) clears all three — this is the
+	// subtle path: a typed-nil *string / *time.Time rides as the SET arg,
+	// and pgx must encode it as SQL NULL, not 500.
+	updated, err := UpdateIssue(ctx, pool, ws.Slug, p.Identifier, iss.ID, creator, IssuePatch{
+		ParentID:   PatchField[string]{Set: true},
+		StartDate:  PatchField[time.Time]{Set: true},
+		TargetDate: PatchField[time.Time]{Set: true},
+	})
+	if err != nil {
+		t.Fatalf("UpdateIssue clear: %v", err)
+	}
+	if updated.ParentID != nil || updated.StartDate != nil || updated.TargetDate != nil {
+		t.Fatalf("after clear: parent=%v start=%v target=%v, want all nil",
+			updated.ParentID, updated.StartDate, updated.TargetDate)
+	}
+
+	// The columns must be SQL NULL in the database — not empty strings,
+	// not zero dates, not JSON null.
+	var parentNull, startNull, targetNull bool
+	if err := pool.QueryRow(ctx,
+		`SELECT parent_id IS NULL, start_date IS NULL, target_date IS NULL
+		 FROM issues WHERE id = $1::uuid`,
+		iss.ID).Scan(&parentNull, &startNull, &targetNull); err != nil {
+		t.Fatalf("read cleared columns: %v", err)
+	}
+	if !parentNull || !startNull || !targetNull {
+		t.Fatalf("SQL NULL flags = %v/%v/%v, want true/true/true", parentNull, startNull, targetNull)
+	}
+
+	// One activity row per cleared field (3 new rows on top of _created),
+	// and new_value is SQL NULL (the field records "cleared").
+	if got := countActivities(t, pool, iss.ID, ""); got-before != 3 {
+		t.Fatalf("new activity rows = %d, want 3", got-before)
+	}
+	for _, field := range []string{"parent_id", "start_date", "target_date"} {
+		var newVal any
+		if err := pool.QueryRow(ctx,
+			`SELECT new_value FROM issue_activities
+			 WHERE issue_id = $1::uuid AND field = $2`,
+			iss.ID, field).Scan(&newVal); err != nil {
+			t.Fatalf("read %s activity: %v", field, err)
+		}
+		if newVal != nil {
+			t.Fatalf("%s activity new_value = %v, want SQL NULL", field, newVal)
+		}
+	}
+
+	// Clearing an already-clear field changes nothing and logs nothing
+	// (before/after compare).
+	before = countActivities(t, pool, iss.ID, "")
+	if _, err := UpdateIssue(ctx, pool, ws.Slug, p.Identifier, iss.ID, creator, IssuePatch{
+		ParentID: PatchField[string]{Set: true},
+	}); err != nil {
+		t.Fatalf("re-clear UpdateIssue: %v", err)
+	}
+	if got := countActivities(t, pool, iss.ID, ""); got != before {
+		t.Fatalf("re-clear logged %d rows, want 0", got-before)
+	}
+}
+
+func TestCreateIssueSelfHealsMissingSequenceRow(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("issue-heal"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-heal"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	// Simulate a hand-inserted project or a failed backfill: drop the
+	// counter row entirely.
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM issue_sequences WHERE project_id = $1::uuid`, p.ID); err != nil {
+		t.Fatalf("delete sequence row: %v", err)
+	}
+
+	// Create must self-heal via the upsert: sequence starts at 1 instead
+	// of 500ing every create for the project.
+	a := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "First")
+	b := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "Second")
+	if a.SequenceID != 1 || b.SequenceID != 2 {
+		t.Fatalf("sequence_ids = %d,%d, want 1,2", a.SequenceID, b.SequenceID)
 	}
 }

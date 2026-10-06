@@ -2,8 +2,9 @@
 --
 -- issues.sequence_id is the per-project counter behind display IDs
 -- (ENG-123); it is UNIQUE per project as a backstop — the atomic
--- increment itself is UPDATE issue_sequences ... RETURNING in the service
--- layer (single row lock, gapless under concurrency).
+-- increment itself is an atomic INSERT ... ON CONFLICT DO UPDATE in the
+-- service layer (single row lock, gapless under concurrency, self-healing
+-- when the counter row is missing).
 -- issue_sequences rows are seeded at project creation (service.CreateProject)
 -- and backfilled below for projects predating this migration.
 -- issues.estimate_point_id has NO FK yet: estimate_points lands in

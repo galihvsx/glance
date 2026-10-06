@@ -249,8 +249,9 @@ func checkParentIssue(ctx context.Context, q queryRower, projectID, parentID str
 }
 
 // CreateIssue inserts an issue inside one transaction: the sequence counter
-// is incremented atomically (UPDATE ... RETURNING takes the row lock, so
-// concurrent creates serialize — gapless, no duplicates), then the issue
+// is incremented atomically (INSERT ... ON CONFLICT DO UPDATE takes the row
+// lock, so concurrent creates serialize — gapless, no duplicates — and a
+// missing counter row self-heals instead of failing), then the issue
 // row and its _created activity row commit together. The caller must be a
 // workspace member (15) or admin (20); guests get ErrForbidden, non-members
 // ErrNotFound.
@@ -313,14 +314,19 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		parentID = &pid
 	}
 
-	// Atomic sequence increment. The counter row is seeded at project
-	// creation (and backfilled by migration 000007 for older projects),
-	// so this is unconditional: the UPDATE takes the row lock, concurrent
-	// creates serialize, sequence_ids come out gapless.
+	// Atomic sequence increment, self-healing if the counter row is ever
+	// missing (hand-inserted project, failed backfill, a future path
+	// bypassing CreateProject). The INSERT ... ON CONFLICT ... DO UPDATE
+	// serializes exactly like the bare UPDATE did: when the row exists the
+	// arbiter matches and DO UPDATE takes the row lock, so concurrent
+	// creates serialize; when it is absent one inserter wins and the
+	// losers re-evaluate to the DO UPDATE branch on commit. Either way
+	// sequence_ids come out gapless with no duplicates, and a missing row
+	// inserts last_value=1 instead of 500ing every create for the project.
 	var seq int
 	if err := tx.QueryRow(ctx,
-		`UPDATE issue_sequences SET last_value = last_value + 1
-		 WHERE project_id = $1::uuid
+		`INSERT INTO issue_sequences (project_id, last_value) VALUES ($1::uuid, 1)
+		 ON CONFLICT (project_id) DO UPDATE SET last_value = issue_sequences.last_value + 1
 		 RETURNING last_value`,
 		projectID).Scan(&seq); err != nil {
 		return nil, fmt.Errorf("service: increment issue sequence: %w", err)
