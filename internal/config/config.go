@@ -20,6 +20,11 @@ type Config struct {
 	SMTPUser     string
 	SMTPPassword string
 	SMTPFrom     string
+	// OTPPepper is the server-side secret mixed into OTP code hashes
+	// (SHA-256(pepper + code)). The spec does not name it; this dedicated
+	// env var keeps it out of every other secret's blast radius.
+	// Required in production — an empty pepper weakens code hashing.
+	OTPPepper string
 }
 
 func getenv(key, def string) string {
@@ -40,6 +45,7 @@ func Load() (*Config, error) {
 		SMTPUser:     os.Getenv("SMTP_USER"),
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
+		OTPPepper:    os.Getenv("OTP_PEPPER"),
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("config: DATABASE_URL is required")

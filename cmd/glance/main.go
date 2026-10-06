@@ -44,6 +44,12 @@ func main() {
 	})
 
 	// /api/v1/* routes land here (Tasks 5+). /ws lands here (Task 24).
+	authHandler := &api.AuthHandler{Pool: pool, Config: cfg}
+	api.RegisterAuthRoutes(e, authHandler)
+
+	if cfg.OTPPepper == "" {
+		log.Println("glance: WARNING: OTP_PEPPER is not set — OTP code hashes are weaker without it; set it in production")
+	}
 
 	// SPA catch-all goes LAST so it never shadows API or health routes.
 	if err := api.RegisterSPA(e); err != nil {

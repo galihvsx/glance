@@ -3,8 +3,10 @@ package mail
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +15,16 @@ import (
 	"glance/internal/store"
 	"glance/migrations"
 )
+
+// testSeq hands out process-unique sequence numbers so parallel test
+// packages sharing one database never collide on keys.
+var testSeq atomic.Int64
+
+// uniqueAddr returns a recipient address unique to this test run across all
+// packages (PID differs per test binary, sequence per call).
+func uniqueAddr(prefix string) string {
+	return fmt.Sprintf("%s-%d-%d@example.com", prefix, os.Getpid(), testSeq.Add(1))
+}
 
 // newTestPool opens a real pool against TEST_DATABASE_URL. The database is
 // available in this environment, so an unset URL is a hard failure —
@@ -31,16 +43,15 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// migrateTestDB applies the real migrations and empties the outbox so each
-// test starts from a known state.
+// migrateTestDB applies the real migrations. It deliberately does NOT
+// truncate any table: test packages run in parallel against one shared
+// database, so each test uses unique keys and filters its assertions to
+// its own rows instead of assuming a clean slate.
 func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatalf("Migrate: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `TRUNCATE outbox`); err != nil {
-		t.Fatalf("truncate outbox: %v", err)
 	}
 }
 
