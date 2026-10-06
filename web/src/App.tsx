@@ -1,17 +1,21 @@
-// Placeholder app shell — real routes, layout and shadcn components
-// arrive in later tasks (Task 4 sets up the design system).
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "./lib/auth";
+import ProtectedRoute from "./components/ProtectedRoute";
+import Login from "./pages/Login";
+import Home from "./pages/Home";
+
 export default function App() {
   return (
-    <div className="flex min-h-full items-center justify-center bg-neutral-950">
-      <div className="text-center">
-        <h1 className="text-3xl font-semibold tracking-tight text-neutral-50">
-          glance
-        </h1>
-        <p className="mt-2 text-sm text-neutral-400">
-          Lean, self-hosted issue tracking. The app shell is loading — UI
-          arrives in the next tasks.
-        </p>
-      </div>
-    </div>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route element={<ProtectedRoute />}>
+            <Route path="/" element={<Home />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
