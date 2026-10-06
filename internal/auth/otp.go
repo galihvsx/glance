@@ -39,22 +39,35 @@ const (
 	// attempt budget (otpMaxAttempts = 5) and the request budget
 	// (otpMaxPerEmail = 5).
 	//
-	// The real threat, confirmed by reading VerifyOTP below: every wrong
-	// guess that passes the rate limit increments the victim code's
-	// `attempts` counter (FOR UPDATE-serialized), and 5 wrong guesses burn
-	// the code. An attacker who knows the victim's email can therefore burn
-	// codes out from under the victim — with a 20/hr verify budget the
-	// attacker could kill up to 4 of the victim's 5 requestable codes per
-	// hour (a near-total login DoS), and a per-cycle race (5 rapid guesses
-	// timed right after the victim requests) kills the exact code the
-	// victim is about to type.
+	// TRUE INVARIANT (round-2 correction — the round-1 comment's
+	// "mathematically impossible" claim was false): the verify:email:
+	// budget is consumed if and only if the guess is evaluated against a
+	// LIVE code row (the newest unconsumed, unexpired code for the email,
+	// locked FOR UPDATE). The budget check sits AFTER the code lookup, so:
 	//
-	// With the budget aligned at 5/hr/email the attacker's ENTIRE hourly
-	// budget can burn at most ONE code, while the victim can request five:
-	// persistent denial is mathematically impossible (floor(5/5) = 1 < 5).
-	// Guesses past the budget are rejected BEFORE the code lookup, so
-	// rate-limited attempts never consume code attempts (pinned by
-	// TestVerifyBudgetExhaustionDoesNotBurnFreshCode).
+	//   - Squat guesses — verify calls for an email with no live code row
+	//     (nothing requested, expired, already consumed/burned) — return
+	//     ErrInvalidCode WITHOUT consuming the email's budget. Five squat
+	//     guesses/hr against a victim's email spend only the attacker's
+	//     own verify:ip: budget; the victim's subsequent request + correct
+	//     verify succeeds (pinned by
+	//     TestVerifySquatGuessesDoNotConsumeEmailBudget). The round-1
+	//     placement (budget check before the lookup) made this a cheap,
+	//     repeatable login DoS — the 20→5 alignment alone did not fix it.
+	//
+	//   - Guesses that DO reach a live row consume one unit of the email
+	//     budget AND one code attempt (spec §7's 5-attempt burn is
+	//     untouched). Guesses rejected as over-budget return BEFORE the
+	//     attempt increment, so they never consume code attempts (pinned by
+	//     TestVerifyBudgetExhaustionDoesNotBurnFreshCode).
+	//
+	// NOT guaranteed by this mechanism: 5 wrong guesses against a LIVE
+	// code still burn the code (spec §7 mandates the burn) and spend the
+	// email's 5/hr verify budget, so the email cannot verify again until
+	// the fixed window resets (worst case < 1h). The attacker's entire
+	// hourly email budget buys at most one burned code — this is the
+	// accepted round-1 tradeoff, and a later verify attempt surfaces
+	// ErrRateLimited (429) rather than failing silently.
 	//
 	// Considered and rejected: dropping the 5-attempt burn (spec §7
 	// mandates it); binding burns to the request IP (mobile/CGNAT IP churn
@@ -85,11 +98,20 @@ var ErrRateLimited = errors.New("auth: OTP rate limit exceeded")
 // hit (no enumeration).
 var ErrInvalidCode = errors.New("auth: invalid or expired code")
 
+// rateQuerier is satisfied by *pgxpool.Pool and pgx.Tx — the budget
+// check can run either outside a transaction (pool) or inside one (tx).
+type rateQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // checkRateLimit applies a fixed-window counter from the rate_limits table.
 // The increment is a single atomic statement, safe across instances.
-func checkRateLimit(ctx context.Context, pool *pgxpool.Pool, key string, limit int) error {
+// When run on a tx, the increment commits or rolls back with the tx —
+// callers must account for that (a rolled-back increment is as if the
+// check never ran, which is exactly right for rejected guesses).
+func checkRateLimit(ctx context.Context, db rateQuerier, key string, limit int) error {
 	var count int
-	err := pool.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		INSERT INTO rate_limits (key, window_start, count)
 		VALUES ($1, now(), 1)
 		ON CONFLICT (key) DO UPDATE SET
@@ -143,7 +165,13 @@ func RequestOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, ema
 		return nil
 	}
 
-	if err := checkRateLimit(ctx, pool, "otp:email:"+email, otpMaxPerEmail); err != nil {
+	// The request budget is keyed per (email, IP): an attacker burning
+	// requests for a victim's email from their own IP spends only their
+	// own (email, IP) bucket — the victim's bucket from their own IP is
+	// untouched, so the victim can always request a fresh code (round-2
+	// fix; pinned by TestRequestOTPPerEmailIPBucketIsolation). The
+	// per-IP bucket (20/hr) remains the global anti-spam shield.
+	if err := checkRateLimit(ctx, pool, "otp:emailip:"+email+":"+ip, otpMaxPerEmail); err != nil {
 		return err
 	}
 	if err := checkRateLimit(ctx, pool, "otp:ip:"+ip, otpMaxPerIP); err != nil {
@@ -206,13 +234,18 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 		return "", ErrInvalidCode
 	}
 
-	// Throttle the verify path (Task 7 review fix). Key namespaces are
-	// distinct from the request endpoint ("verify:" vs "otp:") so the two
-	// budgets never eat each other. Checked here — inside VerifyOTP rather
-	// than the handler — so every caller gets the protection.
-	if err := checkRateLimit(ctx, pool, "verify:email:"+email, otpVerifyMaxPerEmail); err != nil {
-		return "", err
-	}
+	// Throttle the verify path (Task 7 review fix). The verify:ip: budget
+	// is the cheap pre-lookup shield: it bounds total guess volume per IP
+	// (20/hr) before we touch the database.
+	//
+	// The verify:email: budget is deliberately NOT checked here. It is
+	// consumed only when the guess reaches a live code row (see below) —
+	// checking it before the lookup let attackers squat the victim's
+	// entire budget with guesses against no live code (round-2 fix).
+	// Key namespaces are distinct from the request endpoint ("verify:"
+	// vs "otp:") so the two budgets never eat each other. Checked here —
+	// inside VerifyOTP rather than the handler — so every caller gets the
+	// protection.
 	if err := checkRateLimit(ctx, pool, "verify:ip:"+ip, otpVerifyMaxPerIP); err != nil {
 		return "", err
 	}
@@ -234,9 +267,31 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 	).Scan(&codeID, &codeHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			// No live code row (nothing requested, expired, or already
+			// consumed/burned): the guess is invalid, and — critically —
+			// the email's verify budget is NOT consumed. This is the
+			// round-2 fix: budget squatting is impossible because there
+			// is no budget to squat without a live row.
 			return "", ErrInvalidCode
 		}
 		return "", fmt.Errorf("auth: lookup otp code: %w", err)
+	}
+
+	// The guess reached a live code row: NOW consume the email's verify
+	// budget. Over-budget guesses return here — after the lookup but
+	// before the hash comparison and the attempt increment — so they never
+	// consume code attempts.
+	//
+	// The check runs on the tx, not the pool: VerifyOTP already holds a
+	// tx connection here (FOR UPDATE row lock), and acquiring a second
+	// pool connection while holding the first deadlocks under pool
+	// pressure (pgxpool default MaxConns is small; N concurrent verifies
+	// would each hold one conn while waiting for another). On the tx the
+	// increment is atomic with the attempt update — both commit or both
+	// roll back — and a rejected (rolled-back) guess simply doesn't
+	// consume budget, which is the desired semantics.
+	if err := checkRateLimit(ctx, tx, "verify:email:"+email, otpVerifyMaxPerEmail); err != nil {
+		return "", err
 	}
 
 	// Constant-time comparison against the stored hash (spec §7). A corrupt

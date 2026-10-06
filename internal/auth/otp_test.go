@@ -268,15 +268,15 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 		}
 	}
 
-	// The code is burned: even the CORRECT code now fails. Note it fails
-	// with ErrRateLimited, not ErrInvalidCode — the 5 wrong guesses spent
-	// the email's entire aligned verify budget (Task 28: 5/hr), so the 6th
-	// call is rejected before the code lookup. The burn itself is intact
-	// (attempts = 5, consumed_at set): the attacker's budget is exhausted
-	// AND the code is dead — no further guesses are processed either way.
+	// The code is burned: even the CORRECT code now fails. It fails with
+	// ErrInvalidCode, not ErrRateLimited — the budget check now lives
+	// AFTER the code lookup (round-2 fix), and a burned code means there
+	// is no live row, so the guess is answered as invalid without
+	// consulting the budget. (The email's budget IS spent — 5/5, pinned
+	// below — so a guess against a live row would 429 here instead.)
 	_, err := VerifyOTP(ctx, pool, cfg, email, "123456", "test-agent", ip)
-	if !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("correct code after budget exhaustion: err = %v, want ErrRateLimited", err)
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("correct code after burn: err = %v, want ErrInvalidCode", err)
 	}
 
 	var attempts int
@@ -291,6 +291,18 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 	}
 	if consumedAt == nil {
 		t.Errorf("consumed_at = NULL, want set (code burned)")
+	}
+
+	// The 5 wrong guesses each reached a live row, so the email's verify
+	// budget is spent exactly 5/5 — live-code guesses still consume.
+	var budget int
+	if err := pool.QueryRow(ctx,
+		`SELECT count FROM rate_limits WHERE key = $1`, "verify:email:"+email,
+	).Scan(&budget); err != nil {
+		t.Fatalf("query email budget: %v", err)
+	}
+	if budget != 5 {
+		t.Errorf("verify:email: budget count = %d, want exactly 5", budget)
 	}
 }
 
@@ -338,6 +350,87 @@ func TestVerifyBudgetExhaustionDoesNotBurnFreshCode(t *testing.T) {
 	}
 	if consumedAt != nil {
 		t.Errorf("fresh code consumed_at set — rate-limited guess burned a code it never reached")
+	}
+}
+
+// TestVerifySquatGuessesDoNotConsumeEmailBudget is the round-2 regression
+// test for Critical #1: 5 verify guesses against an email with NO live
+// code row must not consume the email's verify budget. Pre-fix, each
+// checkRateLimit call incremented unconditionally, so 5 squat guesses
+// spent the victim's entire 5/hr budget and the victim's subsequent
+// correct verify was rejected with ErrRateLimited — a cheap, repeatable
+// login DoS. Post-fix, the budget is consumed only when the guess reaches
+// a live code row.
+func TestVerifySquatGuessesDoNotConsumeEmailBudget(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("verify-squat")
+	ip := uniqueIP()
+
+	// 5 squat guesses: no code row exists for this email at all.
+	for i := 0; i < 5; i++ {
+		if _, err := VerifyOTP(ctx, pool, cfg, email, "000000", "test-agent", ip); !errors.Is(err, ErrInvalidCode) {
+			t.Fatalf("squat guess %d: err = %v, want ErrInvalidCode (not ErrRateLimited)", i+1, err)
+		}
+	}
+
+	// The victim's email budget must be untouched — no rate_limits row.
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM rate_limits WHERE key = $1`, "verify:email:"+email,
+	).Scan(&n); err != nil {
+		t.Fatalf("count rate_limits: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rate_limits rows for squatted email = %d, want 0 (squat guesses must not consume budget)", n)
+	}
+
+	// Victim requests a code and verifies with the CORRECT code: must
+	// succeed — pre-fix this returned ErrRateLimited.
+	insertTestCode(t, pool, email, "654321", 0)
+	token, err := VerifyOTP(ctx, pool, cfg, email, "654321", "test-agent", uniqueIP())
+	if err != nil {
+		t.Fatalf("correct verify after squat: err = %v, want success", err)
+	}
+	if token == "" {
+		t.Errorf("empty session token after correct verify")
+	}
+}
+
+// TestRequestOTPPerEmailIPBucketIsolation is the round-2 regression test
+// for Important #2: the request budget is keyed per (email, IP), so an
+// attacker burning requests for the victim's email from the attacker's IP
+// spends only the attacker's own bucket — the victim requesting from their
+// own IP is unaffected. Pre-fix the key was per-email, so 5 attacker
+// requests locked the victim out of requesting a fresh code.
+func TestRequestOTPPerEmailIPBucketIsolation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	cfg := testConfig()
+
+	email := uniqueEmail("otp-squat")
+	attackerIP := uniqueIP()
+	victimIP := uniqueIP()
+
+	// Attacker burns the (victim email, attacker IP) bucket: 5 requests.
+	for i := 0; i < 5; i++ {
+		if err := RequestOTP(ctx, pool, cfg, email, attackerIP); err != nil {
+			t.Fatalf("attacker request %d: %v", i+1, err)
+		}
+	}
+	// The attacker's own bucket is spent…
+	if err := RequestOTP(ctx, pool, cfg, email, attackerIP); err != ErrRateLimited {
+		t.Fatalf("attacker 6th request: err = %v, want ErrRateLimited", err)
+	}
+
+	// …but the victim, requesting the same email from their own IP, is
+	// unaffected.
+	if err := RequestOTP(ctx, pool, cfg, email, victimIP); err != nil {
+		t.Fatalf("victim request from own IP: err = %v, want success", err)
 	}
 }
 
@@ -488,11 +581,12 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Task 28: the aligned verify budget (5/hr/email) admits exactly 5 of
-	// the 10 concurrent guesses; the rest are rate-limited BEFORE the code
-	// lookup. Both the limiter and the attempt counter are atomic, so the
-	// split is exactly 5/5 and the code's attempts land on exactly 5 — no
-	// lost updates, no double-count past the burn.
+	// Round 2: the email budget admits exactly the guesses that reach a
+	// live code row. The FOR UPDATE row lock serializes the 10 concurrent
+	// guesses; the first 5 consume budget and attempts 1..5 (burning the
+	// code), the rest find no live row. Both the limiter and the attempt
+	// counter are atomic, so attempts land on exactly 5 — no lost updates,
+	// no double-count past the burn — and the budget count is exactly 5.
 	var invalid, limited int
 	for i, err := range errs {
 		switch {
@@ -504,8 +598,15 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 			t.Fatalf("goroutine %d: err = %v, want ErrInvalidCode or ErrRateLimited", i, err)
 		}
 	}
-	if invalid != 5 || limited != 5 {
-		t.Fatalf("invalid=%d limited=%d, want exactly 5 and 5", invalid, limited)
+	// Round-2 semantics: the email budget is consumed only by guesses that
+	// reach a live code row. The first 5 guesses (in row-lock order) reach
+	// the live row, consume budget 1..5, and burn the code on the 5th
+	// attempt; the remaining 5 find no live row and are answered invalid
+	// WITHOUT consuming budget. All 10 therefore return ErrInvalidCode —
+	// the old exact 5/5 split was an artifact of the pre-lookup budget
+	// check, which is exactly what made budget squatting possible.
+	if invalid != 10 || limited != 0 {
+		t.Fatalf("invalid=%d limited=%d, want exactly 10 and 0", invalid, limited)
 	}
 
 	var attempts int
@@ -520,5 +621,17 @@ func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 	}
 	if consumedAt == nil {
 		t.Errorf("consumed_at = NULL, want set (code burned)")
+	}
+
+	// The limiter is still race-safe under the new ordering: exactly the 5
+	// live-row guesses consumed budget — the 5 post-burn guesses did not.
+	var budget int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count FROM rate_limits WHERE key = $1`, "verify:email:"+email,
+	).Scan(&budget); err != nil {
+		t.Fatalf("query email budget: %v", err)
+	}
+	if budget != 5 {
+		t.Errorf("verify:email: budget count = %d, want exactly 5", budget)
 	}
 }

@@ -243,19 +243,28 @@ func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 // 28 decision) must trip even when the attacker rotates IPs, breaking the
 // code-burn loop: the attacker's whole hourly budget burns at most one
 // code while the victim can request five.
+//
+// Round-2 note: the email budget is consumed only by guesses that reach a
+// live code row, so each wrong guess here is preceded by a FRESH code
+// insert — otherwise the 5th guess would burn the single code and the 6th
+// would find no live row (401) instead of tripping the budget (429). The
+// intent is unchanged: 5 live-row guesses spend the budget, the 6th 429s.
 func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
 	pool := newTestPool(t)
 	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-verify-rl-email")
-	insertVerifyCode(t, pool, email, "123456")
 
 	for i := 0; i < 5; i++ {
+		insertVerifyCode(t, pool, email, "123456")
 		if rec := postVerifyFrom(t, e, email, "000000", uniqueIP()); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("verify %d: status = %d, want 401", i+1, rec.Code)
 		}
 	}
+	// A live row still exists (the 5th code has only 1 attempt), but the
+	// email's 5/hr budget is spent: the 6th guess must 429.
+	insertVerifyCode(t, pool, email, "123456")
 	rec := postVerifyFrom(t, e, email, "000000", uniqueIP())
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("6th verify for same email in an hour: status = %d, want 429", rec.Code)
