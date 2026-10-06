@@ -14,6 +14,7 @@ import type {
   Member,
 } from "../lib/types";
 import { tiptapText } from "../lib/tiptap";
+import { useProjectRealtime } from "../lib/realtime";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
@@ -213,6 +214,11 @@ export default function IssueDetail() {
 
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
+
+  // Realtime: issue channel for this issue (comments, concurrent edits) on
+  // top of the project channel from ProjectScope. Resync-on-reconnect is
+  // owned by ProjectScope.
+  useProjectRealtime({ slug, identifier, issueUuid: uuid });
 
   const issueQuery = useQuery({
     queryKey: issueKey,

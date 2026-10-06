@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
   useMutation,
@@ -29,6 +29,7 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
+import { Kbd } from "../components/ui/kbd";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import {
@@ -43,6 +44,7 @@ import IssueCard from "../components/issue/IssueCard";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
+import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
 
 const PER_PAGE = 25;
 
@@ -101,9 +103,25 @@ export default function Issues() {
   }>();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [searchInput, setSearchInput] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [selected, setSelected] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Opened from the command palette ("Create issue" action).
+  useEffect(() => {
+    if ((location.state as { newIssue?: boolean } | null)?.newIssue) {
+      setDialogOpen(true);
+      navigate(location.pathname, { replace: true });
+    }
+    // Only on mount — the replace clears state so this can't loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useShortcutAction("new-issue", () => setDialogOpen(true));
+  useShortcutAction("focus-search", () => searchRef.current?.focus());
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [newPriority, setNewPriority] = useState(0);
@@ -197,6 +215,34 @@ export default function Issues() {
 
   const issues = issuesQuery.data?.pages.flatMap((p) => p.results) ?? [];
   const states = statesQuery.data ?? [];
+  const selectedId = issues[selected]?.id;
+
+  // j/k move the list selection; Enter opens the selected issue.
+  useEffect(() => {
+    setSelected(0);
+  }, [issuesQuery.data]);
+  useShortcutAction("next-item", () =>
+    setSelected((s) => Math.min(s + 1, Math.max(issues.length - 1, 0))),
+  );
+  useShortcutAction("prev-item", () =>
+    setSelected((s) => Math.max(s - 1, 0)),
+  );
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === "Enter" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !isTypingTarget(e.target) &&
+        selectedId
+      ) {
+        navigate(`/w/${slug}/p/${identifier}/i/${selectedId}`);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedId, navigate, slug, identifier]);
 
   return (
     <div className="mx-auto w-full max-w-4xl p-6">
@@ -219,7 +265,13 @@ export default function Issues() {
             )}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Issues for this project.
+            Issues for this project.{" "}
+            <span className="hidden sm:inline">
+              Press <Kbd className="mx-0.5">/</Kbd> to search,{" "}
+              <Kbd className="mx-0.5">j</Kbd>/<Kbd className="mx-0.5">k</Kbd> to
+              move, <Kbd className="mx-0.5">c</Kbd> for new,{" "}
+              <Kbd className="mx-0.5">⌘K</Kbd> for commands.
+            </span>
           </p>
         </div>
         <div className="flex gap-2">
@@ -308,9 +360,10 @@ export default function Issues() {
         <form onSubmit={onSearchSubmit} className="relative">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
+            ref={searchRef}
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search issues…"
+            placeholder="Search issues…  ( / )"
             className="w-56 pl-8"
           />
         </form>
@@ -424,12 +477,18 @@ export default function Issues() {
       ) : (
         <>
           <div className="space-y-3">
-            {issues.map((issue) => (
-              <IssueCard
+            {issues.map((issue, i) => (
+              <div
                 key={issue.id}
-                issue={issue}
-                state={stateById.get(issue.state_id)}
-              />
+                className={
+                  i === selected ? "rounded-lg ring-2 ring-ring" : undefined
+                }
+              >
+                <IssueCard
+                  issue={issue}
+                  state={stateById.get(issue.state_id)}
+                />
+              </div>
             ))}
           </div>
           {issuesQuery.hasNextPage && (

@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "./api";
+import { getRealtimeClient } from "./ws";
 
 // Mirrors internal/auth.User JSON (session.go). Keep in sync if it changes.
 export interface User {
@@ -54,6 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Already logged out server-side (or unreachable) — the local state
       // is what the UI cares about; refresh() converges it.
     }
+    // Drop the realtime socket: its session is gone, and reconnecting
+    // would just 401-loop.
+    getRealtimeClient().disconnect();
     await refresh();
   }, [refresh]);
 
