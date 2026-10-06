@@ -378,10 +378,16 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, err
 	}
 
+	// Version 1: the post-create full row. DisplayID is derived before the
+	// marshal so the snapshot is complete.
+	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
+	if err := snapshotVersionTx(ctx, tx, iss.ID, actorID, iss); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
 	return iss, nil
 }
 
@@ -690,6 +696,12 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	}
 
 	updated.DisplayID = ident + "-" + strconv.Itoa(updated.SequenceID)
+	// Append-only version snapshot of the post-mutation row. Rides along
+	// inside the caller's tx/savepoint, so BulkUpdateIssues gets per-item
+	// versions for free.
+	if err := snapshotVersionTx(ctx, tx, updated.ID, actorID, updated); err != nil {
+		return nil, err
+	}
 	return updated, nil
 }
 
@@ -717,22 +729,22 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return ErrForbidden
 	}
 
-	if err := deleteIssueTx(ctx, tx, projectID, issueID, actorID); err != nil {
+	if err := deleteIssueTx(ctx, tx, projectID, ident, issueID, actorID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
 // deleteIssueTx is the tx-scoped core of DeleteIssue: soft-delete plus the
-// _deleted activity row. It neither begins nor commits — callers own the
-// transaction. Role checks stay with the callers.
-func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID string) error {
-	var id string
-	err := tx.QueryRow(ctx,
+// _deleted activity row plus a version snapshot of the deleted state. It
+// neither begins nor commits — callers own the transaction. Role checks
+// stay with the callers.
+func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string) error {
+	del, err := scanIssue(tx.QueryRow(ctx,
 		`UPDATE issues SET deleted_at = now(), updated_at = now()
 		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
-		 RETURNING id::text`,
-		issueID, projectID).Scan(&id)
+		 RETURNING `+issueColumns,
+		issueID, projectID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 			return ErrIssueNotFound
@@ -744,7 +756,12 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID s
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO issue_activities (issue_id, actor_id, field, new_value)
 		 VALUES ($1::uuid, $2::uuid, '_deleted', $3::jsonb)`,
-		id, actorID, string(newVal)); err != nil {
+		del.ID, actorID, string(newVal)); err != nil {
+		return err
+	}
+
+	del.DisplayID = ident + "-" + strconv.Itoa(del.SequenceID)
+	if err := snapshotVersionTx(ctx, tx, del.ID, actorID, del); err != nil {
 		return err
 	}
 	return nil
@@ -900,7 +917,7 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, err
 		}
-		if err := deleteIssueTx(ctx, tx, projectID, id, actorID); err != nil {
+		if err := deleteIssueTx(ctx, tx, projectID, ident, id, actorID); err != nil {
 			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
 				return nil, rbErr
 			}

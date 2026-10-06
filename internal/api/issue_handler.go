@@ -108,6 +108,21 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid estimate point", nil)
 	case errors.Is(err, service.ErrAssigneeNotMember):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "assignee is not a workspace member", nil)
+	// Task 18: satellite errors.
+	case errors.Is(err, service.ErrCommentNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "comment not found", nil)
+	case errors.Is(err, service.ErrInvalidComment):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid comment", nil)
+	case errors.Is(err, service.ErrInvalidReaction):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid reaction", nil)
+	case errors.Is(err, service.ErrInvalidRelationType):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid relation type", nil)
+	case errors.Is(err, service.ErrInvalidRelation):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid relation", nil)
+	case errors.Is(err, service.ErrRelationNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "relation not found", nil)
+	case errors.Is(err, service.ErrVersionNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "version not found", nil)
 	default:
 		return WriteInternalError(c)
 	}
@@ -593,4 +608,310 @@ func (h *IssueHandler) listEstimates(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"estimates": estimates})
+}
+
+// ---------- Task 18: satellites ----------
+
+// RegisterSatelliteRoutes mounts the comment / reaction / vote /
+// subscriber / relation / history / version endpoints (Task 18) nested
+// under the issue path. Toggle endpoints are idempotent POST/DELETE
+// pairs (never POST-toggles): POST adds, DELETE removes, repeats are
+// no-ops. Call before the SPA catch-all.
+func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
+	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/issues/:uuid", RequireAuth(h.Pool))
+	g.GET("/comments", h.listComments)
+	g.POST("/comments", h.createComment)
+	g.PATCH("/comments/:commentID", h.updateComment)
+	g.DELETE("/comments/:commentID", h.deleteComment)
+	g.POST("/comments/:commentID/reactions", h.addCommentReaction)
+	g.DELETE("/comments/:commentID/reactions", h.removeCommentReaction)
+	g.GET("/reactions", h.listIssueReactions)
+	g.POST("/reactions", h.addIssueReaction)
+	g.DELETE("/reactions", h.removeIssueReaction)
+	g.GET("/votes", h.getIssueVotes)
+	g.POST("/votes", h.voteIssue)
+	g.DELETE("/votes", h.unvoteIssue)
+	g.GET("/subscribers", h.listSubscribers)
+	g.POST("/subscribers", h.subscribeIssue)
+	g.DELETE("/subscribers", h.unsubscribeIssue)
+	g.GET("/relations", h.listRelations)
+	g.POST("/relations", h.createRelation)
+	g.DELETE("/relations/:relatedID", h.deleteRelation)
+	g.GET("/history", h.getIssueHistory)
+	g.GET("/versions", h.listVersions)
+	g.GET("/versions/:n", h.getVersion)
+	g.POST("/versions/:n/restore", h.restoreVersion)
+}
+
+func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string) {
+	return c.Param("slug"), c.Param("identifier"), c.Param("uuid"), CurrentUser(c).ID
+}
+
+// listComments implements GET .../issues/{uuid}/comments: the threaded
+// comment tree, oldest first.
+func (h *IssueHandler) listComments(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	tree, err := service.ListComments(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"comments": tree})
+}
+
+type createCommentBody struct {
+	Content  json.RawMessage `json:"content"`
+	ParentID *string         `json:"parent_id"`
+}
+
+// createComment implements POST .../issues/{uuid}/comments.
+func (h *IssueHandler) createComment(c *echo.Context) error {
+	var body createCommentBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	comment, err := service.CreateComment(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Content, body.ParentID)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusCreated, comment)
+}
+
+type updateCommentBody struct {
+	Content json.RawMessage `json:"content"`
+}
+
+// updateComment implements PATCH .../issues/{uuid}/comments/{commentID}:
+// author or admin.
+func (h *IssueHandler) updateComment(c *echo.Context) error {
+	var body updateCommentBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	comment, err := service.UpdateComment(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, body.Content)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, comment)
+}
+
+// deleteComment implements DELETE .../issues/{uuid}/comments/{commentID}:
+// soft delete, author or admin.
+func (h *IssueHandler) deleteComment(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.DeleteComment(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+type reactionBody struct {
+	Emoji string `json:"emoji"`
+}
+
+// addIssueReaction implements POST .../issues/{uuid}/reactions {emoji}:
+// idempotent add.
+func (h *IssueHandler) addIssueReaction(c *echo.Context) error {
+	var body reactionBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.AddIssueReaction(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Emoji); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// removeIssueReaction implements DELETE .../issues/{uuid}/reactions?emoji=:
+// idempotent remove.
+func (h *IssueHandler) removeIssueReaction(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.RemoveIssueReaction(c.Request().Context(), h.Pool, slug, ident, uuid, actor, c.QueryParam("emoji")); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// listIssueReactions implements GET .../issues/{uuid}/reactions: emoji
+// groups with counts and the caller's reacted state.
+func (h *IssueHandler) listIssueReactions(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	groups, err := service.ListIssueReactions(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"reactions": groups})
+}
+
+// addCommentReaction implements POST .../issues/{uuid}/comments/{commentID}/reactions {emoji}.
+func (h *IssueHandler) addCommentReaction(c *echo.Context) error {
+	var body reactionBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.AddCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, body.Emoji); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// removeCommentReaction implements DELETE .../issues/{uuid}/comments/{commentID}/reactions?emoji=.
+func (h *IssueHandler) removeCommentReaction(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.RemoveCommentReaction(c.Request().Context(), h.Pool, slug, ident, uuid, c.Param("commentID"), actor, c.QueryParam("emoji")); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// getIssueVotes implements GET .../issues/{uuid}/votes: {count, voted}.
+func (h *IssueHandler) getIssueVotes(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	votes, err := service.GetIssueVotes(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, votes)
+}
+
+// voteIssue implements POST .../issues/{uuid}/votes: idempotent upvote.
+func (h *IssueHandler) voteIssue(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.VoteIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// unvoteIssue implements DELETE .../issues/{uuid}/votes: idempotent remove.
+func (h *IssueHandler) unvoteIssue(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.UnvoteIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// listSubscribers implements GET .../issues/{uuid}/subscribers.
+func (h *IssueHandler) listSubscribers(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	subs, err := service.ListSubscribers(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"subscribers": subs})
+}
+
+// subscribeIssue implements POST .../issues/{uuid}/subscribers: the
+// caller subscribes themselves; idempotent.
+func (h *IssueHandler) subscribeIssue(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.SubscribeIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// unsubscribeIssue implements DELETE .../issues/{uuid}/subscribers:
+// idempotent.
+func (h *IssueHandler) unsubscribeIssue(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.UnsubscribeIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+type createRelationBody struct {
+	RelatedIssueID string `json:"related_issue_id"`
+	Type           string `json:"type"`
+}
+
+// listRelations implements GET .../issues/{uuid}/relations: canonical
+// rows plus derived reverses (A blocked_by B → B shows blocking A).
+func (h *IssueHandler) listRelations(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	rels, err := service.ListRelations(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"relations": rels})
+}
+
+// createRelation implements POST .../issues/{uuid}/relations
+// {related_issue_id, type}: one canonical row; repeats are no-ops.
+func (h *IssueHandler) createRelation(c *echo.Context) error {
+	var body createRelationBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.CreateRelation(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.RelatedIssueID, body.Type); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// deleteRelation implements DELETE .../issues/{uuid}/relations/{relatedID}?type=:
+// the type is the label from this issue's side — a reverse label
+// (e.g. blocking) resolves to the canonical row stored from the other side.
+func (h *IssueHandler) deleteRelation(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	if err := service.DeleteRelation(c.Request().Context(), h.Pool, slug, ident, uuid, actor, c.Param("relatedID"), c.QueryParam("type")); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// getIssueHistory implements GET .../issues/{uuid}/history: the
+// issue_activities rows, chronological, with actor info.
+func (h *IssueHandler) getIssueHistory(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	hist, err := service.GetIssueHistory(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"history": hist})
+}
+
+// listVersions implements GET .../issues/{uuid}/versions: oldest first.
+func (h *IssueHandler) listVersions(c *echo.Context) error {
+	slug, ident, uuid, actor := h.issueParams(c)
+	versions, err := service.ListVersions(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"versions": versions})
+}
+
+// getVersion implements GET .../issues/{uuid}/versions/{n}.
+func (h *IssueHandler) getVersion(c *echo.Context) error {
+	n, err := strconv.Atoi(c.Param("n"))
+	if err != nil || n < 1 {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid version number", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	ver, err := service.GetVersion(c.Request().Context(), h.Pool, slug, ident, uuid, actor, n)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, ver)
+}
+
+// restoreVersion implements POST .../issues/{uuid}/versions/{n}/restore:
+// applies the old snapshot as a NEW version — history is never rewritten.
+func (h *IssueHandler) restoreVersion(c *echo.Context) error {
+	n, err := strconv.Atoi(c.Param("n"))
+	if err != nil || n < 1 {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid version number", nil)
+	}
+	slug, ident, uuid, actor := h.issueParams(c)
+	iss, err := service.RestoreIssueVersion(c.Request().Context(), h.Pool, slug, ident, uuid, actor, n)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, iss)
 }
