@@ -3,6 +3,53 @@
 All notable changes to glance are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.2.0] - unreleased
+
+"Credibility" milestone: the highest value-per-cost Plane parity gaps,
+plus reliability and production-readiness hardening.
+
+### Added
+
+**Views**
+- Spreadsheet view: full-field sortable table (10 columns, sticky header
+  + ID column, horizontal scroll), wired into the project view switcher.
+- Peek view: clicking a row/card opens the issue detail in a right
+  drawer (`?peek=<uuid>`, route unchanged) instead of full-page
+  navigation; list context (selection, scroll, filters) is preserved.
+  Full-page detail remains available via "Open full page".
+- Inline "+ New work item" quick-add: per-state-group rows on the list
+  view and per-column rows on the kanban board; Enter creates, Esc
+  cancels, expand icon hands the typed title to the full create form.
+
+**Spec gaps closed**
+- `GET /api/v1/work-items/{display-id}`: global `{IDENTIFIER}-{SEQ}`
+  lookup (e.g. `ENG-123`), same shape as GET-by-UUID. Unknown,
+  malformed, ambiguous, and non-member lookups share one 404 — no
+  enumeration oracle.
+- `GET /api/v1/search?q=`: global full-text search (tsvector,
+  ts_rank-ordered), scoped to the caller's workspaces, cursor
+  pagination.
+
+**Theming**
+- Dark theme toggle (class-based, persisted, defaults to dark), in every
+  page header; no-flash bootstrap in `index.html`.
+
+**Production**
+- `--health-check` flag: the binary probes its own `/health`
+  (distroless has no shell/curl); `HEALTHCHECK` added to the Dockerfile.
+
+### Fixed
+
+- Parallel `go test ./...` migration race: `Migrate()` now runs in one
+  transaction guarded by `pg_advisory_xact_lock` (transaction-scoped,
+  auto-released); new `TestMigrateConcurrent` regression test.
+
+### Security
+
+- `users.is_active` is now enforced: deactivated users' sessions are
+  rejected and neither login path mints new ones (`ErrUserDeactivated`
+  → 401).
+
 ## [v0.1.0] - 2026-10-06
 
 First release. glance is a lean, self-hosted issue tracker (Plane-like):
