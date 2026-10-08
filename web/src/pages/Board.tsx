@@ -36,6 +36,8 @@ import type {
 import { priorityLabel } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
 import QuickAdd from "../components/issue/QuickAdd";
+import PeekDrawer from "../components/issue/PeekDrawer";
+import { usePeekParam } from "../components/issue/usePeek";
 import ThemeToggle from "../components/ThemeToggle";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
@@ -50,15 +52,12 @@ function columnIssues(all: Issue[], stateId: string): Issue[] {
 function SortableCard({
   issue,
   disabled,
+  onOpen,
 }: {
   issue: Issue;
   disabled: boolean;
+  onOpen: (id: string) => void;
 }) {
-  const navigate = useNavigate();
-  const { slug = "", identifier = "" } = useParams<{
-    slug: string;
-    identifier: string;
-  }>();
   const {
     attributes,
     listeners,
@@ -68,8 +67,10 @@ function SortableCard({
     isDragging,
   } = useSortable({ id: issue.id, disabled });
 
+  // Card click / Enter opens the peek drawer (keeps board context),
+  // not the full detail page.
   function openIssue() {
-    navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
+    onOpen(issue.id);
   }
 
   return (
@@ -137,12 +138,14 @@ function BoardColumn({
   disabled,
   onQuickCreate,
   onQuickExpand,
+  onOpen,
 }: {
   state: IssueState;
   issues: Issue[];
   disabled: boolean;
   onQuickCreate: (name: string) => Promise<void>;
   onQuickExpand: (name: string) => void;
+  onOpen: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: state.id });
   return (
@@ -169,7 +172,12 @@ function BoardColumn({
       >
         <div className="flex min-h-24 flex-col gap-2">
           {issues.map((issue) => (
-            <SortableCard key={issue.id} issue={issue} disabled={disabled} />
+            <SortableCard
+              key={issue.id}
+              issue={issue}
+              disabled={disabled}
+              onOpen={onOpen}
+            />
           ))}
           {issues.length === 0 && (
             <p className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
@@ -198,6 +206,7 @@ export default function Board() {
   const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const { peekUuid, openPeek, closePeek } = usePeekParam();
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const issuesKey = ["board-issues", slug, identifier] as const;
@@ -472,6 +481,7 @@ export default function Board() {
                   disabled={!canEdit}
                   onQuickCreate={(name) => quickCreate(s.id, name)}
                   onQuickExpand={(name) => quickExpand(s.id, name)}
+                  onOpen={openPeek}
                 />
               ))}
             </div>
@@ -492,6 +502,15 @@ export default function Board() {
           </DndContext>
         )}
       </div>
+
+      {peekUuid && (
+        <PeekDrawer
+          slug={slug}
+          identifier={identifier}
+          uuid={peekUuid}
+          onClose={closePeek}
+        />
+      )}
     </div>
   );
 }
