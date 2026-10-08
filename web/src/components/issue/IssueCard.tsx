@@ -7,13 +7,16 @@ import { ActionCard } from "../ui/action-card";
 import StateBadge from "./StateBadge";
 
 /** One row of the issue list: display_id badge, title, state, labels,
- *  priority, assignees. Click navigates to the detail page. */
+ *  priority, assignees. Click opens the issue — via `onOpen` when given
+ *  (peek drawer), otherwise navigates to the detail page. */
 export default function IssueCard({
   issue,
   state,
+  onOpen,
 }: {
   issue: Issue;
   state: IssueState | undefined;
+  onOpen?: (issue: Issue) => void;
 }) {
   const { slug, identifier } = useParams<{
     slug: string;
@@ -26,7 +29,9 @@ export default function IssueCard({
       role="link"
       label={`Open issue ${issue.display_id}: ${issue.name}`}
       onActivate={() =>
-        navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`)
+        onOpen
+          ? onOpen(issue)
+          : navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`)
       }
     >
       <CardHeader className="space-y-2 py-4">

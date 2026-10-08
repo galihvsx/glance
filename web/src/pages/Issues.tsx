@@ -41,6 +41,8 @@ import {
 } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import IssueCard from "../components/issue/IssueCard";
+import PeekDrawer from "../components/issue/PeekDrawer";
+import { usePeekParam } from "../components/issue/usePeek";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import QuickAdd from "../components/issue/QuickAdd";
 import ThemeToggle from "../components/ThemeToggle";
@@ -111,6 +113,7 @@ export default function Issues() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
+  const { peekUuid, openPeek, closePeek } = usePeekParam();
 
   // Opened from the command palette ("Create issue" action) or from the
   // board's inline quick-add expand button (prefills title + state).
@@ -270,7 +273,8 @@ export default function Issues() {
   );
   const selectedId = orderedIssues[selected]?.id;
 
-  // j/k move the list selection; Enter opens the selected issue.
+  // j/k move the list selection; Enter opens the selected issue in the
+  // peek drawer (keeping list context), not the full page.
   useEffect(() => {
     setSelected(0);
   }, [issuesQuery.data]);
@@ -290,12 +294,13 @@ export default function Issues() {
         !isTypingTarget(e.target) &&
         selectedId
       ) {
-        navigate(`/w/${slug}/p/${identifier}/i/${selectedId}`);
+        openPeek(selectedId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedId, navigate, slug, identifier]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, openPeek]);
 
   return (
     <div className="mx-auto w-full max-w-4xl p-6">
@@ -558,6 +563,7 @@ export default function Issues() {
                         <IssueCard
                           issue={issue}
                           state={stateById.get(issue.state_id)}
+                          onOpen={(it) => openPeek(it.id)}
                         />
                       </div>
                     ))}
@@ -582,6 +588,7 @@ export default function Issues() {
                   <IssueCard
                     issue={issue}
                     state={stateById.get(issue.state_id)}
+                    onOpen={(it) => openPeek(it.id)}
                   />
                 </div>
               ))}
@@ -606,6 +613,15 @@ export default function Issues() {
             </div>
           )}
         </>
+      )}
+
+      {peekUuid && (
+        <PeekDrawer
+          slug={slug}
+          identifier={identifier}
+          uuid={peekUuid}
+          onClose={closePeek}
+        />
       )}
     </div>
   );
