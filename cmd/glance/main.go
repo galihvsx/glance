@@ -120,6 +120,7 @@ func main() {
 
 	issueHandler := &api.IssueHandler{Pool: pool}
 	api.RegisterIssueRoutes(e, issueHandler)
+	api.RegisterWorkItemRoutes(e, issueHandler)
 	api.RegisterTokenRoutes(e, &api.TokenHandler{Pool: pool})
 	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
