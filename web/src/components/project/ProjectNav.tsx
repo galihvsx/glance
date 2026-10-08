@@ -1,7 +1,7 @@
 import { Link, useLocation, useParams } from "react-router-dom";
 import { cn } from "../../lib/utils";
 
-/** View switcher shown on the project pages (list / board / cycles / intake). */
+/** View switcher shown on the project pages (list / board / spreadsheet / cycles / intake). */
 export default function ProjectNav() {
   const { slug = "", identifier = "" } = useParams<{
     slug: string;
@@ -12,6 +12,7 @@ export default function ProjectNav() {
   const tabs = [
     { label: "List", to: base },
     { label: "Board", to: `${base}/board` },
+    { label: "Spreadsheet", to: `${base}/spreadsheet` },
     { label: "Cycles", to: `${base}/cycles` },
     { label: "Intake", to: `${base}/intake` },
   ];

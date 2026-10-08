@@ -11,6 +11,7 @@ import IssueDetail from "./pages/IssueDetail";
 import Intake from "./pages/Intake";
 import Board from "./pages/Board";
 import Cycles from "./pages/Cycles";
+import Spreadsheet from "./pages/Spreadsheet";
 
 export default function App() {
   return (
@@ -35,6 +36,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/board"
                   element={<Board />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/spreadsheet"
+                  element={<Spreadsheet />}
                 />
                 <Route
                   path="/w/:slug/p/:identifier/cycles"
