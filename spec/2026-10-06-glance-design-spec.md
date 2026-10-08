@@ -166,14 +166,14 @@ POST /api/v1/ws/ticket               # single-use ticket for token-based ws auth
 GET/POST  /api/v1/workspaces/{slug}/projects
 GET/PATCH /api/v1/workspaces/{slug}/projects/{identifier}/issues
 GET       /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}
-GET       /api/v1/work-items/ENG-123                                  # display-ID lookup
+GET       /api/v1/work-items/ENG-123                                  # display-ID lookup — planned, NOT in v0.1.0
 POST      /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update
 POST      /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-delete
 .../states, .../labels, .../cycles, .../cycles/{id}/issues,
 .../modules, .../intake, .../pages, .../views,
 .../issues/{uuid}/comments, .../issues/{uuid}/relations,
 .../issues/{uuid}/history, .../issues/{uuid}/versions
-GET       /api/v1/search?q=                                            # tsvector global search
+GET       /api/v1/search?q=                                            # tsvector global search — planned, NOT in v0.1.0
 ```
 
 ### Conventions
