@@ -4,9 +4,12 @@ package main
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -22,6 +25,13 @@ import (
 )
 
 func main() {
+	// --health-check is the container HEALTHCHECK probe (distroless has no
+	// shell/curl). It runs before config load on purpose: probing must
+	// never require OTP_PEPPER or a database.
+	if len(os.Args) > 1 && os.Args[1] == "--health-check" {
+		os.Exit(runHealthCheck())
+	}
+
 	ctx := context.Background()
 
 	cfg, err := config.Load()
@@ -143,4 +153,32 @@ func main() {
 	if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("glance: server error: %v", err)
 	}
+}
+
+// runHealthCheck probes /health on the configured port and reports 0/1.
+// Used by the Docker HEALTHCHECK; kept dependency-free on purpose.
+func runHealthCheck() int {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/health")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	// A bare 200 is not enough: another service could be squatting the
+	// port (seen in the wild). Require glance's health body.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	if err != nil {
+		return 1
+	}
+	if !strings.Contains(string(body), `"status":"ok"`) {
+		return 1
+	}
+	return 0
 }

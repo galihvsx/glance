@@ -72,4 +72,9 @@ COPY --from=go-builder /glance /glance
 
 EXPOSE 8080
 USER nonroot:nonroot
+
+# Distroless has no shell/curl: the binary probes itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["/glance", "--health-check"]
+
 ENTRYPOINT ["/glance"]
