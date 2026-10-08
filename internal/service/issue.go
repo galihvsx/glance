@@ -429,10 +429,25 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 		return nil, err
 	}
 
+	item, err := getIssueRow(ctx, pool, ident, projectID, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrIssueNotFound
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+// getIssueRow loads one live issue by (project, UUID) with assignees and
+// labels aggregated in the same query. ident is the project's normalized
+// identifier, used only to derive DisplayID. Callers own the tenancy check;
+// a missing row surfaces as pgx.ErrNoRows for the caller to map.
+func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID string) (*IssueListItem, error) {
 	var item IssueListItem
 	var description []byte
 	var assigneesJSON, labelsJSON []byte
-	err = pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+` FROM issues i
 		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
 		issueID, projectID).Scan(
@@ -445,9 +460,6 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 		&assigneesJSON, &labelsJSON,
 	)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return nil, ErrIssueNotFound
-		}
 		return nil, err
 	}
 	if description != nil {
