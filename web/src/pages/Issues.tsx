@@ -46,6 +46,9 @@ import QuickAdd from "../components/issue/QuickAdd";
 import ThemeToggle from "../components/ThemeToggle";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
+import DisplayPanel from "../components/issue/DisplayPanel";
+import { useDisplaySettings } from "../components/issue/useDisplaySettings";
+import { priorityLabel } from "../lib/types";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
 
 const PER_PAGE = 25;
@@ -85,10 +88,12 @@ function buildIssuePath(
   slug: string,
   identifier: string,
   f: Filters,
+  orderBy: string,
   cursor?: string,
 ): string {
   const p = new URLSearchParams();
   p.set("per_page", String(PER_PAGE));
+  p.set("order_by", orderBy);
   if (f.q.trim()) p.set("q", f.q.trim());
   if (f.state) p.set("state", f.state);
   if (f.priority) p.set("priority", f.priority);
@@ -111,19 +116,27 @@ export default function Issues() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
+  const { settings, update, updateFields, reset } = useDisplaySettings(
+    slug,
+    identifier,
+  );
 
   // Opened from the command palette ("Create issue" action) or from the
-  // board's inline quick-add expand button (prefills title + state).
+  // board's inline quick-add expand button (prefills title + state, and
+  // priority when the board is grouped by priority).
   useEffect(() => {
     const st = location.state as {
       newIssue?: boolean;
       newIssueName?: string;
       newIssueStateId?: string;
+      newIssuePriority?: number;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
       if (typeof st.newIssueStateId === "string")
         setNewStateId(st.newIssueStateId);
+      if (typeof st.newIssuePriority === "number")
+        setNewPriority(st.newIssuePriority);
       setDialogOpen(true);
       navigate(location.pathname, { replace: true });
     }
@@ -168,9 +181,11 @@ export default function Issues() {
   });
 
   const issuesQuery = useInfiniteQuery({
-    queryKey: ["issues", slug, identifier, filters],
+    queryKey: ["issues", slug, identifier, filters, settings.orderBy],
     queryFn: ({ pageParam }: { pageParam?: string }) =>
-      api.get<IssueListResult>(buildIssuePath(slug, identifier, filters, pageParam)),
+      api.get<IssueListResult>(
+        buildIssuePath(slug, identifier, filters, settings.orderBy, pageParam),
+      ),
     getNextPageParam: (last) => last.next_cursor || undefined,
     initialPageParam: undefined as string | undefined,
   });
@@ -224,20 +239,29 @@ export default function Issues() {
     });
   }
 
-  /** Inline quick-add: title only, state pre-set to the group. The new
-   *  row appears via query invalidation — no full reload. */
-  async function quickCreate(stateId: string, name: string): Promise<void> {
-    await api.post<Issue>(`${base}/issues`, { name, state_id: stateId });
+  /** Inline quick-add: title only. The new row appears via query
+   *  invalidation — no full reload. */
+  async function quickCreate(
+    stateId: string,
+    name: string,
+    priority?: number,
+  ): Promise<void> {
+    await api.post<Issue>(`${base}/issues`, {
+      name,
+      ...(stateId ? { state_id: stateId } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+    });
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
   }
 
   /** Expand an inline quick-add into the full create form, keeping the
-   *  typed title and the group's state. */
-  function expandQuickAdd(stateId: string, name: string) {
+   *  typed title and the group's state/priority. */
+  function expandQuickAdd(stateId: string, name: string, priority?: number) {
     setName(name);
     setNewStateId(stateId);
+    if (priority !== undefined) setNewPriority(priority);
     setFormError(null);
     setDialogOpen(true);
   }
@@ -248,20 +272,54 @@ export default function Issues() {
     () => [...states].sort((a, b) => a.sequence - b.sequence),
     [states],
   );
-  // Plane-style state grouping; skipped when filtering to a single state
-  // or when states haven't loaded (falls back to the flat list).
-  const groupByState = sortedStates.length > 0 && !filters.state;
-  const groups = useMemo(
-    () =>
-      groupByState
-        ? sortedStates.map((s) => ({
-            state: s,
-            issues: issues.filter((i) => i.state_id === s.id),
-          }))
-        : [],
-    [groupByState, sortedStates, issues],
-  );
-  const orderedIssues = groupByState
+  // Plane-style grouping, driven by the Display panel. State grouping is
+  // skipped when filtering to a single state (or before states load);
+  // priority grouping is skipped when filtering to a single priority.
+  const groupByState =
+    settings.groupBy === "state" && sortedStates.length > 0 && !filters.state;
+  const groupByPriority =
+    settings.groupBy === "priority" && !filters.priority;
+  const groupingActive = groupByState || groupByPriority;
+
+  interface IssueGroup {
+    key: string;
+    title: string;
+    color?: string;
+    issues: Issue[];
+    stateId?: string;
+    priority?: number;
+  }
+
+  const groups = useMemo<IssueGroup[]>(() => {
+    let gs: IssueGroup[] = [];
+    if (groupByState) {
+      gs = sortedStates.map((s) => ({
+        key: s.id,
+        title: s.name,
+        color: s.color,
+        issues: issues.filter((i) => i.state_id === s.id),
+        stateId: s.id,
+      }));
+    } else if (groupByPriority) {
+      gs = [4, 3, 2, 1, 0].map((p) => ({
+        key: `priority:${p}`,
+        title: priorityLabel(p),
+        issues: issues.filter((i) => i.priority === p),
+        stateId: sortedStates[0]?.id,
+        priority: p,
+      }));
+    }
+    return settings.showEmptyGroups
+      ? gs
+      : gs.filter((g) => g.issues.length > 0);
+  }, [
+    groupByState,
+    groupByPriority,
+    sortedStates,
+    issues,
+    settings.showEmptyGroups,
+  ]);
+  const orderedIssues = groupingActive
     ? groups.flatMap((g) => g.issues)
     : issues;
   const indexById = useMemo(
@@ -485,6 +543,13 @@ export default function Issues() {
             ))}
           </SelectContent>
         </Select>
+        <DisplayPanel
+          settings={settings}
+          onUpdate={update}
+          onUpdateFields={updateFields}
+          onReset={reset}
+          view="list"
+        />
         {hasActiveFilters && (
           <Button
             variant="ghost"
@@ -515,7 +580,7 @@ export default function Issues() {
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
-      ) : issues.length === 0 && !groupByState ? (
+      ) : issues.length === 0 && !groupingActive ? (
         <Card>
           <CardHeader>
             <CardTitle>
@@ -530,17 +595,19 @@ export default function Issues() {
         </Card>
       ) : (
         <>
-          {groupByState ? (
+          {groupingActive ? (
             <div className="space-y-6">
               {groups.map((g) => (
-                <section key={g.state.id} aria-label={g.state.name}>
+                <section key={g.key} aria-label={g.title}>
                   <div className="mb-2 flex items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ backgroundColor: g.state.color }}
-                      aria-hidden
-                    />
-                    <h2 className="text-sm font-medium">{g.state.name}</h2>
+                    {g.color && (
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: g.color }}
+                        aria-hidden
+                      />
+                    )}
+                    <h2 className="text-sm font-medium">{g.title}</h2>
                     <span className="text-xs text-muted-foreground">
                       {g.issues.length}
                     </span>
@@ -558,14 +625,19 @@ export default function Issues() {
                         <IssueCard
                           issue={issue}
                           state={stateById.get(issue.state_id)}
+                          fields={settings.fields}
                         />
                       </div>
                     ))}
                   </div>
                   <QuickAdd
                     className="mt-1"
-                    onCreate={(name) => quickCreate(g.state.id, name)}
-                    onExpand={(name) => expandQuickAdd(g.state.id, name)}
+                    onCreate={(name) =>
+                      quickCreate(g.stateId ?? "", name, g.priority)
+                    }
+                    onExpand={(name) =>
+                      expandQuickAdd(g.stateId ?? "", name, g.priority)
+                    }
                   />
                 </section>
               ))}
@@ -582,6 +654,7 @@ export default function Issues() {
                   <IssueCard
                     issue={issue}
                     state={stateById.get(issue.state_id)}
+                    fields={settings.fields}
                   />
                 </div>
               ))}

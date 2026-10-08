@@ -26,6 +26,13 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
+import { Calendar } from "lucide-react";
+import DisplayPanel from "../components/issue/DisplayPanel";
+import {
+  formatIssueDateRange,
+  useDisplaySettings,
+  type DisplayFields,
+} from "../components/issue/useDisplaySettings";
 import type {
   Issue,
   IssueListResult,
@@ -50,9 +57,11 @@ function columnIssues(all: Issue[], stateId: string): Issue[] {
 function SortableCard({
   issue,
   disabled,
+  fields,
 }: {
   issue: Issue;
   disabled: boolean;
+  fields: DisplayFields;
 }) {
   const navigate = useNavigate();
   const { slug = "", identifier = "" } = useParams<{
@@ -71,6 +80,8 @@ function SortableCard({
   function openIssue() {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
   }
+
+  const dateRange = formatIssueDateRange(issue.start_date, issue.target_date);
 
   return (
     <Card
@@ -98,12 +109,14 @@ function SortableCard({
           <Badge variant="outline" className="font-mono text-[11px]">
             {issue.display_id}
           </Badge>
-          <span className="ml-auto text-[11px] text-muted-foreground">
-            {priorityLabel(issue.priority)}
-          </span>
+          {fields.priority && (
+            <span className="ml-auto text-[11px] text-muted-foreground">
+              {priorityLabel(issue.priority)}
+            </span>
+          )}
         </div>
         <p className="text-sm font-medium leading-snug">{issue.name}</p>
-        {issue.labels.length > 0 && (
+        {fields.labels && issue.labels.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {issue.labels.slice(0, 3).map((l) => (
               <Badge
@@ -126,25 +139,37 @@ function SortableCard({
             )}
           </div>
         )}
+        {fields.dates && dateRange && (
+          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Calendar className="h-3 w-3" aria-hidden />
+            <span>{dateRange}</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
 }
 
 function BoardColumn({
-  state,
+  droppableId,
+  title,
+  color,
   issues,
   disabled,
   onQuickCreate,
   onQuickExpand,
+  fields,
 }: {
-  state: IssueState;
+  droppableId: string;
+  title: string;
+  color?: string;
   issues: Issue[];
   disabled: boolean;
   onQuickCreate: (name: string) => Promise<void>;
   onQuickExpand: (name: string) => void;
+  fields: DisplayFields;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: state.id });
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
   return (
     <div
       ref={setNodeRef}
@@ -153,12 +178,14 @@ function BoardColumn({
       }`}
     >
       <div className="flex items-center gap-2 px-1 pb-2 pt-1">
-        <span
-          className="h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: state.color }}
-          aria-hidden
-        />
-        <span className="text-sm font-medium">{state.name}</span>
+        {color && (
+          <span
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: color }}
+            aria-hidden
+          />
+        )}
+        <span className="text-sm font-medium">{title}</span>
         <Badge variant="secondary" className="ml-auto text-[11px]">
           {issues.length}
         </Badge>
@@ -169,7 +196,12 @@ function BoardColumn({
       >
         <div className="flex min-h-24 flex-col gap-2">
           {issues.map((issue) => (
-            <SortableCard key={issue.id} issue={issue} disabled={disabled} />
+            <SortableCard
+              key={issue.id}
+              issue={issue}
+              disabled={disabled}
+              fields={fields}
+            />
           ))}
           {issues.length === 0 && (
             <p className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
@@ -198,6 +230,10 @@ export default function Board() {
   const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const { settings, update, updateFields, reset } = useDisplaySettings(
+    slug,
+    identifier,
+  );
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const issuesKey = ["board-issues", slug, identifier] as const;
@@ -245,7 +281,9 @@ export default function Board() {
     [statesQuery.data],
   );
   const stateIds = useMemo(() => new Set(states.map((s) => s.id)), [states]);
-  const issues = boardQuery.data ?? [];
+  // Stabilized so downstream memos (column grouping) don't re-evaluate
+  // every render on a fresh [] identity while the query is pending.
+  const issues = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
   const activeIssue = activeId
     ? (issues.find((i) => i.id === activeId) ?? null)
     : null;
@@ -274,18 +312,84 @@ export default function Board() {
       }),
   });
 
-  /** Inline quick-add: title only, state = the column's state. The new
-   *  card appears via query invalidation — no full reload. */
-  async function quickCreate(stateId: string, name: string): Promise<void> {
-    await api.post<Issue>(`${base}/issues`, { name, state_id: stateId });
+  /** Priority-mode drops: the column is a priority, so the drop changes
+   *  the issue's priority (no fine sort-order positioning). */
+  const priorityMutation = useMutation({
+    mutationFn: (body: { id: string; priority: number }) =>
+      api.patch<Issue>(`${base}/issues/${body.id}`, {
+        priority: body.priority,
+      }),
+    onError: (e) => {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to change priority",
+      );
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+    },
+  });
+
+  /** One board column: either a state (default) or a priority bucket,
+   *  depending on the Display panel's Group by setting. */
+  interface BoardGroup {
+    droppableId: string;
+    title: string;
+    color?: string;
+    issues: Issue[];
+    /** State/priority stamped onto quick-added issues in this column. */
+    newStateId?: string;
+    newPriority?: number;
+  }
+
+  const groups = useMemo<BoardGroup[]>(() => {
+    let gs: BoardGroup[];
+    if (settings.groupBy === "priority") {
+      gs = [4, 3, 2, 1, 0].map((p) => ({
+        droppableId: `priority:${p}`,
+        title: priorityLabel(p),
+        issues: issues.filter((i) => i.priority === p),
+        newStateId: states[0]?.id,
+        newPriority: p,
+      }));
+    } else {
+      gs = states.map((s) => ({
+        droppableId: s.id,
+        title: s.name,
+        color: s.color,
+        issues: columnIssues(issues, s.id),
+        newStateId: s.id,
+      }));
+    }
+    return settings.showEmptyGroups
+      ? gs
+      : gs.filter((g) => g.issues.length > 0);
+  }, [settings.groupBy, settings.showEmptyGroups, states, issues]);
+
+  /** Inline quick-add: title only; the column stamps state (and priority
+   *  in priority-grouped mode). The new card appears via query
+   *  invalidation — no full reload. */
+  async function quickCreate(group: BoardGroup, name: string): Promise<void> {
+    await api.post<Issue>(`${base}/issues`, {
+      name,
+      ...(group.newStateId ? { state_id: group.newStateId } : {}),
+      ...(group.newPriority !== undefined
+        ? { priority: group.newPriority }
+        : {}),
+    });
     await queryClient.invalidateQueries({ queryKey: issuesKey });
   }
 
   /** Expand a column quick-add into the full create form on the list
-   *  page, keeping the typed title and the column's state. */
-  function quickExpand(stateId: string, name: string) {
+   *  page, keeping the typed title and the column's state/priority. */
+  function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
-      state: { newIssue: true, newIssueName: name, newIssueStateId: stateId },
+      state: {
+        newIssue: true,
+        newIssueName: name,
+        newIssueStateId: group.newStateId,
+        newIssuePriority: group.newPriority,
+      },
     });
   }
 
@@ -367,6 +471,24 @@ export default function Board() {
     const dragged = all.find((i) => i.id === activeIssueId);
     if (!dragged) return;
 
+    if (settings.groupBy === "priority") {
+      // Priority columns: dropping changes the issue's priority.
+      const m = /^priority:([0-4])$/.exec(overId);
+      let destPriority: number | null = m ? Number(m[1]) : null;
+      if (destPriority === null) {
+        const overIssue = all.find((i) => i.id === overId);
+        if (overIssue) destPriority = overIssue.priority;
+      }
+      if (destPriority === null || destPriority === dragged.priority) return;
+      setBoardError(null);
+      const p = destPriority;
+      queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
+        old?.map((i) => (i.id === activeIssueId ? { ...i, priority: p } : i)),
+      );
+      priorityMutation.mutate({ id: activeIssueId, priority: p });
+      return;
+    }
+
     let destStateId: string;
     let destIndex: number;
     if (stateIds.has(overId)) {
@@ -427,7 +549,16 @@ export default function Board() {
           )}
         </h1>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <DisplayPanel
+            settings={settings}
+            onUpdate={update}
+            onUpdateFields={updateFields}
+            onReset={reset}
+            view="board"
+          />
+          <ThemeToggle />
+        </div>
       </div>
       <ProjectNav />
 
@@ -464,14 +595,17 @@ export default function Board() {
             onDragEnd={onDragEnd}
           >
             <div className="flex h-full items-start gap-3">
-              {states.map((s) => (
+              {groups.map((g) => (
                 <BoardColumn
-                  key={s.id}
-                  state={s}
-                  issues={columnIssues(issues, s.id)}
+                  key={g.droppableId}
+                  droppableId={g.droppableId}
+                  title={g.title}
+                  color={g.color}
+                  issues={g.issues}
                   disabled={!canEdit}
-                  onQuickCreate={(name) => quickCreate(s.id, name)}
-                  onQuickExpand={(name) => quickExpand(s.id, name)}
+                  onQuickCreate={(name) => quickCreate(g, name)}
+                  onQuickExpand={(name) => quickExpand(g, name)}
+                  fields={settings.fields}
                 />
               ))}
             </div>
