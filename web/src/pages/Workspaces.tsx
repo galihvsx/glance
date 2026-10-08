@@ -24,6 +24,7 @@ import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import ThemeToggle from "../components/ThemeToggle";
 
 function slugify(name: string): string {
   return name
@@ -101,8 +102,10 @@ export default function Workspaces() {
             Pick a workspace to see its projects.
           </p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <Button onClick={() => setDialogOpen(true)}>New workspace</Button>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <Button onClick={() => setDialogOpen(true)}>New workspace</Button>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>New workspace</DialogTitle>
@@ -150,6 +153,7 @@ export default function Workspaces() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {error && (

@@ -20,6 +20,7 @@ import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import ThemeToggle from "../components/ThemeToggle";
 
 /**
  * The effective status of an inbox item. The server stores the snoozed
@@ -311,20 +312,23 @@ export default function Intake() {
 
   return (
     <div className="mx-auto w-full max-w-4xl p-6">
-      <div className="mb-6">
-        <Link
-          to={`/w/${slug}/p/${identifier}`}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← Issues
-        </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-          Intake inbox
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Triage new issues: accept them into the backlog, or reject, snooze,
-          or mark as duplicate.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <Link
+            to={`/w/${slug}/p/${identifier}`}
+            className="text-xs text-muted-foreground hover:underline"
+          >
+            ← Issues
+          </Link>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+            Intake inbox
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Triage new issues: accept them into the backlog, or reject, snooze,
+            or mark as duplicate.
+          </p>
+        </div>
+        <ThemeToggle />
       </div>
 
       {inboxQuery.isError && (

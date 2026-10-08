@@ -15,6 +15,7 @@ import type {
   Project,
 } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
+import ThemeToggle from "../components/ThemeToggle";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
@@ -282,11 +283,13 @@ export default function Cycles() {
               <Skeleton className="h-8 w-48" />
             )}
           </h1>
-          <Dialog open={newOpen} onOpenChange={setNewOpen}>
-            <Button onClick={() => setNewOpen(true)} className="gap-2">
-              <Plus className="h-4 w-4" />
-              New cycle
-            </Button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <Dialog open={newOpen} onOpenChange={setNewOpen}>
+              <Button onClick={() => setNewOpen(true)} className="gap-2">
+                <Plus className="h-4 w-4" />
+                New cycle
+              </Button>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>New cycle</DialogTitle>
@@ -344,6 +347,7 @@ export default function Cycles() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
       </div>
       <ProjectNav />

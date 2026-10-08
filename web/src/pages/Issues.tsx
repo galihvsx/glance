@@ -43,6 +43,7 @@ import { Textarea } from "../components/ui/textarea";
 import IssueCard from "../components/issue/IssueCard";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import QuickAdd from "../components/issue/QuickAdd";
+import ThemeToggle from "../components/ThemeToggle";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
@@ -327,6 +328,7 @@ export default function Issues() {
           </p>
         </div>
         <div className="flex gap-2">
+          <ThemeToggle />
           <Button
             variant="outline"
             onClick={() => navigate(`/w/${slug}/p/${identifier}/intake`)}

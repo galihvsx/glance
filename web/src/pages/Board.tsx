@@ -36,6 +36,7 @@ import type {
 import { priorityLabel } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
 import QuickAdd from "../components/issue/QuickAdd";
+import ThemeToggle from "../components/ThemeToggle";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
@@ -407,7 +408,8 @@ export default function Board() {
 
   return (
     <div className="mx-auto flex h-screen w-full max-w-7xl flex-col p-6">
-      <div className="mb-4">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div>
         <Link
           to={`/w/${slug}`}
           className="text-xs text-muted-foreground hover:underline"
@@ -424,6 +426,8 @@ export default function Board() {
             <Skeleton className="h-8 w-48" />
           )}
         </h1>
+        </div>
+        <ThemeToggle />
       </div>
       <ProjectNav />
 

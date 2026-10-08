@@ -23,6 +23,7 @@ import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function Projects() {
   const { slug } = useParams<{ slug: string }>();
@@ -95,8 +96,10 @@ export default function Projects() {
             Pick a project to see its issues and states.
           </p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <Button onClick={() => setDialogOpen(true)}>New project</Button>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <Button onClick={() => setDialogOpen(true)}>New project</Button>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>New project</DialogTitle>
@@ -148,6 +151,7 @@ export default function Projects() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {error && (

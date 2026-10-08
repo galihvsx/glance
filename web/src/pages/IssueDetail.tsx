@@ -29,6 +29,7 @@ import StatePicker from "../components/issue/StatePicker";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import AssigneePicker from "../components/issue/AssigneePicker";
 import LabelPicker from "../components/issue/LabelPicker";
+import ThemeToggle from "../components/ThemeToggle";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -422,6 +423,9 @@ export default function IssueDetail() {
             {stateById.get(issue.state_id) && (
               <StateBadge state={stateById.get(issue.state_id)!} />
             )}
+            <span className="ml-auto">
+              <ThemeToggle />
+            </span>
           </div>
 
           {titleEditing ? (
