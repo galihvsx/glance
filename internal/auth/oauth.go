@@ -438,6 +438,17 @@ func CompleteOAuthLogin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 	}
 
 	// Same session minting as OTP (internal/auth/session.go).
+	// Deactivated accounts cannot log back in; existing sessions are already
+	// dead via AuthenticateSession's is_active enforcement.
+	var isActive bool
+	if err := tx.QueryRow(ctx,
+		`SELECT is_active FROM users WHERE id = $1`, userID,
+	).Scan(&isActive); err != nil {
+		return "", fmt.Errorf("auth: check user active: %w", err)
+	}
+	if !isActive {
+		return "", ErrUserDeactivated
+	}
 	token, err := CreateSessionTx(ctx, tx, userID, userAgent, ip)
 	if err != nil {
 		return "", err
