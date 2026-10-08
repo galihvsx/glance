@@ -119,6 +119,9 @@ func (h *AuthHandler) verifyOTP(c *echo.Context) error {
 		if errors.Is(err, auth.ErrRateLimited) {
 			return WriteError(c, http.StatusTooManyRequests, ErrCodeRateLimited, "too many requests, try again later", nil)
 		}
+		if errors.Is(err, auth.ErrUserDeactivated) {
+			return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "account is deactivated", nil)
+		}
 		return WriteInternalError(c)
 	}
 	SetSessionCookie(c, token)
@@ -224,6 +227,8 @@ func (h *AuthHandler) oauthCallback(c *echo.Context) error {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "oauth provider did not return a verified email", nil)
 		case errors.Is(err, auth.ErrOAuthAlreadyLinked):
 			return WriteError(c, http.StatusConflict, ErrCodeConflict, "oauth account is already linked to another user", nil)
+		case errors.Is(err, auth.ErrUserDeactivated):
+			return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "account is deactivated", nil)
 		default:
 			return WriteInternalError(c)
 		}

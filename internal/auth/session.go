@@ -70,6 +70,7 @@ type SessionInfo struct {
 // or expired. Callers must map it to a single generic 401 so the endpoint
 // never reveals which case hit (no enumeration).
 var ErrSessionInvalid = errors.New("auth: invalid session")
+var ErrUserDeactivated = errors.New("auth: user account is deactivated")
 
 // lastSeenRefreshInterval bounds the last_seen_at write: the column is
 // only rewritten when it is older than this, so the hot path costs one
@@ -114,6 +115,12 @@ func AuthenticateSession(ctx context.Context, pool *pgxpool.Pool, token string) 
 			return AuthResult{}, ErrSessionInvalid
 		}
 		return AuthResult{}, fmt.Errorf("auth: authenticate session: %w", err)
+	}
+	// A deactivated user keeps no valid sessions: the session dies with the
+	// account. Indistinguishable from an invalid session (no account-state
+	// oracle for token holders).
+	if !user.IsActive {
+		return AuthResult{}, ErrSessionInvalid
 	}
 	if time.Since(lastSeenAt) > lastSeenRefreshInterval {
 		if _, err := pool.Exec(ctx,

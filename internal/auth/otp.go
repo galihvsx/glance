@@ -332,13 +332,19 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 
 	// Auto-provision the user on first successful verify (spec §7).
 	var userID string
+	var isActive bool
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO users (email) VALUES ($1)
 		ON CONFLICT (email) DO UPDATE SET last_login_at = now(), updated_at = now()
-		RETURNING id`,
+		RETURNING id, is_active`,
 		email,
-	).Scan(&userID); err != nil {
+	).Scan(&userID, &isActive); err != nil {
 		return "", fmt.Errorf("auth: provision user: %w", err)
+	}
+	// Deactivated accounts cannot log back in; existing sessions are already
+	// dead via AuthenticateSession's is_active enforcement.
+	if !isActive {
+		return "", ErrUserDeactivated
 	}
 
 	// Session creation is shared with the OAuth callback (internal/auth/session.go)
