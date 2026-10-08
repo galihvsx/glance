@@ -20,6 +20,10 @@ plus reliability and production-readiness hardening.
 - Inline "+ New work item" quick-add: per-state-group rows on the list
   view and per-column rows on the kanban board; Enter creates, Esc
   cancels, expand icon hands the typed title to the full create form.
+- Display properties panel: field toggles (state/priority/labels/
+  assignees/dates), group-by (state/priority/none), order-by,
+  hide-empty-groups — persisted per project in localStorage and applied
+  live to the list and board views.
 
 **Spec gaps closed**
 - `GET /api/v1/work-items/{display-id}`: global `{IDENTIFIER}-{SEQ}`
