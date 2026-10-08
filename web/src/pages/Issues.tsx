@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -42,6 +42,7 @@ import {
 import { Textarea } from "../components/ui/textarea";
 import IssueCard from "../components/issue/IssueCard";
 import PriorityPicker from "../components/issue/PriorityPicker";
+import QuickAdd from "../components/issue/QuickAdd";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
@@ -110,9 +111,18 @@ export default function Issues() {
   const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Opened from the command palette ("Create issue" action).
+  // Opened from the command palette ("Create issue" action) or from the
+  // board's inline quick-add expand button (prefills title + state).
   useEffect(() => {
-    if ((location.state as { newIssue?: boolean } | null)?.newIssue) {
+    const st = location.state as {
+      newIssue?: boolean;
+      newIssueName?: string;
+      newIssueStateId?: string;
+    } | null;
+    if (st?.newIssue) {
+      if (typeof st.newIssueName === "string") setName(st.newIssueName);
+      if (typeof st.newIssueStateId === "string")
+        setNewStateId(st.newIssueStateId);
       setDialogOpen(true);
       navigate(location.pathname, { replace: true });
     }
@@ -213,16 +223,58 @@ export default function Issues() {
     });
   }
 
+  /** Inline quick-add: title only, state pre-set to the group. The new
+   *  row appears via query invalidation — no full reload. */
+  async function quickCreate(stateId: string, name: string): Promise<void> {
+    await api.post<Issue>(`${base}/issues`, { name, state_id: stateId });
+    await queryClient.invalidateQueries({
+      queryKey: ["issues", slug, identifier],
+    });
+  }
+
+  /** Expand an inline quick-add into the full create form, keeping the
+   *  typed title and the group's state. */
+  function expandQuickAdd(stateId: string, name: string) {
+    setName(name);
+    setNewStateId(stateId);
+    setFormError(null);
+    setDialogOpen(true);
+  }
+
   const issues = issuesQuery.data?.pages.flatMap((p) => p.results) ?? [];
   const states = statesQuery.data ?? [];
-  const selectedId = issues[selected]?.id;
+  const sortedStates = useMemo(
+    () => [...states].sort((a, b) => a.sequence - b.sequence),
+    [states],
+  );
+  // Plane-style state grouping; skipped when filtering to a single state
+  // or when states haven't loaded (falls back to the flat list).
+  const groupByState = sortedStates.length > 0 && !filters.state;
+  const groups = useMemo(
+    () =>
+      groupByState
+        ? sortedStates.map((s) => ({
+            state: s,
+            issues: issues.filter((i) => i.state_id === s.id),
+          }))
+        : [],
+    [groupByState, sortedStates, issues],
+  );
+  const orderedIssues = groupByState
+    ? groups.flatMap((g) => g.issues)
+    : issues;
+  const indexById = useMemo(
+    () => new Map(orderedIssues.map((it, i) => [it.id, i] as const)),
+    [orderedIssues],
+  );
+  const selectedId = orderedIssues[selected]?.id;
 
   // j/k move the list selection; Enter opens the selected issue.
   useEffect(() => {
     setSelected(0);
   }, [issuesQuery.data]);
   useShortcutAction("next-item", () =>
-    setSelected((s) => Math.min(s + 1, Math.max(issues.length - 1, 0))),
+    setSelected((s) => Math.min(s + 1, Math.max(orderedIssues.length - 1, 0))),
   );
   useShortcutAction("prev-item", () =>
     setSelected((s) => Math.max(s - 1, 0)),
@@ -461,7 +513,7 @@ export default function Issues() {
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
-      ) : issues.length === 0 ? (
+      ) : issues.length === 0 && !groupByState ? (
         <Card>
           <CardHeader>
             <CardTitle>
@@ -476,21 +528,70 @@ export default function Issues() {
         </Card>
       ) : (
         <>
-          <div className="space-y-3">
-            {issues.map((issue, i) => (
-              <div
-                key={issue.id}
-                className={
-                  i === selected ? "rounded-lg ring-2 ring-ring" : undefined
-                }
-              >
-                <IssueCard
-                  issue={issue}
-                  state={stateById.get(issue.state_id)}
+          {groupByState ? (
+            <div className="space-y-6">
+              {groups.map((g) => (
+                <section key={g.state.id} aria-label={g.state.name}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: g.state.color }}
+                      aria-hidden
+                    />
+                    <h2 className="text-sm font-medium">{g.state.name}</h2>
+                    <span className="text-xs text-muted-foreground">
+                      {g.issues.length}
+                    </span>
+                  </div>
+                  <div className="space-y-3">
+                    {g.issues.map((issue) => (
+                      <div
+                        key={issue.id}
+                        className={
+                          indexById.get(issue.id) === selected
+                            ? "rounded-lg ring-2 ring-ring"
+                            : undefined
+                        }
+                      >
+                        <IssueCard
+                          issue={issue}
+                          state={stateById.get(issue.state_id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <QuickAdd
+                    className="mt-1"
+                    onCreate={(name) => quickCreate(g.state.id, name)}
+                    onExpand={(name) => expandQuickAdd(g.state.id, name)}
+                  />
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {issues.map((issue, i) => (
+                <div
+                  key={issue.id}
+                  className={
+                    i === selected ? "rounded-lg ring-2 ring-ring" : undefined
+                  }
+                >
+                  <IssueCard
+                    issue={issue}
+                    state={stateById.get(issue.state_id)}
+                  />
+                </div>
+              ))}
+              {filters.state && (
+                <QuickAdd
+                  className="mt-1"
+                  onCreate={(name) => quickCreate(filters.state, name)}
+                  onExpand={(name) => expandQuickAdd(filters.state, name)}
                 />
-              </div>
-            ))}
-          </div>
+              )}
+            </div>
+          )}
           {issuesQuery.hasNextPage && (
             <div className="mt-4 flex justify-center">
               <Button

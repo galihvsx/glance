@@ -35,6 +35,7 @@ import type {
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
+import QuickAdd from "../components/issue/QuickAdd";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
@@ -133,10 +134,14 @@ function BoardColumn({
   state,
   issues,
   disabled,
+  onQuickCreate,
+  onQuickExpand,
 }: {
   state: IssueState;
   issues: Issue[];
   disabled: boolean;
+  onQuickCreate: (name: string) => Promise<void>;
+  onQuickExpand: (name: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: state.id });
   return (
@@ -172,6 +177,13 @@ function BoardColumn({
           )}
         </div>
       </SortableContext>
+      <div className="mt-1">
+        <QuickAdd
+          onCreate={onQuickCreate}
+          onExpand={onQuickExpand}
+          disabled={disabled}
+        />
+      </div>
     </div>
   );
 }
@@ -182,6 +194,7 @@ export default function Board() {
     identifier: string;
   }>();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
 
@@ -259,6 +272,21 @@ export default function Board() {
         state_id: stateId,
       }),
   });
+
+  /** Inline quick-add: title only, state = the column's state. The new
+   *  card appears via query invalidation — no full reload. */
+  async function quickCreate(stateId: string, name: string): Promise<void> {
+    await api.post<Issue>(`${base}/issues`, { name, state_id: stateId });
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+  }
+
+  /** Expand a column quick-add into the full create form on the list
+   *  page, keeping the typed title and the column's state. */
+  function quickExpand(stateId: string, name: string) {
+    navigate(`/w/${slug}/p/${identifier}`, {
+      state: { newIssue: true, newIssueName: name, newIssueStateId: stateId },
+    });
+  }
 
   function writeDrop(activeId: string, destStateId: string, sortOrder: number) {
     setBoardError(null);
@@ -438,6 +466,8 @@ export default function Board() {
                   state={s}
                   issues={columnIssues(issues, s.id)}
                   disabled={!canEdit}
+                  onQuickCreate={(name) => quickCreate(s.id, name)}
+                  onQuickExpand={(name) => quickExpand(s.id, name)}
                 />
               ))}
             </div>
