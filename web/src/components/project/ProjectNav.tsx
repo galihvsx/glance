@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { cn } from "../../lib/utils";
 
-/** View switcher shown on the project pages (list / board / spreadsheet / cycles / modules / intake).
+/** View switcher shown on the project pages (list / board / spreadsheet / cycles / modules / pages / intake).
  *  `trailing` renders at the right end of the tab bar — used for the saved
  *  views menu (C2T6) on the filterable pages. */
 export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
@@ -18,6 +18,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Spreadsheet", to: `${base}/spreadsheet` },
     { label: "Cycles", to: `${base}/cycles` },
     { label: "Modules", to: `${base}/modules` },
+    { label: "Pages", to: `${base}/pages` },
     { label: "Intake", to: `${base}/intake` },
   ];
   return (
