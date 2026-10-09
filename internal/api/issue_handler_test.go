@@ -344,3 +344,74 @@ func TestListIssuesFilterParams(t *testing.T) {
 		}
 	}
 }
+
+// TestIssueHTTPClone (C8T4): POST .../issues/{uuid}/clone → 201 with a
+// new issue in the same project; unknown uuid → 404; the static /clone
+// segment does not shadow PATCH /:uuid.
+func TestIssueHTTPClone(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testIssueServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-clone-http"), "test-agent", uniqueIP())
+	slug := uniqueSlug("issue-clone-http")
+	createWorkspaceHTTP(t, e, cookie, "Issue Co", slug)
+	ident := uniqueProjectIdentifier("HC")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"name":"Original","priority":2}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID         string `json:"id"`
+		SequenceID int    `json:"sequence_id"`
+		Name       string `json:"name"`
+		StateID    string `json:"state_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	// Clone → 201, same name/state, fresh id + sequence.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+created.ID+"/clone", cookie, ``)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("clone issue: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var clone struct {
+		ID         string `json:"id"`
+		SequenceID int    `json:"sequence_id"`
+		DisplayID  string `json:"display_id"`
+		Name       string `json:"name"`
+		StateID    string `json:"state_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &clone); err != nil {
+		t.Fatalf("decode clone: %v", err)
+	}
+	if clone.ID == created.ID {
+		t.Fatal("clone id equals source id")
+	}
+	if clone.SequenceID != created.SequenceID+1 {
+		t.Fatalf("clone sequence_id = %d, want %d", clone.SequenceID, created.SequenceID+1)
+	}
+	if clone.Name != "Original" || clone.StateID != created.StateID {
+		t.Fatalf("clone = %+v, want name/state copied", clone)
+	}
+	if clone.DisplayID != ident+"-2" {
+		t.Fatalf("clone display_id = %q, want %q", clone.DisplayID, ident+"-2")
+	}
+
+	// Unknown source uuid → 404.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/00000000-0000-0000-0000-000000000000/clone", cookie, ``)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("clone unknown: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// The /:uuid/clone registration did not shadow the plain :uuid routes.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created.ID, cookie, `{"name":"Renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch after clone route: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

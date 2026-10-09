@@ -282,15 +282,18 @@ export default function Home() {
                     issue={row.issue}
                     state={undefined}
                     fields={DEFAULT_DISPLAY_SETTINGS.fields}
+                    slug={row.slug}
+                    identifier={row.identifier}
                     onOpen={(it) =>
                       navigate(
                         `/w/${row.slug}/p/${row.identifier}/i/${it.id}`,
                       )
                     }
                   />
+                  {/* right-12 clears the card's row-menu trigger (C8T4). */}
                   <Badge
                     variant="secondary"
-                    className="absolute right-3 top-3 text-[11px]"
+                    className="absolute right-12 top-3 text-[11px]"
                   >
                     {row.projectName}
                   </Badge>

@@ -437,6 +437,15 @@
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/clone": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Clone an issue",
+        "description": "Duplicates the issue into the same project and returns the new issue. Copies name, description, priority, state, parent (when set), estimate, start/target dates, labels and custom field values; assigns a fresh sequence_id; created_by is the cloning user. Does NOT copy comments, watchers, assignees, activity, attachments or sub-issues. A draft clones into a draft. Member (15)+; 404 when the source is missing or in another project.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "201": { "description": "Cloned issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/parent": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

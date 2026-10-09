@@ -6,8 +6,10 @@ import {
   Bell,
   BellOff,
   Check,
+  Copy,
   History as HistoryIcon,
   Link2,
+  MoreVertical,
   Pencil,
   Share2,
 } from "lucide-react";
@@ -56,6 +58,13 @@ import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
 import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
+import { useCloneIssue } from "./useCloneIssue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -355,6 +364,13 @@ export default function IssueDetailContent({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  // C8T4: clone action — POST .../issues/{uuid}/clone, then navigate to
+  // the new issue. Clone errors surface in the shared error alert below.
+  const {
+    cloneIssue,
+    cloning,
+    error: cloneError,
+  } = useCloneIssue(slug, identifier);
 
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
@@ -710,6 +726,11 @@ export default function IssueDetailContent({
 
   return (
     <div className="w-full">
+      {cloneError && (
+        <Alert variant="destructive" className="mt-4">
+          <AlertDescription>{cloneError}</AlertDescription>
+        </Alert>
+      )}
       {error && (
         <Alert variant="destructive" className="mt-4">
           <AlertDescription>{error}</AlertDescription>
@@ -789,6 +810,26 @@ export default function IssueDetailContent({
                 <Share2 className="h-3.5 w-3.5" />
                 Share
               </Button>
+              {/* C8T4: overflow menu — currently just Clone; the home for
+                  future per-issue actions (delete, move, archive). */}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+                  title="More actions"
+                  aria-label="More issue actions"
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => void cloneIssue(uuid)}
+                    disabled={cloning || !issue}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {cloning ? "Cloning…" : "Clone issue"}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               {headerActions}
             </span>
           </div>
