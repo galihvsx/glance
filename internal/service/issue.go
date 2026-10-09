@@ -1741,6 +1741,40 @@ type ListIssuesInput struct {
 	Draft *bool
 }
 
+// validateListFilterValues checks the UUID/priority formats of a
+// ListIssuesInput. Shared by ListIssues and the export path (C8T3) so both
+// reject malformed filters identically.
+func validateListFilterValues(in ListIssuesInput) error {
+	for _, p := range in.Priorities {
+		if p < 0 || p > 4 {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, f := range []string{in.State, in.Cycle} {
+		if f != "" && !isUUIDFormat(f) {
+			return ErrInvalidListFilter
+		}
+	}
+	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
+	// "none" sentinel (validated separately below).
+	for _, id := range in.Labels {
+		if !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.Assignees {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.EstimatePoints {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	return nil
+}
+
 // IssueAssignee is one assignee on an issue, aggregated from
 // issue_assignees in the same query as the issue row (Task 16).
 type IssueAssignee struct {
@@ -1760,10 +1794,13 @@ type IssueLabel struct {
 // issue's relations as JSONB arrays inside the single list/detail query
 // — one query total, never per-row lookups (Review Focus #3). The outer
 // query must alias issues as i. COALESCE keeps the shape [] (never null)
-// for issues with no relations.
+// for issues with no relations. assigneesAgg also carries each user's
+// email (C8T3: the export CSV's assignee column); unmarshalRelations
+// ignores the extra key so the list shape is unchanged.
 const assigneesAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
 		'id', u.id::text,
-		'name', COALESCE(u.name, u.email::text))
+		'name', COALESCE(u.name, u.email::text),
+		'email', u.email::text)
 		ORDER BY COALESCE(u.name, u.email::text))::jsonb, '[]'::jsonb)
 	FROM issue_assignees ia JOIN users u ON u.id = ia.user_id
 	WHERE ia.issue_id = i.id)`
@@ -1788,126 +1825,13 @@ func unmarshalRelations(assigneesJSON, labelsJSON []byte, item *IssueListItem) e
 	return nil
 }
 
-// IssueListItem is one row of the list: the issue plus its aggregated
-// relations — one query, never per-row lookups (Review Focus #3).
-type IssueListItem struct {
-	Issue
-	Assignees []IssueAssignee `json:"assignees"`
-	Labels    []IssueLabel    `json:"labels"`
-}
-
-// ListIssuesResult is the paginated list envelope (spec §5).
-type ListIssuesResult struct {
-	Issues     []IssueListItem `json:"results"`
-	NextCursor string          `json:"next_cursor,omitempty"`
-	// Links carries the dependency edges touching the listed issues,
-	// fetched in ONE query. Populated only when the caller passes
-	// ?include_links=true (the Gantt consumption contract, C4T0);
-	// omitempty keeps every existing list response byte-identical.
-	Links []IssueLink `json:"links,omitempty"`
-}
-
-// ListIssues returns the project's live issues with filters, cursor
-// pagination, and delta sync. Assignees/labels are aggregated inside the
-// single list query (correlated json_agg subqueries), so the query count
-// is constant in the number of issues. Any workspace member (guest 5+)
-// may read; non-members get ErrNotFound via resolveIssueProject.
-func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in ListIssuesInput) (*ListIssuesResult, error) {
-	ident, err := normalizeIdentifier(identifier)
-	if err != nil {
-		return nil, err
-	}
-
-	orderKey := in.OrderBy
-	if orderKey == "" {
-		orderKey = "-updated_at"
-	}
-	ord, ok := listOrders[orderKey]
-	if !ok {
-		return nil, ErrInvalidOrderBy
-	}
-
-	perPage := in.PerPage
-	switch {
-	case perPage < 0:
-		return nil, ErrInvalidListFilter
-	case perPage == 0:
-		perPage = defaultListPerPage
-	case perPage > maxListPerPage:
-		perPage = maxListPerPage
-	}
-
-	for _, p := range in.Priorities {
-		if p < 0 || p > 4 {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, f := range []string{in.State, in.Cycle} {
-		if f != "" && !isUUIDFormat(f) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
-	// "none" sentinel (validated separately below).
-	for _, id := range in.Labels {
-		if !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, id := range in.Assignees {
-		if id != filterNone && !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, id := range in.EstimatePoints {
-		if id != filterNone && !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-
-	var cur *listCursor
-	if in.Cursor != "" {
-		c, err := decodeListCursor(in.Cursor, orderKey)
-		if err != nil {
-			return nil, err
-		}
-		if !validCursorValue(ord.kind, c.Value) {
-			return nil, ErrInvalidCursor
-		}
-		cur = &c
-	}
-
-	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Sparse fieldsets (spec §5): description is only selected when
-	// ?fields=description asks for it.
-	wantDesc := false
-	for _, f := range in.Fields {
-		if strings.TrimSpace(f) == "description" {
-			wantDesc = true
-			break
-		}
-	}
-	descCol := "NULL::jsonb"
-	if wantDesc {
-		descCol = "i.description"
-	}
-
-	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
-		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
-		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
-		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
-
+// issueListConds builds the WHERE fragments for the issue list query from
+// a ListIssuesInput. Shared by ListIssues and the export path (C8T3) so
+// both honor identical filter/scope semantics: what the user sees in the
+// list is what the export contains. Cursor pagination stays in ListIssues
+// (exports stream the whole filtered set in sequence order, unpaginated).
+func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any) string) []string {
 	var conds []string
-	var args []any
-	arg := func(v any) string {
-		args = append(args, v)
-		return fmt.Sprintf("$%d", len(args))
-	}
-
 	conds = append(conds, "i.project_id = "+arg(projectID)+"::uuid")
 	conds = append(conds, "i.deleted_at IS NULL")
 	if !in.Archived {
@@ -2008,6 +1932,108 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if in.Subscribed {
 		conds = append(conds, "EXISTS (SELECT 1 FROM issue_subscribers s WHERE s.issue_id = i.id AND s.user_id = "+arg(actorID)+"::uuid)")
 	}
+	return conds
+}
+
+// IssueListItem is one row of the list: the issue plus its aggregated
+// relations — one query, never per-row lookups (Review Focus #3).
+type IssueListItem struct {
+	Issue
+	Assignees []IssueAssignee `json:"assignees"`
+	Labels    []IssueLabel    `json:"labels"`
+}
+
+// ListIssuesResult is the paginated list envelope (spec §5).
+type ListIssuesResult struct {
+	Issues     []IssueListItem `json:"results"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+	// Links carries the dependency edges touching the listed issues,
+	// fetched in ONE query. Populated only when the caller passes
+	// ?include_links=true (the Gantt consumption contract, C4T0);
+	// omitempty keeps every existing list response byte-identical.
+	Links []IssueLink `json:"links,omitempty"`
+}
+
+// ListIssues returns the project's live issues with filters, cursor
+// pagination, and delta sync. Assignees/labels are aggregated inside the
+// single list query (correlated json_agg subqueries), so the query count
+// is constant in the number of issues. Any workspace member (guest 5+)
+// may read; non-members get ErrNotFound via resolveIssueProject.
+func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in ListIssuesInput) (*ListIssuesResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	orderKey := in.OrderBy
+	if orderKey == "" {
+		orderKey = "-updated_at"
+	}
+	ord, ok := listOrders[orderKey]
+	if !ok {
+		return nil, ErrInvalidOrderBy
+	}
+
+	perPage := in.PerPage
+	switch {
+	case perPage < 0:
+		return nil, ErrInvalidListFilter
+	case perPage == 0:
+		perPage = defaultListPerPage
+	case perPage > maxListPerPage:
+		perPage = maxListPerPage
+	}
+
+	if err := validateListFilterValues(in); err != nil {
+		return nil, err
+	}
+
+	var cur *listCursor
+	if in.Cursor != "" {
+		c, err := decodeListCursor(in.Cursor, orderKey)
+		if err != nil {
+			return nil, err
+		}
+		if !validCursorValue(ord.kind, c.Value) {
+			return nil, ErrInvalidCursor
+		}
+		cur = &c
+	}
+
+	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Sparse fieldsets (spec §5): description is only selected when
+	// ?fields=description asks for it.
+	wantDesc := false
+	for _, f := range in.Fields {
+		if strings.TrimSpace(f) == "description" {
+			wantDesc = true
+			break
+		}
+	}
+	descCol := "NULL::jsonb"
+	if wantDesc {
+		descCol = "i.description"
+	}
+
+	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
+		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
+		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
+		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
+
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	// The WHERE fragments come from issueListConds, shared with the
+	// export path (C8T3): one function, so the list and the export always
+	// see the same working set for the same filters.
+	conds := issueListConds(in, projectID, actorID, arg)
 	if cur != nil {
 		op := ">"
 		if ord.desc {

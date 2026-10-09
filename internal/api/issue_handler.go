@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,9 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/issues", RequireAuth(h.Pool))
 	g.POST("", h.createIssue)
 	g.GET("", h.listIssues)
+	// C8T3: static segment wins over GET /:uuid by Echo's specificity
+	// rules (kept adjacent for readability).
+	g.GET("/export", h.exportIssues)
 	g.POST("/bulk-update", h.bulkUpdateIssues)
 	g.POST("/bulk-delete", h.bulkDeleteIssues)
 	// C5T8: atomic bulk set. Static segment wins over PATCH /:uuid by
@@ -237,15 +241,20 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // dependency edges for the listed issues as a top-level "links" array,
 // fetched in ONE query — the Gantt view pairs it with
 // ?start_after/?start_before=.
-func (h *IssueHandler) listIssues(c *echo.Context) error {
-	qp := c.QueryParams()
+// parseIssueListInput parses the query params shared by the issue list
+// and the export endpoint (C8T3), so both honor identical filter
+// semantics. Pagination/sort params (per_page, cursor, order_by,
+// fields, include_links) are parsed for the list; exporters ignore them.
+// A non-nil error is always a 400-class client error with a
+// human-readable message.
+func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 
 	var priorities []int
 	if s := qp.Get("priority"); s != "" {
 		for _, part := range strings.Split(s, ",") {
 			p, err := strconv.Atoi(strings.TrimSpace(part))
 			if err != nil {
-				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid priority: want comma-separated 0-4", nil)
+				return service.ListIssuesInput{}, errors.New("invalid priority: want comma-separated 0-4")
 			}
 			priorities = append(priorities, p)
 		}
@@ -280,7 +289,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	if s := qp.Get("per_page"); s != "" {
 		p, err := strconv.Atoi(s)
 		if err != nil || p < 1 || p > 100 {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
+			return service.ListIssuesInput{}, errors.New("invalid per_page: want 1-100")
 		}
 		perPage = p
 	}
@@ -311,7 +320,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	} {
 		tm, err := parseTime(tc.name)
 		if err != nil {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid "+tc.name+": want RFC3339", nil)
+			return service.ListIssuesInput{}, errors.New("invalid " + tc.name + ": want RFC3339")
 		}
 		*tc.dst = tm
 	}
@@ -331,7 +340,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 		case "false", "0":
 			b = false
 		default:
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid draft: want true or false", nil)
+			return service.ListIssuesInput{}, errors.New("invalid draft: want true or false")
 		}
 		draft = &b
 	}
@@ -341,39 +350,47 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	if s := qp.Get("sequence_id"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid sequence_id: want a positive integer", nil)
+			return service.ListIssuesInput{}, errors.New("invalid sequence_id: want a positive integer")
 		}
 		sequenceID = n
 	}
+	return service.ListIssuesInput{
+		State:          qp.Get("state"),
+		Priorities:     priorities,
+		Labels:         labels,
+		Assignees:      assignees,
+		EstimatePoints: estimatePoints,
+		Cycle:          qp.Get("cycle"),
+		Q:              qp.Get("q"),
+		OrderBy:        qp.Get("order_by"),
+		Cursor:         qp.Get("cursor"),
+		PerPage:        perPage,
+		CreatedAfter:   createdAfter,
+		CreatedBefore:  createdBefore,
+		UpdatedAfter:   updatedAfter,
+		UpdatedBefore:  updatedBefore,
+		DueAfter:       dueAfter,
+		DueBefore:      dueBefore,
+		StartAfter:     startAfter,
+		StartBefore:    startBefore,
+		Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
+		Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
+		Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
+		Draft:          draft,
+		SequenceID:     sequenceID,
+		Fields:         fields,
+	}, nil
+}
+
+func (h *IssueHandler) listIssues(c *echo.Context) error {
+	qp := c.QueryParams()
+	in, err := parseIssueListInput(qp)
+	if err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	}
 
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
-		service.ListIssuesInput{
-			State:          qp.Get("state"),
-			Priorities:     priorities,
-			Labels:         labels,
-			Assignees:      assignees,
-			EstimatePoints: estimatePoints,
-			Cycle:          qp.Get("cycle"),
-			Q:              qp.Get("q"),
-			OrderBy:        qp.Get("order_by"),
-			Cursor:         qp.Get("cursor"),
-			PerPage:        perPage,
-			CreatedAfter:   createdAfter,
-			CreatedBefore:  createdBefore,
-			UpdatedAfter:   updatedAfter,
-			UpdatedBefore:  updatedBefore,
-			DueAfter:       dueAfter,
-			DueBefore:      dueBefore,
-			StartAfter:     startAfter,
-			StartBefore:    startBefore,
-			Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
-			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
-			Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
-			Draft:          draft,
-			SequenceID:     sequenceID,
-			Fields:         fields,
-		})
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidOrderBy):
