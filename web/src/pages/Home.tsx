@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Clock, Inbox, Layers, Plus } from "lucide-react";
+import { ChevronRight, Clock, Inbox, Layers, Plus, Shield } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { Issue, IssueListResult, Project, Workspace } from "../lib/types";
@@ -13,7 +13,7 @@ import {
 } from "../components/issue/recents";
 import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
-import { Button } from "../components/ui/button";
+import { Button, buttonVariants } from "../components/ui/button";
 import {
   Card,
   CardContent,
@@ -172,6 +172,20 @@ export default function Home() {
           glance
         </Link>
         <div className="flex items-center gap-2">
+          {/* Instance admin entry (C5T1): visible only to is_admin users;
+              the /admin route itself is guarded by AdminGuard + server-side
+              RequireAdmin. */}
+          {user?.is_admin && (
+            <Link
+              to="/admin"
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+              aria-label="Administration"
+              title="Instance administration"
+            >
+              <Shield className="mr-1.5 h-4 w-4" />
+              Admin
+            </Link>
+          )}
           <NotificationBell />
           <ThemeToggle />
           <Button variant="ghost" size="sm" onClick={() => void logout()}>

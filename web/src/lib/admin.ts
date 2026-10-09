@@ -1,0 +1,129 @@
+// Admin API client (C5T1). All routes live under /api/v1/admin and are
+// gated server-side by RequireAdmin (internal/api/admin_handler.go, C5T0);
+// the UI additionally hides the nav entry and redirects non-admins away
+// from /admin so nobody sees a dead end.
+//
+// Paginated envelopes share the {items, total, page, per_page} shape and
+// default to 25 rows per page, matching the server's pageParams contract.
+
+import { api } from "./api";
+import type { User } from "./auth";
+
+export interface AdminStats {
+  users: number;
+  workspaces: number;
+  projects: number;
+  issues: number;
+  attachment_bytes: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string | null;
+  is_admin: boolean;
+  is_active: boolean;
+  workspace_count: number;
+  created_at: string;
+}
+
+export interface AdminWorkspace {
+  id: string;
+  slug: string;
+  name: string;
+  member_count: number;
+  project_count: number;
+  issue_count: number;
+  created_at: string;
+}
+
+export interface AdminPage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+export const ADMIN_KEYS = {
+  stats: ["admin", "stats"] as const,
+  users: (page: number) => ["admin", "users", page] as const,
+  workspaces: (page: number) => ["admin", "workspaces", page] as const,
+};
+
+export const ADMIN_PER_PAGE = 25;
+
+export function fetchAdminStats(): Promise<AdminStats> {
+  return api.get<AdminStats>("/api/v1/admin/stats");
+}
+
+export function fetchAdminUsers(
+  page = 1,
+  perPage = ADMIN_PER_PAGE,
+): Promise<AdminPage<AdminUser>> {
+  return api.get<AdminPage<AdminUser>>(
+    `/api/v1/admin/users?page=${page}&per_page=${perPage}`,
+  );
+}
+
+/** Flips the instance-admin flag. Rejects when is_admin is missing — the
+ *  client always says what it wants explicitly, like the server demands. */
+export async function setAdminUser(id: string, isAdmin: boolean): Promise<void> {
+  await api.patch<{ ok: boolean }>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}`,
+    { is_admin: isAdmin },
+  );
+}
+
+export async function deactivateAdminUser(id: string): Promise<void> {
+  await api.post<{ ok: boolean }>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/deactivate`,
+  );
+}
+
+export async function reactivateAdminUser(id: string): Promise<void> {
+  await api.post<{ ok: boolean }>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/reactivate`,
+  );
+}
+
+export function fetchAdminWorkspaces(
+  page = 1,
+  perPage = ADMIN_PER_PAGE,
+): Promise<AdminPage<AdminWorkspace>> {
+  return api.get<AdminPage<AdminWorkspace>>(
+    `/api/v1/admin/workspaces?page=${page}&per_page=${perPage}`,
+  );
+}
+
+/** Deletes a workspace. The name typed into the confirmation dialog is
+ *  passed verbatim as ?confirm= — the server rejects a mismatch (409), so
+ *  the client never invents its own notion of "confirmed". */
+export async function deleteAdminWorkspace(
+  id: string,
+  confirmName: string,
+): Promise<void> {
+  await api.del(
+    `/api/v1/admin/workspaces/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirmName)}`,
+  );
+}
+
+/** Guard decision for the /admin route: what the router should do given
+ *  the current auth state. Pure (no hooks) so it is unit-testable and the
+ *  guard component stays a dumb switch. */
+export type AdminRouteDecision = "loading" | "login" | "home" | "allow";
+
+export function adminRouteDecision(
+  loading: boolean,
+  user: Pick<User, "is_admin"> | null,
+): AdminRouteDecision {
+  if (loading) return "loading";
+  if (!user) return "login";
+  if (!user.is_admin) return "home";
+  return "allow";
+}
+
+/** Page count for a total row count at a fixed page size. Always ≥ 1 so
+ *  "Page 1 of 1" renders even for an empty table. */
+export function totalPages(total: number, perPage: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, total) / perPage));
+}

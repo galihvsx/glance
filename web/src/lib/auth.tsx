@@ -10,12 +10,15 @@ import { api } from "./api";
 import { getRealtimeClient } from "./ws";
 
 // Mirrors internal/auth.User JSON (session.go). Keep in sync if it changes.
+// is_admin is present on the /me response (000025, C5T0) and drives the
+// admin nav entry + /admin route guard.
 export interface User {
   id: string;
   email: string;
   name: string | null;
   avatar_url: string | null;
   is_active: boolean;
+  is_admin: boolean;
   last_login_at: string | null;
   created_at: string;
   updated_at: string;
