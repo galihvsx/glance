@@ -60,14 +60,14 @@ function OpenSheet({ children }: { children: ReactNode }) {
 function renderSheet() {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <ShellProvider>
-        <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={["/"]}>
+        <ShellProvider>
           <OpenSheet>
             <NotificationsSheet />
             <LocationProbe />
           </OpenSheet>
-        </MemoryRouter>
-      </ShellProvider>
+        </ShellProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

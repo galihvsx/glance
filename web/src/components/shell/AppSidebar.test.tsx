@@ -2,8 +2,28 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AppSidebar from "./AppSidebar";
+
+// The shell footer reads useAuth; stub it (same pattern as ShellFooter.test).
+vi.mock("../../lib/auth", () => ({
+  useAuth: () => ({
+    user: {
+      id: "u1",
+      email: "test@example.com",
+      name: "Test User",
+      avatar_url: null,
+      is_active: true,
+      is_admin: false,
+      last_login_at: null,
+      created_at: "",
+      updated_at: "",
+    },
+    loading: false,
+    refresh: vi.fn(),
+    logout: vi.fn(),
+  }),
+}));
 import { ShellProvider, type ShellContextValue } from "./shell-context";
 import { SidebarProvider } from "../ui/sidebar";
 import { favoriteKeys, type FavoritesList } from "../../lib/favorites";

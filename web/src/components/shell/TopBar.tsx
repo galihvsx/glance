@@ -5,7 +5,7 @@
 // existing command palette's "toggle-palette" shortcut action (the palette
 // itself is mounted by ProjectScope on project routes).
 
-import { useParams } from "react-router-dom";
+import { useMatch, useParams } from "react-router-dom";
 import { PanelLeftIcon, Search } from "lucide-react";
 import { emitShortcutAction } from "../../lib/shortcuts";
 import { useWorkspaces } from "../../lib/useWorkspaces";
@@ -57,22 +57,27 @@ function ContextLabel() {
 }
 
 export default function TopBar() {
+  // The command palette is mounted by ProjectScope, i.e. only on project
+  // routes — showing the button elsewhere would be a dead control.
+  const projectMatch = useMatch("/w/:slug/p/:identifier/*");
   return (
     <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-1 border-b bg-background px-2">
       <ShellTrigger />
       <ContextLabel />
       <div className="flex-1" />
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-muted-foreground"
-        onClick={() => emitShortcutAction("toggle-palette")}
-        aria-label="Open command palette"
-      >
-        <Search />
-        <span className="hidden sm:inline">Search</span>
-        <Kbd>⌘K</Kbd>
-      </Button>
+      {projectMatch && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          onClick={() => emitShortcutAction("toggle-palette")}
+          aria-label="Open command palette"
+        >
+          <Search />
+          <span className="hidden sm:inline">Search</span>
+          <Kbd>⌘K</Kbd>
+        </Button>
+      )}
     </header>
   );
 }

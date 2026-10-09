@@ -10,7 +10,13 @@ import { useEffect } from "react";
 import { Outlet, useMatch } from "react-router-dom";
 import { ShellProvider, useShell } from "./shell-context";
 import { SidebarInset, SidebarProvider, useSidebar } from "../ui/sidebar";
+import {
+  SHELL_CLOSE_OVERLAY,
+  SHELL_OPEN_NOTIFICATIONS,
+  SHELL_TOGGLE_SIDEBAR,
+} from "../../lib/shell-events";
 import AppSidebar from "./AppSidebar";
+import NotificationsSheet from "./NotificationsSheet";
 import TopBar from "./TopBar";
 
 /** Two-way sync between the shell context's mobileOpen and the shadcn
@@ -31,6 +37,48 @@ function MobileSync() {
   return null;
 }
 
+/** Listens for the window-event contract from ShortcutsHost (see
+ *  lib/shell-events.ts): the shell owns the state, the host only forwards
+ *  shortcut actions. Must be mounted inside ShellProvider. */
+function ShellEventBridge() {
+  const {
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    notificationsOpen,
+    setNotificationsOpen,
+    setMobileOpen,
+  } = useShell();
+
+  useEffect(() => {
+    const onToggle = () => setSidebarCollapsed(!sidebarCollapsed);
+    // Idempotent: firing g n while the sheet is open keeps it open rather
+    // than toggling (spec §3).
+    const onOpenNotifications = () => {
+      if (!notificationsOpen) setNotificationsOpen(true);
+    };
+    const onCloseOverlay = () => {
+      setNotificationsOpen(false);
+      setMobileOpen(false);
+    };
+    window.addEventListener(SHELL_TOGGLE_SIDEBAR, onToggle);
+    window.addEventListener(SHELL_OPEN_NOTIFICATIONS, onOpenNotifications);
+    window.addEventListener(SHELL_CLOSE_OVERLAY, onCloseOverlay);
+    return () => {
+      window.removeEventListener(SHELL_TOGGLE_SIDEBAR, onToggle);
+      window.removeEventListener(SHELL_OPEN_NOTIFICATIONS, onOpenNotifications);
+      window.removeEventListener(SHELL_CLOSE_OVERLAY, onCloseOverlay);
+    };
+  }, [
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    notificationsOpen,
+    setNotificationsOpen,
+    setMobileOpen,
+  ]);
+
+  return null;
+}
+
 function ShellChrome() {
   const { sidebarCollapsed, setSidebarCollapsed } = useShell();
   const projectMatch = useMatch("/w/:slug/p/:identifier/*");
@@ -41,7 +89,9 @@ function ShellChrome() {
       onOpenChange={(open) => setSidebarCollapsed(!open)}
     >
       <MobileSync />
+      <ShellEventBridge />
       <AppSidebar />
+      <NotificationsSheet />
       <SidebarInset className="max-h-svh overflow-y-auto">
         <TopBar />
         {/* T3 seam: ProjectNav portals its tab bar into this node via

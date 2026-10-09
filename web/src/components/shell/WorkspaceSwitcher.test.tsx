@@ -3,9 +3,15 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import { ShellProvider, useShell } from "./shell-context";
+
+// T1's real ShellProvider persists lastWorkspaceSlug to localStorage —
+// clear it between tests so they don't leak state into each other.
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 vi.mock("../../lib/useWorkspaces", () => ({
   useWorkspaces: () => ({
@@ -31,8 +37,8 @@ function SlugProbe() {
 function renderSwitcher(initialEntries: string[]) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <ShellProvider>
-        <MemoryRouter initialEntries={initialEntries}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <ShellProvider>
           <Routes>
             <Route
               path="/w/:slug"
@@ -55,8 +61,8 @@ function renderSwitcher(initialEntries: string[]) {
               }
             />
           </Routes>
-        </MemoryRouter>
-      </ShellProvider>
+        </ShellProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -125,11 +131,11 @@ describe("WorkspaceSwitcher", () => {
 
   it("shows 'Select workspace' when no slug is known", () => {
     render(
-      <ShellProvider>
-        <MemoryRouter initialEntries={["/notifications"]}>
+      <MemoryRouter initialEntries={["/notifications"]}>
+        <ShellProvider>
           <WorkspaceSwitcher />
-        </MemoryRouter>
-      </ShellProvider>,
+        </ShellProvider>
+      </MemoryRouter>,
     );
     expect(screen.getByLabelText("Switch workspace")).toHaveTextContent(
       "Select workspace",

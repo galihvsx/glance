@@ -14,14 +14,12 @@ import {
   Briefcase,
   Building2,
   ChevronDown,
-  ChevronsUpDown,
   CircleDot,
   Folder,
   FolderKanban,
   Home,
   Plus,
   Search,
-  User as UserIcon,
 } from "lucide-react";
 import { api } from "../../lib/api";
 import {
@@ -33,6 +31,8 @@ import { useUnreadCount } from "../../lib/notifications";
 import type { Project } from "../../lib/types";
 import { useWorkspaces } from "../../lib/useWorkspaces";
 import { useShell } from "./shell-context";
+import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import T2ShellFooter from "./ShellFooter";
 import {
   Collapsible,
   CollapsibleContent,
@@ -54,6 +54,7 @@ import {
   SidebarMenuSkeleton,
   SidebarRail,
   SidebarSeparator,
+  useSidebar,
 } from "../ui/sidebar";
 
 const PROJECTS_COLLAPSED_KEY = "glance:projects-collapsed";
@@ -80,12 +81,7 @@ function useWorkspaceProjects(slug: string | undefined) {
 }
 
 function WorkspaceHeader() {
-  const { slug: routeSlug } = useParams<{ slug: string }>();
-  const { lastWorkspaceSlug } = useShell();
   const { data: workspaces, isLoading } = useWorkspaces();
-  const slug = routeSlug ?? lastWorkspaceSlug ?? undefined;
-  const workspace = workspaces?.find((w) => w.slug === slug);
-  const name = workspace?.name ?? slug ?? "glance";
 
   if (!isLoading && (workspaces?.length ?? 0) === 0) {
     // No workspaces: the header becomes a create CTA (spec §2).
@@ -110,23 +106,7 @@ function WorkspaceHeader() {
     <SidebarHeader>
       <SidebarMenu>
         <SidebarMenuItem>
-          {/* TODO(T2): replace with WorkspaceSwitcher dropdown (workspace
-              list, "New workspace", "Workspace settings", "All workspaces"). */}
-          <SidebarMenuButton
-            size="lg"
-            data-slot="workspace-switcher"
-            tooltip={name}
-          >
-            <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-              <span className="text-sm font-semibold">
-                {name.charAt(0).toUpperCase() || "?"}
-              </span>
-            </div>
-            <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{name}</span>
-            </div>
-            <ChevronsUpDown className="ml-auto" />
-          </SidebarMenuButton>
+          <WorkspaceSwitcher />
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarHeader>
@@ -390,24 +370,10 @@ function ProjectsGroup() {
 }
 
 function ShellFooter() {
-  const { pathname } = useLocation();
+  const { state } = useSidebar();
   return (
     <SidebarFooter>
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            render={<Link to="/profile" />}
-            isActive={pathname === "/profile"}
-            tooltip="Profile"
-          >
-            <UserIcon />
-            <span>Profile</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      </SidebarMenu>
-      {/* TODO(T2): real footer — avatar dropdown (Profile, API tokens, Admin,
-          Log out) + ThemeToggle. */}
-      <div data-slot="shell-footer" />
+      <T2ShellFooter collapsed={state === "collapsed"} />
     </SidebarFooter>
   );
 }
