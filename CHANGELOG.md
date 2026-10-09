@@ -71,14 +71,48 @@ queued onboarding follow-up (invites endpoint).
   timer widget on the issue detail (live ticking, survives reload via
   server reconciliation, manual log dialog, totals). No realtime
   broadcast by design — worklogs are personal.
+- Time reports (C6T8): `GET .../projects/{identifier}/time/summary`
+  (`?days=`, `?group_by=day|week|user|issue`; garbage → 400, days
+  clamps to 365). Completed entries only — running timers excluded,
+  same convention as the per-issue total. UI: "Time report" section
+  on the Analytics page (group-by + window selectors, hand-rolled
+  SVG bars, ranked horizontals for user/issue).
 
-### Fixed
+**API tokens UI**
+- `/settings/tokens` (C6T0): create/revoke/list personal tokens,
+  show-once plaintext, scope selection. Linked from the profile
+  page, closing the nav gap.
 
-- `ws.smoke.test.ts` now cleans up its scratch rows (zero live rows
-  post-run; soft-delete audit trail preserved).
-- Last-admin removal/demotion race: `SELECT … FOR UPDATE` on
-  membership rows serializes concurrent removals (20× race test
-  green, incl. `-race`).
+**Webhooks UI**
+- Workspace settings → Webhooks (C6T1, admin-only): CRUD, event
+  selection, active toggle, secret show-on-create; regenerate is
+  client-side generate + PATCH (PATCH never returns the secret).
+
+**Project taxonomy settings**
+- `/w/:slug/p/:identifier/settings` (C6T2): states CRUD (409 unless
+  `?reassign_to=`, last state undeletable), labels, estimate scale
+  delete + add-points. Backend added where the UI needed it (states
+  were list-only, estimates create+list-only).
+
+**Profile page**
+- `/profile` (C6T7): name/email, `PATCH /api/v1/auth/me`, sessions
+  list with `current` flag, link to API tokens.
+
+**"My work" view**
+- `/w/:slug/my-work` (C6T3): assigned / created / watched tabs via
+  `GET /api/v1/workspaces/{slug}/my-issues?filter=`.
+
+**Draft issues**
+- "Save as draft" in the create dialog + Drafts tab per project
+  (C6T4): resume / publish (`PATCH is_draft=false`) / discard.
+  The working-set default now EXCLUDES drafts (no UI could create
+  drafts before, so no flow depended on the old behavior); direct
+  `?sequence_id=` lookups still resolve them.
+
+**Command palette lookup**
+- Display-ID resolution is one query now (C6T5):
+  `GET .../issues?sequence_id=N` (400 on garbage) instead of
+  page-scanning; project paths are encodeURIComponent'd.
 
 **Gantt chart**
 - Full-stack timeline (C4T0 backend, C4T1 frontend): migration
@@ -119,6 +153,29 @@ queued onboarding follow-up (invites endpoint).
   and template download. Two-phase: validate all rows (per-row errors,
   never silent), then single-transaction insert. Resolves states/priorities/
   labels/assignees by name; unknown values → per-row errors.
+
+### Fixed
+
+- `ws.smoke.test.ts` now cleans up its scratch rows (zero live rows
+  post-run; soft-delete audit trail preserved).
+- Last-admin removal/demotion race: `SELECT … FOR UPDATE` on
+  membership rows serializes concurrent removals (20× race test
+  green, incl. `-race`).
+- Snoozed intake inbox excluded archived issues (the pending inbox
+  already did); both intake orders gained an `ii.id` tiebreak (C6T5).
+- `CompleteCycle` only completes `current`/`upcoming` cycles; a
+  second call is a nil no-op (ticker-race safe) (C6T5).
+- `UpdateWebhook` with an empty secret regenerates instead of
+  storing "" (which would silently disable HMAC signing) (C6T5).
+- Issue-link kinds are case-folded on create ("BLOCKS" stores as
+  "blocks") (C6T5).
+- API token scopes dedupe on create (C6T5).
+- Webhook outbox `markFailed` now stamps `processed_at` like the
+  `done` path, so dead rows are distinguishable from retrying rows
+  (C6T5).
+- `internal/api` test `TestMain` truncates `rate_limits` once at
+  package startup — retires the manual-TRUNCATE-before-every-run
+  workaround for the environmental 429 flake (C6T6).
 
 ## [v0.2.0] - unreleased
 
