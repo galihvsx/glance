@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -38,6 +39,15 @@ import StateBadge from "../components/issue/StateBadge";
 import ProjectNav from "../components/project/ProjectNav";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
+import SpreadsheetDisplayPanel from "../components/issue/SpreadsheetDisplayPanel";
+import { useSpreadsheetCustomColumns } from "../components/issue/useSpreadsheetCustomColumns";
+import {
+  customFieldKeys,
+  fetchCustomFields,
+  formatCustomValue,
+  resolveVisibleCustomFields,
+  type CustomValue,
+} from "../lib/customFields";
 import {
   activeFilterCount,
   toApiParams,
@@ -170,6 +180,20 @@ export default function Spreadsheet() {
       api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
   });
 
+  // C9T4: custom-field columns. Definitions come from the project endpoint;
+  // visibility is per-project localStorage, default OFF.
+  const { visible: cfVisible, toggle: toggleCfColumn, reset: resetCfColumns } =
+    useSpreadsheetCustomColumns(slug, identifier);
+  const customFieldsQuery = useQuery({
+    queryKey: customFieldKeys(slug, identifier).fields,
+    queryFn: () => fetchCustomFields(slug, identifier),
+    staleTime: 60_000,
+  });
+  const visibleCfFields = useMemo(
+    () => resolveVisibleCustomFields(customFieldsQuery.data ?? [], cfVisible),
+    [customFieldsQuery.data, cfVisible],
+  );
+
   const issuesQuery = useInfiniteQuery({
     queryKey: ["issues", slug, identifier, filters],
     queryFn: ({ pageParam }: { pageParam?: string }) =>
@@ -243,6 +267,41 @@ export default function Spreadsheet() {
   const issues = useMemo(
     () => issuesQuery.data?.pages.flatMap((p) => p.results) ?? [],
     [issuesQuery.data],
+  );
+
+  // C9T4: per-issue custom values. The list endpoint deliberately never
+  // carries custom_values (C7T2 kept the list query untouched for perf, and
+  // this task is frontend-only with zero backend changes), so while at
+  // least one custom-field column is enabled each visible issue is fetched
+  // once via ?include_custom=1. Opt-in cost only — nothing fires while all
+  // columns are off (the default).
+  const cfValueQueries = useQueries({
+    queries:
+      visibleCfFields.length === 0
+        ? []
+        : issues.map((issue) => ({
+            queryKey: ["issue-custom-values", slug, identifier, issue.id],
+            queryFn: () =>
+              api
+                .get<Issue>(
+                  `${base}/issues/${encodeURIComponent(issue.id)}?include_custom=1`,
+                )
+                .then((d) => d.custom_values ?? {}),
+            staleTime: 60_000,
+          })),
+  });
+  const cfValuesByIssue = useMemo(
+    () =>
+      new Map(
+        issues.map(
+          (issue, i) =>
+            [
+              issue.id,
+              (cfValueQueries[i]?.data ?? {}) as Record<string, CustomValue>,
+            ] as const,
+        ),
+      ),
+    [issues, cfValueQueries],
   );
   const sortedIssues = useMemo(() => {
     if (!sortKey) return issues;
@@ -406,6 +465,15 @@ export default function Spreadsheet() {
             setSortKey(null);
           }}
         />
+        <SpreadsheetDisplayPanel
+          fields={customFieldsQuery.data ?? []}
+          isLoading={customFieldsQuery.isPending}
+          isError={customFieldsQuery.isError}
+          onRetry={() => void customFieldsQuery.refetch()}
+          visible={cfVisible}
+          onToggle={toggleCfColumn}
+          onReset={resetCfColumns}
+        />
         {hasActiveFilters && (
           <Button
             variant="ghost"
@@ -502,6 +570,22 @@ export default function Spreadsheet() {
                       </th>
                     );
                   })}
+                  {/* C9T4: optional custom-field columns. Plain headers — no
+                      client-side sort on these columns (kept minimal; the
+                      standard columns above keep their sorting). */}
+                  {visibleCfFields.map((f) => (
+                    <th
+                      key={`cf-${f.id}`}
+                      className="min-w-36 px-3 py-2.5 text-left align-middle"
+                    >
+                      <span
+                        className="inline-flex items-center gap-1.5 font-medium text-muted-foreground"
+                        title={`Custom field — read-only in the spreadsheet`}
+                      >
+                        {f.name}
+                      </span>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -590,6 +674,26 @@ export default function Spreadsheet() {
                       <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
                         {dateOnly(issue.updated_at)}
                       </td>
+                      {/*
+                        C9T4: custom-field columns are READ-ONLY by design.
+                        Cells render with the exact same formatting as the
+                        issue-detail custom-fields section
+                        (lib/customFields formatCustomValue); editing stays
+                        in the issue detail / peek drawer, where the
+                        per-type validation and write paths already live.
+                        Unset values render as "—".
+                      */}
+                      {visibleCfFields.map((f) => (
+                        <td
+                          key={`cf-${f.id}`}
+                          className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground"
+                        >
+                          {formatCustomValue(
+                            f,
+                            cfValuesByIssue.get(issue.id)?.[f.id],
+                          )}
+                        </td>
+                      ))}
                     </tr>
                   );
                 })}
