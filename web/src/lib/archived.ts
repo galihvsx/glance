@@ -11,13 +11,8 @@
 //     hard-delete endpoint; "permanent delete" here means removed from the
 //     project (soft-deleted on the backend), consistent with every other
 //     delete in the app.
-//   Unarchive: NOT AVAILABLE. The PATCH /issues/:uuid body has no
-//     `archived_at` field and IssuePatch has none either; no dedicated
-//     /archive or /unarchive route exists, and nothing in the backend
-//     writes issues.archived_at. unarchiveIssue() below throws a
-//     descriptive error until the coordinator's backend task adds the
-//     endpoint — the Archived view renders the Unarchive button disabled
-//     with a tooltip instead of pretending to work.
+//   Unarchive: PATCH .../issues/:uuid {archived: false} (added 2026-10-09
+//     to close the C7T5 backend gap); archive: PATCH {archived: true}.
 //   "Archived by": NOT AVAILABLE. There is no archived_by column/field;
 //     the row shows the archived date only.
 
@@ -44,19 +39,31 @@ export function fetchArchived(
 
 /**
  * Restore an archived issue to the working set.
- * Backend gap (C7T5, verified 2026-10-09): no unarchive endpoint exists.
- * Throws until the backend adds one; callers should render this as a
- * disabled action rather than letting the throw reach the user silently.
+ * Backend: PATCH .../issues/:uuid {archived: false} (added 2026-10-09).
  */
 export function unarchiveIssue(
-  _slug: string,
-  _identifier: string,
-  _id: string,
+  slug: string,
+  identifier: string,
+  id: string,
 ): Promise<Issue> {
-  return Promise.reject(
-    new Error(
-      "Unarchiving is not supported by the backend yet (no archive/unarchive endpoint). Flagged for the coordinator.",
-    ),
+  return api.patch<Issue>(
+    `${base(slug, identifier)}/${encodeURIComponent(id)}`,
+    { archived: false },
+  );
+}
+
+/**
+ * Archive an issue (removes it from the working set).
+ * Backend: PATCH .../issues/:uuid {archived: true} (added 2026-10-09).
+ */
+export function archiveIssue(
+  slug: string,
+  identifier: string,
+  id: string,
+): Promise<Issue> {
+  return api.patch<Issue>(
+    `${base(slug, identifier)}/${encodeURIComponent(id)}`,
+    { archived: true },
   );
 }
 

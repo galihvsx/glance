@@ -1,12 +1,11 @@
 // Archived view (C7T5): archived issues (archived_at set) for the project.
 // Route: /w/:slug/p/:identifier/archived (inside ProjectScope).
 //
-// Actions per archived issue: Unarchive (disabled — the backend has no
-// archive/unarchive endpoint, verified 2026-10-09; the button carries an
-// explanatory tooltip instead of pretending to work), Delete (with confirm;
-// backend DELETE is a soft delete, consistent with every other delete in the
-// app — there is no hard-delete endpoint). "Archived by" is not shown: the
-// backend has no archived_by field, only the archived date.
+// Actions per archived issue: Unarchive (PATCH {archived: false}), Delete
+// (with confirm; backend DELETE is a soft delete, consistent with every
+// other delete in the app — there is no hard-delete endpoint).
+// "Archived by" is not shown: the backend has no archived_by field, only
+// the archived date.
 
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +14,7 @@ import {
   archivedKey,
   deleteArchivedIssue,
   fetchArchived,
+  unarchiveIssue,
 } from "../lib/archived";
 import { relativeTime } from "../lib/relativeTime";
 import ProjectNav from "../components/project/ProjectNav";
@@ -25,9 +25,6 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
-
-const UNARCHIVE_UNAVAILABLE =
-  "Unarchiving isn't available yet — the backend has no archive/unarchive endpoint (flagged for the coordinator).";
 
 function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -59,7 +56,13 @@ export default function Archived() {
     onSuccess: () => invalidate(),
   });
 
-  const error = deleteMutation.error ?? archivedQuery.error;
+  const unarchiveMutation = useMutation({
+    mutationFn: (id: string) => unarchiveIssue(slug, identifier, id),
+    onSuccess: () => invalidate(),
+  });
+
+  const error =
+    deleteMutation.error ?? unarchiveMutation.error ?? archivedQuery.error;
 
   const archived = archivedQuery.data ?? [];
 
@@ -111,11 +114,14 @@ export default function Archived() {
                 </p>
               </div>
               <div className="flex shrink-0 gap-1">
-                <span title={UNARCHIVE_UNAVAILABLE}>
-                  <Button variant="outline" size="sm" disabled>
-                    Unarchive
-                  </Button>
-                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={unarchiveMutation.isPending}
+                  onClick={() => unarchiveMutation.mutate(a.id)}
+                >
+                  Unarchive
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"

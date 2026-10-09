@@ -1,7 +1,7 @@
 // Tests for the archived view client (C7T5). The only logic here is the
 // client-side "archived only" filter: ?archived=1 *includes* archived rows
-// rather than selecting them, so fetchArchived must drop active rows — and
-// the unarchive stub must fail loudly until the backend adds the endpoint.
+// rather than selecting them, so fetchArchived must drop active rows — plus
+// the archive/unarchive PATCH shapes.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { archivedKey, fetchArchived, isArchived, unarchiveIssue } from "./archived";
 import { api } from "./api";
@@ -72,10 +72,29 @@ describe("fetchArchived", () => {
 });
 
 describe("unarchiveIssue", () => {
-  it("fails loudly until the backend adds the endpoint", async () => {
-    await expect(unarchiveIssue("ws", "gl", "x")).rejects.toThrow(
-      /not supported by the backend/,
+  it("PATCHes {archived: false} to the issue endpoint", async () => {
+    const { api } = await import("./api");
+    const spy = vi.spyOn(api, "patch").mockResolvedValue({ id: "x" } as never);
+    await unarchiveIssue("ws", "gl", "x");
+    expect(spy).toHaveBeenCalledWith(
+      "/api/v1/workspaces/ws/projects/gl/issues/x",
+      { archived: false },
     );
+    spy.mockRestore();
+  });
+});
+
+describe("archiveIssue", () => {
+  it("PATCHes {archived: true} to the issue endpoint", async () => {
+    const { api } = await import("./api");
+    const { archiveIssue } = await import("./archived");
+    const spy = vi.spyOn(api, "patch").mockResolvedValue({ id: "x" } as never);
+    await archiveIssue("ws", "gl", "x");
+    expect(spy).toHaveBeenCalledWith(
+      "/api/v1/workspaces/ws/projects/gl/issues/x",
+      { archived: true },
+    );
+    spy.mockRestore();
   });
 });
 
