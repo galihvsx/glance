@@ -20,3 +20,12 @@ Ledger for cycle 3. Cycle 2 history lives in `.superpowers/sdd/2026-10-08-glance
 - **C3T6 merged** (review pass: admin-only delete ✓, slug validation + 409 ✓, ErrLastAdmin surfaced ✓). Tests green post-merge. Worktree cleaned.
 - **C3T8 dispatched** (bug bundle C) — dependency on C3T6 satisfied.
 - **C3T7 merged** (review pass: partial unique index → race-safe 409 ✓, satellite scoping helpers existing ✓, no realtime leak by design ✓). Tests green post-merge, tsc clean. Worktree cleaned.
+- **C3T0 merged** (review pass: admin-only ✓, per-email statuses ✓, idempotent ✓, onboarding wiring graceful ✓). Conflicts in workspace test files resolved keeping both sides' tests (C3T6/C3T8 + C3T0). Agent hung post-push (42min idle) — closed, merged manually. Worktree cleaned.
+- **All 9 cycle-3 tasks merged.** Running the QA gate.
+
+## Cycle 3 complete — 2026-10-09 ~10:52 +08
+- **All 9 tasks merged** (C3T0–C3T8): invites endpoint, modules backend+frontend, wiki backend+frontend, calendar, workspace settings, time tracking, bug bundle C.
+- **QA gate: FULL PASS** (go1.27.2): gofmt/vet clean, all 9 Go packages ok, TestRemoveMemberConcurrentLastAdmin 5/5, govulncheck clean, tsc+build clean, 87 vitest passed, smoke test pass (health-check + new routes 401-unauth). Perf: list p95 2.04ms (budget 3.5ms), no regression.
+- **Pushed:** main 56c3e85 → c01d619 on galihvsx/glance. CHANGELOG v0.3.0 (unreleased) written.
+- v0.2.0 + v0.3.0 GitHub Releases still unpublished — galih checkpoints.
+- **Cycle 4 starts automatically** (per plan: gantt — calendar is now the prerequisite).

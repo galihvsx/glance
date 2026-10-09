@@ -177,6 +177,7 @@ func main() {
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterPageRoutes(e, issueHandler)
 	api.RegisterPublicRoutes(e, issueHandler)
+	api.RegisterAnalyticsRoutes(e, issueHandler)
 
 	// OTP_PEPPER enforcement lives in config.Load (fail closed; the
 	// ALLOW_INSECURE_OTP_PEPPER hatch warns loudly there). By this point a
