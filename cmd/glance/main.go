@@ -171,6 +171,13 @@ func main() {
 	staleTicker := &ticker.StaleTicker{Pool: pool}
 	staleTicker.Start(ctx)
 
+	// Daily email digest (C10T2): once a day, opted-in users get ONE email
+	// aggregating their last 24h of digest-worthy events (assignments,
+	// mentions, state changes on watched/assigned issues). Same
+	// in-process, one-instance design as the other tickers.
+	digestTicker := &ticker.DigestTicker{Pool: pool}
+	digestTicker.Start(ctx)
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via

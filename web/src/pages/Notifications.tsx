@@ -118,6 +118,70 @@ function NotificationRow({
   );
 }
 
+// One preference row. The daily digest (C10T2) is email-only, so its row
+// renders a single Email toggle — no inert In-app switch.
+function PrefRow({
+  p,
+  setPref,
+}: {
+  p: NotificationPrefItem;
+  setPref: {
+    mutate: (vars: { event: string; inApp: boolean; email: boolean }) => void;
+    isPending: boolean;
+  };
+}) {
+  const isDigest = p.event === "digest.daily";
+  return (
+    <li className="flex items-center justify-between gap-4 py-3">
+      <span className="text-sm font-medium">
+        {eventLabel(p.event)}
+        {isDigest && (
+          <span className="ml-2 text-xs font-normal text-muted-foreground">
+            One email per day summarizing assignments, mentions, and state
+            changes
+          </span>
+        )}
+      </span>
+      <div className="flex items-center gap-4">
+        {!isDigest && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            In-app
+            <Switch
+              size="sm"
+              checked={p.in_app}
+              disabled={setPref.isPending}
+              onCheckedChange={(inApp) =>
+                setPref.mutate({
+                  event: p.event,
+                  inApp,
+                  email: p.email,
+                })
+              }
+              aria-label={`In-app notifications for ${eventLabel(p.event)}`}
+            />
+          </label>
+        )}
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Email
+          <Switch
+            size="sm"
+            checked={p.email}
+            disabled={setPref.isPending}
+            onCheckedChange={(email) =>
+              setPref.mutate({
+                event: p.event,
+                inApp: p.in_app,
+                email,
+              })
+            }
+            aria-label={`Email notifications for ${eventLabel(p.event)}`}
+          />
+        </label>
+      </div>
+    </li>
+  );
+}
+
 function PrefsSection() {
   const queryClient = useQueryClient();
   const prefsQuery = useQuery({
@@ -199,46 +263,7 @@ function PrefsSection() {
         {prefs && (
           <ul className="divide-y divide-border">
             {prefs.map((p: NotificationPrefItem) => (
-              <li
-                key={p.event}
-                className="flex items-center justify-between gap-4 py-3"
-              >
-                <span className="text-sm font-medium">{eventLabel(p.event)}</span>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    In-app
-                    <Switch
-                      size="sm"
-                      checked={p.in_app}
-                      disabled={setPref.isPending}
-                      onCheckedChange={(inApp) =>
-                        setPref.mutate({
-                          event: p.event,
-                          inApp,
-                          email: p.email,
-                        })
-                      }
-                      aria-label={`In-app notifications for ${eventLabel(p.event)}`}
-                    />
-                  </label>
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    Email
-                    <Switch
-                      size="sm"
-                      checked={p.email}
-                      disabled={setPref.isPending}
-                      onCheckedChange={(email) =>
-                        setPref.mutate({
-                          event: p.event,
-                          inApp: p.in_app,
-                          email,
-                        })
-                      }
-                      aria-label={`Email notifications for ${eventLabel(p.event)}`}
-                    />
-                  </label>
-                </div>
-              </li>
+              <PrefRow key={p.event} p={p} setPref={setPref} />
             ))}
           </ul>
         )}
