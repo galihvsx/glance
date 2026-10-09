@@ -237,6 +237,7 @@ export default function Gantt() {
     dx: number;
   } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const suppressClick = useRef(false);
 
   const patchMutation = useMutation({
     mutationFn: ({ id, start, end }: { id: string; start: string; end: string }) =>
@@ -280,6 +281,11 @@ export default function Gantt() {
     const dayDelta = Math.round(drag.dx / DAY_W);
     setDrag(null);
     if (dayDelta !== 0) {
+      // Suppress the click that follows a real drag (it would open peek).
+      suppressClick.current = true;
+      setTimeout(() => {
+        suppressClick.current = false;
+      }, 0);
       patchMutation.mutate({
         id: drag.id,
         start: addDays(drag.origStart, dayDelta),
@@ -587,7 +593,8 @@ export default function Gantt() {
                         })
                       }
                       onClick={() => {
-                        if (!drag) openPeek(r.issue.id);
+                        if (!drag && !suppressClick.current)
+                          openPeek(r.issue.id);
                       }}
                     >
                       <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
