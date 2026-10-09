@@ -103,6 +103,13 @@ export default function Projects() {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => navigate(`/w/${slug}/my-work`)}
+          >
+            My work
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => navigate(`/w/${slug}/settings`)}
           >
             Settings

@@ -189,6 +189,7 @@ func main() {
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
 	api.RegisterIssueLinkRoutes(e, issueHandler)
+	api.RegisterMyWorkRoutes(e, &api.MyWorkHandler{Pool: pool})
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterPageRoutes(e, issueHandler)
