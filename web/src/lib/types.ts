@@ -8,6 +8,8 @@ export interface Workspace {
   name: string;
   /** 20 = admin, 15 = member, 5 = guest */
   role: number;
+  /** Whether a Slack incoming-webhook URL is configured (C9T3). The URL itself is never returned. */
+  slack_configured: boolean;
   created_at: string;
   updated_at: string;
 }

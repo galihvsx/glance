@@ -53,6 +53,10 @@ type Workspace struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// SlackConfigured reports whether a Slack incoming-webhook URL is
+	// set (C9T3). The URL itself is a secret and is NEVER serialized —
+	// admin UI gates on this boolean.
+	SlackConfigured bool `json:"slack_configured"`
 }
 
 // WorkspaceMembership pairs a workspace with the caller's role in it, so
@@ -102,8 +106,9 @@ func CreateWorkspace(ctx context.Context, pool *pgxpool.Pool, name, slug, creato
 	var ws Workspace
 	err = tx.QueryRow(ctx,
 		`INSERT INTO workspaces (slug, name) VALUES ($1, $2)
-		 RETURNING id::text, slug::text, name, created_at, updated_at`,
-		slug, name).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt)
+		 RETURNING id::text, slug::text, name, created_at, updated_at,
+		           slack_webhook_url IS NOT NULL`,
+		slug, name).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrSlugConflict
@@ -127,7 +132,7 @@ func CreateWorkspace(ctx context.Context, pool *pgxpool.Pool, name, slug, creato
 // the join is the filter.
 func ListWorkspaces(ctx context.Context, pool *pgxpool.Pool, userID string) ([]WorkspaceMembership, error) {
 	rows, err := pool.Query(ctx,
-		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, m.role
+		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, w.slack_webhook_url IS NOT NULL, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
 		 WHERE m.user_id = $1::uuid
@@ -141,7 +146,7 @@ func ListWorkspaces(ctx context.Context, pool *pgxpool.Pool, userID string) ([]W
 	out := []WorkspaceMembership{}
 	for rows.Next() {
 		var wm WorkspaceMembership
-		if err := rows.Scan(&wm.ID, &wm.Slug, &wm.Name, &wm.CreatedAt, &wm.UpdatedAt, &wm.Role); err != nil {
+		if err := rows.Scan(&wm.ID, &wm.Slug, &wm.Name, &wm.CreatedAt, &wm.UpdatedAt, &wm.SlackConfigured, &wm.Role); err != nil {
 			return nil, err
 		}
 		out = append(out, wm)
@@ -156,11 +161,11 @@ func GetWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID string) 
 	var ws Workspace
 	var role int
 	err := pool.QueryRow(ctx,
-		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, m.role
+		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, w.slack_webhook_url IS NOT NULL, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
 		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		slug, userID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &role)
+		slug, userID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured, &role)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, 0, ErrNotFound
@@ -188,11 +193,11 @@ func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name
 	var ws Workspace
 	var role int
 	err = tx.QueryRow(ctx,
-		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, m.role
+		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at, w.slack_webhook_url IS NOT NULL, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
 		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		slug, userID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &role)
+		slug, userID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured, &role)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -219,8 +224,9 @@ func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name
 	err = tx.QueryRow(ctx,
 		`UPDATE workspaces SET name = $1, slug = $2, updated_at = now()
 		 WHERE id = $3::uuid
-		 RETURNING id::text, slug::text, name, created_at, updated_at`,
-		name, targetSlug, ws.ID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt)
+		 RETURNING id::text, slug::text, name, created_at, updated_at,
+		           slack_webhook_url IS NOT NULL`,
+		name, targetSlug, ws.ID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrSlugConflict

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -30,6 +32,8 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.GET("/:slug/members", h.listMembers)
 	g.DELETE("/:slug/members/:user_id", h.removeMember)
 	g.POST("/:slug/invites", h.inviteMembers)
+	// C9T3: fire a probe message at the workspace's Slack webhook.
+	g.POST("/:slug/slack/test", h.testSlack)
 }
 
 // workspaceError maps service sentinel errors to HTTP statuses. Unknown
@@ -54,6 +58,12 @@ func workspaceError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid slug: use lowercase letters, numbers and hyphens", nil)
 	case errors.Is(err, service.ErrInvalidRole):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid role: must be 5 (guest), 15 (member) or 20 (admin)", nil)
+	case errors.Is(err, service.ErrBadSlackWebhookURL):
+		// Never echo the URL back: it is a secret, and the rejection
+		// reason is the same for every bad value (no oracle).
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack_webhook_url must be an https://hooks.slack.com/ URL", nil)
+	case errors.Is(err, service.ErrSlackNotConfigured):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack webhook not configured", nil)
 	case errors.Is(err, service.ErrLastAdmin):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cannot remove or demote the last admin", nil)
 	default:
@@ -104,25 +114,92 @@ func (h *WorkspaceHandler) getWorkspace(c *echo.Context) error {
 }
 
 type updateWorkspaceBody struct {
-	Name string  `json:"name"`
+	// Name is a pointer so a Slack-only PATCH (no name key) does not
+	// trip the "name is required" validation — the General settings
+	// form always sends it, the Slack section never does.
+	Name *string `json:"name"`
 	Slug *string `json:"slug,omitempty"`
+	// SlackWebhookURL uses *json.RawMessage (not **string) to tell
+	// explicit null apart from an absent key: encoding/json unmarshals
+	// JSON null into a nil pointer at ANY indirection depth, so a
+	// double pointer cannot distinguish the two. RawMessage keeps the
+	// literal bytes: nil = key absent (untouched), "null" = clear,
+	// "string" = set (validated as an https://hooks.slack.com/ URL).
+	// The stored URL is a secret and is never returned.
+	SlackWebhookURL *json.RawMessage `json:"slack_webhook_url"`
 }
 
 // updateWorkspace implements PATCH /api/v1/workspaces/{slug}: rename
-// (name, plus optional slug change). Admin only (the service enforces it).
+// (name, plus optional slug change) and/or set/clear the Slack
+// incoming-webhook URL. Admin only (the service enforces it).
 func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 	var body updateWorkspaceBody
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	ws, err := service.UpdateWorkspace(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Slug)
-	if err != nil {
-		if errors.Is(err, service.ErrNameRequired) {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+	ctx := c.Request().Context()
+	slug := c.Param("slug")
+	actorID := CurrentUser(c).ID
+
+	var ws *service.Workspace
+	if body.Name != nil || body.Slug != nil {
+		name := ""
+		if body.Name != nil {
+			name = *body.Name
+		} else {
+			// Slug-only change: keep the current name.
+			cur, _, err := service.GetWorkspace(ctx, h.Pool, slug, actorID)
+			if err != nil {
+				return workspaceError(c, err)
+			}
+			name = cur.Name
 		}
-		return workspaceError(c, err)
+		var err error
+		ws, err = service.UpdateWorkspace(ctx, h.Pool, slug, actorID, name, body.Slug)
+		if err != nil {
+			if errors.Is(err, service.ErrNameRequired) {
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+			}
+			return workspaceError(c, err)
+		}
+		slug = ws.Slug // a slug change moves subsequent lookups
+	}
+	if body.SlackWebhookURL != nil {
+		var urlStr *string
+		raw := strings.TrimSpace(string(*body.SlackWebhookURL))
+		if raw != "" && raw != "null" {
+			var s string
+			if err := json.Unmarshal(*body.SlackWebhookURL, &s); err != nil {
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack_webhook_url must be a string or null", nil)
+			}
+			urlStr = &s
+		}
+		var err error
+		ws, err = service.SetWorkspaceSlackURL(ctx, h.Pool, slug, actorID, urlStr)
+		if err != nil {
+			return workspaceError(c, err)
+		}
+	}
+	if ws == nil {
+		// Empty patch: return the current workspace.
+		var err error
+		ws, _, err = service.GetWorkspace(ctx, h.Pool, slug, actorID)
+		if err != nil {
+			return workspaceError(c, err)
+		}
 	}
 	return c.JSON(http.StatusOK, ws)
+}
+
+// testSlack implements POST /api/v1/workspaces/{slug}/slack/test:
+// enqueue a probe message at the workspace's Slack webhook. Admin only.
+// 202 on enqueue (delivery itself is async via the outbox); 400 when no
+// webhook is configured.
+func (h *WorkspaceHandler) testSlack(c *echo.Context) error {
+	if err := service.SendSlackTest(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID); err != nil {
+		return workspaceError(c, err)
+	}
+	return c.JSON(http.StatusAccepted, map[string]any{"ok": true})
 }
 
 // deleteWorkspace implements DELETE /api/v1/workspaces/{slug}: removes the

@@ -565,6 +565,19 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return nil, err
 	}
 
+	// Slack (C9T3): one compact message per comment, plus one per
+	// @-mention batch — enqueued in-tx, never inline.
+	if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
+		slackCommentText(displayID, actorName, TipTapPlainText(c.Content))); err != nil {
+		return nil, err
+	}
+	if len(mentioned) > 0 {
+		if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
+			slackMentionText(displayID, actorName)); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

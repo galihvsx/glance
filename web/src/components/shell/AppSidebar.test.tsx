@@ -38,6 +38,7 @@ const workspaces: Workspace[] = [
     slug: "acme",
     name: "Acme Corp",
     role: 20,
+    slack_configured: false,
     created_at: "",
     updated_at: "",
   },
