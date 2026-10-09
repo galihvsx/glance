@@ -37,6 +37,9 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("", h.listIssues)
 	g.POST("/bulk-update", h.bulkUpdateIssues)
 	g.POST("/bulk-delete", h.bulkDeleteIssues)
+	// C5T8: atomic bulk set. Static segment wins over PATCH /:uuid by
+	// Echo's specificity rules (kept adjacent for readability).
+	g.PATCH("/bulk", h.bulkSetIssues)
 	g.POST("/rebalance", h.rebalanceIssues)
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
@@ -511,6 +514,49 @@ type bulkUpdateBody struct {
 
 type bulkDeleteBody struct {
 	IDs []string `json:"ids"`
+}
+
+// ---------- C5T8: atomic bulk set ----------
+
+type bulkSetFields struct {
+	StateID  *string `json:"state_id"`
+	Priority *int    `json:"priority"`
+	// LabelIDs nil = untouched; non-nil replaces the issue's label set
+	// (empty array clears).
+	LabelIDs *[]string `json:"label_ids"`
+	// AssigneeID is tri-state: omitted = untouched, null = clear all
+	// assignees, value = replace with that single user.
+	AssigneeID service.PatchField[string] `json:"assignee_id"`
+}
+
+type bulkSetBody struct {
+	IssueIDs []string      `json:"issue_ids"`
+	Set      bulkSetFields `json:"set"`
+}
+
+// bulkSetIssues implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk:
+// applies ONE set to many issues in a single fully-atomic transaction —
+// any unknown, deleted, cross-project, or malformed id, or any invalid
+// set field, aborts the whole batch (no partial application). 200 with
+// {updated, issue_ids}. Member (15)+; every existing issueError mapping
+// covers the failure modes (400/403/404).
+func (h *IssueHandler) bulkSetIssues(c *echo.Context) error {
+	var body bulkSetBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	updated, ids, err := service.BulkSetIssues(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IssueIDs,
+		service.BulkIssueSet{
+			StateID:    body.Set.StateID,
+			Priority:   body.Set.Priority,
+			LabelIDs:   body.Set.LabelIDs,
+			AssigneeID: body.Set.AssigneeID,
+		})
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"updated": updated, "issue_ids": ids})
 }
 
 // bulkUpdateIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update:

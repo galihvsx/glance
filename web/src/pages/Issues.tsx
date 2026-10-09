@@ -12,6 +12,8 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
+  Label as ProjectLabel,
+  Member,
   Project,
 } from "../lib/types";
 import { Button } from "../components/ui/button";
@@ -37,6 +39,11 @@ import { usePeekParam } from "../components/issue/usePeek";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import ParentPicker from "../components/issue/ParentPicker";
 import QuickAdd from "../components/issue/QuickAdd";
+import BulkActionBar from "../components/issue/BulkActionBar";
+import {
+  useBulkSelection,
+  type BulkSetPayload,
+} from "../components/issue/bulkSelection";
 import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
 import StatePicker from "../components/issue/StatePicker";
@@ -175,6 +182,50 @@ export default function Issues() {
 
   const stateById = new Map((statesQuery.data ?? []).map((s) => [s.id, s]));
 
+  // C5T8 bulk operations: list-view multi-select + action bar. Members
+  // and labels are fetched lazily — only once something is selected.
+  const bulk = useBulkSelection();
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+    enabled: bulk.count > 0,
+  });
+  const labelsQuery = useQuery({
+    queryKey: ["labels", slug, identifier],
+    queryFn: () =>
+      api
+        .get<{ labels: ProjectLabel[] }>(`${base}/labels`)
+        .then((d) => d.labels),
+    enabled: bulk.count > 0,
+  });
+  const bulkMutation = useMutation({
+    mutationFn: (set: BulkSetPayload) =>
+      api.patch<{ updated: number; issue_ids: string[] }>(
+        `${base}/issues/bulk`,
+        { issue_ids: bulk.selectedIds, set },
+      ),
+    onSuccess: (res) => {
+      bulk.clear();
+      setBulkError(null);
+      void queryClient.invalidateQueries({
+        queryKey: ["issues", slug, identifier],
+      });
+      toast.add({
+        title: `Updated ${res.updated} issue${res.updated === 1 ? "" : "s"}`,
+        type: "success",
+      });
+    },
+    onError: (e) => {
+      setBulkError(e instanceof ApiError ? e.message : "Bulk update failed");
+    },
+  });
+
   const createMutation = useMutation({
     mutationFn: (body: {
       name: string;
@@ -291,6 +342,18 @@ export default function Issues() {
 
   const issues = issuesQuery.data?.pages.flatMap((p) => p.results) ?? [];
   const states = statesQuery.data ?? [];
+
+  // "Select all" covers every loaded page (the selection is a set of
+  // ids, independent of the rendered rows).
+  const allLoadedSelected =
+    issues.length > 0 && issues.every((i) => bulk.isSelected(i.id));
+  function toggleSelectAllLoaded() {
+    if (allLoadedSelected) {
+      bulk.clear();
+    } else {
+      bulk.selectAll(issues.map((i) => i.id));
+    }
+  }
   const sortedStates = useMemo(
     () => [...states].sort((a, b) => a.sequence - b.sequence),
     [states],
@@ -581,6 +644,22 @@ export default function Issues() {
         </Alert>
       )}
 
+      {bulk.count > 0 && (
+        <BulkActionBar
+          states={states}
+          members={membersQuery.data ?? null}
+          labels={labelsQuery.data ?? null}
+          selectedCount={bulk.count}
+          loadedCount={issues.length}
+          allLoadedSelected={allLoadedSelected}
+          onToggleSelectAll={toggleSelectAllLoaded}
+          onClearSelection={bulk.clear}
+          onApply={(set) => bulkMutation.mutate(set)}
+          applying={bulkMutation.isPending}
+          error={bulkError}
+        />
+      )}
+
       {issuesQuery.isPending ? (
         <div className="space-y-3">
           <Skeleton className="h-24 w-full" />
@@ -634,6 +713,8 @@ export default function Issues() {
                           state={stateById.get(issue.state_id)}
                           fields={settings.fields}
                           onOpen={(it) => openPeek(it.id)}
+                          selected={bulk.isSelected(issue.id)}
+                          onToggleSelect={() => bulk.toggle(issue.id)}
                         />
                       </div>
                     ))}
@@ -664,6 +745,8 @@ export default function Issues() {
                     state={stateById.get(issue.state_id)}
                     fields={settings.fields}
                     onOpen={(it) => openPeek(it.id)}
+                    selected={bulk.isSelected(issue.id)}
+                    onToggleSelect={() => bulk.toggle(issue.id)}
                   />
                 </div>
               ))}
