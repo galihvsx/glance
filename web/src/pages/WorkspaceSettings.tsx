@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import WebhooksSection from "../components/settings/WebhooksSection";
+import SlackSection from "../components/settings/SlackSection";
 
 // Mirrors the backend contract (service.validSlug): lowercase alphanumeric
 // groups joined by single hyphens, 1–64 chars. Same rule as onboarding.
@@ -385,6 +386,11 @@ export default function WorkspaceSettings() {
 
       {/* ---------- Webhooks (admin only, matches danger-zone gating) ---------- */}
       {isAdmin && <WebhooksSection slug={ws.slug} />}
+
+      {/* ---------- Slack (admin only, matches danger-zone gating) ---------- */}
+      {isAdmin && (
+        <SlackSection slug={ws.slug} initialConfigured={ws.slack_configured} />
+      )}
 
       {/* ---------- Danger zone ---------- */}
       {isAdmin && (

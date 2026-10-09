@@ -178,10 +178,10 @@
       },
       "patch": {
         "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "Rename a workspace",
-        "description": "Admin only.",
+        "summary": "Update a workspace",
+        "description": "Admin only. Rename (name, optional slug change) and/or set/clear the Slack incoming-webhook URL. The stored URL is never returned — responses carry slack_configured instead.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "slug": { "type": "string" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "slug": { "type": "string" }, "slack_webhook_url": { "type": "string", "nullable": true, "description": "Slack incoming-webhook URL (must be https://hooks.slack.com/…). Null or empty clears. Omitted leaves it unchanged." } } } } } },
         "responses": { "200": { "description": "Updated workspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -190,6 +190,15 @@
         "description": "Admin only. Destroys the workspace and everything in it.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/slack/test": {
+      "post": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Send a Slack test message",
+        "description": "Admin only. Enqueues a probe message to the workspace's Slack incoming-webhook URL. 202 means the probe was enqueued — delivery itself is async. 400 when no webhook URL is configured.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "202": { "description": "Test message enqueued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/members": {
@@ -1684,6 +1693,7 @@
           "id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
           "slug": { "type": "string" },
+          "slack_configured": { "type": "boolean", "description": "Whether a Slack incoming-webhook URL is set. The URL itself is never returned." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -1694,6 +1704,7 @@
           "name": { "type": "string" },
           "slug": { "type": "string" },
           "role": { "type": "integer", "description": "Caller's role: 15 = member, 20 = admin" },
+          "slack_configured": { "type": "boolean", "description": "Whether a Slack incoming-webhook URL is set. The URL itself is never returned." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },

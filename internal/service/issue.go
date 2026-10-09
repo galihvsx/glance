@@ -411,6 +411,14 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, err
 	}
 
+	// Slack (C9T3): one compact message per created issue, enqueued
+	// in-tx — never inline, so a down Slack endpoint cannot fail the
+	// mutation.
+	if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
+		slackIssueCreatedText(iss.DisplayID, name, actorDisplayName(ctx, tx, actorID))); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -775,17 +783,19 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			stateChanged = true
 		}
 	}
+	// Hoisted for the Slack fan-out below: the state name and actor
+	// display name are only known when the state actually changed.
+	var stateName, actorName string
 	if stateChanged {
 		watchers, err := issueWatchersTx(ctx, tx, issueID)
 		if err != nil {
 			return nil, nil, err
 		}
-		var stateName string
 		if err := tx.QueryRow(ctx,
 			`SELECT name FROM states WHERE id = $1::uuid`, updated.StateID).Scan(&stateName); err != nil {
 			return nil, nil, err
 		}
-		actorName := actorDisplayName(ctx, tx, actorID)
+		actorName = actorDisplayName(ctx, tx, actorID)
 		notified, err = notifyTx(ctx, tx, NotifyStateChanged,
 			fmt.Sprintf("%s moved %s to %s", actorName, updated.DisplayID, stateName),
 			fmt.Sprintf("Issue: %s", updated.Name),
@@ -806,6 +816,14 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if stateChanged {
+		// Slack (C9T3): one compact message per state change, enqueued
+		// in-tx like the generic webhook fan-out below — never inline.
+		if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
+			slackStateChangedText(updated.DisplayID, updated.Name, stateName, actorName)); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
 		"id":             updated.ID,

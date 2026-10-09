@@ -39,6 +39,7 @@ const seeds: [readonly unknown[], unknown][] = [
         slug: "acme",
         name: "Acme Corp",
         role: 20,
+        slack_configured: false,
         created_at: "",
         updated_at: "",
       } satisfies Workspace,

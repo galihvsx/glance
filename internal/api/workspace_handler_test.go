@@ -533,3 +533,136 @@ func TestInviteMembersEndpoint(t *testing.T) {
 		t.Fatalf("bad slug: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// TestSlackWebhookURLHTTP (C9T3): PATCH /api/v1/workspaces/{slug} accepts
+// {slack_webhook_url}; the URL is validated (https://hooks.slack.com/
+// only), null clears, members get 403, and the URL never appears in any
+// response — only the slack_configured flag.
+func TestSlackWebhookURLHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+
+	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slack-admin"), "test-agent/1.0", uniqueIP())
+	memberCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slack-member"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("slack-http")
+	wsPath := "/api/v1/workspaces/" + slug
+	createWorkspaceHTTP(t, e, adminCookie, "Slack Corp", slug)
+
+	// Admin adds the member (role 15).
+	memberID := authedUserID(t, e, memberCookie)
+	rec := postAuthedJSON(t, e, http.MethodPost, wsPath+"/members", adminCookie,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, memberID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add member: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	good := "https://hooks.slack.com/services/T000/B000/SECRETSECRET"
+
+	// Member PATCH → 403 (acceptance criterion).
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, memberCookie,
+		fmt.Sprintf(`{"slack_webhook_url":%q}`, good))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member patch slack url: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin PATCH with a non-Slack URL → 400 (write-time SSRF control).
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, adminCookie,
+		`{"slack_webhook_url":"https://evil.example/hook"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("evil url: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin PATCH with a lookalike host → 400.
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, adminCookie,
+		`{"slack_webhook_url":"https://hooks.slack.com.evil.example/x"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("lookalike url: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin PATCH with a good URL → 200, flag on, URL never echoed.
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, adminCookie,
+		fmt.Sprintf(`{"slack_webhook_url":%q}`, good))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set url: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var patched struct {
+		SlackConfigured bool `json:"slack_configured"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &patched); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if !patched.SlackConfigured {
+		t.Fatal("slack_configured = false after set, want true")
+	}
+	if strings.Contains(rec.Body.String(), "SECRETSECRET") {
+		t.Fatal("PATCH response leaks the webhook URL")
+	}
+
+	// GET shows the flag but never the URL.
+	grec := getAuthed(t, e, http.MethodGet, wsPath, adminCookie)
+	if grec.Code != http.StatusOK {
+		t.Fatalf("get: status = %d, want 200", grec.Code)
+	}
+	if !strings.Contains(grec.Body.String(), `"slack_configured":true`) {
+		t.Fatalf("GET missing slack_configured flag: %s", grec.Body.String())
+	}
+	if strings.Contains(grec.Body.String(), "SECRETSECRET") {
+		t.Fatal("GET response leaks the webhook URL")
+	}
+
+	// Explicit null clears.
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, adminCookie,
+		`{"slack_webhook_url":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear url: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"slack_configured":false`) {
+		t.Fatalf("clear did not flip the flag: %s", rec.Body.String())
+	}
+}
+
+// TestSlackTestEndpointHTTP (C9T3): POST /api/v1/workspaces/{slug}/slack/test
+// is admin-only, 400s without a configured URL, and 202s with one.
+func TestSlackTestEndpointHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+
+	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slackt-admin"), "test-agent/1.0", uniqueIP())
+	memberCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slackt-member"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("slackt-http")
+	wsPath := "/api/v1/workspaces/" + slug
+	testPath := wsPath + "/slack/test"
+	createWorkspaceHTTP(t, e, adminCookie, "Slackt Corp", slug)
+
+	memberID := authedUserID(t, e, memberCookie)
+	rec := postAuthedJSON(t, e, http.MethodPost, wsPath+"/members", adminCookie,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, memberID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add member: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Member → 403.
+	rec = postAuthedJSON(t, e, http.MethodPost, testPath, memberCookie, `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member test: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Admin without a configured URL → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, testPath, adminCookie, `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("test without url: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Configure, then the probe is accepted (202 — delivery is async).
+	rec = postAuthedJSON(t, e, http.MethodPatch, wsPath, adminCookie,
+		`{"slack_webhook_url":"https://hooks.slack.com/services/T/B/X"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set url: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, testPath, adminCookie, `{}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("test with url: status = %d, want 202 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

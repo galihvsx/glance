@@ -118,6 +118,27 @@ func main() {
 		}
 	}()
 
+	// Slack dispatcher (C9T3): drains the "slack.%" outbox namespace with
+	// plain-text POSTs to workspace incoming-webhook URLs and
+	// exponential-backoff retry. It runs on its OWN ticker goroutine —
+	// Slack endpoints can be slow or down, and that must never starve
+	// the mail or webhook passes above.
+	slackDispatcher := service.NewSlackDispatcher(pool)
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := slackDispatcher.Run(ctx); err != nil {
+					log.Printf("glance: slack dispatch: %v", err)
+				}
+			}
+		}
+	}()
+
 	// Cycle rollover ticker: activates upcoming cycles whose start_date
 	// has arrived and completes ended cycles (freezing the progress
 	// snapshot, transferring/detaching incomplete issues per the
