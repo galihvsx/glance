@@ -344,6 +344,22 @@
         "responses": { "201": { "description": "Created issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/similar": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Find possible duplicate issues by title",
+        "description": "C8T7 duplicate detection: returns up to 5 of the project's working-set issues whose titles are trigram-similar (pg_trgm similarity > 0.3) to ?q=, most-similar first. Archived, draft and soft-deleted issues are excluded; non-members get 404. Used by the create-issue modal's \"Possible duplicates\" suggestions (debounced).",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "description": "Title to compare against issue titles. Blank is a 400." } }
+        ],
+        "responses": {
+          "200": { "description": "Up to 5 similar issues, most-similar first", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/SimilarIssue" } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/export": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1594,6 +1610,17 @@
         }
       },
       "Ok": { "type": "object", "properties": { "ok": { "type": "boolean", "example": true } } },
+      "SimilarIssue": {
+        "type": "object",
+        "description": "One possible-duplicate hit from GET .../issues/similar (C8T7).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "display_id": { "type": "string", "description": "e.g. ENG-7" },
+          "name": { "type": "string" },
+          "state": { "type": "string", "description": "Human state name, e.g. Backlog" },
+          "similarity": { "type": "number", "format": "double", "description": "pg_trgm similarity to ?q=, always > 0.3" }
+        }
+      },
       "User": {
         "type": "object",
         "properties": {

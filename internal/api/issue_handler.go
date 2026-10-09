@@ -39,6 +39,10 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	// C8T3: static segment wins over GET /:uuid by Echo's specificity
 	// rules (kept adjacent for readability).
 	g.GET("/export", h.exportIssues)
+	// C8T7: duplicate detection on create. The static "similar" segment
+	// wins over GET /:uuid by Echo's specificity rules (same pattern as
+	// /export above).
+	g.GET("/similar", h.similarIssues)
 	g.POST("/bulk-update", h.bulkUpdateIssues)
 	g.POST("/bulk-delete", h.bulkDeleteIssues)
 	// C5T8: atomic bulk set. Static segment wins over PATCH /:uuid by
