@@ -42,6 +42,7 @@ import ShareModal from "../ShareModal";
 import LabelPicker from "./LabelPicker";
 import TimeTracker from "./TimeTracker";
 import Attachments from "./Attachments";
+import FavoriteStar from "../favorites/FavoriteStar";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
@@ -621,6 +622,8 @@ export default function IssueDetailContent({
               <StateBadge state={stateById.get(issue.state_id)!} />
             )}
             <span className="ml-auto flex items-center gap-1">
+              {/* C7T4: star toggle for this issue. */}
+              <FavoriteStar type="issue" id={uuid} />
               <Button
                 variant="ghost"
                 size="sm"

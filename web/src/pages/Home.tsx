@@ -14,6 +14,7 @@ import {
 } from "../components/issue/recents";
 import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
+import FavoritesSection from "../components/favorites/FavoritesSection";
 import { Button, buttonVariants } from "../components/ui/button";
 import {
   Card,
@@ -301,6 +302,8 @@ export default function Home() {
 
         {/* Right rail */}
         <div className="space-y-8">
+          {/* Favorites (C7T4): starred issues/projects, click to navigate. */}
+          <FavoritesSection />
           {/* Recents */}
           <div>
             <SectionTitle>Recents</SectionTitle>
