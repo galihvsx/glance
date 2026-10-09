@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Clock, Inbox, Layers, Plus, Shield } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { initials } from "../lib/profile";
 import type { Issue, IssueListResult, Project, Workspace } from "../lib/types";
 import IssueCard from "../components/issue/IssueCard";
 import { DEFAULT_DISPLAY_SETTINGS } from "../components/issue/useDisplaySettings";
@@ -188,6 +189,20 @@ export default function Home() {
           )}
           <NotificationBell />
           <ThemeToggle />
+          {/* Profile entry (C6T7): initials avatar linking to /profile. */}
+          <Link
+            to="/profile"
+            className={buttonVariants({ variant: "ghost", size: "sm" })}
+            aria-label="Profile and sessions"
+            title={user?.email ?? "Profile"}
+          >
+            <span
+              className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground"
+              aria-hidden
+            >
+              {initials(user?.name ?? null, user?.email ?? "?")}
+            </span>
+          </Link>
           <Button variant="ghost" size="sm" onClick={() => void logout()}>
             Log out
           </Button>
