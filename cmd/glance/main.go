@@ -200,6 +200,7 @@ func main() {
 	api.RegisterAnalyticsRoutes(e, issueHandler)
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
 	api.RegisterActivityRoutes(e, issueHandler)
+	api.RegisterOverviewRoutes(e, issueHandler) // C8T5: project overview page
 
 	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
 	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})

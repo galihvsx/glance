@@ -20,6 +20,7 @@ import Profile from "./pages/Profile";
 import ApiTokens from "./pages/ApiTokens";
 import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
+import Overview from "./pages/Overview";
 import Gantt from "./pages/Gantt";
 import Analytics from "./pages/Analytics";
 import Activity from "./pages/Activity";
@@ -63,6 +64,10 @@ export default function App() {
               <Route path="/w/:slug/my-work" element={<MyWork />} />
               <Route element={<ProjectScope />}>
                 <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+                <Route
+                  path="/w/:slug/p/:identifier/overview"
+                  element={<Overview />}
+                />
                 <Route
                   path="/w/:slug/p/:identifier/i/:uuid"
                   element={<IssueDetail />}
