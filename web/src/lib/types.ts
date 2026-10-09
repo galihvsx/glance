@@ -280,3 +280,13 @@ export interface PageRevision {
   author_id?: string | null;
   created_at: string;
 }
+
+export interface TimeEntry {
+  id: string;
+  issue_id: string;
+  user_id: string;
+  started_at: string;
+  ended_at?: string | null;
+  note: string;
+  created_at: string;
+}
