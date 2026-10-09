@@ -393,3 +393,94 @@ func TestListMembersHTTP(t *testing.T) {
 		t.Fatalf("outsider list members: status = %d, want 404", orec.Code)
 	}
 }
+
+func TestInviteMembersEndpoint(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+
+	adminEmail := uniqueEmail("h-ws-inv-admin")
+	adminCookie := loginTestUser(t, e, pool, adminEmail, "test-agent/1.0", uniqueIP())
+	targetEmail := uniqueEmail("h-ws-inv-target")
+	loginTestUser(t, e, pool, targetEmail, "test-agent/1.0", uniqueIP())
+	guestCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-inv-guest"), "test-agent/1.0", uniqueIP())
+
+	slug := uniqueSlug("inv-http")
+	createWorkspaceHTTP(t, e, adminCookie, "Inv", slug)
+	invitesPath := "/api/v1/workspaces/" + slug + "/invites"
+	ghost := uniqueEmail("h-ws-inv-ghost")
+
+	rec := postAuthedJSON(t, e, http.MethodPost, invitesPath, adminCookie,
+		fmt.Sprintf(`{"emails":[%q,%q],"role":15}`, targetEmail, ghost))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invite: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Results []struct {
+			Email  string `json:"email"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("results = %d, want 2", len(resp.Results))
+	}
+	byEmail := map[string]string{}
+	for _, r := range resp.Results {
+		byEmail[r.Email] = r.Status
+	}
+	if byEmail[targetEmail] != "invited" {
+		t.Fatalf("registered: status = %q, want invited", byEmail[targetEmail])
+	}
+	if byEmail[ghost] != "not-registered" {
+		t.Fatalf("unknown: status = %q, want not-registered", byEmail[ghost])
+	}
+
+	// Re-invite the same user → already-member, still 200.
+	rec = postAuthedJSON(t, e, http.MethodPost, invitesPath, adminCookie,
+		fmt.Sprintf(`{"emails":[%q]}`, targetEmail))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-invite: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var resp2 struct {
+		Results []struct {
+			Email  string `json:"email"`
+			Status string `json:"status"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp2.Results) != 1 || resp2.Results[0].Status != "already-member" {
+		t.Fatalf("re-invite: results = %+v, want one already-member", resp2.Results)
+	}
+
+	// Non-admin member → 403. First add the guest as a plain member.
+	guestID := authedUserID(t, e, guestCookie)
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", adminCookie,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, guestID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add guest member: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, invitesPath, guestCookie,
+		fmt.Sprintf(`{"emails":[%q]}`, ghost))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member invite: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Invalid role → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, invitesPath, adminCookie,
+		fmt.Sprintf(`{"emails":[%q],"role":99}`, ghost))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad role: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Unknown workspace → 404, no existence hint.
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+uniqueSlug("inv-nosuch")+"/invites", adminCookie,
+		fmt.Sprintf(`{"emails":[%q]}`, ghost))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("bad slug: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

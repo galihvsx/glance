@@ -231,6 +231,7 @@ function InviteStep({
     }
   });
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
 
   function addEmail() {
     const value = email.trim().toLowerCase();
@@ -262,6 +263,42 @@ function InviteStep({
     } catch {
       // ignore
     }
+  }
+
+  // Done sends the pending emails to the invites endpoint. Registered
+  // users become members immediately (invited/already-member results are
+  // dropped from the pending list); unregistered ones stay pending on
+  // this device. Any failure keeps the whole list — the wizard must never
+  // break on a network error.
+  async function handleDone() {
+    if (emails.length > 0) {
+      setSending(true);
+      try {
+        const res = await api.post<{ results: { email: string; status: string }[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(workspace.slug)}/invites`,
+          { emails },
+        );
+        const added = new Set(
+          res.results
+            .filter((r) => r.status === "invited" || r.status === "already-member")
+            .map((r) => r.email),
+        );
+        if (added.size > 0) {
+          const next = emails.filter((e) => !added.has(e));
+          setEmails(next);
+          try {
+            localStorage.setItem(pendingInvitesKey(workspace.id), JSON.stringify(next));
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // Offline or server error: keep the pending list as-is.
+      } finally {
+        setSending(false);
+      }
+    }
+    onDone();
   }
 
   return (
@@ -320,9 +357,9 @@ function InviteStep({
         )}
         <Alert>
           <AlertDescription className="text-xs">
-            Email invites aren't sent yet in this version — this list is kept
-            on this device. Once your teammates sign in, add them from the
-            workspace settings.
+            Teammates who already have an account are added to the
+            workspace right away. Others stay on this device as pending —
+            once they sign in, add them from the workspace settings.
           </AlertDescription>
         </Alert>
         <div className="flex gap-2">
@@ -330,17 +367,18 @@ function InviteStep({
             type="button"
             variant="outline"
             onClick={onDone}
+            disabled={sending}
             className="flex-1"
           >
             Skip for now
           </Button>
           <Button
             type="button"
-            onClick={onDone}
-            disabled={emails.length === 0}
+            onClick={handleDone}
+            disabled={emails.length === 0 || sending}
             className="flex-1"
           >
-            Done
+            {sending ? "Inviting…" : "Done"}
           </Button>
         </div>
       </CardContent>

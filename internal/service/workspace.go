@@ -308,6 +308,112 @@ func UpsertMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	return tx.Commit(ctx)
 }
 
+// Invite outcome statuses for InviteMembers. Every input email gets one
+// result — unknown emails are results, not errors, so the onboarding
+// wizard can keep them as "Pending" without failing.
+const (
+	InviteStatusInvited       = "invited"
+	InviteStatusAlreadyMember = "already-member"
+	InviteStatusNotRegistered = "not-registered"
+	InviteStatusInvalid       = "invalid"
+)
+
+// InviteResult is the per-email outcome of an InviteMembers call.
+type InviteResult struct {
+	Email  string `json:"email"`
+	Status string `json:"status"`
+}
+
+var inviteEmailRE = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+
+// InviteMembers adds registered users to the workspace by email. Only an
+// admin may call it (non-members/bad slugs see ErrNotFound, non-admin
+// members ErrForbidden — the same actor-resolution contract as
+// UpsertMember). Role 0 means RoleMember. Emails are normalized
+// (trimmed, lowercased) and deduplicated, preserving input order. The
+// whole batch runs in one transaction.
+func InviteMembers(ctx context.Context, pool *pgxpool.Pool, slug, actorID string, emails []string, role int) ([]InviteResult, error) {
+	if role == 0 {
+		role = RoleMember
+	}
+	if !validRole(role) {
+		return nil, ErrInvalidRole
+	}
+
+	// Normalize + dedupe, preserving first-seen order.
+	var norm []string
+	seen := map[string]bool{}
+	for _, e := range emails {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		norm = append(norm, e)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	wsID, actorRole, err := workspaceIDForActor(
+		tx.QueryRow(ctx,
+			`SELECT w.id::text, m.role
+			 FROM workspaces w
+			 JOIN workspace_members m ON m.workspace_id = w.id
+			 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+			slug, actorID))
+	if err != nil {
+		return nil, err
+	}
+	if actorRole != RoleAdmin {
+		return nil, ErrForbidden
+	}
+
+	results := make([]InviteResult, 0, len(norm))
+	for _, email := range norm {
+		if email == "" || !inviteEmailRE.MatchString(email) {
+			results = append(results, InviteResult{Email: email, Status: InviteStatusInvalid})
+			continue
+		}
+		var userID string
+		err := tx.QueryRow(ctx,
+			`SELECT id::text FROM users WHERE email = $1`, email).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			results = append(results, InviteResult{Email: email, Status: InviteStatusNotRegistered})
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var isMember bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM workspace_members
+			 WHERE workspace_id = $1::uuid AND user_id = $2::uuid)`,
+			wsID, userID).Scan(&isMember); err != nil {
+			return nil, err
+		}
+		if isMember {
+			results = append(results, InviteResult{Email: email, Status: InviteStatusAlreadyMember})
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO workspace_members (workspace_id, user_id, role)
+			 VALUES ($1::uuid, $2::uuid, $3)
+			 ON CONFLICT (workspace_id, user_id) DO NOTHING`,
+			wsID, userID, role); err != nil {
+			return nil, err
+		}
+		results = append(results, InviteResult{Email: email, Status: InviteStatusInvited})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 // RemoveMember drops a membership. Only an admin may call it; removing the
 // last admin is refused (ErrLastAdmin). Removing a non-member is
 // ErrMemberNotFound (not ErrNotFound — see ErrUserNotFound's rationale).
