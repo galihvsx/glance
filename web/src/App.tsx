@@ -18,6 +18,7 @@ import Gantt from "./pages/Gantt";
 import Analytics from "./pages/Analytics";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
+import Releases from "./pages/Releases";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
 import PublicShare from "./pages/PublicShare";
@@ -74,6 +75,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/modules"
                   element={<Modules />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/releases"
+                  element={<Releases />}
                 />
                 <Route
                   path="/w/:slug/p/:identifier/pages"
