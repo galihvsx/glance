@@ -98,6 +98,13 @@ export default function Projects() {
         </div>
         <div className="flex items-center gap-2">
           <ThemeToggle />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(`/w/${slug}/settings`)}
+          >
+            Settings
+          </Button>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <Button onClick={() => setDialogOpen(true)}>New project</Button>
           <DialogContent>

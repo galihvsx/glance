@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import Onboarding from "./pages/Onboarding";
 import Home from "./pages/Home";
 import Workspaces from "./pages/Workspaces";
+import WorkspaceSettings from "./pages/WorkspaceSettings";
 import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
 import IssueDetail from "./pages/IssueDetail";
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="/" element={<Home />} />
               <Route path="/w" element={<Workspaces />} />
               <Route path="/w/:slug" element={<Projects />} />
+              <Route path="/w/:slug/settings" element={<WorkspaceSettings />} />
               <Route element={<ProjectScope />}>
                 <Route path="/w/:slug/p/:identifier" element={<Issues />} />
                 <Route

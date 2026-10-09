@@ -45,6 +45,22 @@ export function roleLabel(role: number): string {
   }
 }
 
+/** One workspace member with their user identity. */
+export interface WorkspaceMember {
+  id: string;
+  name?: string | null;
+  email: string;
+  /** 20 = admin, 15 = member, 5 = guest */
+  role: number;
+}
+
+/** Role values accepted by the members endpoints. */
+export const WORKSPACE_ROLES = [
+  { value: 20, label: "Admin" },
+  { value: 15, label: "Member" },
+  { value: 5, label: "Guest" },
+] as const;
+
 // ---------- Issues (Tasks 14–18) ----------
 
 /** One assignee aggregated onto an issue row. */

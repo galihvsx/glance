@@ -191,7 +191,23 @@ export default function Workspaces() {
                   <CardTitle className="text-base">{ws.name}</CardTitle>
                   <CardDescription>/{ws.slug}</CardDescription>
                 </div>
-                <Badge variant="secondary">{roleLabel(ws.role)}</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">{roleLabel(ws.role)}</Badge>
+                  {ws.role === 20 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/w/${ws.slug}/settings`);
+                      }}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      aria-label={`Workspace settings for ${ws.name}`}
+                    >
+                      Settings
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
             </ActionCard>
           ))}

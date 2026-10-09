@@ -25,6 +25,7 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.GET("", h.listWorkspaces)
 	g.GET("/:slug", h.getWorkspace)
 	g.PATCH("/:slug", h.updateWorkspace)
+	g.DELETE("/:slug", h.deleteWorkspace)
 	g.POST("/:slug/members", h.upsertMember)
 	g.GET("/:slug/members", h.listMembers)
 	g.DELETE("/:slug/members/:user_id", h.removeMember)
@@ -102,17 +103,18 @@ func (h *WorkspaceHandler) getWorkspace(c *echo.Context) error {
 }
 
 type updateWorkspaceBody struct {
-	Name string `json:"name"`
+	Name string  `json:"name"`
+	Slug *string `json:"slug,omitempty"`
 }
 
-// updateWorkspace implements PATCH /api/v1/workspaces/{slug}: rename.
-// Admin only (the service enforces it).
+// updateWorkspace implements PATCH /api/v1/workspaces/{slug}: rename
+// (name, plus optional slug change). Admin only (the service enforces it).
 func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 	var body updateWorkspaceBody
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	ws, err := service.UpdateWorkspace(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name)
+	ws, err := service.UpdateWorkspace(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Slug)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
@@ -120,6 +122,16 @@ func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 		return workspaceError(c, err)
 	}
 	return c.JSON(http.StatusOK, ws)
+}
+
+// deleteWorkspace implements DELETE /api/v1/workspaces/{slug}: removes the
+// workspace and everything in it (projects/issues/members cascade via FK).
+// Admin only. 204 on success; the typed confirmation lives client-side.
+func (h *WorkspaceHandler) deleteWorkspace(c *echo.Context) error {
+	if err := service.DeleteWorkspace(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID); err != nil {
+		return workspaceError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 type upsertMemberBody struct {

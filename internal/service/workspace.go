@@ -173,7 +173,7 @@ func GetWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID string) 
 // UpdateWorkspace renames the workspace. Admin only. The role check and
 // the rename run in one transaction so a concurrent demotion cannot slip
 // between them.
-func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name string) (*Workspace, error) {
+func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name string, newSlug *string) (*Workspace, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, ErrNameRequired
@@ -202,18 +202,70 @@ func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name
 	if role != RoleAdmin {
 		return nil, ErrForbidden
 	}
+
+	// Optional slug change (C3T6): validate the contract, then update.
+	// A taken slug surfaces as ErrSlugConflict (409), same as create.
+	targetSlug := ws.Slug
+	if newSlug != nil {
+		s := strings.TrimSpace(*newSlug)
+		if s != "" && s != ws.Slug {
+			if !validSlug(s) {
+				return nil, ErrInvalidSlug
+			}
+			targetSlug = s
+		}
+	}
+
 	err = tx.QueryRow(ctx,
-		`UPDATE workspaces SET name = $1, updated_at = now()
-		 WHERE id = $2::uuid
+		`UPDATE workspaces SET name = $1, slug = $2, updated_at = now()
+		 WHERE id = $3::uuid
 		 RETURNING id::text, slug::text, name, created_at, updated_at`,
-		name, ws.ID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt)
+		name, targetSlug, ws.ID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrSlugConflict
+		}
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &ws, nil
+}
+
+// DeleteWorkspace removes a workspace and everything in it. Admin only.
+// Projects, issues, members and satellite rows cascade via FK
+// (ON DELETE CASCADE), so this is a single-row delete. The typed
+// confirmation the UI demands is a client concern — the API just needs
+// an admin caller.
+func DeleteWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, actorID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var wsID string
+	var role int
+	err = tx.QueryRow(ctx,
+		`SELECT w.id::text, m.role
+		 FROM workspaces w
+		 JOIN workspace_members m ON m.workspace_id = w.id
+		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+		slug, actorID).Scan(&wsID, &role)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if role != RoleAdmin {
+		return ErrForbidden
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = $1::uuid`, wsID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // workspaceIDForActor scans the id+role row produced by the caller's

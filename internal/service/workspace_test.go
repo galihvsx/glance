@@ -208,11 +208,11 @@ func TestUpdateWorkspaceAdminOnly(t *testing.T) {
 		t.Fatalf("UpsertMember: %v", err)
 	}
 
-	if _, err := UpdateWorkspace(ctx, pool, updSlug, guest, "Hacked"); !errors.Is(err, ErrForbidden) {
+	if _, err := UpdateWorkspace(ctx, pool, updSlug, guest, "Hacked", nil); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("guest update: err = %v, want ErrForbidden", err)
 	}
 
-	if _, err := UpdateWorkspace(ctx, pool, updSlug, admin, "New Name"); err != nil {
+	if _, err := UpdateWorkspace(ctx, pool, updSlug, admin, "New Name", nil); err != nil {
 		t.Fatalf("admin update: %v", err)
 	}
 	ws, _, err := GetWorkspace(ctx, pool, updSlug, admin)
@@ -221,6 +221,25 @@ func TestUpdateWorkspaceAdminOnly(t *testing.T) {
 	}
 	if ws.Name != "New Name" {
 		t.Fatalf("name = %q, want %q", ws.Name, "New Name")
+	}
+
+	// Slug change: valid new slug persists; invalid and taken slugs fail.
+	newSlug := uniqueTestSlug("ws-upd-new")
+	ws2, err := UpdateWorkspace(ctx, pool, updSlug, admin, "New Name", &newSlug)
+	if err != nil {
+		t.Fatalf("slug update: %v", err)
+	}
+	if ws2.Slug != newSlug {
+		t.Fatalf("slug = %q, want %q", ws2.Slug, newSlug)
+	}
+	bad := "Bad_Slug!!"
+	if _, err := UpdateWorkspace(ctx, pool, newSlug, admin, "New Name", &bad); !errors.Is(err, ErrInvalidSlug) {
+		t.Fatalf("invalid slug: err = %v, want ErrInvalidSlug", err)
+	}
+	taken := uniqueTestSlug("ws-upd-taken")
+	createTestWorkspace(t, pool, "Taken", taken, admin)
+	if _, err := UpdateWorkspace(ctx, pool, newSlug, admin, "New Name", &taken); !errors.Is(err, ErrSlugConflict) {
+		t.Fatalf("taken slug: err = %v, want ErrSlugConflict", err)
 	}
 }
 
@@ -360,5 +379,35 @@ func TestRemoveMemberNonMember(t *testing.T) {
 	err = RemoveMember(ctx, pool, nmSlug, admin, randomAbsentUserID(t, pool))
 	if !errors.Is(err, ErrMemberNotFound) {
 		t.Fatalf("remove unknown user: err = %v, want ErrMemberNotFound", err)
+	}
+}
+
+func TestDeleteWorkspace(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-del-admin"))
+	guest := createTestUser(t, pool, uniqueTestEmail("ws-del-guest"))
+	delSlug := uniqueTestSlug("ws-del")
+	createTestWorkspace(t, pool, "Delete Me", delSlug, admin)
+	if err := UpsertMember(ctx, pool, delSlug, admin, guest, RoleGuest); err != nil {
+		t.Fatalf("UpsertMember: %v", err)
+	}
+
+	// Non-admin → forbidden; workspace survives.
+	if err := DeleteWorkspace(ctx, pool, delSlug, guest); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("guest delete: err = %v, want ErrForbidden", err)
+	}
+	if _, _, err := GetWorkspace(ctx, pool, delSlug, admin); err != nil {
+		t.Fatalf("workspace should survive guest delete: %v", err)
+	}
+
+	// Admin → gone; members cascade with it.
+	if err := DeleteWorkspace(ctx, pool, delSlug, admin); err != nil {
+		t.Fatalf("admin delete: %v", err)
+	}
+	if _, _, err := GetWorkspace(ctx, pool, delSlug, admin); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted workspace lookup: err = %v, want ErrNotFound", err)
 	}
 }
