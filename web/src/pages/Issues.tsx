@@ -237,6 +237,7 @@ export default function Issues() {
       priority: number;
       state_id?: string;
       parent_id?: string;
+      is_draft?: boolean;
     }) => api.post<Issue>(`${base}/issues`, body),
     onSuccess: (issue) => {
       resetCreateForm();
@@ -247,6 +248,11 @@ export default function Issues() {
         queryKey: ["issues", slug, identifier],
       });
       showCreatedToast(issue);
+      if (issue.is_draft) {
+        void queryClient.invalidateQueries({
+          queryKey: ["drafts", slug, identifier],
+        });
+      }
     },
     onError: (e) => {
       setFormError(
@@ -270,7 +276,9 @@ export default function Issues() {
   function showCreatedToast(issue: Issue) {
     const url = `${window.location.origin}/w/${slug}/p/${identifier}/i/${issue.id}`;
     toast.add({
-      title: `${issue.display_id} created`,
+      title: issue.is_draft
+        ? `${issue.display_id} saved as draft`
+        : `${issue.display_id} created`,
       type: "success",
       description: (
         <span className="flex flex-col gap-2">
@@ -315,6 +323,21 @@ export default function Issues() {
       priority: newPriority,
       ...(newStateId ? { state_id: newStateId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
+    });
+  }
+
+  /** Save as draft (C6T4): same body plus is_draft — the issue lands in the
+   *  Drafts view instead of the working set. */
+  async function onSaveDraft(e: FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    createMutation.mutate({
+      name: name.trim(),
+      description: textToTipTapDoc(description) ?? undefined,
+      priority: newPriority,
+      ...(newStateId ? { state_id: newStateId } : {}),
+      ...(parentIssue ? { parent_id: parentIssue.id } : {}),
+      is_draft: true,
     });
   }
 
@@ -590,12 +613,23 @@ export default function Issues() {
                   />
                   Create more
                 </Label>
-                <Button
-                  type="submit"
-                  disabled={createMutation.isPending || !name.trim()}
-                >
-                  {createMutation.isPending ? "Creating…" : "Create issue"}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={createMutation.isPending || !name.trim()}
+                    onClick={onSaveDraft}
+                    title="Save as an unfinished draft — it won't appear in the working set until published"
+                  >
+                    {createMutation.isPending ? "Saving…" : "Save as draft"}
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={createMutation.isPending || !name.trim()}
+                  >
+                    {createMutation.isPending ? "Creating…" : "Create issue"}
+                  </Button>
+                </div>
               </DialogFooter>
             </form>
           </DialogContent>

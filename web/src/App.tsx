@@ -23,6 +23,7 @@ import Gantt from "./pages/Gantt";
 import Analytics from "./pages/Analytics";
 import Activity from "./pages/Activity";
 import ProjectSettings from "./pages/ProjectSettings";
+import Drafts from "./pages/Drafts";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Releases from "./pages/Releases";
@@ -109,6 +110,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/settings"
                   element={<ProjectSettings />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/drafts"
+                  element={<Drafts />}
                 />
               </Route>
             </Route>
