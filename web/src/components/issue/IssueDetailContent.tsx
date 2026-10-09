@@ -42,6 +42,8 @@ import ShareModal from "../ShareModal";
 import LabelPicker from "./LabelPicker";
 import TimeTracker from "./TimeTracker";
 import Attachments from "./Attachments";
+import DraftWithAI from "./DraftWithAI";
+import TriageSuggestions from "./TriageSuggestions";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -98,18 +100,27 @@ function fieldLabel(field: string): string {
 
 function DescriptionEditor({
   issue,
+  slug,
+  identifier,
   onSave,
   saving,
 }: {
   issue: Issue;
+  slug: string;
+  identifier: string;
   onSave: (doc: unknown | null) => void;
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  // C5T3: honest "AI-generated" flag — set on a Draft-with-AI insert,
+  // cleared when the user edits, saves, or cancels.
+  const [aiGenerated, setAiGenerated] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const editor = useEditor({
     extensions: [StarterKit],
     content: (issue.description as object) ?? { type: "doc", content: [] },
     editable: editing,
+    onUpdate: () => setAiGenerated(false),
   });
 
   // Reset content when the issue changes (e.g. after a save) and toggle
@@ -147,6 +158,16 @@ function DescriptionEditor({
             <div className="min-h-32 rounded-md border p-3 focus-within:ring-1 focus-within:ring-ring">
               <EditorContent editor={editor} />
             </div>
+            {aiGenerated && (
+              <p className="text-xs text-muted-foreground">
+                AI-generated — review before saving.
+              </p>
+            )}
+            {aiError && (
+              <p role="alert" className="text-xs text-destructive">
+                {aiError}
+              </p>
+            )}
             <div className="flex gap-2">
               <Button
                 size="sm"
@@ -154,10 +175,26 @@ function DescriptionEditor({
                 onClick={() => {
                   onSave(editor?.getJSON() ?? null);
                   setEditing(false);
+                  setAiGenerated(false);
                 }}
               >
                 {saving ? "Saving…" : "Save"}
               </Button>
+              <DraftWithAI
+                slug={slug}
+                identifier={identifier}
+                title={issue.name}
+                context={tiptapText(issue.description)}
+                onDraft={(d) => {
+                  editor?.commands.setContent(
+                    textToTipTapDoc(d) as object,
+                  );
+                  setAiGenerated(true);
+                  setAiError(null);
+                }}
+                onError={setAiError}
+                disabled={saving}
+              />
               <Button
                 size="sm"
                 variant="ghost"
@@ -165,6 +202,8 @@ function DescriptionEditor({
                 onClick={() => {
                   onSave(null);
                   setEditing(false);
+                  setAiGenerated(false);
+                  setAiError(null);
                 }}
               >
                 Remove description
@@ -655,6 +694,8 @@ export default function IssueDetailContent({
             >
               <DescriptionEditor
                 issue={issue}
+                slug={slug}
+                identifier={identifier}
                 saving={patchMutation.isPending}
                 onSave={(doc) =>
                   patchMutation.mutate({ description: doc })
@@ -826,6 +867,17 @@ export default function IssueDetailContent({
                   </div>
                 </CardContent>
               </Card>
+              {/* C5T3: AI triage suggestions — one-click apply per row. */}
+              <TriageSuggestions
+                slug={slug}
+                identifier={identifier}
+                issue={issue}
+                states={states}
+                labels={labelsQuery.data ?? []}
+                onPatch={(p) => patchMutation.mutate(p)}
+                onAddLabel={(id) => toggleRelation("labels", id, false)}
+                disabled={patchMutation.isPending}
+              />
               <TimeTracker slug={slug} identifier={identifier} uuid={uuid} />
               <Attachments slug={slug} identifier={identifier} uuid={uuid} />
             </div>

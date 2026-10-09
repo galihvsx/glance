@@ -274,3 +274,71 @@ func TestAIKeyNeverLoggedHTTP(t *testing.T) {
 		t.Errorf("key in response body: %s", rec.Body.String())
 	}
 }
+
+// TestAIStatus pins the availability probe contract (C5T3): GET
+// /api/v1/ai/status reports {configured} honestly without calling the
+// provider — key configured → true, key unset → false. The UI needs
+// this to render the honest disabled state without burning a provider
+// call (neither /draft nor /triage can probe cheaply: both validate
+// input first and then call the provider on a valid title).
+func TestAIStatus(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	stub := newAIProviderStub(t)
+	e := testAIServer(t, pool, stub.aiCfg())
+	cookie, _, _ := setupAIHTTP(t, e, pool)
+
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/ai/status", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: code = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Configured bool `json:"configured"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Configured {
+		t.Error("configured = false, want true with an API key set")
+	}
+	if stub.gotAuth != "" {
+		t.Errorf("status probed the provider (Authorization = %q), must not", stub.gotAuth)
+	}
+}
+
+// TestAIStatusUnconfigured: without an API key the probe reports false.
+func TestAIStatusUnconfigured(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testAIServer(t, pool, config.AIConfig{})
+	cookie, _, _ := setupAIHTTP(t, e, pool)
+
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/ai/status", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: code = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Configured bool `json:"configured"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Configured {
+		t.Error("configured = true, want false without an API key")
+	}
+}
+
+// TestAIStatusRequiresAuth: the probe is auth-only, not public.
+func TestAIStatusRequiresAuth(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	stub := newAIProviderStub(t)
+	e := testAIServer(t, pool, stub.aiCfg())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ai/status", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status: code = %d, want 401 without a session", rec.Code)
+	}
+}

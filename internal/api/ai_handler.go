@@ -29,6 +29,7 @@ type AIHandler struct {
 // catch-all.
 func RegisterAIRoutes(e *echo.Echo, h *AIHandler) {
 	g := e.Group("/api/v1/ai", RequireAuth(h.Pool))
+	g.GET("/status", h.status)
 	g.POST("/draft", h.draft)
 	g.POST("/triage", h.triage)
 }
@@ -49,6 +50,21 @@ func aiError(c *echo.Context, err error) error {
 	default:
 		return WriteInternalError(c)
 	}
+}
+
+// aiStatusResponse is the GET /api/v1/ai/status payload.
+type aiStatusResponse struct {
+	Configured bool `json:"configured"`
+}
+
+// status implements GET /api/v1/ai/status: {configured}. Auth-only — no
+// project scope is needed because it reveals nothing but a boolean.
+// The UI uses it for its honest disabled state ("AI not configured by
+// administrator") without burning a provider call, which neither the
+// draft nor the triage endpoint can do cheaply (both validate input
+// before consulting the provider and then call it).
+func (h *AIHandler) status(c *echo.Context) error {
+	return c.JSON(http.StatusOK, aiStatusResponse{Configured: h.AI.Configured()})
 }
 
 // aiScope carries the workspace/project tenancy both AI endpoints need.
