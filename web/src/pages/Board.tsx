@@ -28,6 +28,8 @@ import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
 import { Calendar } from "lucide-react";
 import DisplayPanel from "../components/issue/DisplayPanel";
+import FilterPanel from "../components/issue/FilterPanel";
+import { toApiParams, useIssueFilters } from "../lib/filters";
 import {
   formatIssueDateRange,
   useDisplaySettings,
@@ -239,9 +241,11 @@ export default function Board() {
     identifier,
   );
   const { peekUuid, openPeek, closePeek } = usePeekParam();
+  const [filters, setFilters, clearFilters] = useIssueFilters();
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
-  const issuesKey = ["board-issues", slug, identifier] as const;
+  // Filters are part of the key: changing them refetches the board.
+  const issuesKey = ["board-issues", slug, identifier, filters] as const;
 
   const projectQuery = useQuery({
     queryKey: ["project", slug, identifier],
@@ -263,10 +267,9 @@ export default function Board() {
       const all: Issue[] = [];
       let cursor: string | undefined;
       do {
-        const p = new URLSearchParams({
-          order_by: "sort_order",
-          per_page: "100",
-        });
+        const p = toApiParams(filters);
+        p.set("order_by", "sort_order");
+        p.set("per_page", "100");
         if (cursor) p.set("cursor", cursor);
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
@@ -555,6 +558,13 @@ export default function Board() {
         </h1>
         </div>
         <div className="flex items-center gap-2">
+          <FilterPanel
+            slug={slug}
+            identifier={identifier}
+            filters={filters}
+            onChange={setFilters}
+            onClear={clearFilters}
+          />
           <DisplayPanel
             settings={settings}
             onUpdate={update}

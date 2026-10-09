@@ -12,8 +12,6 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
-  Label as ProjectLabel,
-  Member,
   Project,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
@@ -33,19 +31,19 @@ import { Badge } from "../components/ui/badge";
 import { Kbd } from "../components/ui/kbd";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import StatePicker from "../components/issue/StatePicker";
 import StateBadge from "../components/issue/StateBadge";
 import ThemeToggle from "../components/ThemeToggle";
 import ProjectNav from "../components/project/ProjectNav";
+import FilterPanel from "../components/issue/FilterPanel";
+import {
+  activeFilterCount,
+  toApiParams,
+  useIssueFilters,
+  type IssueFilters,
+} from "../lib/filters";
 import { useShortcutAction } from "../lib/shortcuts";
 import { cn } from "../lib/utils";
 
@@ -70,35 +68,14 @@ function dateOnly(iso?: string | null): string {
   return iso ? iso.slice(0, 10) : "—";
 }
 
-interface Filters {
-  q: string;
-  state: string;
-  priority: string;
-  assignee: string;
-  label: string;
-}
-
-const EMPTY_FILTERS: Filters = {
-  q: "",
-  state: "",
-  priority: "",
-  assignee: "",
-  label: "",
-};
-
 function buildIssuePath(
   slug: string,
   identifier: string,
-  f: Filters,
+  f: IssueFilters,
   cursor?: string,
 ): string {
-  const p = new URLSearchParams();
+  const p = toApiParams(f);
   p.set("per_page", String(PER_PAGE));
-  if (f.q.trim()) p.set("q", f.q.trim());
-  if (f.state) p.set("state", f.state);
-  if (f.priority) p.set("priority", f.priority);
-  if (f.assignee) p.set("assignee", f.assignee);
-  if (f.label) p.set("label", f.label);
   if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
@@ -165,8 +142,9 @@ export default function Spreadsheet() {
   }>();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [searchInput, setSearchInput] = useState("");
+  const [filters, setFilters, clearFilters] = useIssueFilters();
+  // Seed from the URL so a pasted link shows its query in the box.
+  const [searchInput, setSearchInput] = useState(filters.q);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -190,22 +168,6 @@ export default function Spreadsheet() {
     queryKey: ["states", slug, identifier],
     queryFn: () =>
       api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
-  });
-  const membersQuery = useQuery({
-    queryKey: ["members", slug],
-    queryFn: () =>
-      api
-        .get<{ members: Member[] }>(
-          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
-        )
-        .then((d) => d.members),
-  });
-  const labelsQuery = useQuery({
-    queryKey: ["labels", slug, identifier],
-    queryFn: () =>
-      api
-        .get<{ labels: ProjectLabel[] }>(`${base}/labels`)
-        .then((d) => d.labels),
   });
 
   const issuesQuery = useInfiniteQuery({
@@ -248,17 +210,12 @@ export default function Spreadsheet() {
 
   function onSearchSubmit(e: FormEvent) {
     e.preventDefault();
-    setFilters((f) => ({ ...f, q: searchInput }));
+    setFilters({ q: searchInput });
     // A new filter set is a new result set — clear any column sort.
     setSortKey(null);
   }
 
-  function setFilter<K extends keyof Filters>(k: K, v: Filters[K]) {
-    setFilters((f) => ({ ...f, [k]: v }));
-    setSortKey(null);
-  }
-
-  const hasActiveFilters = Object.values(filters).some((v) => v !== "");
+  const hasActiveFilters = activeFilterCount(filters) > 0;
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -426,76 +383,26 @@ export default function Spreadsheet() {
             className="w-56 pl-8"
           />
         </form>
-        <Select
-          value={filters.state || "all"}
-          onValueChange={(v) => setFilter("state", v === "all" || v === null ? "" : v)}
-        >
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="State" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All states</SelectItem>
-            {(statesQuery.data ?? []).map((s) => (
-              <SelectItem key={s.id} value={s.id}>
-                {s.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.priority || "all"}
-          onValueChange={(v) => setFilter("priority", v === "all" || v === null ? "" : v)}
-        >
-          <SelectTrigger className="w-32">
-            <SelectValue placeholder="Priority" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All priorities</SelectItem>
-            {[0, 1, 2, 3, 4].map((p) => (
-              <SelectItem key={p} value={String(p)}>
-                {["None", "Low", "Medium", "High", "Urgent"][p]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.assignee || "all"}
-          onValueChange={(v) => setFilter("assignee", v === "all" || v === null ? "" : v)}
-        >
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="Assignee" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Anyone</SelectItem>
-            {(membersQuery.data ?? []).map((m) => (
-              <SelectItem key={m.id} value={m.id}>
-                {m.name ?? m.email}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.label || "all"}
-          onValueChange={(v) => setFilter("label", v === "all" || v === null ? "" : v)}
-        >
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="Label" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All labels</SelectItem>
-            {(labelsQuery.data ?? []).map((l) => (
-              <SelectItem key={l.id} value={l.id}>
-                {l.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <FilterPanel
+          slug={slug}
+          identifier={identifier}
+          filters={filters}
+          onChange={(patch) => {
+            setFilters(patch);
+            setSortKey(null);
+          }}
+          onClear={() => {
+            clearFilters();
+            setSearchInput("");
+            setSortKey(null);
+          }}
+        />
         {hasActiveFilters && (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => {
-              setFilters(EMPTY_FILTERS);
+              clearFilters();
               setSearchInput("");
               setSortKey(null);
             }}

@@ -267,3 +267,78 @@ func TestIssueHTTPList(t *testing.T) {
 		}
 	}
 }
+
+// TestListIssuesFilterParams: C2T5 multi-value filter params parse at the
+// HTTP layer (comma-separated priority/label/assignee/estimate, RFC3339
+// dates, subscribed flag); malformed values are 400 with the error
+// envelope.
+func TestListIssuesFilterParams(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testIssueServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-filter-http"), "test-agent", uniqueIP())
+	slug := uniqueSlug("issue-filter")
+	createWorkspaceHTTP(t, e, cookie, "Filter Co", slug)
+	ident := uniqueProjectIdentifier("FI")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+
+	for _, body := range []string{
+		`{"name":"p1 issue","priority":1}`,
+		`{"name":"p3 issue","priority":3}`,
+	} {
+		rec := postAuthedJSON(t, e, http.MethodPost, base, cookie, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create issue: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+		}
+	}
+
+	// Comma-separated priority filters both issues.
+	rec := getAuthed(t, e, http.MethodGet, base+"?priority=1,3", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET ?priority=1,3: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		Results []struct {
+			Name string `json:"name"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.Results) != 2 {
+		t.Fatalf("?priority=1,3: got %d issues, want 2", len(res.Results))
+	}
+
+	// Single priority still works (backward compatible).
+	rec = getAuthed(t, e, http.MethodGet, base+"?priority=1", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET ?priority=1: status = %d, want 200", rec.Code)
+	}
+
+	// subscribed=1 is accepted like subscribed=true.
+	for _, v := range []string{"true", "1"} {
+		rec = getAuthed(t, e, http.MethodGet, base+"?subscribed="+v, cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET ?subscribed=%s: status = %d, want 200 (body: %s)", v, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Malformed values are 400 with the error envelope.
+	for _, path := range []string{
+		base + "?priority=abc",
+		base + "?priority=1,abc",
+		base + "?priority=99",
+		base + "?label=not-a-uuid",
+		base + "?assignee=not-a-uuid",
+		base + "?estimate=not-a-uuid",
+		base + "?created_after=yesterday",
+		base + "?due_before=2026-13-99",
+	} {
+		rec = getAuthed(t, e, http.MethodGet, path, cookie)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s: status = %d, want 400 (body: %s)", path, rec.Code, rec.Body.String())
+		}
+	}
+}

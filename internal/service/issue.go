@@ -1292,18 +1292,36 @@ func listSortKey(o listOrder, iss *Issue) string {
 
 // ListIssuesInput carries the list filters. Empty/zero values mean "no
 // filter". State/Assignee/Label/Cycle take UUIDs.
+// filterNone is the sentinel value meaning "no relation" inside the
+// Assignees and EstimatePoints multi-filters (matches issues with zero
+// assignees / a NULL estimate point).
+const filterNone = "none"
+
 type ListIssuesInput struct {
-	State        string
-	Assignee     string
-	Label        string
-	Priority     *int
-	Cycle        string
-	Q            string
-	OrderBy      string
-	Cursor       string
-	PerPage      int
-	UpdatedAfter *time.Time
-	Fields       []string
+	State   string
+	Cycle   string
+	Q       string
+	OrderBy string
+	Cursor  string
+	PerPage int
+	Fields  []string
+	// Multi-value filters (C2T5). Each list is OR-matched; different
+	// dimensions are ANDed. Empty list = no filter on that dimension.
+	// Assignees and EstimatePoints accept the sentinel "none" for issues
+	// with no assignees / no estimate point.
+	Priorities     []int
+	Labels         []string
+	Assignees      []string
+	EstimatePoints []string
+	// Date ranges (inclusive start, exclusive end).
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	UpdatedAfter  *time.Time
+	UpdatedBefore *time.Time
+	DueAfter      *time.Time
+	DueBefore     *time.Time
+	// Subscribed limits to issues the actor subscribed to.
+	Subscribed bool
 }
 
 // IssueAssignee is one assignee on an issue, aggregated from
@@ -1397,11 +1415,30 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		perPage = maxListPerPage
 	}
 
-	if in.Priority != nil && (*in.Priority < 0 || *in.Priority > 4) {
-		return nil, ErrInvalidListFilter
+	for _, p := range in.Priorities {
+		if p < 0 || p > 4 {
+			return nil, ErrInvalidListFilter
+		}
 	}
-	for _, f := range []string{in.State, in.Assignee, in.Label, in.Cycle} {
+	for _, f := range []string{in.State, in.Cycle} {
 		if f != "" && !isUUIDFormat(f) {
+			return nil, ErrInvalidListFilter
+		}
+	}
+	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
+	// "none" sentinel (validated separately below).
+	for _, id := range in.Labels {
+		if !isUUIDFormat(id) {
+			return nil, ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.Assignees {
+		if id != filterNone && !isUUIDFormat(id) {
+			return nil, ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.EstimatePoints {
+		if id != filterNone && !isUUIDFormat(id) {
 			return nil, ErrInvalidListFilter
 		}
 	}
@@ -1454,14 +1491,49 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if in.State != "" {
 		conds = append(conds, "i.state_id = "+arg(in.State)+"::uuid")
 	}
-	if in.Priority != nil {
-		conds = append(conds, "i.priority = "+arg(*in.Priority))
+	if len(in.Priorities) > 0 {
+		conds = append(conds, "i.priority = ANY("+arg(in.Priorities)+")")
 	}
-	if in.Assignee != "" {
-		conds = append(conds, "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = "+arg(in.Assignee)+"::uuid)")
+	if len(in.Assignees) > 0 {
+		var ids []string
+		wantNone := false
+		for _, a := range in.Assignees {
+			if a == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, a)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
-	if in.Label != "" {
-		conds = append(conds, "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = "+arg(in.Label)+"::uuid)")
+	if len(in.Labels) > 0 {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = ANY("+arg(in.Labels)+"::uuid[]))")
+	}
+	if len(in.EstimatePoints) > 0 {
+		var ids []string
+		wantNone := false
+		for _, e := range in.EstimatePoints {
+			if e == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, e)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.estimate_point_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.estimate_point_id IS NULL")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
 	if in.Cycle != "" {
 		// Task 22: cycle_issues exists now — a real EXISTS filter on the
@@ -1474,6 +1546,24 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	}
 	if in.UpdatedAfter != nil {
 		conds = append(conds, "i.updated_at > "+arg(in.UpdatedAfter)+"::timestamptz")
+	}
+	if in.CreatedAfter != nil {
+		conds = append(conds, "i.created_at >= "+arg(in.CreatedAfter)+"::timestamptz")
+	}
+	if in.CreatedBefore != nil {
+		conds = append(conds, "i.created_at < "+arg(in.CreatedBefore)+"::timestamptz")
+	}
+	if in.UpdatedBefore != nil {
+		conds = append(conds, "i.updated_at < "+arg(in.UpdatedBefore)+"::timestamptz")
+	}
+	if in.DueAfter != nil {
+		conds = append(conds, "i.target_date >= "+arg(in.DueAfter)+"::date")
+	}
+	if in.DueBefore != nil {
+		conds = append(conds, "i.target_date < "+arg(in.DueBefore)+"::date")
+	}
+	if in.Subscribed {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_subscribers s WHERE s.issue_id = i.id AND s.user_id = "+arg(actorID)+"::uuid)")
 	}
 	if cur != nil {
 		op := ">"
