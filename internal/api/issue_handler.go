@@ -782,6 +782,10 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/versions", h.listVersions)
 	g.GET("/versions/:n", h.getVersion)
 	g.POST("/versions/:n/restore", h.restoreVersion)
+	g.POST("/time/start", h.startTimer)
+	g.POST("/time/stop", h.stopTimer)
+	g.POST("/time/log", h.logTimeEntry)
+	g.GET("/time", h.listTimeEntries)
 }
 
 func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string, ok bool) {
