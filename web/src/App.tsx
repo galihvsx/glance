@@ -3,6 +3,8 @@ import { AuthProvider } from "./lib/auth";
 import { QueryProvider } from "./lib/query";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectScope from "./components/ProjectScope";
+import AdminGuard from "./components/AdminGuard";
+import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 import Onboarding from "./pages/Onboarding";
 import Home from "./pages/Home";
@@ -38,6 +40,14 @@ export default function App() {
               <Route path="/onboarding" element={<Onboarding />} />
               <Route path="/" element={<Home />} />
               <Route path="/notifications" element={<Notifications />} />
+              <Route
+                path="/admin"
+                element={
+                  <AdminGuard>
+                    <Admin />
+                  </AdminGuard>
+                }
+              />
               <Route path="/w" element={<Workspaces />} />
               <Route path="/w/:slug" element={<Projects />} />
               <Route path="/w/:slug/settings" element={<WorkspaceSettings />} />
