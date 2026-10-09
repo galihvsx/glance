@@ -49,6 +49,8 @@ func RegisterImportRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.POST("/github", h.importGitHubIssues)
 	g.POST("/jira/preview", h.previewJiraImport)
 	g.POST("/jira", h.importJiraIssues)
+	g.POST("/trello/preview", h.previewTrelloImport)
+	g.POST("/trello", h.importTrelloCards)
 }
 
 // importMultipart extracts the CSV file and the JSON mapping from a
@@ -316,6 +318,109 @@ func (h *ProjectHandler) importJiraIssues(c *echo.Context) error {
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
 	if err != nil {
 		return jiraImportError(c, err)
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+// ---------- Trello Cloud importer (C10T0) ----------
+//
+//   POST .../imports/trello/preview — JSON {api_key, token, board_id,
+//     max?}: fetch from the Trello REST v1 API, report how the first 10
+//     cards would map. No writes. Member (15)+.
+//   POST .../imports/trello — same inputs: import the cards.
+//
+// Trello Cloud only (Trello has no self-hosted edition): the host is
+// fixed to https://api.trello.com. The board id accepts the 24-char id,
+// the 8-char short link, or an https trello.com board URL.
+//
+// The API key + token travel in the JSON body only: Trello's v1 API
+// authenticates via key+token QUERY PARAMS (Trello's contract — headers
+// are not supported), sent to api.trello.com only, and they are never
+// stored, never logged, and never echoed in error messages (pinned by
+// TestTrelloTokenNeverPersisted).
+//
+// Error honesty: board-not-found 404 surfaces Trello's message, bad
+// credentials 401, rate-limit exhaustion 429 with Retry-After (never
+// retried silently), other upstream failures 502.
+
+// trelloImportMaxBody caps the Trello import JSON body: 1MB is generous
+// for api_key/token/board_id fields (no files ride this endpoint).
+const trelloImportMaxBody = 1 << 20
+
+// trelloImportBody is the JSON body of the trello import endpoints.
+type trelloImportBody struct {
+	APIKey  string `json:"api_key"`
+	Token   string `json:"token"`
+	BoardID string `json:"board_id"`
+	Max     int    `json:"max"`
+}
+
+// trelloImportError maps the trello importer service errors to HTTP
+// statuses. Trello's own messages are surfaced for 404/502; the
+// credentials are never part of any message.
+func trelloImportError(c *echo.Context, err error) error {
+	var rl *service.TrelloRateLimitError
+	switch {
+	case errors.As(err, &rl):
+		c.Response().Header().Set("Retry-After", strconv.Itoa(rl.RetryAfter))
+		return WriteError(c, http.StatusTooManyRequests, ErrCodeRateLimited,
+			"trello rate limit exceeded: "+rl.Message,
+			map[string]any{"retry_after": rl.RetryAfter})
+	case errors.Is(err, service.ErrTrelloNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, err.Error(), nil)
+	case errors.Is(err, service.ErrTrelloUnauthorized):
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, err.Error(), nil)
+	case errors.Is(err, service.ErrTrelloUpstream):
+		return WriteError(c, http.StatusBadGateway, ErrCodeBadGateway, err.Error(), nil)
+	case errors.Is(err, service.ErrTrelloBadInput):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	default:
+		return projectError(c, err)
+	}
+}
+
+// decodeTrelloImportBody reads the JSON import body under the size cap.
+func decodeTrelloImportBody(c *echo.Context) (service.TrelloImportInput, bool) {
+	r := c.Request()
+	r.Body = http.MaxBytesReader(c.Response(), r.Body, trelloImportMaxBody)
+	var b trelloImportBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+			"request body must be JSON {api_key, token, board_id, max?}", nil)
+		return service.TrelloImportInput{}, false
+	}
+	return service.TrelloImportInput{
+		APIKey:  b.APIKey,
+		Token:   b.Token,
+		BoardID: b.BoardID,
+		Max:     b.Max,
+	}, true
+}
+
+// previewTrelloImport implements POST .../imports/trello/preview.
+func (h *ProjectHandler) previewTrelloImport(c *echo.Context) error {
+	in, ok := decodeTrelloImportBody(c)
+	if !ok {
+		return nil
+	}
+	prev, err := service.PreviewTrelloImport(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
+	if err != nil {
+		return trelloImportError(c, err)
+	}
+	return c.JSON(http.StatusOK, prev)
+}
+
+// importTrelloCards implements POST .../imports/trello.
+func (h *ProjectHandler) importTrelloCards(c *echo.Context) error {
+	in, ok := decodeTrelloImportBody(c)
+	if !ok {
+		return nil
+	}
+	res, err := service.ImportTrelloCards(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
+	if err != nil {
+		return trelloImportError(c, err)
 	}
 	return c.JSON(http.StatusOK, res)
 }

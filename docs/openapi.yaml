@@ -349,6 +349,26 @@
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JiraImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/trello/preview": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Preview a Trello board import",
+        "description": "Fetches cards from the Trello REST v1 API (before-cursor pagination) and reports how the first 10 would map: list → state (unmatched lists would create new states), labels (missing ones would be created, with Trello palette colors), due date → target date, assignee matches, comment/checklist badge counts (comment bodies are NOT fetched at preview time). No writes. Trello Cloud only — host pinned to https://api.trello.com. Checklists are skipped (glance has no checklist model) and their counts are reported. The API key + token travel in the body only and are never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["api_key", "board_id"], "properties": { "api_key": { "type": "string", "description": "Trello API key (from trello.com/app-key); sent as a key query param to api.trello.com only, never stored" }, "token": { "type": "string", "description": "Trello token; required for private boards, empty works for public boards" }, "board_id": { "type": "string", "description": "24-char board id, 8-char short link, or an https trello.com board URL" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Preview result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TrelloImportPreview" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/trello": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import cards from a Trello board",
+        "description": "Imports Trello cards as glance issues: lists map to states by name (unmatched lists create new states in the unstarted group), labels are created when missing (Trello palette colors become label colors, color-only labels become the capitalized color name), card desc becomes the description (Markdown kept), due date becomes the target date, comments are imported with attribution and original timestamps, assignees are matched best-effort by email, archived cards are excluded (counted as archived_skipped), checklists are skipped and counted (glance has no checklist model). Idempotent via an imported-from marker in each issue's description: re-running skips already-imported cards. Trello Cloud only. The API key + token travel in the body only and are never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["api_key", "board_id"], "properties": { "api_key": { "type": "string", "description": "Trello API key (from trello.com/app-key); sent as a key query param to api.trello.com only, never stored" }, "token": { "type": "string", "description": "Trello token; required for private boards, empty works for public boards" }, "board_id": { "type": "string", "description": "24-char board id, 8-char short link, or an https trello.com board URL" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TrelloImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2144,6 +2164,47 @@
           "states_created": { "type": "array", "items": { "type": "string" } },
           "assignee_misses": { "type": "integer" },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "1-based ordinal of the issue in the fetched batch" }, "message": { "type": "string" } } } }
+        }
+      },
+      "TrelloImportPreview": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "description": "Trello board name" },
+          "board_id": { "type": "string" },
+          "total": { "type": "integer" },
+          "rows": { "type": "array", "items": { "type": "object", "properties": {
+            "id": { "type": "string" },
+            "short_link": { "type": "string" },
+            "short_url": { "type": "string" },
+            "name": { "type": "string" },
+            "list_name": { "type": "string", "description": "Trello list name" },
+            "state": { "type": "string", "description": "Matched glance state name, or the list name when state_is_new" },
+            "state_is_new": { "type": "boolean" },
+            "labels": { "type": "array", "items": { "type": "string" } },
+            "new_labels": { "type": "array", "items": { "type": "string" } },
+            "due_date": { "type": "string", "nullable": true, "description": "YYYY-MM-DD (UTC) when the card has a due date" },
+            "assignees": { "type": "array", "items": { "type": "string" }, "description": "Trello usernames" },
+            "assignee_matched": { "type": "boolean" },
+            "comments": { "type": "integer" },
+            "checklists": { "type": "integer", "description": "Checklist count (badges); checklists are never imported" },
+            "already_imported": { "type": "boolean" }
+          } } }
+        }
+      },
+      "TrelloImportResult": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "board_id": { "type": "string" },
+          "created": { "type": "integer" },
+          "skipped": { "type": "integer" },
+          "archived_skipped": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "labels_created": { "type": "array", "items": { "type": "string" } },
+          "states_created": { "type": "array", "items": { "type": "string" } },
+          "assignee_misses": { "type": "integer" },
+          "checklists_skipped": { "type": "integer" },
+          "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "1-based ordinal of the card in the fetched batch" }, "message": { "type": "string" } } } }
         }
       },
       "ShareLink": {

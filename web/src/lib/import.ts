@@ -173,6 +173,90 @@ export function buildCsvMapping(raw: Record<string, string>): ImportMapping {
   return out;
 }
 
+// ---------- Trello import (C10T0 backend) ----------
+
+export interface TrelloImportInput {
+  api_key: string;
+  token: string;
+  board_id: string;
+  max?: number;
+}
+
+export interface TrelloImportPreviewRow {
+  id: string;
+  short_link: string;
+  short_url: string;
+  name: string;
+  list_name: string;
+  state: string;
+  state_is_new: boolean;
+  labels: string[];
+  new_labels: string[];
+  due_date?: string | null;
+  assignees: string[];
+  assignee_matched: boolean;
+  comments: number;
+  checklists: number;
+  already_imported: boolean;
+}
+
+export interface TrelloImportPreview {
+  source: string;
+  board_id: string;
+  total: number;
+  rows: TrelloImportPreviewRow[];
+}
+
+export interface TrelloImportResult {
+  source: string;
+  board_id: string;
+  created: number;
+  skipped: number;
+  archived_skipped: number;
+  failed: number;
+  labels_created: string[];
+  states_created: string[];
+  assignee_misses: number;
+  checklists_skipped: number;
+  errors: ImportRowError[];
+}
+
+export function previewTrelloImport(
+  slug: string,
+  identifier: string,
+  input: TrelloImportInput,
+): Promise<TrelloImportPreview> {
+  return api.post<TrelloImportPreview>(
+    `${importBase(slug, identifier)}/trello/preview`,
+    input,
+  );
+}
+
+export function runTrelloImport(
+  slug: string,
+  identifier: string,
+  input: TrelloImportInput,
+): Promise<TrelloImportResult> {
+  return api.post<TrelloImportResult>(
+    `${importBase(slug, identifier)}/trello`,
+    input,
+  );
+}
+
+// validateTrelloForm is the pure client-side gate for the Trello import
+// form: the API key is required (Trello has no anonymous API access) and
+// the board is the 24-char board id, the 8-char short link, or an https
+// trello.com board URL. The server re-validates strictly; this is just
+// fast feedback. Returns the error message or null when OK.
+export function validateTrelloForm(apiKey: string, boardId: string): string | null {
+  if (!apiKey.trim()) return "API key is required.";
+  const b = boardId.trim();
+  if (!b) return "Board is required.";
+  if (/^[0-9a-fA-F]{24}$/.test(b) || /^[A-Za-z0-9]{8}$/.test(b)) return null;
+  if (/^https:\/\/(www\.)?trello\.com\/b\/[A-Za-z0-9]{8}(\/|$)/.test(b)) return null;
+  return "Board must be the 24-char board id, the 8-char short link, or an https trello.com board URL.";
+}
+
 // ---------- Jira import (C9T1 backend) ----------
 
 export interface JiraImportInput {

@@ -1,7 +1,12 @@
-// Import client helpers (C8T2 GitHub + C9T1 Jira): form validation +
-// CSV mapping builder.
+// Import client helpers (C8T2 GitHub + C9T1 Jira + C10T0 Trello): form
+// validation + CSV mapping builder.
 import { describe, expect, it } from "vitest";
-import { buildCsvMapping, validateGitHubForm, validateJiraForm } from "./import";
+import {
+  buildCsvMapping,
+  validateGitHubForm,
+  validateJiraForm,
+  validateTrelloForm,
+} from "./import";
 
 describe("validateGitHubForm", () => {
   it("requires owner and repo", () => {
@@ -54,6 +59,32 @@ describe("validateJiraForm", () => {
     expect(validateJiraForm("acme", "a@b.c", "1PROJ")).toBe(
       "Project key must start with a letter and contain only letters and digits (e.g. “PROJ”).",
     );
+  });
+});
+
+describe("validateTrelloForm", () => {
+  it("requires the API key and the board", () => {
+    expect(validateTrelloForm("", "abc12345")).toBe("API key is required.");
+    expect(validateTrelloForm("key", "")).toBe("Board is required.");
+    expect(validateTrelloForm("key", "  ")).toBe("Board is required.");
+  });
+
+  it("accepts the 24-char board id, the 8-char short link, and https board URLs", () => {
+    expect(validateTrelloForm("key", "5abbe4b7ddc1b351ef961414")).toBeNull();
+    expect(validateTrelloForm("key", "AbC123xY")).toBeNull();
+    expect(validateTrelloForm("key", "https://trello.com/b/AbC123xY/roadmap")).toBeNull();
+    expect(validateTrelloForm("key", "https://www.trello.com/b/AbC123xY")).toBeNull();
+  });
+
+  it("rejects malformed board references", () => {
+    const msg =
+      "Board must be the 24-char board id, the 8-char short link, or an https trello.com board URL.";
+    expect(validateTrelloForm("key", "abc123")).toBe(msg); // 6 chars
+    expect(validateTrelloForm("key", "abc 1234")).toBe(msg); // space
+    expect(validateTrelloForm("key", "5abbe4b7ddc1b351ef96141g")).toBe(msg); // non-hex 24-char
+    expect(validateTrelloForm("key", "http://trello.com/b/AbC123xY/x")).toBe(msg); // plain http
+    expect(validateTrelloForm("key", "https://evil.com/b/AbC123xY/x")).toBe(msg); // wrong host
+    expect(validateTrelloForm("key", "https://trello.com/c/AbC123xY/x")).toBe(msg); // card URL
   });
 });
 
