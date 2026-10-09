@@ -17,6 +17,7 @@ import (
 type viewFixture struct {
 	ctx       context.Context
 	pool      *pgxpool.Pool
+	slug      string
 	projectID string
 	actorA    string
 	actorB    string
@@ -43,7 +44,7 @@ func setupViewTest(t *testing.T) *viewFixture {
 		slug, ident).Scan(&projectID); err != nil {
 		t.Fatalf("project id: %v", err)
 	}
-	return &viewFixture{ctx: ctx, pool: pool, projectID: projectID, actorA: actorA, actorB: actorB}
+	return &viewFixture{ctx: ctx, pool: pool, slug: slug, projectID: projectID, actorA: actorA, actorB: actorB}
 }
 
 func viewInput(name string) IssueViewInput {
