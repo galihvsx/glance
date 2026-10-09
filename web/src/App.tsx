@@ -22,6 +22,7 @@ import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
 import Overview from "./pages/Overview";
 import Gantt from "./pages/Gantt";
+import Roadmap from "./pages/Roadmap";
 import Analytics from "./pages/Analytics";
 import Activity from "./pages/Activity";
 import ProjectSettings from "./pages/ProjectSettings";
@@ -96,6 +97,10 @@ export default function App() {
                   <Route
                     path="/w/:slug/p/:identifier/gantt"
                     element={<Gantt />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/roadmap"
+                    element={<Roadmap />}
                   />
                   <Route
                     path="/w/:slug/p/:identifier/analytics"

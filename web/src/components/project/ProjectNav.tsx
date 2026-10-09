@@ -4,7 +4,7 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { cn } from "../../lib/utils";
 
 /** View switcher shown on the project pages (overview / list / board /
- *  spreadsheet / calendar / gantt / analytics / cycles / modules /
+ *  spreadsheet / calendar / gantt / roadmap / analytics / cycles / modules /
  *  pages / intake / activity / settings).
  *  `trailing` renders at the right end of the tab bar — used for the saved
  *  views menu (C2T6) on the filterable pages.
@@ -33,6 +33,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Spreadsheet", to: `${base}/spreadsheet` },
     { label: "Calendar", to: `${base}/calendar` },
     { label: "Gantt", to: `${base}/gantt` },
+    { label: "Roadmap", to: `${base}/roadmap` },
     { label: "Analytics", to: `${base}/analytics` },
     { label: "Cycles", to: `${base}/cycles` },
     { label: "Modules", to: `${base}/modules` },
