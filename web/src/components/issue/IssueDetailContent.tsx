@@ -46,6 +46,7 @@ import FavoriteStar from "../favorites/FavoriteStar";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
+import IssueCustomFields from "./IssueCustomFields";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -316,8 +317,11 @@ export default function IssueDetailContent({
   const issueQuery = useQuery({
     queryKey: issueKey,
     // C5T5: ?include_children=1 attaches the child summaries for the
-    // Sub-issues section (detail only — the list query is untouched).
-    queryFn: () => api.get<Issue>(`${issuePath}?include_children=1`),
+    // Sub-issues section; C7T3: ?include_custom=1 attaches custom_values
+    // for the Custom fields section (detail only — the list query is
+    // untouched).
+    queryFn: () =>
+      api.get<Issue>(`${issuePath}?include_children=1&include_custom=1`),
   });
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
@@ -892,6 +896,13 @@ export default function IssueDetailContent({
                   </div>
                 </CardContent>
               </Card>
+              {/* C7T3: custom fields — typed per-issue values, inline edit. */}
+              <IssueCustomFields
+                slug={slug}
+                identifier={identifier}
+                issue={issue}
+                issueKey={issueKey}
+              />
               {/* C5T3: AI triage suggestions — one-click apply per row. */}
               <TriageSuggestions
                 slug={slug}

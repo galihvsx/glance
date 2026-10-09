@@ -1,5 +1,7 @@
 // Shared domain types mirroring the backend JSON shapes (snake_case).
 
+import type { CustomValue } from "./customFields";
+
 export interface Workspace {
   id: string;
   slug: string;
@@ -91,6 +93,9 @@ export interface Issue {
   /** Child summaries; present only on the detail endpoint fetched with
    *  ?include_children=1. */
   children?: IssueChild[];
+  /** Custom values keyed by field_id; present only on the detail endpoint
+   *  fetched with ?include_custom=1 (C7T3). */
+  custom_values?: Record<string, CustomValue>;
   sort_order: number;
   start_date?: string | null;
   target_date?: string | null;
