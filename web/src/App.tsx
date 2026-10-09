@@ -13,6 +13,7 @@ import IssueDetail from "./pages/IssueDetail";
 import Intake from "./pages/Intake";
 import Board from "./pages/Board";
 import Cycles from "./pages/Cycles";
+import Modules from "./pages/Modules";
 import Spreadsheet from "./pages/Spreadsheet";
 import { Toaster } from "./components/ui/toast";
 
@@ -49,6 +50,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/cycles"
                   element={<Cycles />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/modules"
+                  element={<Modules />}
                 />
               </Route>
             </Route>

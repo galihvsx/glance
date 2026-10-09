@@ -64,6 +64,9 @@ export const api = {
       method: "PATCH",
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
-  del: <T = void>(path: string): Promise<T> =>
-    request<T>(path, { method: "DELETE" }),
+  del: <T = void>(path: string, body?: unknown): Promise<T> =>
+    request<T>(path, {
+      method: "DELETE",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }),
 };

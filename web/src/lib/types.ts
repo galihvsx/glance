@@ -210,6 +210,21 @@ export interface Cycle {
   updated_at: string;
 }
 
+/** A project module (epic / sub-grouping). Dates are YYYY-MM-DD or null. */
+export interface Module {
+  id: string;
+  project_id: string;
+  name: string;
+  description?: string | null;
+  status: "active" | "completed" | "archived";
+  lead_id?: string | null;
+  start_date?: string | null;
+  target_date?: string | null;
+  issue_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One day of a cycle burndown. `remaining` is null for future days. */
 export interface BurndownDay {
   date: string; // YYYY-MM-DD
