@@ -18,6 +18,7 @@ import type {
 import ProjectNav from "../components/project/ProjectNav";
 import BurndownChart from "../components/cycle/BurndownChart";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
@@ -286,6 +287,7 @@ export default function Cycles() {
             )}
           </h1>
           <div className="flex items-center gap-2">
+            <NotificationBell />
             <ThemeToggle />
             <Dialog open={newOpen} onOpenChange={setNewOpen}>
               <Button onClick={() => setNewOpen(true)} className="gap-2">

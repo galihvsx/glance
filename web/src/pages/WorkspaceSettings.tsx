@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 
 // Mirrors the backend contract (service.validSlug): lowercase alphanumeric
 // groups joined by single hyphens, 1–64 chars. Same rule as onboarding.
@@ -240,6 +241,7 @@ export default function WorkspaceSettings() {
             Manage this workspace, its members and danger zone.
           </p>
         </div>
+        <NotificationBell />
         <ThemeToggle />
       </div>
 

@@ -38,6 +38,7 @@ import PriorityPicker from "../components/issue/PriorityPicker";
 import ParentPicker from "../components/issue/ParentPicker";
 import QuickAdd from "../components/issue/QuickAdd";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
 import DisplayPanel from "../components/issue/DisplayPanel";
@@ -410,6 +411,7 @@ export default function Issues() {
           </p>
         </div>
         <div className="flex gap-2">
+          <NotificationBell />
           <ThemeToggle />
           <Button
             variant="outline"
