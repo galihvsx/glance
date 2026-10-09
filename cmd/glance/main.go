@@ -142,6 +142,14 @@ func main() {
 	reminderTicker := &ticker.ReminderTicker{Pool: pool}
 	reminderTicker.Start(ctx)
 
+	// Stale-issue nudge ticker (C9T5, beyond-parity automation): once a
+	// day, notifies assignees + watchers of issues in non-done states
+	// whose updated_at is older than 30 days (stale, once per issue until
+	// it is updated again). Same in-process, one-instance design as the
+	// cycle ticker.
+	staleTicker := &ticker.StaleTicker{Pool: pool}
+	staleTicker.Start(ctx)
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via
