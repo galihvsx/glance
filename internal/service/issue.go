@@ -1393,6 +1393,11 @@ type IssueListItem struct {
 type ListIssuesResult struct {
 	Issues     []IssueListItem `json:"results"`
 	NextCursor string          `json:"next_cursor,omitempty"`
+	// Links carries the dependency edges touching the listed issues,
+	// fetched in ONE query. Populated only when the caller passes
+	// ?include_links=true (the Gantt consumption contract, C4T0);
+	// omitempty keeps every existing list response byte-identical.
+	Links []IssueLink `json:"links,omitempty"`
 }
 
 // ListIssues returns the project's live issues with filters, cursor

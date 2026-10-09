@@ -209,7 +209,10 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // (?fields=description). Multi-value filters take comma-separated lists
 // (single values keep working); assignee=/estimate= accept "none" for
 // unassigned / unestimated issues. 200 with the {results, next_cursor}
-// envelope (spec §5).
+// envelope (spec §5). ?include_links=true (C4T0) attaches the issue
+// dependency edges for the listed issues as a top-level "links" array,
+// fetched in ONE query — the Gantt view pairs it with
+// ?start_after/?start_before=.
 func (h *IssueHandler) listIssues(c *echo.Context) error {
 	qp := c.QueryParams()
 
@@ -329,6 +332,25 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid filter", nil)
 		}
 		return issueError(c, err)
+	}
+	// C4T0: the Gantt consumption contract. ?include_links=true (the
+	// gantt view pairs this with ?start_after/?start_before=) attaches
+	// the dependency edges for the listed issues, fetched in ONE query
+	// — no N+1 from the client.
+	if qp.Get("include_links") == "true" || qp.Get("include_links") == "1" {
+		ids := make([]string, 0, len(res.Issues))
+		for _, it := range res.Issues {
+			ids = append(ids, it.ID)
+		}
+		links, err := service.ListIssueLinksForIssues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, ids)
+		if err != nil {
+			return linkError(c, err)
+		}
+		if links == nil {
+			links = []service.IssueLink{}
+		}
+		res.Links = links
 	}
 	return c.JSON(http.StatusOK, res)
 }
