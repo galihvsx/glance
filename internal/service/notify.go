@@ -45,6 +45,13 @@ const (
 	// unconstrained TEXT, so adding the key to AllNotifyEvents is enough
 	// for prefs to work (absent row = defaults: in_app on, email off).
 	NotifyMention = "mention"
+	// NotifyDueSoon fires when the daily reminder job sees an issue whose
+	// target_date is tomorrow and which was never reminded (C8T6). One
+	// notification per issue; the mark is written to issue_reminders.
+	NotifyDueSoon = "due_soon"
+	// NotifyOverdue fires when the daily reminder job sees an issue whose
+	// target_date is before today, throttled to once per 24h (C8T6).
+	NotifyOverdue = "overdue"
 )
 
 // AllNotifyEvents lists every event type users can set delivery prefs for.
@@ -56,6 +63,8 @@ var AllNotifyEvents = []string{
 	NotifyStateChanged,
 	NotifyIntakeTriaged,
 	NotifyMention,
+	NotifyDueSoon,
+	NotifyOverdue,
 }
 
 var (

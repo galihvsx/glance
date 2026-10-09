@@ -135,6 +135,13 @@ func main() {
 	snoozeTicker := &ticker.SnoozeTicker{Pool: pool, Interval: time.Minute}
 	snoozeTicker.Start(ctx)
 
+	// Due-date reminder ticker (C8T6, spec §3): once a day, notifies
+	// assignees + watchers of issues due tomorrow (due_soon, once per
+	// issue) and overdue issues (overdue, throttled to 24h). Same
+	// in-process, one-instance design as the cycle ticker.
+	reminderTicker := &ticker.ReminderTicker{Pool: pool}
+	reminderTicker.Start(ctx)
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via
