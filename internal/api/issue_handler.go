@@ -41,6 +41,8 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
+	// C5T4: sub-issue parent endpoints on the same group.
+	registerIssueParentRoutes(g, h)
 }
 
 // RegisterTaxonomyRoutes mounts the label / assignee / estimate endpoints
@@ -86,6 +88,14 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "parent issue not found", nil)
 	case errors.Is(err, service.ErrInvalidParent):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid parent_id", nil)
+	// C5T4: sub-issue parent guards (SetParent routes and the PATCH
+	// parent_id cycle backstop).
+	case errors.Is(err, service.ErrIssueSelfParent):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "issue cannot be its own parent", nil)
+	case errors.Is(err, service.ErrIssueCrossProjectParent):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "parent issue is in another project", nil)
+	case errors.Is(err, service.ErrIssueCyclicParent):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "parent assignment would create a cycle", nil)
 	case errors.Is(err, service.ErrInvalidDateRange):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "start_date must not be after target_date", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):
@@ -372,7 +382,9 @@ func (h *IssueHandler) getIssue(c *echo.Context) error {
 	if err != nil {
 		return issueError(c, err)
 	}
-	return c.JSON(http.StatusOK, iss)
+	// C5T4: ?include_children=1 attaches the child summaries (detail
+	// only — the list query is untouched).
+	return h.getIssueChildren(c, iss)
 }
 
 type updateIssueBody struct {
