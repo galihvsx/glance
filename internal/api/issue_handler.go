@@ -826,6 +826,9 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/attachments", h.uploadAttachment)
 	g.GET("/attachments/:attachmentID", h.downloadAttachment)
 	g.DELETE("/attachments/:attachmentID", h.deleteAttachment)
+	g.POST("/share", h.createIssueShare)
+	g.GET("/share", h.listIssueShares)
+	g.DELETE("/share/:token", h.revokeIssueShare)
 }
 
 func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string, ok bool) {

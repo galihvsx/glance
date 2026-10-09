@@ -19,6 +19,7 @@ import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
+import PublicShare from "./pages/PublicShare";
 import { Toaster } from "./components/ui/toast";
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/s/:token" element={<PublicShare />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/onboarding" element={<Onboarding />} />
               <Route path="/" element={<Home />} />

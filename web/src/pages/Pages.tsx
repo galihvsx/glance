@@ -12,12 +12,14 @@ import {
   History,
   Pencil,
   Plus,
+  Share2,
   Trash2,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type { Page, PageRevision, Project } from "../lib/types";
 import { cn } from "../lib/utils";
 import ProjectNav from "../components/project/ProjectNav";
+import ShareModal from "../components/ShareModal";
 import ThemeToggle from "../components/ThemeToggle";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -265,6 +267,7 @@ export default function Pages() {
   const [moveTarget, setMoveTarget] = useState<Page | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Page | null>(null);
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [previewRev, setPreviewRev] = useState<PageRevision | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -623,6 +626,14 @@ export default function Pages() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      onClick={() => setShareOpen(true)}
+                      title="Share publicly"
+                    >
+                      <Share2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setDeleteTarget(selected)}
                       title="Delete"
                     >
@@ -853,6 +864,13 @@ export default function Pages() {
           </div>
         </DrawerContent>
       </Drawer>
+
+      {shareOpen && selected && (
+        <ShareModal
+          resource={`${base}/pages/${encodeURIComponent(selected.id)}/share`}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
 
       <style>{`
         .wiki-content { font-size: 0.925rem; line-height: 1.7; color: var(--foreground); }
