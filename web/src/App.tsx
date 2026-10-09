@@ -14,6 +14,7 @@ import IssueDetail from "./pages/IssueDetail";
 import Intake from "./pages/Intake";
 import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
+import Gantt from "./pages/Gantt";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Pages from "./pages/Pages";
@@ -54,6 +55,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/calendar"
                   element={<Calendar />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/gantt"
+                  element={<Gantt />}
                 />
                 <Route
                   path="/w/:slug/p/:identifier/cycles"
