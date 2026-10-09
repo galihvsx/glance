@@ -28,6 +28,16 @@ queued onboarding follow-up (invites endpoint).
   `?include_children=1` on issue detail, parent breadcrumb,
   sub-issue list with add/detach, create-with-parent.
 
+**Connections & interop (cycle 8)**
+- Issue links UI (C8T0): visual dependency management on the Gantt/link endpoints.
+- @mentions in comments (C8T1): autocomplete + notifications.
+- GitHub issues importer (C8T2): bring issues over from GitHub.
+- Issues export CSV/JSON (C8T3).
+- Clone issue (C8T4): duplicate with labels/custom values.
+- Project overview page (C8T5): composed single-endpoint dashboard tab.
+- Due-date reminders (C8T6): batched scanner, atomic claim, watcher/assignee notify.
+- Duplicate detection on create (C8T7): beyond-parity similarity check.
+
 **Issue templates**
 - Reusable issue blueprints (C7T0 backend, C7T1 frontend): migration
   000027, CRUD, `POST .../templates/{id}/apply` (validates stale refs
