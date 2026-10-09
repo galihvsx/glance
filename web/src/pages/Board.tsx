@@ -28,6 +28,7 @@ import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
 import { Calendar } from "lucide-react";
 import DisplayPanel from "../components/issue/DisplayPanel";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import { toApiParams, useIssueFilters } from "../lib/filters";
 import {
@@ -575,7 +576,18 @@ export default function Board() {
           <ThemeToggle />
         </div>
       </div>
-      <ProjectNav />
+      <ProjectNav
+        trailing={
+          <SavedViewsMenu
+            key={`${slug}:${identifier}`}
+            slug={slug}
+            identifier={identifier}
+            filters={filters}
+            display={settings}
+            onApplyDisplay={update}
+          />
+        }
+      />
 
       {(boardError || loadError) && (
         <Alert variant="destructive" className="mt-4">

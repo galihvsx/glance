@@ -43,6 +43,7 @@ import ProjectNav from "../components/project/ProjectNav";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
 import FilterPanel from "../components/issue/FilterPanel";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import {
   activeFilterCount,
   toApiParams,
@@ -513,7 +514,18 @@ export default function Issues() {
 
       {/* Filter toolbar */}
       <div className="mt-4">
-        <ProjectNav />
+        <ProjectNav
+          trailing={
+            <SavedViewsMenu
+              key={`${slug}:${identifier}`}
+              slug={slug}
+              identifier={identifier}
+              filters={filters}
+              display={settings}
+              onApplyDisplay={update}
+            />
+          }
+        />
       </div>
       <div className="mb-4 mt-4 flex flex-wrap items-center gap-2">
         <form onSubmit={onSearchSubmit} className="relative">

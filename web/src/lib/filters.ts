@@ -246,6 +246,8 @@ const FILTER_PARAM_NAMES = new Set([
   "subscribed",
 ]);
 
-function isFilterParam(k: string): boolean {
+/** True for the URL params that belong to the filter schema (C2T6 uses this
+ *  to preserve non-filter params like ?peek= when applying a saved view). */
+export function isFilterParam(k: string): boolean {
   return FILTER_PARAM_NAMES.has(k);
 }

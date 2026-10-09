@@ -37,6 +37,7 @@ import StatePicker from "../components/issue/StatePicker";
 import StateBadge from "../components/issue/StateBadge";
 import ThemeToggle from "../components/ThemeToggle";
 import ProjectNav from "../components/project/ProjectNav";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import {
   activeFilterCount,
@@ -368,7 +369,18 @@ export default function Spreadsheet() {
 
       {/* View switcher */}
       <div className="mt-4">
-        <ProjectNav />
+        <ProjectNav
+          trailing={
+            <SavedViewsMenu
+              key={`${slug}:${identifier}`}
+              slug={slug}
+              identifier={identifier}
+              filters={filters}
+              display={null}
+              onApplyDisplay={null}
+            />
+          }
+        />
       </div>
 
       {/* Filter toolbar — same query params as the list view */}
