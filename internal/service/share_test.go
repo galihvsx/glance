@@ -40,7 +40,7 @@ func TestCreateAndListShareLinks(t *testing.T) {
 	admin := createTestUser(t, pool, uniqueTestEmail("sh-admin"))
 	slug := uniqueTestSlug("sh-ws")
 	createTestWorkspace(t, pool, "Share", slug, admin)
-	ident := "sh-proj"
+	ident := "SHPROJ"
 	createTestProject(t, pool, slug, admin, "ShareProj", ident)
 	iss := createTestIssue(t, pool, slug, ident, admin, "Shared issue")
 
@@ -73,7 +73,7 @@ func TestShareLinkMemberScoping(t *testing.T) {
 	if err := UpsertMember(ctx, pool, slug, admin, guest, RoleGuest); err != nil {
 		t.Fatalf("UpsertMember: %v", err)
 	}
-	ident := "shs-proj"
+	ident := "SHSPROJ"
 	createTestProject(t, pool, slug, admin, "ShareScopeProj", ident)
 	iss := createTestIssue(t, pool, slug, ident, admin, "Scoped issue")
 
@@ -96,7 +96,7 @@ func TestPublicShareIssue(t *testing.T) {
 	admin := createTestUser(t, pool, uniqueTestEmail("shp-admin"))
 	slug := uniqueTestSlug("shp-ws")
 	createTestWorkspace(t, pool, "SharePub", slug, admin)
-	ident := "shp-proj"
+	ident := "SHPPROJ"
 	createTestProject(t, pool, slug, admin, "SharePubProj", ident)
 	iss := createTestIssue(t, pool, slug, ident, admin, "Public issue")
 
@@ -130,7 +130,7 @@ func TestPublicShareNotFoundCases(t *testing.T) {
 	admin := createTestUser(t, pool, uniqueTestEmail("shn-admin"))
 	slug := uniqueTestSlug("shn-ws")
 	createTestWorkspace(t, pool, "ShareNF", slug, admin)
-	ident := "shn-proj"
+	ident := "SHNPROJ"
 	createTestProject(t, pool, slug, admin, "ShareNFProj", ident)
 	iss := createTestIssue(t, pool, slug, ident, admin, "NF issue")
 
@@ -177,7 +177,7 @@ func TestPublicSharePage(t *testing.T) {
 	admin := createTestUser(t, pool, uniqueTestEmail("shpg-admin"))
 	slug := uniqueTestSlug("shpg-ws")
 	createTestWorkspace(t, pool, "SharePage", slug, admin)
-	ident := "shpg-proj"
+	ident := "SHPGPROJ"
 	createTestProject(t, pool, slug, admin, "SharePageProj", ident)
 	content := "hello world"
 	p, err := CreatePage(ctx, pool, slug, ident, admin, PageInput{Title: "Shared page", Content: &content})

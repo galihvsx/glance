@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -299,16 +300,20 @@ func publicIssue(ctx context.Context, pool *pgxpool.Pool, issueID string) (*Publ
 	var out PublicIssue
 	var desc []byte
 	var labelsJSON []byte
+	// display_id is derived, never stored: {project identifier}-{sequence_id}.
+	var projectIdent string
+	var seqID int
 	err := pool.QueryRow(ctx,
-		`SELECT i.display_id, i.name, i.description, s.name, s."group",
+		`SELECT p.identifier, i.sequence_id, i.name, i.description, s.name, s."group",
 		        i.priority, i.start_date, i.target_date, i.created_at, i.updated_at,
 		        (SELECT COALESCE(json_agg(jsonb_build_object('name', l.name, 'color', l.color)
 		             ORDER BY l.name)::jsonb, '[]'::jsonb)
 		         FROM issue_labels il JOIN labels l ON l.id = il.label_id
 		         WHERE il.issue_id = i.id)
 		 FROM issues i JOIN states s ON s.id = i.state_id
+		 JOIN projects p ON p.id = i.project_id
 		 WHERE i.id = $1::uuid AND i.deleted_at IS NULL`,
-		issueID).Scan(&out.DisplayID, &out.Name, &desc, &out.State, &out.StateGroup,
+		issueID).Scan(&projectIdent, &seqID, &out.Name, &desc, &out.State, &out.StateGroup,
 		&out.Priority, &out.StartDate, &out.TargetDate, &out.CreatedAt, &out.UpdatedAt,
 		&labelsJSON)
 	if err != nil {
@@ -317,6 +322,7 @@ func publicIssue(ctx context.Context, pool *pgxpool.Pool, issueID string) (*Publ
 		}
 		return nil, err
 	}
+	out.DisplayID = projectIdent + "-" + strconv.Itoa(seqID)
 	if len(desc) > 0 {
 		out.Description = desc
 	}
