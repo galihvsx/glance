@@ -38,21 +38,73 @@ plus reliability and production-readiness hardening.
 - Dark theme toggle (class-based, persisted, defaults to dark), in every
   page header; no-flash bootstrap in `index.html`.
 
+**Onboarding & home (cycle 2)**
+- Guided onboarding wizard (`/onboarding`): welcome → create workspace
+  (inline slug validation) → invite teammates (optional); zero-workspace
+  users are funneled through it, existing users see no change. Email
+  invites are not sent yet — the list is kept on-device with honest copy
+  until a backend invites endpoint exists.
+- Home dashboard (`/`): greeting + date, "Your work" (assigned issues
+  across projects), recents (last 5 opened issues, localStorage), quick
+  links; every section has inline empty-state actions. Workspace list
+  moved to `/w`.
+
+**Create flow & detail (cycle 2)**
+- Denser create flow: parent issue picker (creates sub-issue relation),
+  "Create more" toggle (keeps the dialog open), success toast with
+  display_id + Copy link / View actions.
+- Issue-detail extras: Subscribe/Unsubscribe (existing backend),
+  Copy-link button, unified Activity timeline (comments + history,
+  relative timestamps). Lands in both the full page and the peek drawer.
+
+**Cycles (cycle 2)**
+- Cycle burndown: progress header (open/in-progress/done) + hand-rolled
+  SVG burndown with ideal line, via new read-only
+  `GET .../cycles/{id}/burndown` (reconstructed from the audit log;
+  member-scoped).
+
+**Filters & views (cycle 2)**
+- Richer filters: state, multi priority/label/assignee (incl.
+  "unassigned"), estimate, created/updated/due ranges, subscribed —
+  all backend-filtered, all URL-serializable (round-trips through the
+  URL), shared by list/board/spreadsheet.
+- Saved views: per-project named views (filter + display preset),
+  apply/rename/delete/default, persisted in localStorage.
+
 **Production**
 - `--health-check` flag: the binary probes its own `/health`
   (distroless has no shell/curl); `HEALTHCHECK` added to the Dockerfile.
+- Graceful shutdown: SIGINT/SIGTERM cancels dispatchers + tickers and
+  drains in-flight requests (10s timeout).
+- `GET .../cycles/{id}/burndown`: read-only aggregate endpoint
+  (member-scoped).
 
 ### Fixed
 
 - Parallel `go test ./...` migration race: `Migrate()` now runs in one
   transaction guarded by `pg_advisory_xact_lock` (transaction-scoped,
   auto-released); new `TestMigrateConcurrent` regression test.
+- Snooze-expiry ticker (spec §3): intake issues whose `snoozed_till`
+  passes flip back to pending automatically (1-min ticker, idempotent,
+  realtime fan-out so inboxes refresh).
+- `archived=` filter on list/board/inbox: archived issues are now
+  excluded by default, visible with the "Show archived" toggle.
+- `per_page` out of range (1–100) is now rejected with 400 on all list
+  endpoints (was: silently clamped); service-layer clamp stays as
+  defense-in-depth.
 
 ### Security
 
 - `users.is_active` is now enforced: deactivated users' sessions are
   rejected and neither login path mints new ones (`ErrUserDeactivated`
   → 401).
+- OTP_PEPPER fail-fast in production: `APP_ENV=production` ignores the
+  `ALLOW_INSECURE_OTP_PEPPER` hatch — empty pepper refuses to boot.
+- Comment POST is now covered by `Idempotency-Key` (same key → one
+  comment).
+- Webhook dispatcher no longer follows HTTP redirects (SSRF-adjacent).
+- `X-Forwarded-For` is honored only from `TRUSTED_PROXY_CIDRS`
+  (default: trust none — direct TCP peer is the client IP).
 
 ## [v0.1.0] - 2026-10-06
 
