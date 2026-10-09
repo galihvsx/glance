@@ -11,6 +11,23 @@ queued onboarding follow-up (invites endpoint).
 
 ### Added
 
+**Admin panel**
+- Instance administration (C5T0 backend, C5T1 frontend): user management
+  (list, deactivate, role), workspace oversight, instance stats.
+  AdminGuard is UX-only — the server is the real gate.
+
+**AI assistance**
+- Draft-with-AI and triage suggestions (C5T2 backend, C5T3 frontend):
+  `GET /api/v1/ai/status` (config probe, reveals only a boolean),
+  draft generation (text inserted for review, never auto-saved),
+  triage suggestions with per-row Apply (unmatched labels greyed out,
+  never applied). Provider-agnostic; degrades honestly when unconfigured.
+
+**Sub-issues**
+- Parent/child issue hierarchy (C5T4 backend, C5T5 frontend):
+  `?include_children=1` on issue detail, parent breadcrumb,
+  sub-issue list with add/detach, create-with-parent.
+
 **Workspace invites**
 - `POST /api/v1/workspaces/{slug}/invites`: admin-only, adds
   registered users as members by email; per-email statuses
