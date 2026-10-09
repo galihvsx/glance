@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -23,6 +23,14 @@ import type {
   Subscriber,
 } from "../../lib/types";
 import { tiptapText } from "../../lib/tiptap";
+import {
+  applyMention,
+  filterMentionMembers,
+  findMentionTrigger,
+  mentionLabel,
+  renderMentionSegments,
+  type MentionableMember,
+} from "../../lib/mentions";
 import { useProjectRealtime } from "../../lib/realtime";
 import { useRecordRecentIssue } from "./recents";
 import { Button } from "../ui/button";
@@ -230,12 +238,41 @@ function DescriptionEditor({
 
 // ---------- Comments ----------
 
+/** Renders comment text with @-mention chips (C8T1). */
+function CommentBody({
+  text,
+  members,
+}: {
+  text: string;
+  members: MentionableMember[];
+}) {
+  const segments = renderMentionSegments(text, members);
+  return (
+    <>
+      {segments.map((s, i) =>
+        s.kind === "mention" ? (
+          <span
+            key={i}
+            className="rounded bg-primary/15 px-1 py-0.5 font-medium text-primary"
+          >
+            @{s.label}
+          </span>
+        ) : (
+          <span key={i}>{s.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 function CommentItem({
   comment,
   onReply,
+  members,
 }: {
   comment: CommentNode;
   onReply: (parentId: string) => void;
+  members: MentionableMember[];
 }) {
   return (
     <div className="space-y-2">
@@ -255,13 +292,18 @@ function CommentItem({
           </button>
         </div>
         <p className="whitespace-pre-wrap text-sm">
-          {tiptapText(comment.content)}
+          <CommentBody text={tiptapText(comment.content)} members={members} />
         </p>
       </div>
       {comment.replies.length > 0 && (
         <div className="space-y-2 border-l-2 pl-4">
           {comment.replies.map((r) => (
-            <CommentItem key={r.id} comment={r} onReply={onReply} />
+            <CommentItem
+              key={r.id}
+              comment={r}
+              onReply={onReply}
+              members={members}
+            />
           ))}
         </div>
       )}
@@ -303,6 +345,13 @@ export default function IssueDetailContent({
   const [titleDraft, setTitleDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
+  // @-mention autocomplete state (C8T1).
+  const commentRef = useRef<HTMLTextAreaElement>(null);
+  const [mentionTrigger, setMentionTrigger] = useState<{
+    start: number;
+    query: string;
+  } | null>(null);
+  const [mentionActive, setMentionActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -549,12 +598,80 @@ export default function IssueDetailContent({
 
   function onCommentSubmit(e: FormEvent) {
     e.preventDefault();
+    setMentionTrigger(null);
     const doc = textToTipTapDoc(commentDraft);
     if (!doc) return;
     commentMutation.mutate({
       content: doc,
       parent_id: replyTo,
     });
+  }
+
+  /** @-mention autocomplete (C8T1): tracks the @-token before the caret. */
+  // The actor is excluded: self-mentions never notify (backend skips them).
+  const mentionMembers = (membersQuery.data ?? []).filter(
+    (m) => m.id !== user?.id,
+  );
+  const mentionList = mentionTrigger
+    ? filterMentionMembers(mentionMembers, mentionTrigger.query)
+    : [];
+
+  function syncMentionTrigger(value: string, caret: number) {
+    setMentionTrigger(findMentionTrigger(value, caret));
+    setMentionActive(0);
+  }
+
+  function onCommentChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const v = e.target.value;
+    setCommentDraft(v);
+    syncMentionTrigger(v, e.target.selectionStart ?? v.length);
+  }
+
+  function onCommentSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
+    const el = e.currentTarget;
+    syncMentionTrigger(el.value, el.selectionStart ?? el.value.length);
+  }
+
+  function pickMention(m: MentionableMember) {
+    if (!mentionTrigger) return;
+    const el = commentRef.current;
+    const caret = el?.selectionStart ?? commentDraft.length;
+    const applied = applyMention(
+      commentDraft,
+      mentionTrigger.start,
+      caret,
+      m,
+    );
+    setCommentDraft(applied.text);
+    setMentionTrigger(null);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(applied.caret, applied.caret);
+    });
+  }
+
+  function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!mentionTrigger || mentionList.length === 0) return;
+    if (e.key === "Escape") {
+      setMentionTrigger(null);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setMentionActive((a) => (a + 1) % mentionList.length);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setMentionActive(
+        (a) => (a - 1 + mentionList.length) % mentionList.length,
+      );
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      pickMention(mentionList[mentionActive] ?? mentionList[0]);
+    }
   }
 
   function onTitleSave() {
@@ -770,12 +887,50 @@ export default function IssueDetailContent({
                         </button>
                       </div>
                     )}
-                    <Textarea
-                      value={commentDraft}
-                      onChange={(e) => setCommentDraft(e.target.value)}
-                      placeholder="Write a comment…"
-                      rows={3}
-                    />
+                    <div className="relative">
+                      <Textarea
+                        ref={commentRef}
+                        value={commentDraft}
+                        onChange={onCommentChange}
+                        onSelect={onCommentSelect}
+                        onKeyDown={onComposerKeyDown}
+                        placeholder="Write a comment… (type @ to mention)"
+                        rows={3}
+                      />
+                      {mentionTrigger && mentionList.length > 0 && (
+                        <div
+                          className="absolute top-full left-0 z-10 mt-1 max-h-56 w-64 overflow-auto rounded-md border bg-popover shadow-md"
+                          role="listbox"
+                          aria-label="Mention a member"
+                        >
+                          {mentionList.map((m, i) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              role="option"
+                              aria-selected={i === mentionActive}
+                              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                                i === mentionActive
+                                  ? "bg-accent text-accent-foreground"
+                                  : ""
+                              }`}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                pickMention(m);
+                              }}
+                              onMouseEnter={() => setMentionActive(i)}
+                            >
+                              <span className="font-medium">
+                                {mentionLabel(m)}
+                              </span>
+                              <span className="truncate text-xs text-muted-foreground">
+                                {m.email}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <Button
                       type="submit"
                       size="sm"
@@ -803,6 +958,7 @@ export default function IssueDetailContent({
                             <CommentItem
                               comment={item.comment}
                               onReply={(id) => setReplyTo(id)}
+                              members={mentionMembers}
                             />
                           </li>
                         ) : (

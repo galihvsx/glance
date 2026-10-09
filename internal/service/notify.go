@@ -40,6 +40,11 @@ const (
 	NotifyCommentCreated  = "comment.created"
 	NotifyStateChanged    = "issue.state_changed"
 	NotifyIntakeTriaged   = "intake.triaged"
+	// NotifyMention fires when a workspace member is @-mentioned in a
+	// comment (C8T1). No migration needed: notification_prefs.event is
+	// unconstrained TEXT, so adding the key to AllNotifyEvents is enough
+	// for prefs to work (absent row = defaults: in_app on, email off).
+	NotifyMention = "mention"
 )
 
 // AllNotifyEvents lists every event type users can set delivery prefs for.
@@ -50,6 +55,7 @@ var AllNotifyEvents = []string{
 	NotifyCommentCreated,
 	NotifyStateChanged,
 	NotifyIntakeTriaged,
+	NotifyMention,
 }
 
 var (
