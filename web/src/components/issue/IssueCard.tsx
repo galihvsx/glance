@@ -5,6 +5,7 @@ import { priorityLabel } from "../../lib/types";
 import { Badge } from "../ui/badge";
 import { CardHeader, CardTitle } from "../ui/card";
 import { ActionCard } from "../ui/action-card";
+import { Checkbox } from "../ui/checkbox";
 import StateBadge from "./StateBadge";
 import {
   formatIssueDateRange,
@@ -14,17 +15,23 @@ import {
 /** One row of the issue list: display_id badge, title, state, labels,
  *  priority, assignees. Click opens the issue — via `onOpen` when given
  *  (peek drawer), otherwise navigates to the detail page. The `fields`
- *  prop (from the Display panel) toggles which attributes render. */
+ *  prop (from the Display panel) toggles which attributes render.
+ *  `selected`/`onToggleSelect` render a multi-select checkbox (C5T8 bulk
+ *  operations); the click is stopped so it never opens the issue. */
 export default function IssueCard({
   issue,
   state,
   onOpen,
   fields,
+  selected,
+  onToggleSelect,
 }: {
   issue: Issue;
   state: IssueState | undefined;
   onOpen?: (issue: Issue) => void;
   fields: DisplayFields;
+  selected?: boolean;
+  onToggleSelect?: (checked: boolean) => void;
 }) {
   const { slug, identifier } = useParams<{
     slug: string;
@@ -45,6 +52,21 @@ export default function IssueCard({
     >
       <CardHeader className="space-y-2 py-4">
         <div className="flex items-center gap-2">
+          {onToggleSelect && (
+            // stopPropagation: the card itself is a link — checking the
+            // box must not open the issue.
+            <span
+              className="flex items-center"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Checkbox
+                checked={selected ?? false}
+                onCheckedChange={(v) => onToggleSelect(v === true)}
+                aria-label={`Select issue ${issue.display_id}`}
+              />
+            </span>
+          )}
           <Badge variant="outline" className="font-mono">
             {issue.display_id}
           </Badge>

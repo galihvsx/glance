@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1175,6 +1176,371 @@ var (
 	// malformed (bad UUID, priority outside 0-4, negative per_page).
 	ErrInvalidListFilter = errors.New("service: invalid list filter")
 )
+
+// ---------- C5T8: atomic bulk set ----------
+
+// BulkIssueSet is the single set applied to every issue in a BulkSetIssues
+// call. Semantics per field:
+//   - StateID nil = untouched; non-nil must name a state of the project.
+//   - Priority nil = untouched; non-nil must be 0-4.
+//   - LabelIDs nil = untouched; non-nil REPLACES the issue's label set
+//     (empty array clears). Every id must be a workspace label.
+//   - AssigneeID follows PatchField tri-state: unset = untouched,
+//     set-with-nil = clear all assignees, set-with-value = replace with
+//     that single user (must be a workspace member).
+type BulkIssueSet struct {
+	StateID    *string
+	Priority   *int
+	LabelIDs   *[]string
+	AssigneeID PatchField[string]
+}
+
+func (s BulkIssueSet) hasFields() bool {
+	return s.StateID != nil || s.Priority != nil || s.LabelIDs != nil || s.AssigneeID.Set
+}
+
+// BulkSetIssues applies one set to many issues in ONE transaction with
+// full atomicity: any unknown, deleted, cross-project, or malformed id,
+// or any invalid set field, aborts the whole batch — no partial
+// application. Per issue it reuses updateIssueTx, so every issue gets the
+// same activity rows, version snapshot, state-change notifications, and
+// webhook fan-out a single-issue PATCH writes. Label/assignee replacement
+// writes one "labels"/"assignees" activity row per issue (old/new id
+// arrays, only when the set actually changed); a newly added assignee is
+// notified like AssignAssignee does. Member (15)+; the role is checked
+// once for the whole call. Ids are deduplicated (batch order kept).
+// Returns the number of issues updated and their (deduplicated) ids.
+func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, ids []string, set BulkIssueSet) (int, []string, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(ids) == 0 {
+		return 0, nil, ErrBulkEmptyIDs
+	}
+	if len(ids) > maxBulkItems {
+		return 0, nil, ErrBulkTooManyIDs
+	}
+	if !set.hasFields() {
+		return 0, nil, ErrNothingToUpdate
+	}
+	// Normalize + dedupe, keeping batch order. A malformed id aborts the
+	// batch like an unknown one (documented atomicity).
+	norm := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		nid := strings.ToLower(strings.TrimSpace(id))
+		if !isUUIDFormat(nid) {
+			return 0, nil, ErrIssueNotFound
+		}
+		if _, ok := seen[nid]; ok {
+			continue
+		}
+		seen[nid] = struct{}{}
+		norm = append(norm, nid)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	wsID, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return 0, nil, err
+	}
+	if role < RoleMember {
+		return 0, nil, ErrForbidden
+	}
+
+	// Fail fast: every id must name a live issue of THIS project.
+	// Missing/deleted/foreign ids abort the whole batch before any
+	// mutation runs. updateIssueTx re-checks per row (FOR UPDATE) as a
+	// backstop against races — a late failure still rolls the tx back.
+	var have int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM issues
+		  WHERE project_id = $1::uuid AND id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+		projectID, norm).Scan(&have); err != nil {
+		return 0, nil, err
+	}
+	if have != len(norm) {
+		return 0, nil, ErrIssueNotFound
+	}
+
+	// Validate the set fields once, before any mutation.
+	var stateID *string
+	if set.StateID != nil {
+		sid, err := checkStateInProject(ctx, tx, projectID, *set.StateID)
+		if err != nil {
+			return 0, nil, err
+		}
+		stateID = &sid
+	}
+	if set.Priority != nil && (*set.Priority < 0 || *set.Priority > 4) {
+		return 0, nil, ErrInvalidPriority
+	}
+	var labelIDs []string
+	if set.LabelIDs != nil {
+		labelIDs = dedupeSortedStrings(normalizeIDs(*set.LabelIDs))
+		for _, lid := range labelIDs {
+			var owner string
+			err := tx.QueryRow(ctx,
+				`SELECT workspace_id::text FROM labels WHERE id = $1::uuid`, lid).Scan(&owner)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+					return 0, nil, ErrLabelNotFound
+				}
+				return 0, nil, err
+			}
+			if owner != wsID {
+				return 0, nil, ErrLabelNotFound
+			}
+		}
+	}
+	var assigneeID PatchField[string]
+	if set.AssigneeID.Set {
+		if set.AssigneeID.Value != nil {
+			uid := strings.ToLower(strings.TrimSpace(*set.AssigneeID.Value))
+			var one int
+			err := tx.QueryRow(ctx,
+				`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
+				wsID, uid).Scan(&one)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+					return 0, nil, ErrAssigneeNotMember
+				}
+				return 0, nil, err
+			}
+			assigneeID = PatchField[string]{Set: true, Value: &uid}
+		} else {
+			assigneeID = PatchField[string]{Set: true}
+		}
+	}
+
+	var notified []*Notification
+	announced := make([]*Issue, 0, len(norm))
+	for _, id := range norm {
+		var patch IssuePatch
+		if stateID != nil {
+			patch.StateID = stateID
+		}
+		if set.Priority != nil {
+			patch.Priority = set.Priority
+		}
+		// updateIssueTx is the single-issue PATCH core: row lock,
+		// per-field activity rows, version snapshot, state-change
+		// notifications, webhook fan-out. A patch with no changed fields
+		// returns the current row without writing (labels/assignees-only
+		// sets are fine).
+		updated, itemNotified, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		if err != nil {
+			return 0, nil, err
+		}
+		notified = append(notified, itemNotified...)
+		if set.LabelIDs != nil {
+			if err := replaceIssueLabelsTx(ctx, tx, id, actorID, labelIDs); err != nil {
+				return 0, nil, err
+			}
+		}
+		if assigneeID.Set {
+			added, err := replaceIssueAssigneesTx(ctx, tx, wsID, projectID, ident, id, actorID, assigneeID.Value)
+			if err != nil {
+				return 0, nil, err
+			}
+			notified = append(notified, added...)
+		}
+		announced = append(announced, updated)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, nil, err
+	}
+	for _, u := range announced {
+		announceIssueUpdated(wsSlug, ident, u.ID, u)
+	}
+	announceNotifications(notified)
+	return len(norm), norm, nil
+}
+
+// normalizeIDs lowercases/trims raw id strings; malformed entries are
+// kept as-is so the caller's validation (uuid cast) rejects them.
+func normalizeIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, strings.ToLower(strings.TrimSpace(id)))
+	}
+	return out
+}
+
+// dedupeSortedStrings dedupes and sorts — the canonical form used for
+// set comparison and storage.
+func dedupeSortedStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// equalStringSlices reports whether two sorted slices hold the same ids.
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceIssueLabelsTx replaces the issue's label set with exactly the
+// given (canonical, sorted) ids — empty clears. It writes one "labels"
+// issue_activities row with the old/new id arrays, but only when the set
+// actually changed (mirroring updateIssueTx's changed-only convention).
+func replaceIssueLabelsTx(ctx context.Context, tx pgx.Tx, issueID, actorID string, labelIDs []string) error {
+	var old []string
+	rows, err := tx.Query(ctx,
+		`SELECT label_id::text FROM issue_labels WHERE issue_id = $1::uuid ORDER BY label_id::text`, issueID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		old = append(old, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if equalStringSlices(old, labelIDs) {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM issue_labels WHERE issue_id = $1::uuid`, issueID); err != nil {
+		return err
+	}
+	for _, lid := range labelIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO issue_labels (issue_id, label_id) VALUES ($1::uuid, $2::uuid)
+			 ON CONFLICT DO NOTHING`, issueID, lid); err != nil {
+			return err
+		}
+	}
+	oldArr := old
+	if oldArr == nil {
+		oldArr = []string{}
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'labels', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(oldArr), toJSONBParam(labelIDs)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// replaceIssueAssigneesTx replaces the issue's assignee set with the
+// given single user (nil clears). It writes one "assignees"
+// issue_activities row when the set changed, and notifies the assignee
+// when they were newly added — the same notification AssignAssignee
+// sends. Returns the created notifications for the caller to announce
+// after commit.
+func replaceIssueAssigneesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, assigneeID *string) ([]*Notification, error) {
+	var old []string
+	rows, err := tx.Query(ctx,
+		`SELECT user_id::text FROM issue_assignees WHERE issue_id = $1::uuid ORDER BY user_id::text`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		old = append(old, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var want []string
+	if assigneeID != nil {
+		want = []string{*assigneeID}
+	}
+	if equalStringSlices(old, want) {
+		return nil, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM issue_assignees WHERE issue_id = $1::uuid`, issueID); err != nil {
+		return nil, err
+	}
+	for _, uid := range want {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1::uuid, $2::uuid)
+			 ON CONFLICT DO NOTHING`, issueID, uid); err != nil {
+			return nil, err
+		}
+	}
+	oldArr := old
+	if oldArr == nil {
+		oldArr = []string{}
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'assignees', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(oldArr), toJSONBParam(want)); err != nil {
+		return nil, err
+	}
+	// Notify the newly added assignee (mirrors AssignAssignee).
+	oldSet := make(map[string]struct{}, len(old))
+	for _, id := range old {
+		oldSet[id] = struct{}{}
+	}
+	var added []string
+	for _, uid := range want {
+		if _, ok := oldSet[uid]; !ok {
+			added = append(added, uid)
+		}
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+	if err != nil {
+		return nil, err
+	}
+	actorName := actorDisplayName(ctx, tx, actorID)
+	notified, err := notifyTx(ctx, tx, NotifyIssueAssigned,
+		fmt.Sprintf("%s assigned you to %s", actorName, displayID),
+		fmt.Sprintf("Issue: %s", name),
+		map[string]any{
+			"issue_id":     issueID,
+			"display_id":   displayID,
+			"issue_name":   name,
+			"actor_id":     actorID,
+			"workspace_id": wsID,
+			"project_id":   projectID,
+		},
+		actorID, added)
+	if err != nil {
+		return nil, err
+	}
+	return notified, nil
+}
 
 // listSortKind classifies a whitelisted sort column so cursor values can
 // be (de)serialized with the right type.

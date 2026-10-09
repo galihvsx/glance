@@ -21,6 +21,7 @@ func testIssueServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
 	RegisterIssueRoutes(e, &IssueHandler{Pool: pool})
+	RegisterTaxonomyRoutes(e, &IssueHandler{Pool: pool})
 	return e
 }
 

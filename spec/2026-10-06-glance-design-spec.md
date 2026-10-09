@@ -169,6 +169,7 @@ GET       /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}
 GET       /api/v1/work-items/ENG-123                                  # display-ID lookup — planned, NOT in v0.1.0
 POST      /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update
 POST      /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-delete
+PATCH     /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk       # C5T8: one atomic set for many issues (fully atomic — any bad id/field aborts the batch)
 .../states, .../labels, .../cycles, .../cycles/{id}/issues,
 .../modules, .../intake, .../pages, .../views,
 .../issues/{uuid}/comments, .../issues/{uuid}/relations,
