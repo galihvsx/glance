@@ -1,17 +1,18 @@
 // Issue import UI (C4T8 CSV backend + C8T2 GitHub importer + C9T1 Jira
-// Cloud importer).
+// Cloud importer + C10T0 Trello importer).
 //
-// Project settings → Import tab: a source selector (Jira / GitHub / CSV
-// file) with the shared preview → import → result flow. The CSV mapping
-// form follows the backend's ImportMapping contract (title required, the
-// rest optional); the GitHub form collects owner/repo/token + filters;
-// the Jira form collects site/email/API token/project key. Secrets are
-// sent in the JSON body only and are never stored anywhere — the inputs
-// are password fields and the values are cleared from state after the
-// import runs.
+// Project settings → Import tab: a source selector (Jira / GitHub /
+// Trello / CSV file) with the shared preview → import → result flow.
+// The CSV mapping form follows the backend's ImportMapping contract
+// (title required, the rest optional); the GitHub form collects
+// owner/repo/token + filters; the Jira form collects site/email/API
+// token/project key; the Trello form collects API key/token/board.
+// Secrets are sent in the JSON body only and are never stored anywhere
+// — the inputs are password fields and the values are cleared from state
+// after the import runs.
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch, KanbanSquare } from "lucide-react";
 import { ApiError } from "../../lib/api";
 import {
   buildCsvMapping,
@@ -19,11 +20,14 @@ import {
   previewCsvImport,
   previewGitHubImport,
   previewJiraImport,
+  previewTrelloImport,
   runCsvImport,
   runGitHubImport,
   runJiraImport,
+  runTrelloImport,
   validateGitHubForm,
   validateJiraForm,
+  validateTrelloForm,
   type GitHubImportPreview,
   type GitHubImportPreviewRow,
   type GitHubImportResult,
@@ -34,6 +38,9 @@ import {
   type JiraImportPreview,
   type JiraImportPreviewRow,
   type JiraImportResult,
+  type TrelloImportPreview,
+  type TrelloImportPreviewRow,
+  type TrelloImportResult,
 } from "../../lib/import";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
@@ -62,7 +69,7 @@ function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-type Source = "csv" | "github" | "jira";
+type Source = "csv" | "github" | "jira" | "trello";
 
 // ---------- shared bits ----------
 
@@ -919,6 +926,350 @@ function JiraPanel({ slug, identifier }: { slug: string; identifier: string }) {
   );
 }
 
+// ---------- Trello panel ----------
+
+function TrelloPreviewTable({ preview }: { preview: TrelloImportPreview }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Card</TableHead>
+          <TableHead>Title</TableHead>
+          <TableHead>List → State</TableHead>
+          <TableHead>Labels</TableHead>
+          <TableHead>Due</TableHead>
+          <TableHead>Assignees</TableHead>
+          <TableHead>Comments</TableHead>
+          <TableHead>Checklists</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {preview.rows.map((r: TrelloImportPreviewRow) => (
+          <TableRow key={r.id} className={r.already_imported ? "opacity-60" : undefined}>
+            <TableCell className="font-mono">
+              <a
+                href={r.short_url}
+                target="_blank"
+                rel="noreferrer"
+                className="underline decoration-dotted"
+                title={r.short_url}
+              >
+                {r.short_link}
+              </a>
+            </TableCell>
+            <TableCell className="max-w-64">
+              <span className="block truncate" title={r.name}>
+                {r.name}
+              </span>
+              {r.already_imported && (
+                <Badge variant="secondary" className="mt-1">
+                  already imported
+                </Badge>
+              )}
+            </TableCell>
+            <TableCell>
+              <div className="flex items-center gap-1">
+                <Badge variant="outline" title={`Trello list: ${r.list_name}`}>
+                  {r.list_name}
+                </Badge>
+                <span className="text-muted-foreground">→</span>
+                <Badge
+                  variant={r.state_is_new ? "default" : "outline"}
+                  title={r.state_is_new ? "Will be created as a new state" : "Existing state"}
+                >
+                  {r.state}
+                  {r.state_is_new ? " +" : ""}
+                </Badge>
+              </div>
+            </TableCell>
+            <TableCell>
+              <div className="flex max-w-48 flex-wrap gap-1">
+                {r.labels.map((l) => (
+                  <Badge
+                    key={l}
+                    variant={r.new_labels.includes(l) ? "default" : "outline"}
+                    title={r.new_labels.includes(l) ? "Will be created" : "Exists"}
+                  >
+                    {l}
+                    {r.new_labels.includes(l) ? " +" : ""}
+                  </Badge>
+                ))}
+                {r.labels.length === 0 && <span className="text-muted-foreground">—</span>}
+              </div>
+            </TableCell>
+            <TableCell className="font-mono text-xs">
+              {r.due_date ?? <span className="text-muted-foreground">—</span>}
+            </TableCell>
+            <TableCell>
+              <div className="flex max-w-40 flex-wrap gap-1">
+                {r.assignees.map((a) => (
+                  <Badge key={a} variant="outline" title={a}>
+                    @{a}
+                  </Badge>
+                ))}
+                {r.assignees.length === 0 && <span className="text-muted-foreground">—</span>}
+              </div>
+              {r.assignees.length > 0 && (
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {r.assignee_matched ? "matched a member" : "no member match"}
+                </div>
+              )}
+            </TableCell>
+            <TableCell className="font-mono">{r.comments}</TableCell>
+            <TableCell className="font-mono">
+              {r.checklists > 0 ? (
+                <span title="Checklists are not imported — glance has no checklist model">
+                  {r.checklists} (skipped)
+                </span>
+              ) : (
+                <span className="text-muted-foreground">0</span>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function TrelloPanel({ slug, identifier }: { slug: string; identifier: string }) {
+  const [apiKey, setApiKey] = useState("");
+  const [token, setToken] = useState("");
+  const [boardId, setBoardId] = useState("");
+  const [max, setMax] = useState("100");
+  const [preview, setPreview] = useState<TrelloImportPreview | null>(null);
+  const [result, setResult] = useState<TrelloImportResult | null>(null);
+  const [busy, setBusy] = useState<"preview" | "import" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const formError = validateTrelloForm(apiKey, boardId);
+  const input = {
+    api_key: apiKey.trim(),
+    token: token.trim(),
+    board_id: boardId.trim(),
+    max: Math.max(1, parseInt(max, 10) || 100),
+  };
+
+  const doPreview = async () => {
+    if (formError) return;
+    setBusy("preview");
+    setError(null);
+    setResult(null);
+    try {
+      setPreview(await previewTrelloImport(slug, identifier, input));
+    } catch (e) {
+      setError(errMsg(e, "Preview failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doImport = async () => {
+    if (formError) return;
+    if (
+      !window.confirm(
+        `Import up to ${input.max} cards from this Trello board into this project?`,
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setError(null);
+    setPreview(null);
+    try {
+      const res = await runTrelloImport(slug, identifier, input);
+      setResult(res);
+    } catch (e) {
+      setError(errMsg(e, "Import failed"));
+    } finally {
+      setBusy(null);
+      setApiKey(""); // the API key never lingers in the form after a run
+      setToken(""); // neither does the token
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Label htmlFor="trello-board">Board *</Label>
+            <Input
+              id="trello-board"
+              placeholder="Board id, short link, or trello.com/b/… URL"
+              value={boardId}
+              onChange={(e) => setBoardId(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              The 24-char board id, the 8-char short link from the board URL,
+              or the full board URL.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="trello-key">API key *</Label>
+              <Input
+                id="trello-key"
+                type="password"
+                placeholder="Trello API key"
+                value={apiKey}
+                autoComplete="off"
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="trello-token">Token</Label>
+              <Input
+                id="trello-token"
+                type="password"
+                placeholder="Token (private boards)"
+                value={token}
+                autoComplete="off"
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Sent to api.trello.com only, never stored. Get both at
+            trello.com/app-key. The token is needed for private boards.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Label htmlFor="trello-max">Max cards</Label>
+            <Input
+              id="trello-max"
+              type="number"
+              min={1}
+              max={1000}
+              value={max}
+              onChange={(e) => setMax(e.target.value)}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Trello lists map to states by name; unmatched lists create new
+            states. Labels are created when missing (Trello colors become
+            label colors). Due dates become target dates. Comments are
+            imported with attribution; assignees are matched best-effort by
+            email — misses are reported, never fatal. Archived cards are
+            skipped. Checklists are not imported (glance has no checklist
+            model) — their count is reported. Re-running is safe:
+            already-imported cards are skipped.
+          </p>
+        </div>
+      </div>
+
+      {formError && (
+        <Alert>
+          <AlertDescription>{formError}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex gap-2">
+        <Button onClick={doPreview} disabled={!!formError || busy !== null} variant="outline">
+          {busy === "preview" ? <Spinner className="mr-2" /> : null}Preview
+        </Button>
+        <Button
+          onClick={doImport}
+          disabled={!!formError || busy !== null || !apiKey}
+        >
+          {busy === "import" ? <Spinner className="mr-2" /> : null}Import
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {preview && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">
+              Preview — {preview.rows.length} of {preview.total} cards from{" "}
+              {preview.source}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <TrelloPreviewTable preview={preview} />
+          </CardContent>
+        </Card>
+      )}
+
+      {result && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
+              {result.source}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Stat label="Created" value={result.created} />
+              <Stat label="Skipped (already imported)" value={result.skipped} />
+              <Stat label="Archived skipped" value={result.archived_skipped} />
+              <Stat label="Failed" value={result.failed} />
+              <Stat
+                label="Labels created"
+                value={
+                  result.labels_created.length > 0 ? (
+                    <span title={result.labels_created.join(", ")}>
+                      {result.labels_created.length}
+                    </span>
+                  ) : (
+                    0
+                  )
+                }
+              />
+              <Stat
+                label="States created"
+                value={
+                  result.states_created.length > 0 ? (
+                    <span title={result.states_created.join(", ")}>
+                      {result.states_created.length}
+                    </span>
+                  ) : (
+                    0
+                  )
+                }
+              />
+              <Stat label="Assignee misses" value={result.assignee_misses} />
+              <Stat label="Checklists skipped" value={result.checklists_skipped} />
+            </div>
+            {result.states_created.length > 0 && (
+              <div>
+                <p className="mb-1 text-xs text-muted-foreground">New states:</p>
+                <div className="flex flex-wrap gap-1">
+                  {result.states_created.map((s) => (
+                    <Badge key={s} variant="outline">
+                      {s}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {result.labels_created.length > 0 && (
+              <div>
+                <p className="mb-1 text-xs text-muted-foreground">New labels:</p>
+                <div className="flex flex-wrap gap-1">
+                  {result.labels_created.map((l) => (
+                    <Badge key={l} variant="outline">
+                      {l}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            <RowErrors errors={result.errors} label="card" />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ---------- section ----------
 
 export default function ImportSection({
@@ -968,6 +1319,13 @@ export default function ImportSection({
           >
             <FileUp className="mr-2 h-4 w-4" /> CSV file
           </Button>
+          <Button
+            variant={source === "trello" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSource("trello")}
+          >
+            <KanbanSquare className="mr-2 h-4 w-4" /> Trello
+          </Button>
         </div>
       </CardHeader>
       <CardContent>
@@ -975,6 +1333,8 @@ export default function ImportSection({
           <JiraPanel slug={slug} identifier={identifier} />
         ) : source === "github" ? (
           <GitHubPanel slug={slug} identifier={identifier} />
+        ) : source === "trello" ? (
+          <TrelloPanel slug={slug} identifier={identifier} />
         ) : (
           <CsvPanel slug={slug} identifier={identifier} />
         )}
