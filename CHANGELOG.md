@@ -38,6 +38,14 @@ queued onboarding follow-up (invites endpoint).
 - Due-date reminders (C8T6): batched scanner, atomic claim, watcher/assignee notify.
 - Duplicate detection on create (C8T7): beyond-parity similarity check.
 
+**Roadmap, importers & notifications (cycle 9)**
+- Roadmap project view (C9T0): month columns by `target_date`, Unscheduled lane, 3/6/12-month range, peek drawer; frontend-only.
+- Jira Cloud importer (C9T1): `POST .../imports/jira/preview` + `.../imports/jira` (same group as the GitHub importer) — project+site-scoped dedupe, two-phase import (all HTTP before one tx), token body-only (never persisted), SSRF guard (pinned `https://<site>.atlassian.net`, https-only, no redirects, 8MB cap).
+- Saved views, server-side (C9T2): migration `000033_issue_views` (per-user, per-project, unique name); `GET/POST /views`, `PATCH/DELETE /views/{id}` — member-scoped, own-views-only; frontend rewired off localStorage with honest error toast.
+- Slack incoming-webhook notifications (C9T3): migration `000034_workspace_slack` (single `slack_webhook_url` column on workspaces — no settings table exists to reuse); admin-only PATCH; write-time `https://hooks.slack.com/` hostname allowlist (SSRF control); compact POSTs on issue created / state changed / commented / @mentioned (failures logged, never block); URL never serialized (`slack_configured` boolean instead); workspace-settings "Slack" section with test-message button.
+- Custom-field columns in spreadsheet (C9T4): optional per-field columns (default off, per-project localStorage), read-only, typed formatting reused from issue detail.
+- Stale-issue nudge (C9T5, beyond parity): daily ticker — issues untouched for 30 days in non-done states get one in-app nudge to assignees + watchers; reuses `issue_reminders` with `kind='stale'` (no migration), respects notification prefs.
+
 **App shell**
 - Plane-style persistent shell wrapping all protected routes (`/login`,
   `/onboarding`, `/s/:token` stay chromeless): 240px sidebar ↔ 48px icon
@@ -214,6 +222,13 @@ queued onboarding follow-up (invites endpoint).
   labels/assignees by name; unknown values → per-row errors.
 
 ### Fixed
+
+- Slack webhook clear path (C9T3 follow-up): PATCH
+  `{"slack_webhook_url":null}` never cleared the column — encoding/json
+  unmarshals JSON null into a nil `*json.RawMessage`, making explicit
+  null indistinguishable from an absent key. The body now uses
+  `service.PatchField[string]` (tri-state: omitted = untouched,
+  null = clear, string = set); pinned by `TestSlackWebhookURLHTTP`.
 
 - `ws.smoke.test.ts` now cleans up its scratch rows (zero live rows
   post-run; soft-delete audit trail preserved).
