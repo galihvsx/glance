@@ -122,6 +122,10 @@ glance is for teams that want Plane's core workflow without Plane's operational 
 
 `web/dist` is a build artifact (gitignored) — build it before `go build`, or use the Dockerfile which does both stages.
 
+### API docs
+
+The full REST API is documented in [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.0) — every route, auth scheme (session cookie vs scoped API token), and request/response shape. A running server also serves the same document live at `GET /api/v1/openapi.json` (no auth). A route-coverage test (`internal/api/openapi_test.go`) fails the build if a registered route is missing from the spec, so the two cannot drift.
+
 ## Roadmap
 
 Post-v1, each ships as its own forward-only migration + feature plan: **pages**, **attachments**, **issue views** (saved filters), **Gantt & calendar**, **roadmaps**, **analytics**, **public boards**, **admin panel**, **importers** (GitHub/Jira), **favorites**.

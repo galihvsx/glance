@@ -1,0 +1,2003 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "glance API",
+    "version": "0.3.0-dev",
+    "description": "Public HTTP API of glance, the lean Plane-like issue tracker (Go monolith, single binary). All paths are relative to the server root. NOTE ON FORMAT: this file is written in JSON syntax, which is valid YAML 1.2 — docs/openapi.yaml and the served GET /api/v1/openapi.json are the SAME single file with no build-time conversion; keep it JSON-compatible so both parsers accept it."
+  },
+  "servers": [
+    { "url": "/", "description": "Same origin as the glance server (self-hosted)" }
+  ],
+  "security": [],
+  "tags": [
+    { "name": "auth", "description": "Passwordless auth: email OTP, OAuth, sessions" },
+    { "name": "workspaces", "description": "Workspaces and membership" },
+    { "name": "projects", "description": "Projects inside a workspace" },
+    { "name": "issues", "description": "Issues, sub-issues, comments, reactions, votes, attachments, shares" },
+    { "name": "taxonomy", "description": "Labels, states, estimate scales" },
+    { "name": "cycles", "description": "Sprints / cycles" },
+    { "name": "modules", "description": "Modules (feature groupings)" },
+    { "name": "pages", "description": "Wiki pages" },
+    { "name": "releases", "description": "Releases" },
+    { "name": "intake", "description": "Intake inbox triage" },
+    { "name": "activity", "description": "Project activity feed" },
+    { "name": "analytics", "description": "Analytics summaries, burndown, trends" },
+    { "name": "time", "description": "Time tracking entries and summaries" },
+    { "name": "templates", "description": "Issue templates" },
+    { "name": "custom-fields", "description": "Project custom fields and per-issue values" },
+    { "name": "webhooks", "description": "Workspace webhooks" },
+    { "name": "notifications", "description": "Notifications and per-event preferences" },
+    { "name": "favorites", "description": "Starred issues and projects" },
+    { "name": "tokens", "description": "Personal API tokens (session-cookie only)" },
+    { "name": "search", "description": "Cross-project search and work-item lookup" },
+    { "name": "ai", "description": "AI-assisted drafting and triage (optional, provider-backed)" },
+    { "name": "admin", "description": "Instance administration (server admin role)" },
+    { "name": "import", "description": "CSV issue import" },
+    { "name": "meta", "description": "API metadata (this spec)" }
+  ],
+  "paths": {
+    "/api/v1/auth/otp/request": {
+      "post": {
+        "tags": ["auth"], "security": [],
+        "summary": "Request a one-time login code",
+        "description": "Always answers 200 {\"ok\": true} — even for unknown or malformed emails — so the endpoint never reveals whether an address is registered. 400 on unparseable body, 429 when rate limited.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email"], "properties": { "email": { "type": "string", "format": "email" } } } } } },
+        "responses": { "200": { "description": "Accepted (no enumeration)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "429": { "$ref": "#/components/responses/RateLimited" } }
+      }
+    },
+    "/api/v1/auth/otp/verify": {
+      "post": {
+        "tags": ["auth"], "security": [],
+        "summary": "Verify a one-time code and start a session",
+        "description": "Every failure (unknown email, expired/consumed code, wrong code) answers 401 with the same generic message. Success sets the glance_session HttpOnly cookie and answers 200 {\"ok\": true}.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email", "code"], "properties": { "email": { "type": "string", "format": "email" }, "code": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Session started (cookie set)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "429": { "$ref": "#/components/responses/RateLimited" } }
+      }
+    },
+    "/api/v1/auth/oauth/{provider}/login": {
+      "get": {
+        "tags": ["auth"], "security": [],
+        "summary": "Start an OAuth login flow",
+        "description": "Redirects the browser to the provider (google or github). Requires OAUTH_STATE_SECRET on the server or the endpoint refuses to operate.",
+        "parameters": [ { "name": "provider", "in": "path", "required": true, "schema": { "type": "string", "enum": ["google", "github"] } } ],
+        "responses": { "302": { "description": "Redirect to the OAuth provider" } }
+      }
+    },
+    "/api/v1/auth/oauth/{provider}/callback": {
+      "get": {
+        "tags": ["auth"], "security": [],
+        "summary": "OAuth provider callback",
+        "description": "Exchanges the provider code, creates/links the user, sets the glance_session cookie, and redirects to the app.",
+        "parameters": [ { "name": "provider", "in": "path", "required": true, "schema": { "type": "string", "enum": ["google", "github"] } } ],
+        "responses": { "302": { "description": "Redirect to the app (session cookie set)" }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Log out the current session",
+        "description": "Revokes the current session row and clears the cookie.",
+        "responses": { "200": { "description": "Logged out", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/auth/me": {
+      "patch": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update my display name",
+        "description": "Email is identity (OTP/OAuth) and is never editable here.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "maxLength": 100 } } } } } },
+        "responses": { "200": { "description": "Updated user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get the current user",
+        "responses": { "200": { "description": "Current user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/auth/sessions": {
+      "get": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List my active sessions",
+        "description": "Never includes token hashes. Each row carries a `current` flag for the caller's own session.",
+        "responses": { "200": { "description": "Session list", "content": { "application/json": { "schema": { "type": "object", "properties": { "sessions": { "type": "array", "items": { "$ref": "#/components/schemas/Session" } } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/auth/sessions/{id}": {
+      "delete": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Revoke one of my sessions",
+        "description": "A session that does not exist, is already revoked, belongs to another user, or is malformed all answer 404 — the endpoint never reveals which case hit. Revoking the current session also clears its cookie.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Revoked", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": ["tokens"], "security": [{ "sessionCookie": [] }],
+        "summary": "List my API tokens",
+        "description": "Session-cookie only: a token must never be able to mint or list tokens. Never reveals plaintext (shown once at creation).",
+        "responses": { "200": { "description": "Token list", "content": { "application/json": { "schema": { "type": "object", "properties": { "tokens": { "type": "array", "items": { "$ref": "#/components/schemas/Token" } } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "post": {
+        "tags": ["tokens"], "security": [{ "sessionCookie": [] }],
+        "summary": "Mint a personal API token",
+        "description": "Session-cookie only. The plaintext (gl_…) is returned exactly once in the 201 body — there is no endpoint that reveals it again. Scopes: read (GETs), write (implies read).",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "scopes"], "properties": { "name": { "type": "string" }, "scopes": { "type": "array", "items": { "type": "string", "enum": ["read", "write"] } }, "expires_at": { "type": "string", "format": "date-time", "description": "Optional; absent = never expires" } } } } } },
+        "responses": { "201": { "description": "Created (plaintext shown once)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedToken" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "tags": ["tokens"], "security": [{ "sessionCookie": [] }],
+        "summary": "Revoke an API token",
+        "description": "Session-cookie only.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Revoked" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/ws/ticket": {
+      "post": {
+        "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Mint a single-use websocket ticket",
+        "description": "Token clients connect with /ws?ticket=<ticket>. The ticket is single-use and expires after 60 seconds.",
+        "responses": { "200": { "description": "Ticket", "content": { "application/json": { "schema": { "type": "object", "properties": { "ticket": { "type": "string" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "tags": ["meta"], "security": [],
+        "summary": "This OpenAPI spec as JSON",
+        "description": "Serves docs/openapi.yaml verbatim (the file is JSON syntax, valid YAML 1.2) with application/json. No auth required.",
+        "responses": { "200": { "description": "OpenAPI 3.0 document", "content": { "application/json": { "schema": { "type": "object" } } } } }
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List my workspaces",
+        "description": "The caller's workspaces with their role in each.",
+        "responses": { "200": { "description": "Workspace list", "content": { "application/json": { "schema": { "type": "object", "properties": { "workspaces": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceMembership" } } } } } } } }
+      },
+      "post": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a workspace",
+        "description": "Creates the workspace with the caller as admin.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "slug": { "type": "string", "description": "Optional; derived from name when omitted" } } } } } },
+        "responses": { "201": { "description": "Created workspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a workspace",
+        "description": "Non-members get 404 — never a hint the slug exists.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Workspace with my role", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceMembership" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Rename a workspace",
+        "description": "Admin only.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "slug": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Updated workspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a workspace",
+        "description": "Admin only. Destroys the workspace and everything in it.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/members": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List workspace members",
+        "description": "Any member may read — the issue page's assignee picker needs it.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Member list", "content": { "application/json": { "schema": { "type": "object", "properties": { "members": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceMember" } } } } } } } } 
+      },
+      "post": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add or re-role a member",
+        "description": "Admin only.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id", "role"], "properties": { "user_id": { "type": "string", "format": "uuid" }, "role": { "type": "integer", "description": "15 = member, 20 = admin" } } } } } },
+        "responses": { "200": { "description": "Member upserted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/members/{user_id}": {
+      "delete": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a member",
+        "description": "Admin only; removing the last admin is refused.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/invites": {
+      "post": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Invite registered users by email",
+        "description": "Admin only. Every email gets a per-email result (invited | already-member | not-registered | invalid) — unknown emails are results, not errors.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["emails"], "properties": { "emails": { "type": "array", "items": { "type": "string" } }, "role": { "type": "integer" } } } } } },
+        "responses": { "200": { "description": "Per-email results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/InviteResult" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/my-issues": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "My issues across this workspace",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "filter", "in": "query", "schema": { "type": "string", "enum": ["assigned", "created", "watched"], "default": "assigned" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 100 } }
+        ],
+        "responses": { "200": { "description": "Issues", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects": {
+      "get": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List projects in a workspace",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Project list", "content": { "application/json": { "schema": { "type": "object", "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } } } } } } 
+      },
+      "post": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a project",
+        "description": "The identifier is uppercased and unique per workspace; default states are seeded.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" } } } } } },
+        "responses": { "201": { "description": "Created project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}": {
+      "get": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a project",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a project",
+        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "close_in_days": { "type": "integer", "minimum": 0 } } } } } },
+        "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import issues from CSV",
+        "description": "multipart/form-data with a `file` field (the CSV) and a `mapping` field (JSON column mapping). 10MB limit. Valid rows are inserted; per-row failures are reported.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file", "mapping"], "properties": { "file": { "type": "string", "format": "binary" }, "mapping": { "type": "string", "description": "JSON import mapping (see ImportMapping)" } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/preview": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Preview a CSV import",
+        "description": "Parses and validates the multipart CSV + mapping without inserting anything.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file", "mapping"], "properties": { "file": { "type": "string", "format": "binary" }, "mapping": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Preview result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/template.csv": {
+      "get": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Download the CSV import template",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "CSV template", "content": { "text/csv": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issues",
+        "description": "Supports filtering, sorting and pagination via query params (state, priority, label, assignee, cycle, search, sort, per_page, page/cursor). Honors Idempotency-Key on creation only.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "state", "in": "query", "schema": { "type": "string", "description": "State group or state id" } },
+          { "name": "priority", "in": "query", "schema": { "type": "integer" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "total": { "type": "integer" } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an issue",
+        "description": "Creates the issue with the next atomic sequence_id (display ID {IDENTIFIER}-{sequence_id}). Honors Idempotency-Key: a replayed key returns the stored response byte-identical without creating a second issue.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueCreate" } } } },
+        "responses": { "201": { "description": "Created issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk": {
+      "patch": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Atomically set fields on many issues",
+        "description": "Applies ONE set to many issues in a single fully-atomic transaction — any unknown, deleted, cross-project, or malformed id, or any invalid set field, aborts the whole batch (no partial application). 200 with {updated, issue_ids}. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids", "set"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "set": { "type": "object", "properties": { "state_id": { "type": "string", "format": "uuid" }, "priority": { "type": "integer" }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "null = untouched; non-null replaces the label set (empty clears)" }, "assignee_id": { "type": "object", "description": "Tri-state: omitted = untouched, null value = clear all, value = replace with that user", "properties": { "set": { "type": "boolean" }, "value": { "type": "string", "format": "uuid", "nullable": true } } } } } } } } } },
+        "responses": { "200": { "description": "Bulk set result", "content": { "application/json": { "schema": { "type": "object", "properties": { "updated": { "type": "integer" }, "issue_ids": { "type": "array", "items": { "type": "string" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Bulk-update many issues (partial success)",
+        "description": "Applies one tri-state patch to many issues inside a single transaction (per-item savepoints → partial success). 200 with {results:[{id, ok, error?}]}. Member (15)+. Honors Idempotency-Key.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids", "patch"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "patch": { "$ref": "#/components/schemas/IssuePatch" } } } } } },
+        "responses": { "200": { "description": "Per-item results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "ok": { "type": "boolean" }, "error": { "type": "string" } } } } } } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-delete": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Bulk-delete many issues",
+        "description": "Member (15)+. Honors Idempotency-Key.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Bulk delete result", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "integer" } } } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/rebalance": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Rebalance issue sort orders",
+        "description": "Re-normalizes fractional sort_order values in the project. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Rebalanced", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get issue detail",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" },
+          { "name": "include_children", "in": "query", "schema": { "type": "integer", "enum": [0, 1] }, "description": "Attach sub-issues (fetched only on detail, in one extra query)" },
+          { "name": "include_custom", "in": "query", "schema": { "type": "integer", "enum": [0, 1] }, "description": "Attach custom_values keyed by field id" }
+        ],
+        "responses": { "200": { "description": "Issue detail", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueDetail" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update an issue",
+        "description": "Partial update. Plain pointers: nil = omitted, leave untouched. Tri-state fields (description, parent_id, dates, estimate_point_id): omitted = untouched, explicit null = clear, value = assign. archived=true archives, false unarchives.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuePatch" } } } },
+        "responses": { "200": { "description": "Updated issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/parent": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set the issue's parent (make it a sub-issue)",
+        "description": "409 on self-parent, cross-project parent, or a parent assignment that would close a cycle; 404 on an unknown parent id. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["parent_issue_id"], "properties": { "parent_issue_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Parent set", "content": { "application/json": { "schema": { "type": "object", "properties": { "parent_issue_id": { "type": "string", "nullable": true } } } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Clear the issue's parent",
+        "description": "The issue becomes a top-level issue. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Parent cleared", "content": { "application/json": { "schema": { "type": "object", "properties": { "parent_issue_id": { "type": "string", "nullable": true } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue comments",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Comments", "content": { "application/json": { "schema": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a comment",
+        "description": "Covered by Idempotency-Key: a retried POST with the same key returns the original comment byte-identical instead of creating a duplicate.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["content"], "properties": { "content": { "description": "Rich-text JSON document" }, "parent_id": { "type": "string", "format": "uuid", "description": "Optional: reply to a comment" } } } } } },
+        "responses": { "201": { "description": "Created comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}": {
+      "patch": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Edit a comment",
+        "description": "Author or admin.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["content"], "properties": { "content": { "description": "Rich-text JSON document" } } } } } },
+        "responses": { "200": { "description": "Updated comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a comment",
+        "description": "Soft delete; author or admin.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}/reactions": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a reaction to a comment",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["emoji"], "properties": { "emoji": { "type": "string" } } } } } },
+        "responses": { "204": { "description": "Reaction added" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove my reaction from a comment",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Reaction removed" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/reactions": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue reactions",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Reactions", "content": { "application/json": { "schema": { "type": "object", "properties": { "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/Reaction" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a reaction to an issue",
+        "description": "Idempotent add.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["emoji"], "properties": { "emoji": { "type": "string" } } } } } },
+        "responses": { "204": { "description": "Reaction added" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove my reaction from an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Reaction removed" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/votes": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue votes",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Votes", "content": { "application/json": { "schema": { "type": "object", "properties": { "votes": { "type": "array", "items": { "$ref": "#/components/schemas/Vote" } }, "count": { "type": "integer" } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Vote for an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Voted" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove my vote",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Vote removed" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/subscribers": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue subscribers",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Subscribers", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscribers": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Subscribe to an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Subscribed" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unsubscribe from an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "204": { "description": "Unsubscribed" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/labels/{labelID}": {
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Assign a label to an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Label assigned" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a label from an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Label removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/assignees/{userID}": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Assign a user to an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "userID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Assignee added" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unassign a user from an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "userID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Assignee removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/attachments": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue attachments",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Attachments", "content": { "application/json": { "schema": { "type": "object", "properties": { "attachments": { "type": "array", "items": { "$ref": "#/components/schemas/Attachment" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Upload an attachment",
+        "description": "multipart/form-data with a `file` field. Stored under the server data dir; the server refuses to boot if the storage directory cannot be created.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file"], "properties": { "file": { "type": "string", "format": "binary" } } } } } },
+        "responses": { "201": { "description": "Uploaded attachment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Attachment" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/attachments/{attachmentID}": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Download an attachment",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "attachmentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "File bytes" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an attachment",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "attachmentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/history": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get issue activity history",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "History entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "history": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } } } } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue description versions",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Versions", "content": { "application/json": { "schema": { "type": "object", "properties": { "versions": { "type": "array", "items": { "$ref": "#/components/schemas/IssueVersion" } } } } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions/{n}": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get one description version",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "n", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } } ],
+        "responses": { "200": { "description": "Version", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueVersion" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions/{n}/restore": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Restore a description version",
+        "description": "The pre-restore state is snapshotted first, so a restore is itself undoable.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "n", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } } ],
+        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/links": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue links",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Links", "content": { "application/json": { "schema": { "type": "object", "properties": { "links": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLink" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link two issues",
+        "description": "409 on self-link, cross-project target, or duplicate edge; 404 on unknown target. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["target_issue_id"], "properties": { "target_issue_id": { "type": "string", "format": "uuid" }, "kind": { "type": "string", "default": "blocks", "description": "Link kind; defaults to blocks" } } } } } },
+        "responses": { "201": { "description": "Created link", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueLink" } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/links/{linkID}": {
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove an issue link",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "linkID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Link removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/relations": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue relations",
+        "description": "Canonical rows plus derived reverses (A blocked_by B → B shows blocking A).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Relations", "content": { "application/json": { "schema": { "type": "object", "properties": { "relations": { "type": "array", "items": { "$ref": "#/components/schemas/IssueRelation" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an issue relation",
+        "description": "One canonical row; repeats are no-ops.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["related_issue_id", "type"], "properties": { "related_issue_id": { "type": "string", "format": "uuid" }, "type": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Created relation", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueRelation" } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/relations/{relatedID}": {
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove an issue relation",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "relatedID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Relation removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/share": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List public share links for an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "shares": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a public share link for an issue",
+        "description": "The 201 is the only response that returns the token and public URL.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "expires_at": { "type": "string", "format": "date-time", "description": "Optional RFC3339 expiry; absent = never expires" } } } } } },
+        "responses": { "201": { "description": "Share link created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShareCreateResponse" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/share/{token}": {
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Revoke a public share link",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "204": { "description": "Share revoked" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/time": {
+      "get": {
+        "tags": ["time"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List time entries for an issue",
+        "description": "Any member may read.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Time entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "entries": { "type": "array", "items": { "$ref": "#/components/schemas/TimeEntry" } }, "total_seconds": { "type": "integer" } } } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/time/log": {
+      "post": {
+        "tags": ["time"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Log a manual time entry",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["started_at", "ended_at"], "properties": { "started_at": { "type": "string", "format": "date-time" }, "ended_at": { "type": "string", "format": "date-time" }, "note": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Created entry", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimeEntry" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/time/start": {
+      "post": {
+        "tags": ["time"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Start the running timer for an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "201": { "description": "Timer started", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimeEntry" } } } }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/time/stop": {
+      "post": {
+        "tags": ["time"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Stop the running timer for an issue",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Timer stopped", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimeEntry" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/custom-values": {
+      "put": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set all custom-field values for an issue",
+        "description": "Replaces the issue's custom-value set in one call.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "values": { "type": "object", "additionalProperties": {}, "description": "Map of custom-field id → value" } } } } } },
+        "responses": { "200": { "description": "Updated values", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/custom-values/{fieldID}": {
+      "delete": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Clear one custom-field value",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "fieldID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Value cleared" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/labels": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List labels",
+        "description": "Labels are workspace-scoped rows; the project identifier in the route resolves the workspace and the caller's membership.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Labels", "content": { "application/json": { "schema": { "type": "object", "properties": { "labels": { "type": "array", "items": { "$ref": "#/components/schemas/Label" } } } } } } } }
+      },
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a label",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "color": { "type": "string" }, "parent_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "201": { "description": "Created label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Label" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/labels/{labelID}": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a label",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Label" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a label",
+        "description": "parent_id is tri-state: unset leaves the parent untouched, null clears it, a value reparents (cycle-checked).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "color": { "type": "string" }, "parent_id": { "type": "object", "description": "Tri-state: omitted = untouched, null value = clear, value = reparent", "properties": { "set": { "type": "boolean" }, "value": { "type": "string", "format": "uuid", "nullable": true } } } } } } } },
+        "responses": { "200": { "description": "Updated label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Label" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a label",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/states": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List workflow states",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "States", "content": { "application/json": { "schema": { "type": "object", "properties": { "states": { "type": "array", "items": { "$ref": "#/components/schemas/State" } } } } } } } }
+      },
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a workflow state",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "group", "color"], "properties": { "name": { "type": "string" }, "group": { "type": "string", "description": "e.g. backlog, unstarted, started, completed, cancelled" }, "color": { "type": "string" }, "sequence": { "type": "integer" } } } } } },
+        "responses": { "201": { "description": "Created state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/State" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/states/{stateID}": {
+      "patch": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a workflow state",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "stateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "group": { "type": "string" }, "color": { "type": "string" }, "sequence": { "type": "integer" } } } } } },
+        "responses": { "200": { "description": "Updated state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/State" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a workflow state",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "stateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/estimates": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List estimate scales",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Estimate scales", "content": { "application/json": { "schema": { "type": "object", "properties": { "estimates": { "type": "array", "items": { "$ref": "#/components/schemas/EstimateScale" } } } } } } } }
+      },
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an estimate scale",
+        "description": "Creates a scale with its points in one call.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "points"], "properties": { "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "object", "required": ["key", "value"], "properties": { "key": { "type": "string" }, "value": { "type": "integer" }, "description": { "type": "string" } } } } } } } } },
+        "responses": { "201": { "description": "Created scale", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EstimateScale" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/estimates/{estimateID}": {
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an estimate scale",
+        "description": "409 when live issues reference the scale's points.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "estimateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/estimates/{estimateID}/points": {
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add points to an estimate scale",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "estimateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["points"], "properties": { "points": { "type": "array", "items": { "type": "object", "required": ["key", "value"], "properties": { "key": { "type": "string" }, "value": { "type": "integer" }, "description": { "type": "string" } } } } } } } } },
+        "responses": { "200": { "description": "Updated scale", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EstimateScale" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles": {
+      "get": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List cycles",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Cycles", "content": { "application/json": { "schema": { "type": "object", "properties": { "cycles": { "type": "array", "items": { "$ref": "#/components/schemas/Cycle" } } } } } } } }
+      },
+      "post": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a cycle",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "start_date", "end_date"], "properties": { "name": { "type": "string" }, "start_date": { "type": "string", "format": "date" }, "end_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "201": { "description": "Created cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}": {
+      "get": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a cycle",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a cycle",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "start_date": { "type": "string", "format": "date" }, "end_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "200": { "description": "Updated cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a cycle",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/issues": {
+      "post": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add issues to a cycle",
+        "description": "Idempotent: repeats are no-ops. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Added", "content": { "application/json": { "schema": { "type": "object", "properties": { "added": { "type": "integer" } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/burndown": {
+      "get": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get cycle burndown data",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Burndown data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Burndown" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/modules": {
+      "get": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List modules",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Modules", "content": { "application/json": { "schema": { "type": "object", "properties": { "modules": { "type": "array", "items": { "$ref": "#/components/schemas/Module" } } } } } } } }
+      },
+      "post": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a module",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "status"], "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string" }, "lead_id": { "type": "string", "format": "uuid" }, "start_date": { "type": "string", "format": "date" }, "target_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "201": { "description": "Created module", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Module" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/modules/{moduleID}": {
+      "get": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a module",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Module", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Module" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a module",
+        "description": "Member (15)+. Partial semantics.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string" }, "lead_id": { "type": "string", "format": "uuid" }, "start_date": { "type": "string", "format": "date" }, "target_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "200": { "description": "Updated module", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Module" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a module",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/modules/{moduleID}/issues": {
+      "get": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List a module's issues",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Module issues", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add issues to a module",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Added", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove issues from a module",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List pages",
+        "description": "Flat list, roots first, siblings by position — the frontend builds the tree.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Pages", "content": { "application/json": { "schema": { "type": "object", "properties": { "pages": { "type": "array", "items": { "$ref": "#/components/schemas/Page" } } } } } } } }
+      },
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a page",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" }, "content": { "type": "string" }, "parent_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "201": { "description": "Created page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a page",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a page",
+        "description": "Member (15)+. Partial semantics.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "content": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Updated page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a page",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/revisions": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List page revisions",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Revisions", "content": { "application/json": { "schema": { "type": "object", "properties": { "revisions": { "type": "array", "items": { "$ref": "#/components/schemas/PageRevision" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/restore": {
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Restore a page revision",
+        "description": "The pre-restore state is snapshotted first, so a restore is itself undoable. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["revision_id"], "properties": { "revision_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Restored page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/move": {
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Move a page",
+        "description": "Reparent and/or reposition. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "parent_id": { "type": "string", "format": "uuid", "nullable": true }, "position": { "type": "number" } } } } } },
+        "responses": { "200": { "description": "Moved page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/share": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List public share links for a page",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "shares": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
+      },
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a public share link for a page",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "expires_at": { "type": "string", "format": "date-time" } } } } } },
+        "responses": { "201": { "description": "Share link created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShareCreateResponse" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/share/{token}": {
+      "delete": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Revoke a page share link",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "204": { "description": "Share revoked" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/releases": {
+      "get": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List releases",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Releases", "content": { "application/json": { "schema": { "type": "object", "properties": { "releases": { "type": "array", "items": { "$ref": "#/components/schemas/Release" } } } } } } } }
+      },
+      "post": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a release",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "status"], "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string" }, "release_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "201": { "description": "Created release", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Release" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/releases/{releaseID}": {
+      "get": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a release",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Release", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Release" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a release",
+        "description": "Partial semantics.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string" }, "release_date": { "type": "string", "format": "date" } } } } } },
+        "responses": { "200": { "description": "Updated release", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Release" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a release",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/releases/{releaseID}/issues": {
+      "get": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List a release's issues",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Release issues", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add issues to a release",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Added", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove issues from a release",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake": {
+      "get": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List intake inbox items",
+        "description": "Pending triage items for the project's intake inbox.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Intake inbox", "content": { "application/json": { "schema": { "type": "object", "properties": { "intake": { "type": "object" }, "items": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeItem" } }, "snoozed": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeItem" } } } } } } } } 
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/issues/{uuid}/accept": {
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Accept an intake item into the backlog",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Accepted intake item", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeItem" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/issues/{uuid}/reject": {
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Reject an intake item",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Rejected intake item", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeItem" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/issues/{uuid}/snooze": {
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Snooze an intake item",
+        "description": "snoozed_till must be an RFC3339 timestamp in the future. A server ticker flips expired snoozes back to pending without any page interaction.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["snoozed_till"], "properties": { "snoozed_till": { "type": "string", "format": "date-time" } } } } } },
+        "responses": { "200": { "description": "Snoozed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeItem" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/issues/{uuid}/duplicate": {
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Mark an intake item as a duplicate",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["duplicate_to_id"], "properties": { "duplicate_to_id": { "type": "string", "format": "uuid", "description": "The issue this item duplicates" } } } } } },
+        "responses": { "200": { "description": "Marked duplicate", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeItem" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/activity": {
+      "get": {
+        "tags": ["activity"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get the project activity feed",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } }
+        ],
+        "responses": { "200": { "description": "Activity entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "activity": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/analytics/summary": {
+      "get": {
+        "tags": ["analytics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get project analytics summary",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Analytics summary", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsSummary" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/analytics/cycle/{cycleID}/burndown": {
+      "get": {
+        "tags": ["analytics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get analytics burndown for a cycle",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Burndown data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Burndown" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/analytics/trends": {
+      "get": {
+        "tags": ["analytics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get project trend data",
+        "description": "days must be a positive integer.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "days", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 30 } }
+        ],
+        "responses": { "200": { "description": "Trend data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trends" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/time/summary": {
+      "get": {
+        "tags": ["time"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get project time summary",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Time summary", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimeSummary" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/templates": {
+      "get": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List issue templates",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Templates", "content": { "application/json": { "schema": { "type": "object", "properties": { "templates": { "type": "array", "items": { "$ref": "#/components/schemas/Template" } } } } } } } }
+      },
+      "post": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an issue template",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "template_data": { "description": "Template defaults (rich-text description, priority, state, labels, …)" } } } } } },
+        "responses": { "201": { "description": "Created template", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Template" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/templates/{templateID}": {
+      "get": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a template",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "templateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Template", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Template" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a template",
+        "description": "PATCH {} is 400 (nothing to update) rather than a no-op 200.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "templateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "template_data": { "description": "Template defaults" } } } } } },
+        "responses": { "200": { "description": "Updated template", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Template" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a template",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "templateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/templates/{templateID}/apply": {
+      "post": {
+        "tags": ["templates"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an issue from a template",
+        "description": "Merges the template defaults with the optional body overrides; validates every referenced state/label/estimate still exists — a stale ref is 404, not a silently wrong issue. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "templateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "description": "Rich-text JSON document" }, "priority": { "type": "integer" }, "state_id": { "type": "string", "format": "uuid" }, "estimate_point_id": { "type": "string", "format": "uuid" }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "201": { "description": "Created issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/custom-fields": {
+      "get": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List custom fields",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Custom fields", "content": { "application/json": { "schema": { "type": "object", "properties": { "custom_fields": { "type": "array", "items": { "$ref": "#/components/schemas/CustomField" } } } } } } } }
+      },
+      "post": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a custom field",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "field_type"], "properties": { "name": { "type": "string" }, "field_type": { "type": "string", "description": "e.g. text, number, date, select, multi_select, checkbox, url" }, "options": { "description": "Raw JSON options (e.g. select choices)" }, "required": { "type": "boolean" }, "position": { "type": "integer" } } } } } },
+        "responses": { "201": { "description": "Created field", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomField" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/custom-fields/{fieldID}": {
+      "get": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a custom field",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "fieldID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Custom field", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomField" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a custom field",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "fieldID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "field_type": { "type": "string" }, "options": { "description": "Raw JSON options" }, "required": { "type": "boolean" }, "position": { "type": "integer" } } } } } },
+        "responses": { "200": { "description": "Updated field", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomField" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a custom field",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "fieldID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/webhooks": {
+      "get": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List webhooks",
+        "description": "List/get/update omit the signing secret; only create reveals it.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Webhooks", "content": { "application/json": { "schema": { "type": "object", "properties": { "webhooks": { "type": "array", "items": { "$ref": "#/components/schemas/Webhook" } } } } } } } }
+      },
+      "post": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a webhook",
+        "description": "The 201 is the only response that reveals the signing secret (show-on-create); list/get/update omit it.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["url", "events"], "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" } } } } } },
+        "responses": { "201": { "description": "Created webhook (secret shown once)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookCreateResponse" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/webhooks/{id}": {
+      "get": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a webhook",
+        "description": "The signing secret is omitted.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Webhook", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Webhook" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a webhook",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" } } } } } },
+        "responses": { "200": { "description": "Updated webhook", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Webhook" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a webhook",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/notifications": {
+      "get": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List my notifications",
+        "parameters": [
+          { "name": "unread_only", "in": "query", "schema": { "type": "boolean", "default": false } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1 } }
+        ],
+        "responses": { "200": { "description": "Notifications", "content": { "application/json": { "schema": { "type": "object", "properties": { "notifications": { "type": "array", "items": { "$ref": "#/components/schemas/Notification" } }, "unread_count": { "type": "integer" } } } } } } }
+      }
+    },
+    "/api/v1/notifications/read": {
+      "post": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Mark all notifications read",
+        "responses": { "200": { "description": "Marked read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } } }
+      }
+    },
+    "/api/v1/notifications/{id}/read": {
+      "post": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Mark one notification read",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Marked read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/notification-prefs": {
+      "get": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get my notification preferences",
+        "responses": { "200": { "description": "Preferences", "content": { "application/json": { "schema": { "type": "object", "properties": { "prefs": { "type": "array", "items": { "$ref": "#/components/schemas/NotificationPref" } } } } } } } }
+      }
+    },
+    "/api/v1/notification-prefs/{event}": {
+      "put": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set a notification preference",
+        "parameters": [ { "name": "event", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["in_app", "email"], "properties": { "in_app": { "type": "boolean" }, "email": { "type": "boolean" } } } } } },
+        "responses": { "200": { "description": "Preference saved", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationPref" } } } } }
+      }
+    },
+    "/api/v1/favorites": {
+      "get": {
+        "tags": ["favorites"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List my favorites",
+        "responses": { "200": { "description": "Favorites", "content": { "application/json": { "schema": { "type": "object", "properties": { "favorites": { "type": "array", "items": { "$ref": "#/components/schemas/Favorite" } } } } } } } }
+      },
+      "post": {
+        "tags": ["favorites"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Star an issue or project",
+        "description": "201 with the favorite on a new star, 200 with the existing favorite when already starred. 404 when the target is missing or not visible to the caller.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["type", "id"], "properties": { "type": { "type": "string", "enum": ["issue", "project"] }, "id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Already starred", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Favorite" } } } }, "201": { "description": "Starred", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Favorite" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["favorites"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unstar",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["type", "id"], "properties": { "type": { "type": "string", "enum": ["issue", "project"] }, "id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "204": { "description": "Unstarred" } }
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "tags": ["search"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Cross-project issue search",
+        "parameters": [ { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "Search results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } } }
+      }
+    },
+    "/api/v1/work-items/{displayID}": {
+      "get": {
+        "tags": ["search"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Resolve a work item by display ID",
+        "description": "Resolves IDs like GLA-123 across the caller's workspaces. Not-found variants share one 404 message — the caller must not learn whether the ID was malformed, unknown, ambiguous, or in a workspace they cannot see.",
+        "parameters": [ { "name": "displayID", "in": "path", "required": true, "schema": { "type": "string", "example": "GLA-123" } } ],
+        "responses": { "200": { "description": "Work item", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkItem" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/ai/status": {
+      "get": {
+        "tags": ["ai"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "AI provider status",
+        "responses": { "200": { "description": "Status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AIStatus" } } } } }
+      }
+    },
+    "/api/v1/ai/draft": {
+      "post": {
+        "tags": ["ai"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Draft an issue description with AI",
+        "description": "Fail-open at boot: without GLANCE_AI_API_KEY the endpoints answer 503 (ai_not_configured) instead of refusing to start the server.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspace_slug", "project_identifier", "title"], "properties": { "workspace_slug": { "type": "string" }, "project_identifier": { "type": "string" }, "title": { "type": "string" }, "context": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Drafted description", "content": { "application/json": { "schema": { "type": "object", "properties": { "description": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "503": { "description": "AI not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/v1/ai/triage": {
+      "post": {
+        "tags": ["ai"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Suggest triage for an issue with AI",
+        "description": "Returns priority, label and state suggestions. 503 when the AI provider is not configured.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspace_slug", "project_identifier", "title"], "properties": { "workspace_slug": { "type": "string" }, "project_identifier": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Triage suggestions", "content": { "application/json": { "schema": { "type": "object", "properties": { "priority": { "type": "integer" }, "label_names": { "type": "array", "items": { "type": "string" } }, "state_name": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "503": { "description": "AI not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/v1/admin/stats": {
+      "get": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Instance stats",
+        "description": "Requires the server admin role (in addition to auth).",
+        "responses": { "200": { "description": "Stats", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminStats" } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/admin/users": {
+      "get": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List all users",
+        "description": "Requires the server admin role.",
+        "responses": { "200": { "description": "Users", "content": { "application/json": { "schema": { "type": "object", "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/admin/users/{id}": {
+      "patch": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a user (e.g. role)",
+        "description": "Requires the server admin role.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "role": { "type": "string", "description": "Server role, e.g. admin" } } } } } },
+        "responses": { "200": { "description": "Updated user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/admin/users/{id}/deactivate": {
+      "post": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Deactivate a user",
+        "description": "Requires the server admin role.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Deactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/admin/users/{id}/reactivate": {
+      "post": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Reactivate a user",
+        "description": "Requires the server admin role.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Reactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/admin/workspaces": {
+      "get": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List all workspaces (instance-wide)",
+        "description": "Requires the server admin role.",
+        "responses": { "200": { "description": "Workspaces", "content": { "application/json": { "schema": { "type": "object", "properties": { "workspaces": { "type": "array", "items": { "$ref": "#/components/schemas/Workspace" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/admin/workspaces/{id}": {
+      "delete": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete any workspace (instance-wide)",
+        "description": "Requires the server admin role.",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/public/s/{token}": {
+      "get": {
+        "tags": ["issues"], "security": [],
+        "summary": "Open a public share link",
+        "description": "No auth — the token is the capability. Renders the shared issue or page.",
+        "parameters": [ { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "Shared resource", "content": { "application/json": { "schema": { "type": "object" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey", "in": "cookie", "name": "glance_session",
+        "description": "Session cookie set by POST /api/v1/auth/otp/verify or the OAuth callback. HttpOnly."
+      },
+      "apiToken": {
+        "type": "http", "scheme": "bearer",
+        "description": "Personal API token minted via POST /api/v1/tokens (prefix gl_). Bearer <redacted> that do not start with gl_ are ignored by the middleware. Scopes: read (GETs), write (implies read)."
+      }
+    },
+    "parameters": {
+      "Slug": { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Workspace slug" },
+      "Identifier": { "name": "identifier", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Project identifier (uppercased short key)" },
+      "Uuid": { "name": "uuid", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Issue id (uuid)" },
+      "IdempotencyKey": { "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" }, "description": "Replay-safe: a retried request with the same key returns the stored response byte-identical instead of executing again (supported on issue create, comment create, bulk update/delete)." }
+    },
+    "responses": {
+      "BadRequest": { "description": "Invalid request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthorized": { "description": "Missing or invalid auth", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "Authenticated but not allowed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "Conflicting state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RateLimited": { "description": "Too many requests", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "PayloadTooLarge": { "description": "Request body exceeds the size limit", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "Machine-readable error code, e.g. bad_request, not_found, rate_limited" },
+          "message": { "type": "string" },
+          "details": { "type": "object", "description": "Optional structured detail" }
+        }
+      },
+      "Ok": { "type": "object", "properties": { "ok": { "type": "boolean", "example": true } } },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string" },
+          "role": { "type": "string", "description": "Server role (admin or member)" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "user_agent": { "type": "string" },
+          "ip": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "last_seen_at": { "type": "string", "format": "date-time" },
+          "current": { "type": "boolean", "description": "True when this row is the caller's own session" }
+        }
+      },
+      "Token": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "scopes": { "type": "array", "items": { "type": "string", "enum": ["read", "write"] } },
+          "expires_at": { "type": "string", "format": "date-time", "nullable": true },
+          "last_used_at": { "type": "string", "format": "date-time", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreatedToken": {
+        "allOf": [ { "$ref": "#/components/schemas/Token" } ],
+        "description": "Token plus its plaintext, returned exactly once.",
+        "properties": { "token": { "type": "string", "description": "Plaintext token (prefix gl_); shown once, never again" } }
+      },
+      "Workspace": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "slug": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WorkspaceMembership": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "slug": { "type": "string" },
+          "role": { "type": "integer", "description": "Caller's role: 15 = member, 20 = admin" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WorkspaceMember": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string" },
+          "name": { "type": "string" },
+          "role": { "type": "integer", "description": "15 = member, 20 = admin" }
+        }
+      },
+      "InviteResult": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "status": { "type": "string", "enum": ["invited", "already-member", "not-registered", "invalid"] }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "identifier": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "close_in_days": { "type": "integer", "description": "Cycle-rollover grace in days" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Issue": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "sequence_id": { "type": "integer" },
+          "display_id": { "type": "string", "example": "GLA-123" },
+          "name": { "type": "string" },
+          "description": { "description": "Rich-text JSON document" },
+          "priority": { "type": "integer", "description": "0-4" },
+          "state_id": { "type": "string", "format": "uuid", "nullable": true },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true },
+          "sort_order": { "type": "number" },
+          "start_date": { "type": "string", "format": "date", "nullable": true },
+          "target_date": { "type": "string", "format": "date", "nullable": true },
+          "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true },
+          "is_draft": { "type": "boolean" },
+          "archived": { "type": "boolean" },
+          "assignees": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
+          "labels": { "type": "array", "items": { "$ref": "#/components/schemas/Label" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "IssueCreate": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "description": "Rich-text JSON document" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+          "state_id": { "type": "string", "format": "uuid" },
+          "parent_id": { "type": "string", "format": "uuid" },
+          "sort_order": { "type": "number" },
+          "start_date": { "type": "string", "format": "date" },
+          "target_date": { "type": "string", "format": "date" },
+          "estimate_point_id": { "type": "string", "format": "uuid" },
+          "is_draft": { "type": "boolean" },
+          "intake": { "type": "boolean", "description": "Opt the new issue into the intake inbox as pending (default false: direct-to-backlog)" }
+        }
+      },
+      "IssuePatch": {
+        "type": "object",
+        "description": "Partial update. Plain fields: omitted = untouched. description/parent_id/start_date/target_date/estimate_point_id are tri-state: omitted = untouched, explicit null = clear, value = assign.",
+        "properties": {
+          "name": { "type": "string" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+          "state_id": { "type": "string", "format": "uuid" },
+          "sort_order": { "type": "number" },
+          "is_draft": { "type": "boolean" },
+          "archived": { "type": "boolean" },
+          "description": { "description": "Rich-text JSON document (tri-state)" },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true },
+          "start_date": { "type": "string", "format": "date", "nullable": true },
+          "target_date": { "type": "string", "format": "date", "nullable": true },
+          "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true }
+        }
+      },
+      "IssueDetail": {
+        "allOf": [ { "$ref": "#/components/schemas/Issue" } ],
+        "description": "Issue plus optional attachments: children (with ?include_children=1) and custom_values keyed by field id (with ?include_custom=1).",
+        "properties": {
+          "children": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } },
+          "custom_values": { "type": "object", "additionalProperties": {}, "description": "Custom-field id → value" }
+        }
+      },
+      "IssueVersion": {
+        "type": "object",
+        "properties": {
+          "n": { "type": "integer", "description": "Version number" },
+          "description": { "description": "Rich-text JSON document at this version" },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Comment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "content": { "description": "Rich-text JSON document" },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true },
+          "author": { "$ref": "#/components/schemas/User" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Reaction": {
+        "type": "object",
+        "properties": {
+          "emoji": { "type": "string" },
+          "user_id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Vote": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "filename": { "type": "string" },
+          "content_type": { "type": "string" },
+          "size_bytes": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Label": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "color": { "type": "string", "nullable": true },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true }
+        }
+      },
+      "State": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "group": { "type": "string", "description": "backlog | unstarted | started | completed | cancelled" },
+          "color": { "type": "string" },
+          "sequence": { "type": "integer" }
+        }
+      },
+      "EstimateScale": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "points": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "key": { "type": "string" }, "value": { "type": "integer" }, "description": { "type": "string", "nullable": true } } }
+          }
+        }
+      },
+      "Cycle": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "start_date": { "type": "string", "format": "date" },
+          "end_date": { "type": "string", "format": "date" },
+          "status": { "type": "string" }
+        }
+      },
+      "Module": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "status": { "type": "string" },
+          "lead_id": { "type": "string", "format": "uuid", "nullable": true },
+          "start_date": { "type": "string", "format": "date", "nullable": true },
+          "target_date": { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "Page": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "content": { "type": "string", "nullable": true },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true },
+          "position": { "type": "number" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PageRevision": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "content": { "type": "string", "nullable": true },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Release": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "status": { "type": "string" },
+          "release_date": { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "Template": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "template_data": { "description": "Template defaults (rich-text description, priority, state, labels, …)" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CustomField": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "field_type": { "type": "string" },
+          "options": { "description": "Raw JSON options (e.g. select choices)" },
+          "required": { "type": "boolean" },
+          "position": { "type": "integer" }
+        }
+      },
+      "Webhook": {
+        "type": "object",
+        "description": "Signing secret is never returned by list/get/update — only by create (once).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "url": { "type": "string", "format": "uri" },
+          "events": { "type": "array", "items": { "type": "string" } },
+          "active": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WebhookCreateResponse": {
+        "allOf": [ { "$ref": "#/components/schemas/Webhook" } ],
+        "description": "Webhook plus its signing secret, shown exactly once.",
+        "properties": { "secret": { "type": "string", "description": "Signing secret — shown once at creation" } }
+      },
+      "Notification": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "event": { "type": "string" },
+          "title": { "type": "string" },
+          "read": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "NotificationPref": {
+        "type": "object",
+        "properties": {
+          "event": { "type": "string" },
+          "in_app": { "type": "boolean" },
+          "email": { "type": "boolean" }
+        }
+      },
+      "Favorite": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["issue", "project"] },
+          "id": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "IntakeItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "description": "pending | snoozed | accepted | rejected | duplicate" },
+          "snoozed_till": { "type": "string", "format": "date-time", "nullable": true },
+          "issue": { "$ref": "#/components/schemas/Issue" }
+        }
+      },
+      "ActivityEntry": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "actor": { "$ref": "#/components/schemas/User" },
+          "action": { "type": "string" },
+          "issue_id": { "type": "string", "format": "uuid", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AnalyticsSummary": {
+        "type": "object",
+        "properties": {
+          "total_issues": { "type": "integer" },
+          "open_issues": { "type": "integer" },
+          "completed_issues": { "type": "integer" },
+          "by_state": { "type": "object", "additionalProperties": { "type": "integer" } },
+          "by_priority": { "type": "object", "additionalProperties": { "type": "integer" } }
+        }
+      },
+      "Burndown": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "date": { "type": "string", "format": "date" }, "remaining": { "type": "integer" }, "ideal": { "type": "number" } } }
+          }
+        }
+      },
+      "Trends": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": { "type": "object", "properties": { "date": { "type": "string", "format": "date" }, "created": { "type": "integer" }, "completed": { "type": "integer" } } } }
+          }
+        },
+      "TimeEntry": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
+          "user_id": { "type": "string", "format": "uuid" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": "string", "format": "date-time", "nullable": true },
+          "note": { "type": "string", "nullable": true },
+          "seconds": { "type": "integer" }
+        }
+      },
+      "TimeSummary": {
+        "type": "object",
+        "properties": {
+          "total_seconds": { "type": "integer" },
+          "by_user": { "type": "object", "additionalProperties": { "type": "integer" } },
+          "by_issue": { "type": "object", "additionalProperties": { "type": "integer" } }
+        }
+      },
+      "ImportResult": {
+        "type": "object",
+        "properties": {
+          "created": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer" }, "error": { "type": "string" } } } }
+        }
+      },
+      "ShareLink": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string" },
+          "expires_at": { "type": "string", "format": "date-time", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ShareCreateResponse": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string" },
+          "url": { "type": "string", "format": "uri" },
+          "share": { "$ref": "#/components/schemas/ShareLink" }
+        }
+      },
+      "AIStatus": {
+        "type": "object",
+        "properties": {
+          "configured": { "type": "boolean" },
+          "model": { "type": "string", "nullable": true }
+        }
+      },
+      "AdminStats": {
+        "type": "object",
+        "properties": {
+          "users": { "type": "integer" },
+          "workspaces": { "type": "integer" },
+          "projects": { "type": "integer" },
+          "issues": { "type": "integer" }
+        }
+      },
+      "IssueLink": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "target_issue_id": { "type": "string", "format": "uuid" },
+          "kind": { "type": "string" }
+        }
+      },
+      "IssueRelation": {
+        "type": "object",
+        "properties": {
+          "related_issue_id": { "type": "string", "format": "uuid" },
+          "type": { "type": "string" },
+          "derived": { "type": "boolean", "description": "True for derived reverse rows" }
+        }
+      },
+      "WorkItem": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "description": "issue" },
+          "issue": { "$ref": "#/components/schemas/Issue" },
+          "workspace_slug": { "type": "string" },
+          "project_identifier": { "type": "string" }
+        }
+      }
+    }
+  }
+}
