@@ -154,6 +154,7 @@ func main() {
 
 	projectHandler := &api.ProjectHandler{Pool: pool}
 	api.RegisterProjectRoutes(e, projectHandler)
+	api.RegisterImportRoutes(e, projectHandler)
 
 	issueHandler := &api.IssueHandler{Pool: pool}
 	// C4T2: issue attachment file storage, rooted at
