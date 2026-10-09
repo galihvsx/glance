@@ -26,6 +26,7 @@ import {
 } from "../components/ui/dialog";
 import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
+import WebhooksSection from "../components/settings/WebhooksSection";
 
 // Mirrors the backend contract (service.validSlug): lowercase alphanumeric
 // groups joined by single hyphens, 1–64 chars. Same rule as onboarding.
@@ -238,7 +239,7 @@ export default function WorkspaceSettings() {
             Workspace settings
           </h1>
           <p className="text-sm text-muted-foreground">
-            Manage this workspace, its members and danger zone.
+            Manage this workspace, its members, webhooks and danger zone.
           </p>
         </div>
         <NotificationBell />
@@ -385,6 +386,9 @@ export default function WorkspaceSettings() {
           )}
         </CardContent>
       </Card>
+
+      {/* ---------- Webhooks (admin only, matches danger-zone gating) ---------- */}
+      {isAdmin && <WebhooksSection slug={ws.slug} />}
 
       {/* ---------- Danger zone ---------- */}
       {isAdmin && (
