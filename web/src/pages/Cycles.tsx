@@ -9,12 +9,14 @@ import { Plus } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
   Cycle,
+  CycleBurndown,
   Issue,
   IssueListResult,
   IssueState,
   Project,
 } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
+import BurndownChart from "../components/cycle/BurndownChart";
 import ThemeToggle from "../components/ThemeToggle";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
@@ -516,6 +518,19 @@ function CycleDetail({
   slug: string;
   identifier: string;
 }) {
+  const burndownQuery = useQuery({
+    queryKey: ["cycle-burndown", slug, identifier, cycle.id],
+    queryFn: () =>
+      api.get<CycleBurndown>(
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/cycles/${cycle.id}/burndown`,
+      ),
+  });
+  const snapshot = cycle.progress_snapshot ?? {};
+  const openCount =
+    (snapshot.triage ?? 0) + (snapshot.backlog ?? 0) + (snapshot.unstarted ?? 0);
+  const inProgressCount = snapshot.started ?? 0;
+  const doneCount = snapshot.completed ?? 0;
+
   return (
     <div>
       <button
@@ -535,8 +550,57 @@ function CycleDetail({
           Add issues
         </Button>
       </div>
+      <div className="mt-4 grid grid-cols-3 gap-3">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Open</p>
+            <p className="text-2xl font-semibold tabular-nums">{openCount}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">In progress</p>
+            <p className="text-2xl font-semibold tabular-nums">
+              {inProgressCount}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Done</p>
+            <p className="text-2xl font-semibold tabular-nums">{doneCount}</p>
+          </CardContent>
+        </Card>
+      </div>
       <div className="mt-4">
         <ProgressBar snapshot={cycle.progress_snapshot ?? {}} states={states} />
+      </div>
+      <div className="mt-4">
+        {burndownQuery.status === "pending" ? (
+          <Skeleton className="h-64 w-full" />
+        ) : burndownQuery.status === "error" ? (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              Couldn't load the burndown chart.
+            </CardContent>
+          </Card>
+        ) : burndownQuery.data.total_scope === 0 ? (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              No issues in this cycle yet — the burndown chart appears once
+              issues are added.
+            </CardContent>
+          </Card>
+        ) : !burndownQuery.data.days.some((d) => d.remaining != null) ? (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              This cycle hasn't started yet — the burndown chart appears once
+              it's underway.
+            </CardContent>
+          </Card>
+        ) : (
+          <BurndownChart data={burndownQuery.data} />
+        )}
       </div>
       <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
         Issues in this cycle ({issues.length})

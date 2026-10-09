@@ -202,3 +202,20 @@ export interface Cycle {
   created_at: string;
   updated_at: string;
 }
+
+/** One day of a cycle burndown. `remaining` is null for future days. */
+export interface BurndownDay {
+  date: string; // YYYY-MM-DD
+  remaining: number | null;
+  ideal: number;
+}
+
+/** GET .../cycles/{id}/burndown response. */
+export interface CycleBurndown {
+  cycle_id: string;
+  start_date: string; // YYYY-MM-DD
+  end_date: string; // YYYY-MM-DD
+  status: string;
+  total_scope: number;
+  days: BurndownDay[];
+}
