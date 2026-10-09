@@ -14,8 +14,9 @@ import { childRows, removeChildMessage, subIssuesTitle } from "./subIssues";
 
 /** Opens an issue the same way the list/board do: inside a peek drawer
  *  (compact) the drawer swaps to the new issue; on the full page the
- *  router navigates to the issue's detail route. */
-function useOpenIssue(slug: string, identifier: string, compact: boolean) {
+ *  router navigates to the issue's detail route. Exported for IssueLinks,
+ *  which reuses the same navigation contract. */
+export function useOpenIssue(slug: string, identifier: string, compact: boolean) {
   const navigate = useNavigate();
   const { openPeek } = usePeekParam();
   return useCallback(
