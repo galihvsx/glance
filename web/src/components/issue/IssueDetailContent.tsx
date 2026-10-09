@@ -14,6 +14,7 @@ import type {
 } from "../../lib/types";
 import { tiptapText } from "../../lib/tiptap";
 import { useProjectRealtime } from "../../lib/realtime";
+import { useRecordRecentIssue } from "./recents";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
@@ -275,6 +276,10 @@ export default function IssueDetailContent({
   const issue = issueQuery.data;
   const states = statesQuery.data ?? [];
   const stateById = new Map(states.map((s) => [s.id, s]));
+
+  // Recents (localStorage): every opened issue — full page or peek drawer —
+  // lands here, feeding the dashboard's "Recents" section.
+  useRecordRecentIssue(issue, slug, identifier);
 
   function invalidateIssue() {
     void queryClient.invalidateQueries({ queryKey: issueKey });
