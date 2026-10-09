@@ -408,15 +408,18 @@ func TestListAdminWorkspaces(t *testing.T) {
 		t.Fatalf("total = %d, want >= 1", total)
 	}
 	var found *AdminWorkspace
-	// Page through (bounded): the shared test DB accumulates workspaces
-	// across runs and pages cap at 100 rows.
-	for page := 1; page <= 50 && found == nil; page++ {
+	// The listing orders by created_at ASC, so a freshly created workspace
+	// sits on the LAST page. The shared test DB accumulates workspaces
+	// across runs (well past 50 pages), so scan the last two pages (the
+	// second guards against created_at ties with concurrent test rows).
+	lastPage := int(total-1)/100 + 1
+	for page := lastPage - 1; page <= lastPage && found == nil; page++ {
+		if page < 1 {
+			continue
+		}
 		batch, _, err := ListAdminWorkspaces(ctx, pool, 100, (page-1)*100)
 		if err != nil {
 			t.Fatalf("ListAdminWorkspaces page %d: %v", page, err)
-		}
-		if len(batch) == 0 {
-			break
 		}
 		for i := range batch {
 			if batch[i].ID == ws.ID {
