@@ -87,28 +87,47 @@ func (h *IssueHandler) clearIssueParent(c *echo.Context) error {
 }
 
 // issueDetailResponse is the GET issue detail shape with the optional
-// ?include_children=1 children attachment (C5T4). The list query is
-// deliberately untouched (perf): children are fetched only on detail,
-// in one extra query.
+// ?include_children=1 children attachment (C5T4) and the optional
+// ?include_custom=1 custom-values attachment (C7T2). The list query is
+// deliberately untouched (perf): both are fetched only on detail, in one
+// extra query each. custom_values is keyed by field id and omitted when
+// not requested (or when no values are set).
 type issueDetailResponse struct {
 	service.IssueListItem
-	Children []service.IssueChild `json:"children,omitempty"`
+	Children     []service.IssueChild           `json:"children,omitempty"`
+	CustomValues map[string]service.CustomValue `json:"custom_values,omitempty"`
 }
 
 // getIssueChildren decorates a fetched issue with its child summaries
-// when the caller passes ?include_children=1.
+// when the caller passes ?include_children=1, and with its custom values
+// when the caller passes ?include_custom=1 (C7T2). Without either flag
+// the response is the bare IssueListItem, byte-identical to before.
 func (h *IssueHandler) getIssueChildren(c *echo.Context, iss *service.IssueListItem) error {
 	qp := c.QueryParams()
-	if qp.Get("include_children") != "1" && qp.Get("include_children") != "true" {
+	wantChildren := qp.Get("include_children") == "1" || qp.Get("include_children") == "true"
+	wantCustom := qp.Get("include_custom") == "1" || qp.Get("include_custom") == "true"
+	if !wantChildren && !wantCustom {
 		return c.JSON(http.StatusOK, iss)
 	}
-	children, err := service.ListIssueChildren(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), iss.ID, CurrentUser(c).ID)
-	if err != nil {
-		return parentError(c, err)
+	resp := issueDetailResponse{IssueListItem: *iss}
+	if wantChildren {
+		children, err := service.ListIssueChildren(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), iss.ID, CurrentUser(c).ID)
+		if err != nil {
+			return parentError(c, err)
+		}
+		if children == nil {
+			children = []service.IssueChild{}
+		}
+		resp.Children = children
 	}
-	if children == nil {
-		children = []service.IssueChild{}
+	if wantCustom {
+		values, err := service.GetIssueCustomValues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, iss.ID)
+		if err != nil {
+			return customFieldError(c, err)
+		}
+		resp.CustomValues = values
 	}
-	return c.JSON(http.StatusOK, issueDetailResponse{IssueListItem: *iss, Children: children})
+	return c.JSON(http.StatusOK, resp)
 }

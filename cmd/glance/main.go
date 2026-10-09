@@ -195,6 +195,7 @@ func main() {
 	api.RegisterPageRoutes(e, issueHandler)
 	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterTemplateRoutes(e, issueHandler)
+	api.RegisterCustomFieldRoutes(e, issueHandler)
 	api.RegisterPublicRoutes(e, issueHandler)
 	api.RegisterAnalyticsRoutes(e, issueHandler)
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
