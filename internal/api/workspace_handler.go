@@ -1,10 +1,8 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -119,14 +117,14 @@ type updateWorkspaceBody struct {
 	// form always sends it, the Slack section never does.
 	Name *string `json:"name"`
 	Slug *string `json:"slug,omitempty"`
-	// SlackWebhookURL uses *json.RawMessage (not **string) to tell
-	// explicit null apart from an absent key: encoding/json unmarshals
-	// JSON null into a nil pointer at ANY indirection depth, so a
-	// double pointer cannot distinguish the two. RawMessage keeps the
-	// literal bytes: nil = key absent (untouched), "null" = clear,
-	// "string" = set (validated as an https://hooks.slack.com/ URL).
+	// SlackWebhookURL is tri-state (service.PatchField): omitted key = leave
+	// untouched, explicit null = clear the column, string = set (validated
+	// as an https://hooks.slack.com/ URL). A *json.RawMessage cannot do
+	// this: encoding/json unmarshals a JSON null into a nil pointer, making
+	// explicit null indistinguishable from an absent key (C9T3 clear-path
+	// bug — PatchField records presence in UnmarshalJSON instead).
 	// The stored URL is a secret and is never returned.
-	SlackWebhookURL *json.RawMessage `json:"slack_webhook_url"`
+	SlackWebhookURL service.PatchField[string] `json:"slack_webhook_url"`
 }
 
 // updateWorkspace implements PATCH /api/v1/workspaces/{slug}: rename
@@ -164,18 +162,9 @@ func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 		}
 		slug = ws.Slug // a slug change moves subsequent lookups
 	}
-	if body.SlackWebhookURL != nil {
-		var urlStr *string
-		raw := strings.TrimSpace(string(*body.SlackWebhookURL))
-		if raw != "" && raw != "null" {
-			var s string
-			if err := json.Unmarshal(*body.SlackWebhookURL, &s); err != nil {
-				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack_webhook_url must be a string or null", nil)
-			}
-			urlStr = &s
-		}
+	if body.SlackWebhookURL.Set {
 		var err error
-		ws, err = service.SetWorkspaceSlackURL(ctx, h.Pool, slug, actorID, urlStr)
+		ws, err = service.SetWorkspaceSlackURL(ctx, h.Pool, slug, actorID, body.SlackWebhookURL.Value)
 		if err != nil {
 			return workspaceError(c, err)
 		}
