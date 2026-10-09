@@ -282,6 +282,18 @@ func workspaceIDForActor(row pgx.Row) (string, int, error) {
 	return wsID, role, nil
 }
 
+// lockMembershipRows takes a FOR UPDATE lock on all of a workspace's
+// membership rows inside the caller's transaction. RemoveMember and
+// UpsertMember both read adminCount() before mutating; without this lock
+// two concurrent calls can each observe N admins and together remove or
+// demote them all, leaving the workspace with zero admins (C3T8).
+func lockMembershipRows(ctx context.Context, tx pgx.Tx, wsID string) error {
+	_, err := tx.Exec(ctx,
+		`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid FOR UPDATE`,
+		wsID)
+	return err
+}
+
 // adminCount returns the number of admins in the workspace. Read inside
 // the caller's transaction so the check-and-mutate pair is atomic.
 func adminCount(ctx context.Context, tx pgx.Tx, wsID string) (int, error) {
@@ -317,6 +329,12 @@ func UpsertMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	}
 	if actorRole != RoleAdmin {
 		return ErrForbidden
+	}
+
+	// Serialize with concurrent membership mutations (C3T8): the
+	// last-admin demotion guard below reads adminCount() then mutates.
+	if err := lockMembershipRows(ctx, tx, wsID); err != nil {
+		return err
 	}
 
 	// Lockout guard: demoting an admin below 20 when they are the last one.
@@ -382,6 +400,12 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	}
 	if actorRole != RoleAdmin {
 		return ErrForbidden
+	}
+
+	// Serialize with concurrent membership mutations (C3T8): the
+	// last-admin removal guard below reads adminCount() then deletes.
+	if err := lockMembershipRows(ctx, tx, wsID); err != nil {
+		return err
 	}
 
 	var targetRole int

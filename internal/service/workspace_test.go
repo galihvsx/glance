@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -409,5 +410,63 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 	if _, _, err := GetWorkspace(ctx, pool, delSlug, admin); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted workspace lookup: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRemoveMemberConcurrentLastAdmin (C3T8): 20 parallel removals
+// targeting both admins of a 2-admin workspace must never leave the
+// workspace with zero admins. Without the FOR UPDATE lock on the
+// membership rows, two concurrent check-then-delete pairs could each
+// observe 2 admins and remove both.
+func TestRemoveMemberConcurrentLastAdmin(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	adminA := createTestUser(t, pool, uniqueTestEmail("c3t8-raceA"))
+	adminB := createTestUser(t, pool, uniqueTestEmail("c3t8-raceB"))
+	raceSlug := uniqueTestSlug("c3t8-race")
+	createTestWorkspace(t, pool, "Race", raceSlug, adminA)
+	if err := UpsertMember(ctx, pool, raceSlug, adminA, adminB, RoleAdmin); err != nil {
+		t.Fatalf("UpsertMember adminB: %v", err)
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	var succeeded atomic.Int64
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			target := adminA
+			if i%2 == 1 {
+				target = adminB
+			}
+			// Actor stays adminA. Once adminA removes themself, their
+			// later calls fail with ErrNotFound — expected; the
+			// assertion is only that the workspace never ends up
+			// with zero admins.
+			if err := RemoveMember(ctx, pool, raceSlug, adminA, target); err == nil {
+				succeeded.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if succeeded.Load() == 0 {
+		t.Fatal("no removal succeeded; the test did not exercise the race")
+	}
+
+	var admins int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspace_members m
+		 JOIN workspaces w ON w.id = m.workspace_id
+		 WHERE w.slug = $1 AND m.role = $2`,
+		raceSlug, RoleAdmin).Scan(&admins)
+	if err != nil {
+		t.Fatalf("final admin count: %v", err)
+	}
+	if admins < 1 {
+		t.Fatalf("workspace left with %d admins; the last-admin guard was defeated by the race", admins)
 	}
 }
