@@ -10,7 +10,7 @@
 // with a session row for GLANCE_SMOKE_TOKEN, workspace slug `acme` with
 // the user as admin, and project identifier `ENG`.
 
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { RealtimeClient, type WsEventFrame } from "./ws";
 
 // vitest runs in node, but the app tsconfig only includes vite/client
@@ -34,6 +34,28 @@ async function mintTicket(): Promise<string> {
 }
 
 describe.skipIf(!SMOKE)("realtime smoke (live server)", () => {
+  // Issue IDs created by this suite. Cleaned up in afterAll so a smoke
+  // run leaves no live scratch rows behind (C3T8: test pollution fix).
+  const createdIssueIds: string[] = [];
+
+  async function deleteIssue(id: string): Promise<void> {
+    await fetch(`${BASE}/api/v1/workspaces/acme/projects/ENG/issues/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie },
+    });
+  }
+
+  afterAll(async () => {
+    for (const id of createdIssueIds) {
+      try {
+        await deleteIssue(id);
+      } catch {
+        // Best-effort cleanup — never fail the suite on teardown.
+      }
+    }
+    createdIssueIds.length = 0;
+  });
+
   it("ticket auth → subscribe → issue.created over the real socket", async () => {
     const client = new RealtimeClient({
       url: `${BASE.replace(/^http/, "ws")}/ws`,
@@ -70,6 +92,8 @@ describe.skipIf(!SMOKE)("realtime smoke (live server)", () => {
         },
       );
       expect(createRes.status).toBe(201);
+      const created = (await createRes.json()) as { id?: string };
+      if (created.id) createdIssueIds.push(created.id);
 
       const evt = await gotEvent;
       expect(evt.event).toBe("issue.created");
