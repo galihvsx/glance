@@ -14,6 +14,7 @@ import Intake from "./pages/Intake";
 import Board from "./pages/Board";
 import Cycles from "./pages/Cycles";
 import Spreadsheet from "./pages/Spreadsheet";
+import { Toaster } from "./components/ui/toast";
 
 export default function App() {
   return (
@@ -53,6 +54,7 @@ export default function App() {
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <Toaster />
         </BrowserRouter>
       </QueryProvider>
     </AuthProvider>
