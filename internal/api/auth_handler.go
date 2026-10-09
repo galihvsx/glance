@@ -32,6 +32,7 @@ func RegisterAuthRoutes(e *echo.Echo, h *AuthHandler) {
 	g.POST("/logout", h.logout, RequireAuth(h.Pool))
 	g.GET("/sessions", h.listSessions, RequireAuth(h.Pool))
 	g.DELETE("/sessions/:id", h.deleteSession, RequireAuth(h.Pool))
+	g.PATCH("/me", h.updateMe, RequireAuth(h.Pool))
 
 	e.Group("/api/v1").GET("/me", h.me, RequireAuth(h.Pool))
 }
@@ -243,6 +244,32 @@ func (h *AuthHandler) me(c *echo.Context) error {
 	return c.JSON(http.StatusOK, CurrentUser(c))
 }
 
+type updateMeBody struct {
+	Name string `json:"name"`
+}
+
+// updateMe implements PATCH /api/v1/auth/me: the user updates their own
+// display name. Email is identity (OTP/OAuth) and is never editable here.
+func (h *AuthHandler) updateMe(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	var b updateMeBody
+	if err := c.Bind(&b); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	updated, err := auth.UpdateUserName(c.Request().Context(), h.Pool, u.ID, b.Name)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidName) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+				"name is required and must be at most 100 characters", nil)
+		}
+		return WriteInternalError(c)
+	}
+	return c.JSON(http.StatusOK, updated)
+}
+
 // logout implements POST /api/v1/auth/logout: revokes the current session
 // row and clears the cookie. It requires auth — there is no session to
 // log out without one.
@@ -255,13 +282,29 @@ func (h *AuthHandler) logout(c *echo.Context) error {
 }
 
 // listSessions implements GET /api/v1/auth/sessions: the user's active
-// sessions for the settings page. Never includes token hashes.
+// sessions for the settings page. Never includes token hashes. Each row
+// carries a `current` flag so the UI can badge the caller's own session
+// (the session id lives in an HttpOnly cookie — the client cannot tell).
 func (h *AuthHandler) listSessions(c *echo.Context) error {
 	sessions, err := auth.ListSessions(c.Request().Context(), h.Pool, CurrentUser(c).ID)
 	if err != nil {
 		return WriteInternalError(c)
 	}
-	return c.JSON(http.StatusOK, map[string]any{"sessions": sessions})
+	currentID := CurrentSessionID(c)
+	views := make([]sessionView, 0, len(sessions))
+	for _, s := range sessions {
+		views = append(views, sessionView{
+			SessionInfo: s,
+			Current:     currentID != "" && strings.EqualFold(s.ID, currentID),
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]any{"sessions": views})
+}
+
+// sessionView is auth.SessionInfo plus the caller's current-session flag.
+type sessionView struct {
+	auth.SessionInfo
+	Current bool `json:"current"`
 }
 
 // deleteSession implements DELETE /api/v1/auth/sessions/{id}: revokes one
