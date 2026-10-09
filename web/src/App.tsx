@@ -32,6 +32,7 @@ import Releases from "./pages/Releases";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
 import PublicShare from "./pages/PublicShare";
+import ShortcutsHost from "./components/ShortcutsHost";
 import { Toaster } from "./components/ui/toast";
 
 export default function App() {
@@ -126,6 +127,7 @@ export default function App() {
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <ShortcutsHost />
           <Toaster />
         </BrowserRouter>
       </QueryProvider>
