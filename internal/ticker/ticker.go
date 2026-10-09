@@ -7,10 +7,9 @@
 // In-process by design (spec §3 "Known limitation"): one instance only in
 // v1. Horizontal scaling later = leader election; not v1.
 //
-// Snooze expiry (Task 20's deferred ticker) resurfaces at read time and is
-// NOT handled here — this ticker owns cycles only. It could host it later:
-// snooze expiry is another date-driven, idempotent per-row transition,
-// exactly the shape RunOnce already runs.
+// Snooze expiry lives in SnoozeTicker (snooze.go, C2T7): expired snoozes
+// are flipped to pending by a background pass, with the read-time
+// EffectiveStatus rule as the safety net.
 package ticker
 
 import (

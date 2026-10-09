@@ -991,3 +991,61 @@ func TestListFiltersMulti(t *testing.T) {
 		}
 	}
 }
+
+// TestListIssuesArchivedFilter (C2T7): archived issues are excluded by
+// default and included with Archived:true. (No archive action exists
+// yet — archived_at is set directly, the way a future archive endpoint
+// would.)
+func TestListIssuesArchivedFilter(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("arch-filt"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("arch-filt"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	live := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "live issue")
+	arch := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "archived issue")
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET archived_at = now() WHERE id = $1::uuid`, arch.ID); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	ids := func(res *ListIssuesResult) map[string]bool {
+		m := map[string]bool{}
+		for _, it := range res.Issues {
+			m[it.ID] = true
+		}
+		return m
+	}
+
+	// Default: archived hidden.
+	def, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator, ListIssuesInput{})
+	if err != nil {
+		t.Fatalf("ListIssues default: %v", err)
+	}
+	dm := ids(def)
+	if !dm[live.ID] {
+		t.Errorf("default list missing live issue")
+	}
+	if dm[arch.ID] {
+		t.Errorf("default list leaked archived issue")
+	}
+
+	// Archived:true: both visible.
+	all, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator, ListIssuesInput{Archived: true})
+	if err != nil {
+		t.Fatalf("ListIssues archived: %v", err)
+	}
+	am := ids(all)
+	if !am[live.ID] || !am[arch.ID] {
+		t.Errorf("archived list missing rows: live=%v archived=%v", am[live.ID], am[arch.ID])
+	}
+	// The archived row still carries its archived_at.
+	for _, it := range all.Issues {
+		if it.ID == arch.ID && it.ArchivedAt == nil {
+			t.Errorf("archived row lost its archived_at")
+		}
+	}
+}

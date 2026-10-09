@@ -104,6 +104,13 @@ func main() {
 	cycleTicker := &ticker.Ticker{Pool: pool, Interval: time.Minute}
 	cycleTicker.Start(ctx)
 
+	// Snooze-expiry ticker (C2T7, spec §3): flips intake rows whose
+	// snoozed_till has passed back to pending, so expired snoozes
+	// resurface without any page interaction. Same in-process,
+	// one-instance design as the cycle ticker.
+	snoozeTicker := &ticker.SnoozeTicker{Pool: pool, Interval: time.Minute}
+	snoozeTicker.Start(ctx)
+
 	e := echo.New()
 	e.GET("/health", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "version": Version})

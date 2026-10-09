@@ -27,6 +27,7 @@ import { useSearchParams } from "react-router-dom";
  *   due_after       YYYY-MM-DD, inclusive (matches target_date)
  *   due_before      YYYY-MM-DD, inclusive of the whole day
  *   subscribed      "1" = only issues the current user subscribed to
+ *   archived        "1" = include archived issues (default: hidden)
  *
  * The list API takes the same params except dates, which it wants as
  * RFC3339 (existing `updated_after` convention). toApiParams() converts:
@@ -53,6 +54,8 @@ export interface IssueFilters {
   dueAfter: string;
   dueBefore: string;
   subscribed: boolean;
+  /** Include archived issues; default false hides them. */
+  archived: boolean;
 }
 
 export const EMPTY_FILTERS: IssueFilters = {
@@ -69,6 +72,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   dueAfter: "",
   dueBefore: "",
   subscribed: false,
+  archived: false,
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -121,6 +125,7 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     dueAfter: validDate(search.get("due_after")),
     dueBefore: validDate(search.get("due_before")),
     subscribed: search.get("subscribed") === "1",
+    archived: search.get("archived") === "1",
   };
 }
 
@@ -141,6 +146,7 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.dueAfter) p.set("due_after", f.dueAfter);
   if (f.dueBefore) p.set("due_before", f.dueBefore);
   if (f.subscribed) p.set("subscribed", "1");
+  if (f.archived) p.set("archived", "1");
   return p;
 }
 
@@ -190,6 +196,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore) n++;
   if (f.subscribed) n++;
+  if (f.archived) n++;
   return n;
 }
 
@@ -244,6 +251,7 @@ const FILTER_PARAM_NAMES = new Set([
   "due_after",
   "due_before",
   "subscribed",
+  "archived",
 ]);
 
 /** True for the URL params that belong to the filter schema (C2T6 uses this

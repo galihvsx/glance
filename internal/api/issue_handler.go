@@ -304,6 +304,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			DueAfter:       dueAfter,
 			DueBefore:      dueBefore,
 			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
+			Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
 			Fields:         fields,
 		})
 	if err != nil {

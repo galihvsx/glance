@@ -1322,6 +1322,9 @@ type ListIssuesInput struct {
 	DueBefore     *time.Time
 	// Subscribed limits to issues the actor subscribed to.
 	Subscribed bool
+	// Archived includes archived issues. Default (false) excludes them:
+	// archived issues are out of the working set.
+	Archived bool
 }
 
 // IssueAssignee is one assignee on an issue, aggregated from
@@ -1488,6 +1491,9 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 
 	conds = append(conds, "i.project_id = "+arg(projectID)+"::uuid")
 	conds = append(conds, "i.deleted_at IS NULL")
+	if !in.Archived {
+		conds = append(conds, "i.archived_at IS NULL")
+	}
 	if in.State != "" {
 		conds = append(conds, "i.state_id = "+arg(in.State)+"::uuid")
 	}

@@ -22,6 +22,7 @@ const FULL: IssueFilters = {
   dueAfter: "2026-10-05",
   dueBefore: "",
   subscribed: true,
+  archived: true,
 };
 
 describe("parseFilters / serializeFilters", () => {
@@ -94,7 +95,7 @@ describe("activeFilterCount", () => {
   it("counts dimensions, not values", () => {
     expect(activeFilterCount(EMPTY_FILTERS)).toBe(0);
     // q, state, priority, label, assignee, estimate, created pair,
-    // due pair, subscribed = 9 dimensions
-    expect(activeFilterCount(FULL)).toBe(9);
+    // due pair, subscribed, archived = 10 dimensions
+    expect(activeFilterCount(FULL)).toBe(10);
   });
 });
