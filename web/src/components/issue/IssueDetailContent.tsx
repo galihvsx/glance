@@ -46,6 +46,7 @@ import FavoriteStar from "../favorites/FavoriteStar";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
+import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
 
 /** Wraps plain text as a minimal TipTap doc. */
@@ -727,6 +728,17 @@ export default function IssueDetailContent({
                 identifier={identifier}
                 issue={issue}
                 issueKey={issueKey}
+                compact={compact}
+                onError={setError}
+              />
+
+              {/* C8T0: issue links — directed dependency edges, grouped by
+                  type. Shares the detail/peek layout like SubIssues. */}
+              <IssueLinks
+                slug={slug}
+                identifier={identifier}
+                uuid={uuid}
+                projectBase={base}
                 compact={compact}
                 onError={setError}
               />
