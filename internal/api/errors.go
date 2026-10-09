@@ -10,16 +10,17 @@ import (
 // Every handler error path answers with one of these — never a bare
 // status and never a free-form string the client must substring-match.
 const (
-	ErrCodeBadRequest     = "bad_request"
-	ErrCodeUnauthorized   = "unauthorized"
-	ErrCodeForbidden      = "forbidden"
-	ErrCodeNotFound       = "not_found"
-	ErrCodeUserNotFound   = "user_not_found"
-	ErrCodeMemberNotFound = "member_not_found"
-	ErrCodeConflict       = "conflict"
-	ErrCodeRateLimited    = "rate_limited"
-	ErrCodeGone           = "gone"
-	ErrCodeInternal       = "internal"
+	ErrCodeBadRequest      = "bad_request"
+	ErrCodeUnauthorized    = "unauthorized"
+	ErrCodeForbidden       = "forbidden"
+	ErrCodeNotFound        = "not_found"
+	ErrCodeUserNotFound    = "user_not_found"
+	ErrCodeMemberNotFound  = "member_not_found"
+	ErrCodeConflict        = "conflict"
+	ErrCodeRateLimited     = "rate_limited"
+	ErrCodeGone            = "gone"
+	ErrCodePayloadTooLarge = "payload_too_large"
+	ErrCodeInternal        = "internal"
 )
 
 // errorEnvelope is the spec §5 error shape:

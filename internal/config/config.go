@@ -50,6 +50,16 @@ type Config struct {
 	// does not name it; dedicated env var like OTP_PEPPER. Empty → the
 	// OAuth endpoints fail fast instead of signing with a nil key.
 	OAuthStateSecret string
+	// DataDir is the filesystem root for glance's local data
+	// (attachments live under <DataDir>/attachments). From
+	// GLANCE_DATA_DIR; defaults to "./data" (relative to the process
+	// working directory). The server creates it on boot.
+	DataDir string
+	// MaxUploadMB caps a single attachment upload (C4T2). From
+	// GLANCE_MAX_UPLOAD_MB; defaults to 25. Must be a positive integer
+	// — anything else fails boot (fail closed: a misconfigured limit
+	// must not silently become unlimited).
+	MaxUploadMB int
 }
 
 func getenv(key, def string) string {
@@ -78,6 +88,16 @@ func Load() (*Config, error) {
 		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
 		OAuthStateSecret:   os.Getenv("OAUTH_STATE_SECRET"),
+		DataDir:            getenv("GLANCE_DATA_DIR", "./data"),
+	}
+	if v := os.Getenv("GLANCE_MAX_UPLOAD_MB"); v != "" {
+		mb, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || mb < 1 {
+			return nil, errors.New("config: GLANCE_MAX_UPLOAD_MB must be a positive integer (megabytes)")
+		}
+		cfg.MaxUploadMB = mb
+	} else {
+		cfg.MaxUploadMB = 25
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, errors.New("config: DATABASE_URL is required")

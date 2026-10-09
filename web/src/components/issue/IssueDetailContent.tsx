@@ -39,6 +39,7 @@ import PriorityPicker from "./PriorityPicker";
 import AssigneePicker from "./AssigneePicker";
 import LabelPicker from "./LabelPicker";
 import TimeTracker from "./TimeTracker";
+import Attachments from "./Attachments";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -813,6 +814,7 @@ export default function IssueDetailContent({
                 </CardContent>
               </Card>
               <TimeTracker slug={slug} identifier={identifier} uuid={uuid} />
+              <Attachments slug={slug} identifier={identifier} uuid={uuid} />
             </div>
           </div>
         </div>

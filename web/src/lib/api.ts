@@ -18,11 +18,18 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // FormData bodies (file uploads) must NOT get a Content-Type header:
+  // the browser sets multipart/form-data with the boundary itself.
+  const isForm =
+    typeof FormData !== "undefined" && init.body instanceof FormData;
   const res = await fetch(path, {
     ...init,
     // Cookie auth: always include credentials, even if a caller passes init.
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
+    headers: {
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
+      ...(init.headers ?? {}),
+    },
   });
 
   const text = await res.text();
@@ -69,4 +76,11 @@ export const api = {
       method: "DELETE",
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
+  /**
+   * POST a multipart FormData body (file uploads). Unlike `post`, this
+   * must NOT set Content-Type: the browser sets it with the multipart
+   * boundary. Cookie auth still applies via `request`.
+   */
+  postForm: <T>(path: string, form: FormData): Promise<T> =>
+    request<T>(path, { method: "POST", body: form }),
 };

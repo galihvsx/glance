@@ -12,5 +12,8 @@ web/node_modules/
 # local secrets (never commit) — see .env.example
 .env
 
+# local file storage (GLANCE_DATA_DIR default ./data) — never commit uploads
+data/
+
 # local-only reference material (competitor screenshots etc.)
 docs/reference/
