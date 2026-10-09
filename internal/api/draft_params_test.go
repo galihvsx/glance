@@ -71,3 +71,45 @@ func TestDraftListParam(t *testing.T) {
 		t.Errorf("draft=maybe: status = %d, want 400", rec.Code)
 	}
 }
+
+// TestSequenceIDListParam (C6T5 T25): ?sequence_id= is a direct lookup.
+// Garbage is 400, not ignored.
+func TestSequenceIDListParam(t *testing.T) {
+	_, e, cookie, base := setupBulkProject(t, "seqparam")
+
+	liveID := createIssueHTTP(t, e, cookie, base, "live issue")
+
+	listIDs := func(query string) map[string]bool {
+		t.Helper()
+		rec := getAuthed(t, e, http.MethodGet, base+"?"+query, cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d (body: %s)", query, rec.Code, rec.Body.String())
+		}
+		var res struct {
+			Results []struct {
+				ID string `json:"id"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		m := map[string]bool{}
+		for _, r := range res.Results {
+			m[r.ID] = true
+		}
+		return m
+	}
+
+	// First issue in this project → sequence_id=1.
+	got := listIDs("sequence_id=1")
+	if len(got) != 1 || !got[liveID] {
+		t.Errorf("sequence_id=1: got %v, want only %s", got, liveID)
+	}
+
+	for _, bad := range []string{"abc", "0", "-1", "1.5"} {
+		rec := getAuthed(t, e, http.MethodGet, base+"?sequence_id="+bad, cookie)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("sequence_id=%s: status = %d, want 400", bad, rec.Code)
+		}
+	}
+}

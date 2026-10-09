@@ -290,6 +290,20 @@ func TestCycleFrozenSnapshotKeepsTriage(t *testing.T) {
 			t.Fatalf("frozen snapshot missing group %q (full: %+v)", g, got.ProgressSnapshot)
 		}
 	}
+
+	// C6T5: completing an already-completed cycle is a no-op, not a
+	// second snapshot + second issue transfer (ticker race guard).
+	if err := CompleteCycle(ctx, pool, c.ID, proj.ID, now); err != nil {
+		t.Fatalf("second CompleteCycle: %v (want nil no-op)", err)
+	}
+	again, err := GetCycle(ctx, pool, slug, ident, actor, c.ID)
+	if err != nil {
+		t.Fatalf("GetCycle after second complete: %v", err)
+	}
+	if again.Status != "completed" || again.ProgressSnapshot["triage"] != 1 {
+		t.Fatalf("second complete changed the cycle: status=%q snapshot=%+v",
+			again.Status, again.ProgressSnapshot)
+	}
 }
 
 // TestCycleMalformedUUID: malformed cycle/issue ids are 400-grade client

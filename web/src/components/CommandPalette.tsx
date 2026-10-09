@@ -35,16 +35,16 @@ interface PaletteProps {
 }
 
 function projectPath(slug: string, identifier: string): string {
-  return `/w/${slug}/p/${identifier}`;
+  return `/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}`;
 }
 
 function apiBase(slug: string, identifier: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
 }
 
-// resolveDisplayId finds an issue by display ID, scanning newest-first.
-// Sequence ids are dense from 1, so we can stop as soon as we pass the
-// target sequence. Bounded at 5 pages (500 issues).
+// resolveDisplayId resolves an issue by display ID (e.g. "ENG-123") in one
+// query: the backend's ?sequence_id= lookup finds the exact row, drafts
+// included (a direct sequence lookup isn't a working-set listing).
 async function resolveDisplayId(
   slug: string,
   identifier: string,
@@ -52,25 +52,14 @@ async function resolveDisplayId(
 ): Promise<Issue | null> {
   const parsed = parseDisplayId(displayId);
   if (!parsed || parsed.identifier !== identifier.toUpperCase()) return null;
-  let cursor: string | undefined;
-  for (let page = 0; page < 5; page++) {
-    const p = new URLSearchParams({
-      per_page: "100",
-      order_by: "-sequence_id",
-    });
-    if (cursor) p.set("cursor", cursor);
-    const res = await api.get<IssueListResult>(
-      `${apiBase(slug, identifier)}/issues?${p}`,
-    );
-    for (const issue of res.results) {
-      if (issue.display_id.toUpperCase() === displayId.toUpperCase())
-        return issue;
-      if (issue.sequence_id < parsed.sequence) return null; // passed it
-    }
-    cursor = res.next_cursor;
-    if (!cursor) return null;
-  }
-  return null;
+  const res = await api.get<IssueListResult>(
+    `${apiBase(slug, identifier)}/issues?sequence_id=${parsed.sequence}&per_page=1`,
+  );
+  const issue = res.results[0];
+  if (!issue) return null;
+  return issue.display_id.toUpperCase() === displayId.toUpperCase()
+    ? issue
+    : null;
 }
 
 export default function CommandPalette({ slug, identifier }: PaletteProps) {

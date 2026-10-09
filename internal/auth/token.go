@@ -119,17 +119,25 @@ func (t *TokenAuth) HasScope(scope string) bool {
 	return false
 }
 
-// validateScopes rejects empty or unknown scope lists.
-func validateScopes(scopes []string) error {
+// validateScopes rejects empty or unknown scope lists and returns the
+// deduped list (C6T5: ["read","read"] stores as ["read"] — typos 400
+// before touching the DB, dupes never inflate the stored row).
+func validateScopes(scopes []string) ([]string, error) {
 	if len(scopes) == 0 {
-		return fmt.Errorf("%w: at least one scope is required", ErrInvalidScope)
+		return nil, fmt.Errorf("%w: at least one scope is required", ErrInvalidScope)
 	}
+	seen := make(map[string]bool, len(scopes))
+	out := make([]string, 0, len(scopes))
 	for _, s := range scopes {
 		if !validScopes[s] {
-			return fmt.Errorf("%w: %q", ErrInvalidScope, s)
+			return nil, fmt.Errorf("%w: %q", ErrInvalidScope, s)
+		}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // CreateToken mints a token for userID and stores only its hash. name must
@@ -140,7 +148,8 @@ func CreateToken(ctx context.Context, pool *pgxpool.Pool, userID, name string, s
 	if name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrInvalidScope)
 	}
-	if err := validateScopes(scopes); err != nil {
+	scopes, err := validateScopes(scopes)
+	if err != nil {
 		return nil, err
 	}
 	if expiresAt != nil && !expiresAt.After(time.Now()) {

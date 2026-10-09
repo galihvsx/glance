@@ -467,8 +467,15 @@ func CompleteCycle(ctx context.Context, pool *pgxpool.Pool, cycleID, projectID s
 	var endDate time.Time
 	err = tx.QueryRow(ctx,
 		`UPDATE cycles SET status = 'completed', progress_snapshot = $2::jsonb, updated_at = now()
-		 WHERE id = $1::uuid
+		 WHERE id = $1::uuid AND status IN ('current', 'upcoming')
 		 RETURNING end_date`, cycleID, snapJSON).Scan(&endDate)
+	if err == pgx.ErrNoRows {
+		// Already completed (or never completable): the ticker may
+		// race itself — completing twice must be a no-op, not a
+		// second snapshot + second issue transfer.
+		_ = tx.Rollback(ctx)
+		return nil
+	}
 	if err != nil {
 		return err
 	}

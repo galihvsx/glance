@@ -298,7 +298,17 @@ func UpdateWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, id 
 		add("url", "", strings.TrimSpace(*patch.URL))
 	}
 	if patch.Secret != nil {
-		add("secret", "", *patch.Secret)
+		// C6T5: empty-string secret = regenerate (an empty HMAC secret
+		// signs nothing — storing it would silently disable signing).
+		secret := *patch.Secret
+		if secret == "" {
+			var err error
+			secret, err = randomWebhookSecret()
+			if err != nil {
+				return nil, err
+			}
+		}
+		add("secret", "", secret)
 	}
 	if patch.Events != nil {
 		if err := validateWebhookEvents(patch.Events); err != nil {
@@ -776,7 +786,8 @@ func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempt
 func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts int, sendErr error) error {
 	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
-		SET status = 'failed', attempts = $2, last_error = $3
+		SET status = 'failed', attempts = $2, last_error = $3,
+		    processed_at = now()
 		WHERE id = $1`, id, attempts, sendErr.Error()); err != nil {
 		return fmt.Errorf("webhook: mark row %d failed: %w", id, err)
 	}

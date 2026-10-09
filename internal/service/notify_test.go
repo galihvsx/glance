@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -535,6 +536,66 @@ func TestWebhookSecretHiddenInListGetUpdate(t *testing.T) {
 		t.Fatalf("UpdateWebhook: %v", err)
 	}
 	assertNoSecret("update", upd)
+}
+
+// TestUpdateWebhookEmptySecretRegenerates (C6T5 T26): an explicit empty
+// secret regenerates instead of storing "" (an empty HMAC secret signs
+// nothing — the deliveries would go out unsigned without anyone
+// noticing).
+func TestUpdateWebhookEmptySecretRegenerates(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	wh, err := CreateWebhook(ctx, pool, wsSlug, actorID, WebhookInput{
+		URL: "https://example.com/hook", Secret: strPtr2("oldsecret"),
+	})
+	if err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+	upd, err := UpdateWebhook(ctx, pool, wsSlug, actorID, wh.ID,
+		WebhookPatch{Secret: strPtr2("")})
+	if err != nil {
+		t.Fatalf("UpdateWebhook empty secret: %v", err)
+	}
+	if upd.Secret == "" {
+		t.Fatalf("stored secret is empty after regenerate")
+	}
+	if upd.Secret == "oldsecret" {
+		t.Fatalf("secret was not rotated")
+	}
+}
+
+// TestWebhookMarkFailedSetsProcessedAt (C6T5 T5): the terminal 'failed'
+// write stamps processed_at like 'done' does, so dead rows are
+// distinguishable from rows still being retried.
+func TestWebhookMarkFailedSetsProcessedAt(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	createTestWebhook(t, pool, ctx, wsSlug, actorID, "https://example.com/hook")
+	outboxID := enqueueWebhookRow(t, pool, ctx, wsSlug)
+
+	d := NewWebhookDispatcher(pool)
+	if err := d.markFailed(ctx, outboxID, 99, errors.New("boom")); err != nil {
+		t.Fatalf("markFailed: %v", err)
+	}
+	var status string
+	var processedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, processed_at FROM outbox WHERE id = $1`, outboxID,
+	).Scan(&status, &processedAt); err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	if processedAt == nil {
+		t.Fatalf("processed_at is NULL after markFailed")
+	}
 }
 
 // createTestWebhook registers one webhook against srvURL subscribed to

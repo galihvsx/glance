@@ -252,7 +252,7 @@ func ListIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		 JOIN intake t ON t.id = ii.intake_id AND t.is_default AND t.project_id = $1::uuid
 		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL AND i.archived_at IS NULL
 		 WHERE ii.status = $2 OR (ii.status = $3 AND ii.snoozed_till <= now())
-		 ORDER BY ii.created_at ASC
+		 ORDER BY ii.created_at ASC, ii.id ASC
 		 LIMIT $4`,
 		projectID, IntakePending, IntakeSnoozed, limit)
 	if err != nil {
@@ -327,9 +327,9 @@ func ListSnoozedIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, id
 		        ii.duplicate_to_id::text, ii.created_at, `+issueColumnsI+`
 		 FROM intake_issues ii
 		 JOIN intake t ON t.id = ii.intake_id AND t.is_default AND t.project_id = $1::uuid
-		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL
+		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL AND i.archived_at IS NULL
 		 WHERE ii.status = $2 AND ii.snoozed_till > now()
-		 ORDER BY ii.snoozed_till ASC
+		 ORDER BY ii.snoozed_till ASC, ii.id ASC
 		 LIMIT $3`,
 		projectID, IntakeSnoozed, limit)
 	if err != nil {

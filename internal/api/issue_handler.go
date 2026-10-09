@@ -319,8 +319,8 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	if s := qp.Get("fields"); s != "" {
 		fields = strings.Split(s, ",")
 	}
-	// C6T4: tri-state draft filter. Absent = today's behavior (no draft
-	// filtering); true/false filter explicitly. Anything else is 400 —
+	// C6T4: tri-state draft filter. Absent = working-set default (drafts
+	// excluded); true/false filter explicitly. Anything else is 400 —
 	// silently coercing would hide client bugs.
 	var draft *bool
 	if s := qp.Get("draft"); s != "" {
@@ -334,6 +334,16 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid draft: want true or false", nil)
 		}
 		draft = &b
+	}
+	// C6T5: sequence_id lookup (command palette display-ID resolution).
+	// Must be a positive integer — garbage is 400, not ignored.
+	var sequenceID int
+	if s := qp.Get("sequence_id"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid sequence_id: want a positive integer", nil)
+		}
+		sequenceID = n
 	}
 
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
@@ -361,6 +371,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
 			Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
 			Draft:          draft,
+			SequenceID:     sequenceID,
 			Fields:         fields,
 		})
 	if err != nil {
