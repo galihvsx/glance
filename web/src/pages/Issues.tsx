@@ -44,16 +44,30 @@ import IssueCard from "../components/issue/IssueCard";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import PriorityPicker from "../components/issue/PriorityPicker";
+import ParentPicker from "../components/issue/ParentPicker";
 import QuickAdd from "../components/issue/QuickAdd";
 import ThemeToggle from "../components/ThemeToggle";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
+import { Checkbox } from "../components/ui/checkbox";
+import { toast } from "../components/ui/toast";
 import { priorityLabel } from "../lib/types";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
 
 const PER_PAGE = 25;
+
+/** Best-effort clipboard copy; silently ignored where unavailable. */
+function copyToClipboard(text: string) {
+  void (async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API unavailable (e.g. insecure context) — ignore.
+    }
+  })();
+}
 
 /** Wraps a paragraph of plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -153,6 +167,8 @@ export default function Issues() {
   const [description, setDescription] = useState("");
   const [newPriority, setNewPriority] = useState(0);
   const [newStateId, setNewStateId] = useState("");
+  const [parentIssue, setParentIssue] = useState<Issue | null>(null);
+  const [createMore, setCreateMore] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
@@ -201,17 +217,17 @@ export default function Issues() {
       description: unknown;
       priority: number;
       state_id?: string;
+      parent_id?: string;
     }) => api.post<Issue>(`${base}/issues`, body),
-    onSuccess: () => {
-      setDialogOpen(false);
-      setName("");
-      setDescription("");
-      setNewPriority(0);
-      setNewStateId("");
-      setFormError(null);
+    onSuccess: (issue) => {
+      resetCreateForm();
+      // "Create more" keeps the dialog open for rapid entry; otherwise
+      // the dialog closes and the toast is the confirmation.
+      if (!createMore) setDialogOpen(false);
       void queryClient.invalidateQueries({
         queryKey: ["issues", slug, identifier],
       });
+      showCreatedToast(issue);
     },
     onError: (e) => {
       setFormError(
@@ -219,6 +235,49 @@ export default function Issues() {
       );
     },
   });
+
+  /** Clear the create form (after a successful create). */
+  function resetCreateForm() {
+    setName("");
+    setDescription("");
+    setNewPriority(0);
+    setNewStateId("");
+    setParentIssue(null);
+    setFormError(null);
+  }
+
+  /** Success toast for a created issue: display_id + Copy link / View. */
+  function showCreatedToast(issue: Issue) {
+    const url = `${window.location.origin}/w/${slug}/p/${identifier}/i/${issue.id}`;
+    toast.add({
+      title: `${issue.display_id} created`,
+      type: "success",
+      description: (
+        <span className="flex flex-col gap-2">
+          <span className="truncate">{issue.name}</span>
+          <span className="flex gap-2">
+            <button
+              type="button"
+              className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-accent"
+              onClick={() => copyToClipboard(url)}
+            >
+              Copy link
+            </button>
+            <button
+              type="button"
+              className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-accent"
+              onClick={() => {
+                setDialogOpen(false);
+                openPeek(issue.id);
+              }}
+            >
+              View
+            </button>
+          </span>
+        </span>
+      ),
+    });
+  }
 
   function onSearchSubmit(e: FormEvent) {
     e.preventDefault();
@@ -239,6 +298,7 @@ export default function Issues() {
       description: textToTipTapDoc(description) ?? undefined,
       priority: newPriority,
       ...(newStateId ? { state_id: newStateId } : {}),
+      ...(parentIssue ? { parent_id: parentIssue.id } : {}),
     });
   }
 
@@ -398,7 +458,14 @@ export default function Issues() {
           >
             Intake inbox
           </Button>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog
+            open={dialogOpen}
+            onOpenChange={(open) => {
+              setDialogOpen(open);
+              // A picked parent must not leak into the next create.
+              if (!open) setParentIssue(null);
+            }}
+          >
           <Button onClick={() => setDialogOpen(true)} className="gap-2">
             <Plus className="h-4 w-4" />
             New issue
@@ -450,12 +517,29 @@ export default function Issues() {
                   </div>
                 )}
               </div>
+              <div className="space-y-2">
+                <Label>Parent</Label>
+                <ParentPicker
+                  slug={slug}
+                  identifier={identifier}
+                  value={parentIssue}
+                  onChange={setParentIssue}
+                  disabled={createMutation.isPending}
+                />
+              </div>
               {formError && (
                 <Alert variant="destructive">
                   <AlertDescription>{formError}</AlertDescription>
                 </Alert>
               )}
-              <DialogFooter>
+              <DialogFooter className="items-center sm:justify-between">
+                <Label className="flex cursor-pointer items-center gap-2 text-sm font-normal text-muted-foreground">
+                  <Checkbox
+                    checked={createMore}
+                    onCheckedChange={(v) => setCreateMore(v === true)}
+                  />
+                  Create more
+                </Label>
                 <Button
                   type="submit"
                   disabled={createMutation.isPending || !name.trim()}
