@@ -56,7 +56,11 @@ func serveInline(contentType string) bool {
 	switch mt {
 	case "text/html",
 		"application/javascript", "application/x-javascript",
-		"application/ecmascript", "application/x-ecmascript":
+		"application/ecmascript", "application/x-ecmascript",
+		// SVG is XML that browsers render as a document when navigated
+		// to directly — embedded <script> would execute in the glance
+		// origin, so it is never served inline.
+		"image/svg+xml", "image/svg":
 		return false
 	}
 	return strings.HasPrefix(mt, "image/") || strings.HasPrefix(mt, "text/")

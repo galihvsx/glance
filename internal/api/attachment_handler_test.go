@@ -205,14 +205,26 @@ func TestAttachmentHTTPInlinePolicy(t *testing.T) {
 
 	// Never serve dangerous types inline, even when the client declares
 	// them as such: text/html and application/javascript must download.
-	dangerous := []struct{ name, ctype string }{
-		{"evil.html", "text/html"},
-		{"evil2.html", "text/html; charset=utf-8"},
-		{"x.js", "application/javascript"},
-		{"x2.js", "application/x-javascript"},
+	dangerous := []struct {
+		name, ctype string
+		// binary forces the body to sniff as application/octet-stream so
+		// the client-declared type is the one that gets stored.
+		binary bool
+	}{
+		{"evil.html", "text/html", false},
+		{"evil2.html", "text/html; charset=utf-8", false},
+		{"x.js", "application/javascript", false},
+		{"x2.js", "application/x-javascript", false},
+		// SVG: an attacker-controlled <script> inside a navigated SVG
+		// would execute in the glance origin — must force download even
+		// though it matches image/*.
+		{"evil.svg", "image/svg+xml", true},
 	}
 	for _, d := range dangerous {
 		body := []byte("<script>alert(1)</script>")
+		if d.binary {
+			body = append([]byte{0x00}, []byte(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>`)...)
+		}
 		rec := postMultipartFile(t, e, attBase, cookie, d.name, d.ctype, body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("upload %s: status = %d", d.name, rec.Code)
@@ -224,6 +236,8 @@ func TestAttachmentHTTPInlinePolicy(t *testing.T) {
 		}
 		ct := rec.Header().Get("Content-Type")
 		cd := rec.Header().Get("Content-Disposition")
+		// NOTE: image/svg+xml is stored as-is but served as attachment —
+		// the disposition check below is its safety invariant.
 		if ct == "text/html" || ct == "application/javascript" || ct == "application/x-javascript" {
 			t.Errorf("%s: served inline-capable Content-Type %q", d.name, ct)
 		}
@@ -294,5 +308,36 @@ func TestAttachmentHTTPValidation(t *testing.T) {
 	rec = authedReq(t, e, http.MethodGet, attBase, nil, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list: status = %d, want 401", rec.Code)
+	}
+}
+
+func TestServeInlinePolicy(t *testing.T) {
+	cases := []struct {
+		ctype  string
+		inline bool
+	}{
+		{"image/png", true},
+		{"image/jpeg", true},
+		{"text/plain", true},
+		{"text/plain; charset=utf-8", true},
+		{"text/html", false},
+		{"text/html; charset=utf-8", false},
+		{"application/javascript", false},
+		{"application/x-javascript", false},
+		{"application/ecmascript", false},
+		{"application/x-ecmascript", false},
+		// SVG renders as a document when navigated to — embedded
+		// scripts would execute in the glance origin: never inline.
+		{"image/svg+xml", false},
+		{"image/svg+xml; charset=utf-8", false},
+		{"image/svg", false},
+		{"application/octet-stream", false},
+		{"application/pdf", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := serveInline(tc.ctype); got != tc.inline {
+			t.Errorf("serveInline(%q) = %v, want %v", tc.ctype, got, tc.inline)
+		}
 	}
 }
