@@ -436,7 +436,19 @@ Postgres-only, passwordless auth, Apache-2.0.
   on a Docker-capable host before publishing images.
 
 ### Deferred (post-v1)
-Intentionally absent from v1; each ships with its own forward-only
-migration — no big-bang schema: `pages`, `issue_views`, `attachments`,
-`favorites`, module UI, gantt, calendar, roadmaps, analytics,
-spreadsheet, public boards, admin panel.
+No longer deferred — these shipped after the original v1.0 list was
+written: `pages`, `issue_views`, `attachments`, `favorites`, module UI,
+gantt, calendar, roadmaps, analytics, spreadsheet, public boards,
+admin panel.
+
+True remaining gaps:
+- **SSO/SAML** — deliberately deferred; email OTP + Google/GitHub OAuth
+  covers auth. Enterprise SSO is a post-parity consideration, not a v1
+  gap.
+- **Data portability beyond CSV/JSON** — issue export exists as
+  CSV/JSON; workspace-wide archive exports (including Plane-compatible
+  imports) are future work.
+- **Beyond-parity stance** — the loop's target is not just zero gap with
+  Plane but a leaner, better, fully free (Apache-2.0) tracker. Any new
+  capability is judged against Plane parity first, then on its own
+  merit.
