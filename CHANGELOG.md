@@ -46,6 +46,12 @@ queued onboarding follow-up (invites endpoint).
 - Custom-field columns in spreadsheet (C9T4): optional per-field columns (default off, per-project localStorage), read-only, typed formatting reused from issue detail.
 - Stale-issue nudge (C9T5, beyond parity): daily ticker — issues untouched for 30 days in non-done states get one in-app nudge to assignees + watchers; reuses `issue_reminders` with `kind='stale'` (no migration), respects notification prefs.
 
+**Portability & sharing (cycle 10)**
+- Trello Cloud importer (C10T0): `POST .../imports/trello/preview` + `.../imports/trello` (same group as the GitHub/Jira importers) — list→state mapping (unmatched lists create states in the `unstarted` group), Trello palette labels, comments with attribution, assignees best-effort by email, checklists skip-documented, archived cards excluded; SSRF guard (host pinned `https://api.trello.com`, https-only, no redirects); credentials body-only, never persisted.
+- Shared saved views (C10T1): migration `000035_issue_views_shared` (`shared` flag on `issue_views`); `GET /views` returns own + project-shared views (annotated with owner); `PATCH {shared}` owner-only (403 on another's shared view, 404 on another's private view — no existence leak); workspace admins (role 20) may delete any shared view (moderation); SavedViewsMenu "Shared" section with owner attribution; default auto-apply scoped to own views only.
+- Email digests (C10T2, beyond parity): migration `000036_digest_watermarks` (per-user-per-day idempotency); daily ticker aggregates the last 24h of `issue.assigned`/`mention`/`issue.state_changed` notifications into ONE opt-in `digest.daily` email (default off); watermark claimed only when an email is sent, in the same tx as the outbox row; one Email toggle in notification prefs (no new settings page).
+- Full workspace data export (C10T3, beyond parity): admin-only (role 20) `GET /api/v1/workspaces/{slug}/export` streams a single `glance-export/1` JSON archive (chunked, REPEATABLE READ snapshot, memory flat) — workspace, members, projects, states, labels, estimates, custom fields, cycles, modules, pages, issues with nested comments/custom values/assignees/labels/attachment metadata; binaries and secrets (Slack URL, stored paths) never exported; workspace-settings "Data" section with honest copy (no importer yet — future work).
+
 **App shell**
 - Plane-style persistent shell wrapping all protected routes (`/login`,
   `/onboarding`, `/s/:token` stay chromeless): 240px sidebar ↔ 48px icon
@@ -461,8 +467,9 @@ True remaining gaps:
   covers auth. Enterprise SSO is a post-parity consideration, not a v1
   gap.
 - **Data portability beyond CSV/JSON** — issue export exists as
-  CSV/JSON; workspace-wide archive exports (including Plane-compatible
-  imports) are future work.
+  CSV/JSON; admin-only workspace-wide JSON archive export ships
+  (C10T3); the archive importer (including Plane-compatible imports)
+  remains future work.
 - **Beyond-parity stance** — the loop's target is not just zero gap with
   Plane but a leaner, better, fully free (Apache-2.0) tracker. Any new
   capability is judged against Plane parity first, then on its own
