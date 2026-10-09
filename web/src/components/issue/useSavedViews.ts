@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   DEFAULT_DISPLAY_SETTINGS,
   type DisplayFields,
@@ -6,14 +6,24 @@ import {
   type GroupBy,
   type OrderBy,
 } from "./useDisplaySettings";
+import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
+import {
+  useCreateIssueView,
+  useDeleteIssueView,
+  useIssueViews,
+  useUpdateIssueView,
+  type IssueViewRow,
+} from "../../lib/savedViews";
+import { toast } from "../ui/toast";
 
-/** A named per-project saved view: a verbatim filter query string plus the
- *  display preset that was active when it was saved. */
+/** A named per-project saved view: an IssueFilters object plus the
+ *  display preset that was active when it was saved. Persisted
+ *  server-side (C9T2) so views roam across devices. */
 export interface SavedView {
   id: string;
   name: string;
-  /** Verbatim output of serializeFilters(filters).toString(). */
-  filterQuery: string;
+  /** The IssueFilters object, stored opaquely by the backend. */
+  filters: IssueFilters;
   /** Null when saved from a page without display settings (spreadsheet). */
   display: DisplaySettings | null;
   isDefault: boolean;
@@ -33,10 +43,6 @@ const ORDER_BYS: OrderBy[] = [
   "sequence_id",
   "-sequence_id",
 ];
-
-function storageKey(slug: string, identifier: string): string {
-  return `glance:views:${slug}:${identifier}`;
-}
 
 function sanitizeDisplay(raw: unknown): DisplaySettings | null {
   if (raw === null || raw === undefined) return null;
@@ -64,157 +70,154 @@ function sanitizeDisplay(raw: unknown): DisplaySettings | null {
   };
 }
 
-/** Exported for unit tests. */
-export function sanitizeView(raw: unknown): SavedView | null {
-  if (!raw || typeof raw !== "object") return null;
-  const v = raw as Partial<SavedView>;
-  if (typeof v.id !== "string" || !v.id) return null;
-  if (typeof v.name !== "string" || !v.name.trim()) return null;
-  if (typeof v.filterQuery !== "string") return null;
-  // Garbage query strings are dropped, never throw on a stored value.
-  try {
-    new URLSearchParams(v.filterQuery);
-  } catch {
+function sanitizeFilters(raw: unknown): IssueFilters | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") {
     return null;
   }
+  // The backend stores filters opaquely; be defensive on read and merge
+  // over EMPTY_FILTERS so a partial row can never break the menu.
+  const p = raw as Partial<IssueFilters>;
+  return {
+    ...EMPTY_FILTERS,
+    ...Object.fromEntries(
+      Object.entries(p).filter(([, v]) => v !== undefined),
+    ),
+  } as IssueFilters;
+}
+
+/** Validate one backend row into a SavedView. Exported for unit tests.
+ *  Garbage rows are dropped, never throw. */
+export function sanitizeView(raw: unknown): SavedView | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as Partial<IssueViewRow> & Partial<SavedView>;
+  if (typeof v.id !== "string" || !v.id) return null;
+  if (typeof v.name !== "string" || !v.name.trim()) return null;
+  const filters = sanitizeFilters(v.filters);
+  if (!filters) return null;
+  const isDefault = v.is_default === true || v.isDefault === true;
   return {
     id: v.id,
     name: v.name.trim().slice(0, MAX_NAME_LEN),
-    filterQuery: v.filterQuery,
+    filters,
     display: sanitizeDisplay(v.display),
-    isDefault: v.isDefault === true,
+    isDefault,
   };
 }
 
-function load(slug: string, identifier: string): SavedView[] {
-  try {
-    const raw = localStorage.getItem(storageKey(slug, identifier));
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    const views = arr
-      .map(sanitizeView)
-      .filter((v): v is SavedView => v !== null)
-      .slice(0, MAX_VIEWS);
-    // At most one default survives a corrupted store.
-    let seenDefault = false;
-    for (const v of views) {
-      if (v.isDefault) {
-        if (seenDefault) v.isDefault = false;
-        seenDefault = true;
-      }
-    }
-    return views;
-  } catch {
-    return [];
-  }
+function toSavedView(row: IssueViewRow): SavedView | null {
+  return sanitizeView(row);
 }
 
-function newId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/** Per-project saved views, persisted to localStorage.
+/** Per-project saved views, persisted to the backend (C9T2).
  *
- *  Storage choice: localStorage, not the backend. There is no
- *  user-preferences / saved-view store server-side, and a migration +
- *  CRUD endpoints for what is inherently per-device UI state would be
- *  over-engineering for v1 of this feature (same call the display panel
- *  made in cycle 1). If views ever need to roam across devices, add a
- *  backend store then — the SavedView shape is JSON-ready. */
-export function useSavedViews(slug: string, identifier: string) {
-  const key = `${slug}\0${identifier}`;
-  // Same adjust-during-render pattern as useDisplaySettings: keeps views in
-  // sync when the route params change without a remount.
-  const [cached, setCached] = useState(() => ({
-    key,
-    views: load(slug, identifier),
-  }));
-  if (cached.key !== key) {
-    setCached({ key, views: load(slug, identifier) });
-  }
-  const views = cached.views;
+ *  On API failure the hook shows an honest error toast — there is no
+ *  silent fallback (the old localStorage path was dropped entirely).
+ *  Validation behavior is kept from the localStorage implementation:
+ *  blank names are rejected inline, the 50-view cap is enforced
+ *  client-side, and duplicate names surface as the backend's 409. */
+export function useSavedViews(projectId: string) {
+  const query = useIssueViews(projectId);
+  const createMutation = useCreateIssueView(projectId);
+  const updateMutation = useUpdateIssueView(projectId);
+  const deleteMutation = useDeleteIssueView(projectId);
 
-  const persist = useCallback(
-    (next: SavedView[]) => {
-      setCached((prev) => ({ ...prev, views: next }));
-      try {
-        localStorage.setItem(
-          storageKey(slug, identifier),
-          JSON.stringify(next),
-        );
-      } catch {
-        // Storage full / private mode — views still work for the session.
-      }
-    },
-    [slug, identifier],
+  // Honest error toast on load failure — exactly once per failure, reset
+  // when the query recovers.
+  const toasted = useRef(false);
+  useEffect(() => {
+    if (query.error && !toasted.current) {
+      toasted.current = true;
+      toast.add({
+        title: "Could not load saved views",
+        type: "error",
+      });
+    } else if (!query.error) {
+      toasted.current = false;
+    }
+  }, [query.error]);
+
+  const views = useMemo(
+    () =>
+      (query.data ?? [])
+        .map(toSavedView)
+        .filter((v): v is SavedView => v !== null)
+        .slice(0, MAX_VIEWS),
+    [query.data],
   );
 
-  /** Returns the created view, or null when the name is blank/taken or the
-   *  per-project cap is reached. */
+  /** Creates a view; returns it, or null when the name is blank or the
+   *  per-project cap is reached. Throws ApiError on request failure
+   *  (409 = duplicate name) so the caller can show an honest error. */
   const createView = useCallback(
-    (
+    async (
       name: string,
-      filterQuery: string,
+      filters: IssueFilters,
       display: DisplaySettings | null,
-    ): SavedView | null => {
+    ): Promise<SavedView | null> => {
       const clean = name.trim().slice(0, MAX_NAME_LEN);
       if (!clean || views.length >= MAX_VIEWS) return null;
-      if (
-        views.some((v) => v.name.toLowerCase() === clean.toLowerCase())
-      ) {
-        return null;
-      }
-      const view: SavedView = {
-        id: newId(),
+      if (!projectId) throw new Error("project not loaded yet");
+      const row = await createMutation.mutateAsync({
         name: clean,
-        filterQuery,
+        filters,
         display: sanitizeDisplay(display),
-        isDefault: false,
-      };
-      persist([...views, view]);
-      return view;
+      });
+      return toSavedView(row);
     },
-    [views, persist],
+    [views, projectId, createMutation],
   );
 
-  /** Returns false when the name is blank or taken by another view. */
+  /** Renames a view; returns false when the name is blank. Throws
+   *  ApiError on request failure (409 = name taken by another view). */
   const renameView = useCallback(
-    (id: string, name: string): boolean => {
+    async (id: string, name: string): Promise<boolean> => {
       const clean = name.trim().slice(0, MAX_NAME_LEN);
       if (!clean) return false;
-      if (
-        views.some(
-          (v) => v.id !== id && v.name.toLowerCase() === clean.toLowerCase(),
-        )
-      ) {
-        return false;
-      }
       if (!views.some((v) => v.id === id)) return false;
-      persist(views.map((v) => (v.id === id ? { ...v, name: clean } : v)));
+      if (!projectId) throw new Error("project not loaded yet");
+      await updateMutation.mutateAsync({ viewId: id, patch: { name: clean } });
       return true;
     },
-    [views, persist],
+    [views, projectId, updateMutation],
   );
 
+  /** Deletes a view. Throws ApiError on request failure. */
   const deleteView = useCallback(
-    (id: string) => {
-      if (views.some((v) => v.id === id)) {
-        persist(views.filter((v) => v.id !== id));
-      }
+    async (id: string): Promise<void> => {
+      if (!projectId) throw new Error("project not loaded yet");
+      await deleteMutation.mutateAsync(id);
     },
-    [views, persist],
+    [projectId, deleteMutation],
   );
 
+  /** Sets (or clears, with null) the default view. Throws ApiError on
+   *  request failure. */
   const setDefaultView = useCallback(
-    (id: string | null) => {
-      persist(views.map((v) => ({ ...v, isDefault: v.id === id })));
+    async (id: string | null): Promise<void> => {
+      if (!projectId) throw new Error("project not loaded yet");
+      if (id === null) {
+        const current = views.find((v) => v.isDefault);
+        if (!current) return;
+        await updateMutation.mutateAsync({
+          viewId: current.id,
+          patch: { is_default: false },
+        });
+        return;
+      }
+      await updateMutation.mutateAsync({
+        viewId: id,
+        patch: { is_default: true },
+      });
     },
-    [views, persist],
+    [views, projectId, updateMutation],
   );
 
-  return { views, createView, renameView, deleteView, setDefaultView };
+  return {
+    views,
+    viewsLoading: query.isLoading,
+    createView,
+    renameView,
+    deleteView,
+    setDefaultView,
+  };
 }
