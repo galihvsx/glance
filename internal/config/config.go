@@ -60,7 +60,36 @@ type Config struct {
 	// — anything else fails boot (fail closed: a misconfigured limit
 	// must not silently become unlimited).
 	MaxUploadMB int
+	// AI is the provider-agnostic AI assist configuration (C5T2): an
+	// OpenAI-compatible /chat/completions endpoint reached over stdlib
+	// HTTP only (zero new dependencies). The key travels as a Bearer
+	// header and is NEVER logged — error paths carry status codes and
+	// generic messages only. An empty APIKey means "unconfigured": boot
+	// logs it (non-fatal) and the AI endpoints answer 503
+	// (code ai_not_configured).
+	AI AIConfig
 }
+
+// AIConfig holds the AI assist settings from GLANCE_AI_BASE_URL,
+// GLANCE_AI_MODEL and GLANCE_AI_API_KEY.
+type AIConfig struct {
+	// BaseURL is the provider base URL (e.g.
+	// https://api.openai.com/v1); /chat/completions is appended.
+	// Defaults to the OpenAI endpoint so any compatible provider works
+	// by setting just its own URL.
+	BaseURL string
+	// Model is the chat model name sent to the provider. Defaults to
+	// gpt-4o-mini; any provider-specific model name may be set.
+	Model string
+	// APIKey is the provider secret, sent as "Authorization: Bearer
+	// <key>". The ONLY hard requirement for AI assist — empty means
+	// unconfigured, never "try anyway with no key".
+	APIKey string
+}
+
+// Configured reports whether AI assist can run: an API key is present.
+// Everything else has working defaults.
+func (a AIConfig) Configured() bool { return a.APIKey != "" }
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -89,6 +118,11 @@ func Load() (*Config, error) {
 		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
 		OAuthStateSecret:   os.Getenv("OAUTH_STATE_SECRET"),
 		DataDir:            getenv("GLANCE_DATA_DIR", "./data"),
+		AI: AIConfig{
+			BaseURL: getenv("GLANCE_AI_BASE_URL", "https://api.openai.com/v1"),
+			Model:   getenv("GLANCE_AI_MODEL", "gpt-4o-mini"),
+			APIKey:  os.Getenv("GLANCE_AI_API_KEY"),
+		},
 	}
 	if v := os.Getenv("GLANCE_MAX_UPLOAD_MB"); v != "" {
 		mb, err := strconv.Atoi(strings.TrimSpace(v))

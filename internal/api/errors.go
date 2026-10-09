@@ -21,6 +21,14 @@ const (
 	ErrCodeGone            = "gone"
 	ErrCodePayloadTooLarge = "payload_too_large"
 	ErrCodeInternal        = "internal"
+	// ErrCodeAINotConfigured is the 503 code for the AI assist endpoints
+	// when no provider key is configured (C5T2): an honest "not
+	// configured" rather than a fake error or a 500.
+	ErrCodeAINotConfigured = "ai_not_configured"
+	// ErrCodeBadGateway is the 502 code when a configured AI provider
+	// answers with an error (C5T2): the failure is the provider's, not
+	// glance's — never report it as a 500.
+	ErrCodeBadGateway = "bad_gateway"
 )
 
 // errorEnvelope is the spec §5 error shape:
