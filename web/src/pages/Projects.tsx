@@ -84,7 +84,7 @@ export default function Projects() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <Link
-            to="/"
+            to="/w"
             className="text-xs text-muted-foreground hover:underline"
           >
             ← Workspaces

@@ -4,6 +4,7 @@ import { QueryProvider } from "./lib/query";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectScope from "./components/ProjectScope";
 import Login from "./pages/Login";
+import Home from "./pages/Home";
 import Workspaces from "./pages/Workspaces";
 import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
@@ -21,7 +22,8 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route element={<ProtectedRoute />}>
-              <Route path="/" element={<Workspaces />} />
+              <Route path="/" element={<Home />} />
+              <Route path="/w" element={<Workspaces />} />
               <Route path="/w/:slug" element={<Projects />} />
               <Route element={<ProjectScope />}>
                 <Route path="/w/:slug/p/:identifier" element={<Issues />} />
