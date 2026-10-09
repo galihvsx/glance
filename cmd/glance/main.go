@@ -200,6 +200,9 @@ func main() {
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
 	api.RegisterActivityRoutes(e, issueHandler)
 
+	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
+	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})
+
 	// C5T2: AI assist (description drafting + triage) over a
 	// provider-agnostic OpenAI-compatible endpoint. Fail-open at boot:
 	// without GLANCE_AI_API_KEY the endpoints answer 503

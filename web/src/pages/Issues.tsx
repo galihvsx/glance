@@ -49,6 +49,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
 import StatePicker from "../components/issue/StatePicker";
 import ProjectNav from "../components/project/ProjectNav";
+import FavoriteStar from "../components/favorites/FavoriteStar";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -486,6 +487,8 @@ export default function Issues() {
               <>
                 <Badge>{projectQuery.data.identifier}</Badge>
                 {projectQuery.data.name}
+                {/* C7T4: star toggle for this project. */}
+                <FavoriteStar type="project" id={projectQuery.data.id} />
               </>
             ) : (
               <Skeleton className="h-8 w-48" />
