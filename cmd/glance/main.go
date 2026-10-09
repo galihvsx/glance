@@ -181,6 +181,15 @@ func main() {
 	api.RegisterPublicRoutes(e, issueHandler)
 	api.RegisterAnalyticsRoutes(e, issueHandler)
 
+	// C5T2: AI assist (description drafting + triage) over a
+	// provider-agnostic OpenAI-compatible endpoint. Fail-open at boot:
+	// without GLANCE_AI_API_KEY the endpoints answer 503
+	// (ai_not_configured) instead of refusing to start the server.
+	if !cfg.AI.Configured() {
+		log.Println("glance: AI disabled: GLANCE_AI_API_KEY unset")
+	}
+	api.RegisterAIRoutes(e, &api.AIHandler{Pool: pool, AI: cfg.AI})
+
 	// OTP_PEPPER enforcement lives in config.Load (fail closed; the
 	// ALLOW_INSECURE_OTP_PEPPER hatch warns loudly there). By this point a
 	// missing pepper without the hatch has already refused to boot.
