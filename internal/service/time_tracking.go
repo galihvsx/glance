@@ -22,6 +22,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -179,4 +180,118 @@ func ListTimeEntries(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier
 		return nil, 0, err
 	}
 	return entries, total, nil
+}
+
+// TimeSummaryBucket is one aggregation row of the time report.
+type TimeSummaryBucket struct {
+	Key     string `json:"key"`     // day: "2026-10-09"; week: Monday "2026-10-05"; user/issue: the id
+	Label   string `json:"label"`   // day/week: same as key; user: name; issue: "ENG-5"
+	Seconds int64  `json:"seconds"` // summed completed durations
+	Entries int    `json:"entries"` // number of completed entries
+}
+
+// TimeSummary is the project time report (C6T8): completed entries only
+// (a running timer's elapsed time stays client-side, same convention as
+// ListTimeEntries' total_seconds), grouped by day, week, user, or issue.
+type TimeSummary struct {
+	Days         int                 `json:"days"`
+	GroupBy      string              `json:"group_by"`
+	TotalSeconds int64               `json:"total_seconds"`
+	Buckets      []TimeSummaryBucket `json:"buckets"`
+}
+
+// GetTimeSummary aggregates completed time entries for the project over
+// the last `days` days. Any member may read. days clamps to 1..365;
+// groupBy is one of day/week/user/issue (anything else → "day").
+func GetTimeSummary(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, days int, groupBy string) (*TimeSummary, error) {
+	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, false)
+	if err != nil {
+		return nil, err
+	}
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
+	switch groupBy {
+	case "day", "week", "user", "issue":
+	default:
+		groupBy = "day"
+	}
+
+	sum := &TimeSummary{Days: days, GroupBy: groupBy, Buckets: []TimeSummaryBucket{}}
+
+	// Completed entries only; soft-deleted issues don't count.
+	// extraJoin slots the group_by join BEFORE the WHERE clause.
+	scope := func(extraJoin string) string {
+		return `FROM time_entries te
+		JOIN issues i ON i.id = te.issue_id AND i.deleted_at IS NULL
+		` + extraJoin + `
+		WHERE i.project_id = $1::uuid
+		  AND te.ended_at IS NOT NULL
+		  AND te.started_at >= now() - make_interval(days => $2)`
+	}
+
+	var rows pgx.Rows
+	switch groupBy {
+	case "day", "week":
+		// Zero-filled buckets via generate_series so charts don't gap.
+		// Weeks dedupe: several days map to the same Monday.
+		trunc := "day"
+		if groupBy == "week" {
+			trunc = "week"
+		}
+		rows, err = pool.Query(ctx, `
+			WITH buckets(b) AS (
+				SELECT DISTINCT date_trunc('`+trunc+`', CURRENT_DATE - (s || ' days')::interval)
+				FROM generate_series(0, $2 - 1) s
+			)
+			SELECT to_char(b.b, 'YYYY-MM-DD'), to_char(b.b, 'YYYY-MM-DD'),
+			       COALESCE(agg.seconds, 0), COALESCE(agg.entries, 0)
+			FROM buckets b
+			LEFT JOIN (
+				SELECT date_trunc('`+trunc+`', te.started_at) AS k,
+				       SUM(EXTRACT(EPOCH FROM (te.ended_at - te.started_at)))::bigint AS seconds,
+				       COUNT(*)::int AS entries
+				`+scope("")+`
+				GROUP BY k
+			) agg ON agg.k = b.b
+			ORDER BY b.b`, projectID, days)
+	case "user":
+		rows, err = pool.Query(ctx, `
+			SELECT te.user_id::text,
+			       COALESCE(NULLIF(u.name, ''), u.email),
+			       SUM(EXTRACT(EPOCH FROM (te.ended_at - te.started_at)))::bigint,
+			       COUNT(*)::int
+			`+scope("JOIN users u ON u.id = te.user_id")+`
+			GROUP BY te.user_id, u.name, u.email
+			ORDER BY 3 DESC`, projectID, days)
+	case "issue":
+		rows, err = pool.Query(ctx, `
+			SELECT te.issue_id::text,
+			       $3 || '-' || i.sequence_id,
+			       SUM(EXTRACT(EPOCH FROM (te.ended_at - te.started_at)))::bigint,
+			       COUNT(*)::int
+			`+scope("")+`
+			GROUP BY te.issue_id, i.sequence_id
+			ORDER BY 3 DESC`, projectID, days, strings.ToUpper(identifier))
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var b TimeSummaryBucket
+		if err := rows.Scan(&b.Key, &b.Label, &b.Seconds, &b.Entries); err != nil {
+			return nil, err
+		}
+		if groupBy == "day" || groupBy == "week" {
+			b.Label = b.Key
+		}
+		sum.Buckets = append(sum.Buckets, b)
+		sum.TotalSeconds += b.Seconds
+	}
+	return sum, rows.Err()
 }

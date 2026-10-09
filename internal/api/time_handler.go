@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -107,4 +108,45 @@ func (h *IssueHandler) listTimeEntries(c *echo.Context) error {
 		"entries":       entries,
 		"total_seconds": total,
 	})
+}
+
+// RegisterTimeSummaryRoutes mounts the project time-report endpoint.
+// Call this before the SPA catch-all so API routes are never shadowed.
+func RegisterTimeSummaryRoutes(e *echo.Echo, h *IssueHandler) {
+	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/time", RequireAuth(h.Pool))
+	g.GET("/summary", h.getTimeSummary)
+}
+
+// getTimeSummary implements GET
+// /api/v1/workspaces/{slug}/projects/{identifier}/time/summary?days=30&group_by=day.
+// Completed entries only, grouped by day (default), week, user, or issue.
+// Any member may read. Mirrors the analytics trends ?days= convention:
+// garbage is 400, oversized clamps to 365.
+func (h *IssueHandler) getTimeSummary(c *echo.Context) error {
+	days := 30
+	if raw := c.QueryParam("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "days must be a positive integer", nil)
+		}
+		if n > 365 {
+			n = 365
+		}
+		days = n
+	}
+	groupBy := c.QueryParam("group_by")
+	if groupBy == "" {
+		groupBy = "day"
+	}
+	switch groupBy {
+	case "day", "week", "user", "issue":
+	default:
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid group_by: want day, week, user, or issue", nil)
+	}
+	sum, err := service.GetTimeSummary(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, days, groupBy)
+	if err != nil {
+		return timeError(c, err)
+	}
+	return c.JSON(http.StatusOK, sum)
 }

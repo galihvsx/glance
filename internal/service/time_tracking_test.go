@@ -159,3 +159,108 @@ func TestTimeUnknownIssue(t *testing.T) {
 		t.Fatalf("StartTimer unknown issue = %v, want ErrIssueNotFound", err)
 	}
 }
+
+// TestGetTimeSummary (C6T8): the project time report aggregates completed
+// entries by day/week/user/issue. Running timers are excluded (same
+// convention as ListTimeEntries' total_seconds).
+func TestGetTimeSummary(t *testing.T) {
+	ctx, pool, slug, ident, actor, issueID := setupTimeTest(t)
+
+	now := time.Now().UTC()
+	// 2h yesterday + 1h today by actor.
+	if _, err := LogTimeEntry(ctx, pool, slug, ident, issueID, actor,
+		now.Add(-26*time.Hour), now.Add(-24*time.Hour), "yesterday"); err != nil {
+		t.Fatalf("log yesterday: %v", err)
+	}
+	if _, err := LogTimeEntry(ctx, pool, slug, ident, issueID, actor,
+		now.Add(-2*time.Hour), now.Add(-1*time.Hour), "today"); err != nil {
+		t.Fatalf("log today: %v", err)
+	}
+	// A second member logs 30m today.
+	other := createTestUser(t, pool, uniqueTestEmail("time-other"))
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM workspaces WHERE slug = $1`, slug).Scan(&wsID); err != nil {
+		t.Fatalf("workspace id: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workspace_members (workspace_id, user_id, role)
+		 VALUES ($1::uuid, $2::uuid, $3) ON CONFLICT DO NOTHING`,
+		wsID, other, RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if _, err := LogTimeEntry(ctx, pool, slug, ident, issueID, other,
+		now.Add(-50*time.Minute), now.Add(-20*time.Minute), "other"); err != nil {
+		t.Fatalf("log other: %v", err)
+	}
+	// A running timer must NOT appear in the summary.
+	if _, err := StartTimer(ctx, pool, slug, ident, issueID, actor); err != nil {
+		t.Fatalf("start timer: %v", err)
+	}
+
+	byDay, err := GetTimeSummary(ctx, pool, slug, ident, actor, 7, "day")
+	if err != nil {
+		t.Fatalf("GetTimeSummary day: %v", err)
+	}
+	if byDay.GroupBy != "day" || byDay.Days != 7 {
+		t.Fatalf("meta = %+v, want group_by=day days=7", byDay)
+	}
+	if len(byDay.Buckets) != 7 {
+		t.Fatalf("day buckets = %d, want 7 zero-filled", len(byDay.Buckets))
+	}
+	if byDay.TotalSeconds != 3*3600+1800 {
+		t.Fatalf("total = %d, want %d (2h+1h+30m)", byDay.TotalSeconds, 3*3600+1800)
+	}
+	var nonZero int
+	for _, b := range byDay.Buckets {
+		if b.Seconds > 0 {
+			nonZero++
+		}
+	}
+	if nonZero != 2 {
+		t.Fatalf("non-zero day buckets = %d, want 2", nonZero)
+	}
+
+	byUser, err := GetTimeSummary(ctx, pool, slug, ident, actor, 7, "user")
+	if err != nil {
+		t.Fatalf("GetTimeSummary user: %v", err)
+	}
+	if len(byUser.Buckets) != 2 {
+		t.Fatalf("user buckets = %d, want 2", len(byUser.Buckets))
+	}
+	// Descending by seconds: actor (3h) first.
+	if byUser.Buckets[0].Seconds != 3*3600 || byUser.Buckets[1].Seconds != 1800 {
+		t.Fatalf("user buckets = %+v, want actor 3h then other 30m", byUser.Buckets)
+	}
+
+	byIssue, err := GetTimeSummary(ctx, pool, slug, ident, actor, 7, "issue")
+	if err != nil {
+		t.Fatalf("GetTimeSummary issue: %v", err)
+	}
+	if len(byIssue.Buckets) != 1 || byIssue.Buckets[0].Entries != 3 {
+		t.Fatalf("issue buckets = %+v, want one bucket with 3 entries", byIssue.Buckets)
+	}
+
+	byWeek, err := GetTimeSummary(ctx, pool, slug, ident, actor, 30, "week")
+	if err != nil {
+		t.Fatalf("GetTimeSummary week: %v", err)
+	}
+	if byWeek.TotalSeconds != byDay.TotalSeconds {
+		t.Fatalf("week total = %d, want %d (same entries)", byWeek.TotalSeconds, byDay.TotalSeconds)
+	}
+	for _, b := range byWeek.Buckets {
+		if len(b.Key) != 10 { // Monday "YYYY-MM-DD"
+			t.Fatalf("week bucket key = %q, want YYYY-MM-DD", b.Key)
+		}
+	}
+
+	// Unknown group_by falls back to day (the handler 400s; the service
+	// stays defensive).
+	def, err := GetTimeSummary(ctx, pool, slug, ident, actor, 7, "fortnight")
+	if err != nil {
+		t.Fatalf("GetTimeSummary bad group: %v", err)
+	}
+	if def.GroupBy != "day" {
+		t.Fatalf("group_by = %q, want day fallback", def.GroupBy)
+	}
+}

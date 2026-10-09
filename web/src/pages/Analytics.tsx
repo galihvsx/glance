@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import ProjectNav from "../components/project/ProjectNav";
+import TimeReport from "../components/analytics/TimeReport";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import type { Cycle, IssueState, Label } from "../lib/types";
@@ -624,6 +625,9 @@ export default function Analytics() {
           <TrendsChart days={trendsQuery.data ?? []} />
         )}
       </Section>
+
+      {/* Time report (C6T8) */}
+      <TimeReport />
     </div>
   );
 }
