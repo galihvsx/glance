@@ -318,7 +318,7 @@ func TestListRelationFilters(t *testing.T) {
 
 	// label= filter matches only the labeled issue.
 	r, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
-		ListIssuesInput{Label: bug.ID})
+		ListIssuesInput{Labels: []string{bug.ID}})
 	if err != nil {
 		t.Fatalf("ListIssues label=: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestListRelationFilters(t *testing.T) {
 
 	// assignee= filter matches only the assigned issue.
 	r, err = ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
-		ListIssuesInput{Assignee: member})
+		ListIssuesInput{Assignees: []string{member}})
 	if err != nil {
 		t.Fatalf("ListIssues assignee=: %v", err)
 	}

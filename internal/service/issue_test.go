@@ -736,7 +736,7 @@ func TestListFilters(t *testing.T) {
 	}
 
 	byPrio, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
-		ListIssuesInput{Priority: &hi})
+		ListIssuesInput{Priorities: []int{hi}})
 	if err != nil {
 		t.Fatalf("ListIssues priority: %v", err)
 	}
@@ -807,11 +807,187 @@ func TestListInvalidParams(t *testing.T) {
 
 	badPrio := 99
 	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
-		ListIssuesInput{Priority: &badPrio}); !errors.Is(err, ErrInvalidListFilter) {
+		ListIssuesInput{Priorities: []int{badPrio}}); !errors.Is(err, ErrInvalidListFilter) {
 		t.Fatalf("bad priority: err = %v, want ErrInvalidListFilter", err)
 	}
 	if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
 		ListIssuesInput{State: "not-a-uuid"}); !errors.Is(err, ErrInvalidListFilter) {
 		t.Fatalf("bad state uuid: err = %v, want ErrInvalidListFilter", err)
+	}
+}
+
+// TestListFiltersMulti: C2T5 multi-value filters (priorities, labels,
+// assignees incl. "none", estimate points incl. "none"), date ranges, and
+// the subscribed filter narrow the result set; malformed values 400.
+func TestListFiltersMulti(t *testing.T) {
+	s := setupListTest(t)
+	ctx := context.Background()
+
+	p1, p3, p4 := 1, 3, 4
+	issA := createTestIssue(t, s.pool, s.slug, s.ident, s.actor, "multi alpha")
+	if _, err := CreateIssue(ctx, s.pool, s.slug, s.ident, s.actor,
+		CreateIssueInput{Name: "multi beta", Priority: &p3}); err != nil {
+		t.Fatalf("CreateIssue beta: %v", err)
+	}
+	due := time.Now().Add(48 * time.Hour).Truncate(24 * time.Hour)
+	if _, err := CreateIssue(ctx, s.pool, s.slug, s.ident, s.actor,
+		CreateIssueInput{Name: "multi gamma", Priority: &p4, TargetDate: &due}); err != nil {
+		t.Fatalf("CreateIssue gamma: %v", err)
+	}
+	if _, err := CreateIssue(ctx, s.pool, s.slug, s.ident, s.actor,
+		CreateIssueInput{Name: "multi delta", Priority: &p1}); err != nil {
+		t.Fatalf("CreateIssue delta: %v", err)
+	}
+
+	// Multi-priority: 3 and 4 of the four issues.
+	byPrios, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Priorities: []int{3, 4}})
+	if err != nil {
+		t.Fatalf("ListIssues priorities: %v", err)
+	}
+	if len(byPrios.Issues) != 2 {
+		t.Fatalf("priorities filter: got %d issues, want 2", len(byPrios.Issues))
+	}
+
+	// Labels: two labels on different issues; multi filter OR-matches.
+	lblBug, err := CreateLabel(ctx, s.pool, s.slug, s.ident, s.actor, LabelInput{Name: "bug"})
+	if err != nil {
+		t.Fatalf("CreateLabel bug: %v", err)
+	}
+	lblFeat, err := CreateLabel(ctx, s.pool, s.slug, s.ident, s.actor, LabelInput{Name: "feature"})
+	if err != nil {
+		t.Fatalf("CreateLabel feature: %v", err)
+	}
+	if err := AssignLabel(ctx, s.pool, s.slug, s.ident, issA.ID, lblBug.ID, s.actor); err != nil {
+		t.Fatalf("AssignLabel: %v", err)
+	}
+	byLabels, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Labels: []string{lblBug.ID, lblFeat.ID}})
+	if err != nil {
+		t.Fatalf("ListIssues labels: %v", err)
+	}
+	if len(byLabels.Issues) != 1 || byLabels.Issues[0].ID != issA.ID {
+		t.Fatalf("labels filter: got %d issues, want only multi alpha", len(byLabels.Issues))
+	}
+
+	// Assignees: actor on alpha; "none" matches the rest.
+	if err := AssignAssignee(ctx, s.pool, s.slug, s.ident, issA.ID, s.actor, s.actor); err != nil {
+		t.Fatalf("AssignAssignee: %v", err)
+	}
+	byAssignee, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Assignees: []string{s.actor}})
+	if err != nil {
+		t.Fatalf("ListIssues assignees: %v", err)
+	}
+	if len(byAssignee.Issues) != 1 || byAssignee.Issues[0].ID != issA.ID {
+		t.Fatalf("assignee filter: got %d issues, want only multi alpha", len(byAssignee.Issues))
+	}
+	byNone, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Assignees: []string{"none"}})
+	if err != nil {
+		t.Fatalf("ListIssues assignee=none: %v", err)
+	}
+	if len(byNone.Issues) != 3 {
+		t.Fatalf("assignee=none filter: got %d issues, want 3", len(byNone.Issues))
+	}
+
+	// Estimates: scale with two points; point on beta, "none" matches rest.
+	est, err := CreateEstimate(ctx, s.pool, s.slug, s.ident, s.actor, EstimateInput{
+		Name: "Fibonacci",
+		Points: []EstimatePointInput{
+			{Key: "1", Value: 1},
+			{Key: "3", Value: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateEstimate: %v", err)
+	}
+	if len(est.Points) != 2 {
+		t.Fatalf("CreateEstimate: got %d points, want 2", len(est.Points))
+	}
+	betaID := ""
+	for _, it := range byPrios.Issues {
+		if it.Name == "multi beta" {
+			betaID = it.ID
+		}
+	}
+	if betaID == "" {
+		t.Fatal("multi beta not found")
+	}
+	if _, err := UpdateIssue(ctx, s.pool, s.slug, s.ident, betaID, s.actor, IssuePatch{
+		EstimatePointID: PatchField[string]{Set: true, Value: &est.Points[0].ID},
+	}); err != nil {
+		t.Fatalf("UpdateIssue estimate: %v", err)
+	}
+	byEst, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{EstimatePoints: []string{est.Points[0].ID}})
+	if err != nil {
+		t.Fatalf("ListIssues estimate: %v", err)
+	}
+	if len(byEst.Issues) != 1 || byEst.Issues[0].ID != betaID {
+		t.Fatalf("estimate filter: got %d issues, want only multi beta", len(byEst.Issues))
+	}
+	byEstNone, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{EstimatePoints: []string{"none"}})
+	if err != nil {
+		t.Fatalf("ListIssues estimate=none: %v", err)
+	}
+	if len(byEstNone.Issues) != 3 {
+		t.Fatalf("estimate=none filter: got %d issues, want 3", len(byEstNone.Issues))
+	}
+
+	// Date ranges: created_before far future matches all; created_after far
+	// future matches none. Due range brackets gamma's target date.
+	future := time.Now().Add(time.Hour)
+	byCreated, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{CreatedBefore: &future})
+	if err != nil {
+		t.Fatalf("ListIssues created_before: %v", err)
+	}
+	if len(byCreated.Issues) != 4 {
+		t.Fatalf("created_before filter: got %d issues, want 4", len(byCreated.Issues))
+	}
+	byCreatedNone, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{CreatedAfter: &future})
+	if err != nil {
+		t.Fatalf("ListIssues created_after: %v", err)
+	}
+	if len(byCreatedNone.Issues) != 0 {
+		t.Fatalf("created_after filter: got %d issues, want 0", len(byCreatedNone.Issues))
+	}
+	dueAfter := due.Add(-24 * time.Hour)
+	dueBefore := due.Add(24 * time.Hour)
+	byDue, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{DueAfter: &dueAfter, DueBefore: &dueBefore})
+	if err != nil {
+		t.Fatalf("ListIssues due range: %v", err)
+	}
+	if len(byDue.Issues) != 1 || byDue.Issues[0].Name != "multi gamma" {
+		t.Fatalf("due range filter: got %d issues, want only multi gamma", len(byDue.Issues))
+	}
+
+	// Subscribed: only the subscribed issue matches.
+	if err := SubscribeIssue(ctx, s.pool, s.slug, s.ident, issA.ID, s.actor); err != nil {
+		t.Fatalf("SubscribeIssue: %v", err)
+	}
+	bySub, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor,
+		ListIssuesInput{Subscribed: true})
+	if err != nil {
+		t.Fatalf("ListIssues subscribed: %v", err)
+	}
+	if len(bySub.Issues) != 1 || bySub.Issues[0].ID != issA.ID {
+		t.Fatalf("subscribed filter: got %d issues, want only multi alpha", len(bySub.Issues))
+	}
+
+	// Malformed values are ErrInvalidListFilter.
+	for _, in := range []ListIssuesInput{
+		{Labels: []string{"not-a-uuid"}},
+		{Assignees: []string{"not-a-uuid"}},
+		{EstimatePoints: []string{"not-a-uuid"}},
+		{Priorities: []int{42}},
+	} {
+		if _, err := ListIssues(ctx, s.pool, s.slug, s.ident, s.actor, in); !errors.Is(err, ErrInvalidListFilter) {
+			t.Fatalf("bad filter %+v: err = %v, want ErrInvalidListFilter", in, err)
+		}
 	}
 }

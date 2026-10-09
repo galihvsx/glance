@@ -200,21 +200,48 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 }
 
 // listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
-// filters (?state=&assignee=&label=&priority=&cycle=&q=), ordering
-// (?order_by=-updated_at), cursor pagination (?cursor=&per_page=), delta
-// sync (?updated_after=), and sparse fieldsets (?fields=description).
-// 200 with the {results, next_cursor} envelope (spec §5).
+// filters (?state=&assignee=&label=&priority=&estimate=&cycle=&q=,
+// ?created_after/before=&updated_after/before=&due_after/before=,
+// ?subscribed=true), ordering (?order_by=-updated_at), cursor pagination
+// (?cursor=&per_page=), delta sync (?updated_after=), and sparse fieldsets
+// (?fields=description). Multi-value filters take comma-separated lists
+// (single values keep working); assignee=/estimate= accept "none" for
+// unassigned / unestimated issues. 200 with the {results, next_cursor}
+// envelope (spec §5).
 func (h *IssueHandler) listIssues(c *echo.Context) error {
 	qp := c.QueryParams()
 
-	var priority *int
+	var priorities []int
 	if s := qp.Get("priority"); s != "" {
-		p, err := strconv.Atoi(s)
-		if err != nil {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid priority: want 0-4", nil)
+		for _, part := range strings.Split(s, ",") {
+			p, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil {
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid priority: want comma-separated 0-4", nil)
+			}
+			priorities = append(priorities, p)
 		}
-		priority = &p
 	}
+	// parseIDList splits a comma-separated param. The "none" sentinel is
+	// only meaningful for assignee=/estimate=; elsewhere it passes through
+	// and the service rejects it as a malformed UUID (400).
+	parseIDList := func(name string) []string {
+		s := qp.Get(name)
+		if s == "" {
+			return nil
+		}
+		var out []string
+		for _, part := range strings.Split(s, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, part)
+		}
+		return out
+	}
+	labels := parseIDList("label")
+	assignees := parseIDList("assignee")
+	estimatePoints := parseIDList("estimate")
 	perPage := 25
 	if s := qp.Get("per_page"); s != "" {
 		p, err := strconv.Atoi(s)
@@ -223,13 +250,34 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 		}
 		perPage = p
 	}
-	var updatedAfter *time.Time
-	if s := qp.Get("updated_after"); s != "" {
+	parseTime := func(name string) (*time.Time, error) {
+		s := qp.Get(name)
+		if s == "" {
+			return nil, nil
+		}
 		tm, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid updated_after: want RFC3339", nil)
+			return nil, err
 		}
-		updatedAfter = &tm
+		return &tm, nil
+	}
+	var createdAfter, createdBefore, updatedAfter, updatedBefore, dueAfter, dueBefore *time.Time
+	for _, tc := range []struct {
+		name string
+		dst  **time.Time
+	}{
+		{"created_after", &createdAfter},
+		{"created_before", &createdBefore},
+		{"updated_after", &updatedAfter},
+		{"updated_before", &updatedBefore},
+		{"due_after", &dueAfter},
+		{"due_before", &dueBefore},
+	} {
+		tm, err := parseTime(tc.name)
+		if err != nil {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid "+tc.name+": want RFC3339", nil)
+		}
+		*tc.dst = tm
 	}
 	var fields []string
 	if s := qp.Get("fields"); s != "" {
@@ -239,17 +287,24 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
 		service.ListIssuesInput{
-			State:        qp.Get("state"),
-			Assignee:     qp.Get("assignee"),
-			Label:        qp.Get("label"),
-			Priority:     priority,
-			Cycle:        qp.Get("cycle"),
-			Q:            qp.Get("q"),
-			OrderBy:      qp.Get("order_by"),
-			Cursor:       qp.Get("cursor"),
-			PerPage:      perPage,
-			UpdatedAfter: updatedAfter,
-			Fields:       fields,
+			State:          qp.Get("state"),
+			Priorities:     priorities,
+			Labels:         labels,
+			Assignees:      assignees,
+			EstimatePoints: estimatePoints,
+			Cycle:          qp.Get("cycle"),
+			Q:              qp.Get("q"),
+			OrderBy:        qp.Get("order_by"),
+			Cursor:         qp.Get("cursor"),
+			PerPage:        perPage,
+			CreatedAfter:   createdAfter,
+			CreatedBefore:  createdBefore,
+			UpdatedAfter:   updatedAfter,
+			UpdatedBefore:  updatedBefore,
+			DueAfter:       dueAfter,
+			DueBefore:      dueBefore,
+			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
+			Fields:         fields,
 		})
 	if err != nil {
 		switch {
