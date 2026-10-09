@@ -34,6 +34,9 @@ func RegisterPageRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/:pageID/move", h.movePage)
 	g.GET("/:pageID/revisions", h.listPageRevisions)
 	g.POST("/:pageID/restore", h.restorePageRevision)
+	g.POST("/:pageID/share", h.createPageShare)
+	g.GET("/:pageID/share", h.listPageShares)
+	g.DELETE("/:pageID/share/:token", h.revokePageShare)
 }
 
 // pageError maps page sentinel errors to HTTP statuses, delegating the

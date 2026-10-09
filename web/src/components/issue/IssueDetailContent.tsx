@@ -9,6 +9,7 @@ import {
   History as HistoryIcon,
   Link2,
   Pencil,
+  Share2,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
@@ -37,6 +38,7 @@ import StateBadge from "./StateBadge";
 import StatePicker from "./StatePicker";
 import PriorityPicker from "./PriorityPicker";
 import AssigneePicker from "./AssigneePicker";
+import ShareModal from "../ShareModal";
 import LabelPicker from "./LabelPicker";
 import TimeTracker from "./TimeTracker";
 import Attachments from "./Attachments";
@@ -260,6 +262,7 @@ export default function IssueDetailContent({
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
@@ -600,6 +603,16 @@ export default function IssueDetailContent({
                 )}
                 {copied ? "Copied" : "Copy link"}
               </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setShareOpen(true)}
+                title="Share publicly"
+              >
+                <Share2 className="h-3.5 w-3.5" />
+                Share
+              </Button>
               {headerActions}
             </span>
           </div>
@@ -818,6 +831,12 @@ export default function IssueDetailContent({
             </div>
           </div>
         </div>
+      )}
+      {shareOpen && (
+        <ShareModal
+          resource={`/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/share`}
+          onClose={() => setShareOpen(false)}
+        />
       )}
     </div>
   );
