@@ -1,11 +1,19 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { useWorkspaces } from "../lib/useWorkspaces";
 import { Skeleton } from "./ui/skeleton";
 
 // Gate for authenticated routes: while the session is being resolved show a
 // skeleton; unauthenticated visitors are sent to /login.
+//
+// Brand-new users (zero workspaces) are routed through the onboarding
+// wizard first — every protected page funnels them to /onboarding, which
+// itself redirects back once a workspace exists. Existing users see zero
+// change: one cached query, no redirect.
 export default function ProtectedRoute() {
   const { user, loading } = useAuth();
+  const location = useLocation();
+  const { data: workspaces, isLoading: workspacesLoading } = useWorkspaces();
 
   if (loading) {
     return (
@@ -21,6 +29,15 @@ export default function ProtectedRoute() {
 
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (
+    location.pathname !== "/onboarding" &&
+    !workspacesLoading &&
+    workspaces !== undefined &&
+    workspaces.length === 0
+  ) {
+    return <Navigate to="/onboarding" replace />;
   }
 
   return <Outlet />;
