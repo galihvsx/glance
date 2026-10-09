@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildPageTree, renderMarkdown } from "./Pages";
+import { buildPageTree } from "./Pages";
+import { renderMarkdown } from "../lib/markdown";
 import type { Page } from "../lib/types";
 
 function page(partial: Partial<Page> & { id: string }): Page {

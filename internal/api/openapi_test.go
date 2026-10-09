@@ -66,6 +66,7 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterAnalyticsRoutes(e, issueHandler)
 	RegisterTimeSummaryRoutes(e, issueHandler)
 	RegisterActivityRoutes(e, issueHandler)
+	RegisterOverviewRoutes(e, issueHandler)
 
 	RegisterFavoriteRoutes(e, &FavoriteHandler{})
 
