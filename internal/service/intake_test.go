@@ -408,3 +408,87 @@ func TestIntakeBackfillForExistingProjects(t *testing.T) {
 		t.Errorf("GetIntake after backfill = %v, want nil", err)
 	}
 }
+
+// TestListSnoozedIntakeIssues (C2T7): the snoozed-inbox partitioning —
+// only rows still snoozed (snoozed_till in the future) are returned,
+// ordered by snoozed_till ASC (soonest wake-up first). Pending rows and
+// expired snoozes (resurfaced to the main inbox) are excluded.
+func TestListSnoozedIntakeIssues(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator, wsSlug, identifier := intakeFixture(t, pool, "snooz-part")
+
+	// Two snoozed rows, created out of wake order — the query must
+	// order by snoozed_till ASC.
+	later := createIntakeIssue(t, pool, wsSlug, identifier, creator, "wakes later")
+	if _, err := SnoozeIntakeIssue(ctx, pool, wsSlug, identifier, later.ID, creator, time.Now().Add(48*time.Hour)); err != nil {
+		t.Fatalf("snooze later: %v", err)
+	}
+	soon := createIntakeIssue(t, pool, wsSlug, identifier, creator, "wakes soon")
+	if _, err := SnoozeIntakeIssue(ctx, pool, wsSlug, identifier, soon.ID, creator, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("snooze soon: %v", err)
+	}
+
+	// One plain pending row — never in the snoozed list.
+	createIntakeIssue(t, pool, wsSlug, identifier, creator, "stays pending")
+
+	// One expired snooze: snoozed, then the clock ran past it. It reads
+	// as pending in the main inbox, not here.
+	expired := createIntakeIssue(t, pool, wsSlug, identifier, creator, "already awake")
+	if _, err := SnoozeIntakeIssue(ctx, pool, wsSlug, identifier, expired.ID, creator, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("snooze expired: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE intake_issues SET snoozed_till = now() - interval '1 minute' WHERE issue_id = $1::uuid`,
+		expired.ID); err != nil {
+		t.Fatalf("backdate snooze: %v", err)
+	}
+
+	got, err := ListSnoozedIntakeIssues(ctx, pool, wsSlug, identifier, creator, 50)
+	if err != nil {
+		t.Fatalf("ListSnoozedIntakeIssues: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d snoozed rows, want 2 (soon + later)", len(got))
+	}
+	if got[0].IssueID != soon.ID || got[1].IssueID != later.ID {
+		t.Fatalf("order = [%s %s], want soon-then-later [%s %s]",
+			got[0].IssueID, got[1].IssueID, soon.ID, later.ID)
+	}
+	for _, ii := range got {
+		if ii.Status != IntakeSnoozed {
+			t.Errorf("row %s: status = %d, want snoozed", ii.IssueID, ii.Status)
+		}
+		if ii.StatusName != "snoozed" {
+			t.Errorf("row %s: status_name = %q, want snoozed", ii.IssueID, ii.StatusName)
+		}
+		if ii.SnoozedTill == nil || !ii.SnoozedTill.After(time.Now()) {
+			t.Errorf("row %s: snoozed_till not in the future", ii.IssueID)
+		}
+		if ii.Issue == nil || ii.Issue.ID != ii.IssueID {
+			t.Errorf("row %s: embedded issue missing", ii.IssueID)
+		}
+	}
+
+	// The expired row resurfaces in the main inbox with effective
+	// pending status, and the still-snoozed rows do not.
+	inbox, err := ListIntakeIssues(ctx, pool, wsSlug, identifier, creator, 50)
+	if err != nil {
+		t.Fatalf("ListIntakeIssues: %v", err)
+	}
+	seen := map[string]int16{}
+	for _, ii := range inbox {
+		seen[ii.IssueID] = ii.EffectiveStatus()
+	}
+	if st, ok := seen[expired.ID]; !ok || st != IntakePending {
+		t.Errorf("expired row: inbox status = %d (present=%v), want pending", st, ok)
+	}
+	if _, ok := seen[soon.ID]; ok {
+		t.Errorf("still-snoozed row %s leaked into the main inbox", soon.ID)
+	}
+	if _, ok := seen[later.ID]; ok {
+		t.Errorf("still-snoozed row %s leaked into the main inbox", later.ID)
+	}
+}

@@ -20,8 +20,10 @@ package service
 //
 // Inbox surfacing rule (GET .../intake): status pending, plus snoozed
 // rows whose snoozed_till has passed — those read back with an EFFECTIVE
-// status of pending (computed, never written). No background ticker
-// flips rows in v1; resurfacing is purely a read-time rule.
+// status of pending (computed, never written). A background ticker
+// (internal/ticker.SnoozeTicker, spec §3) also flips expired rows to
+// pending in the database, so the stored state reflects reality between
+// reads; the read-time rule stays as the safety net.
 
 import (
 	"context"
@@ -93,8 +95,10 @@ type IntakeIssue struct {
 }
 
 // EffectiveStatus applies the resurfacing rule: a snoozed item whose
-// snoozed_till has passed reads as pending. The stored status is never
-// rewritten — the snooze record is kept.
+// snoozed_till has passed reads as pending. This is the safety net for
+// the window between snooze-ticker passes — the ticker itself rewrites
+// the stored status, so this path only triggers for rows it hasn't
+// reached yet.
 func (ii *IntakeIssue) EffectiveStatus() int16 {
 	if ii.Status == IntakeSnoozed && ii.SnoozedTill != nil && !ii.SnoozedTill.After(time.Now()) {
 		return IntakePending
@@ -222,7 +226,8 @@ func GetIntake(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, acto
 // ListIntakeIssues returns the triage inbox: pending items plus snoozed
 // items whose snoozed_till has passed (resurfaced — EffectiveStatus()
 // reads pending). Terminal rows (accepted/rejected/duplicate) never
-// appear. Ordered by arrival (created_at ASC) — triage in arrival order.
+// appear, and neither do archived issues (archived work is out of
+// triage). Ordered by arrival (created_at ASC) — triage in arrival order.
 // limit is clamped to 1..100. Any workspace member may read.
 func ListIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, limit int) ([]IntakeIssue, error) {
 	ident, err := normalizeIdentifier(identifier)
@@ -245,7 +250,7 @@ func ListIntakeIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		        ii.duplicate_to_id::text, ii.created_at, `+issueColumnsI+`
 		 FROM intake_issues ii
 		 JOIN intake t ON t.id = ii.intake_id AND t.is_default AND t.project_id = $1::uuid
-		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL
+		 JOIN issues i ON i.id = ii.issue_id AND i.deleted_at IS NULL AND i.archived_at IS NULL
 		 WHERE ii.status = $2 OR (ii.status = $3 AND ii.snoozed_till <= now())
 		 ORDER BY ii.created_at ASC
 		 LIMIT $4`,

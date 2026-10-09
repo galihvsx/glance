@@ -333,6 +333,15 @@ export default function FilterPanel({
             Subscribed by me
           </Label>
         </div>
+        <div className="px-2 py-1">
+          <Label className="flex cursor-pointer items-center gap-2 text-sm font-normal">
+            <Checkbox
+              checked={filters.archived}
+              onCheckedChange={(v) => onChange({ archived: v === true })}
+            />
+            Show archived
+          </Label>
+        </div>
       </PopoverContent>
     </Popover>
   );

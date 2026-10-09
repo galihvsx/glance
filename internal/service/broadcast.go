@@ -113,3 +113,21 @@ func announceCycleUpdated(ctx context.Context, pool *pgxpool.Pool, cycleID, proj
 func BroadcastCycleUpdated(ctx context.Context, pool *pgxpool.Pool, cycleID, projectID, status string) {
 	announceCycleUpdated(ctx, pool, cycleID, projectID, status)
 }
+
+// BroadcastIntakeResurfaced announces intake rows whose snooze the
+// background ticker expired (status flipped snoozed → pending), so open
+// inboxes refresh without a page reload. Exported for the snooze ticker,
+// whose expiry path bypasses the service mutation layer (it runs a raw
+// UPDATE ... RETURNING).
+func BroadcastIntakeResurfaced(wsSlug, identifier, intakeIssueID, issueID string) {
+	announce(
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
+		EventIntakeUpdated,
+		map[string]any{
+			"id":          intakeIssueID,
+			"issue_id":    issueID,
+			"status":      IntakePending,
+			"status_name": IntakeStatusName(IntakePending),
+		},
+	)
+}
