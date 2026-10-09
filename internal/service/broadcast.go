@@ -29,6 +29,7 @@ const (
 	EventPageUpdated         = "page.updated"
 	EventReleaseUpdated      = "release.updated"
 	EventTemplateUpdated     = "template.updated"
+	EventCustomFieldUpdated  = "custom_field.updated"
 	EventIntakeUpdated       = "intake.updated"
 	EventNotificationCreated = "notification.created"
 )
