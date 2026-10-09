@@ -15,6 +15,7 @@ import Intake from "./pages/Intake";
 import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
 import Gantt from "./pages/Gantt";
+import Analytics from "./pages/Analytics";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Pages from "./pages/Pages";
@@ -61,6 +62,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/gantt"
                   element={<Gantt />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/analytics"
+                  element={<Analytics />}
                 />
                 <Route
                   path="/w/:slug/p/:identifier/cycles"
