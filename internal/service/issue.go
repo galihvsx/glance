@@ -1320,6 +1320,13 @@ type ListIssuesInput struct {
 	UpdatedBefore *time.Time
 	DueAfter      *time.Time
 	DueBefore     *time.Time
+	// StartAfter/StartBefore bracket issues.start_date (C3T5: calendar
+	// view places start-dated issues by their start date).
+	StartAfter  *time.Time
+	StartBefore *time.Time
+	// Undated matches issues with neither a target nor a start date
+	// (C3T5: the calendar "unscheduled" strip).
+	Undated bool
 	// Subscribed limits to issues the actor subscribed to.
 	Subscribed bool
 	// Archived includes archived issues. Default (false) excludes them:
@@ -1567,6 +1574,15 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	}
 	if in.DueBefore != nil {
 		conds = append(conds, "i.target_date < "+arg(in.DueBefore)+"::date")
+	}
+	if in.StartAfter != nil {
+		conds = append(conds, "i.start_date >= "+arg(in.StartAfter)+"::date")
+	}
+	if in.StartBefore != nil {
+		conds = append(conds, "i.start_date < "+arg(in.StartBefore)+"::date")
+	}
+	if in.Undated {
+		conds = append(conds, "i.target_date IS NULL AND i.start_date IS NULL")
 	}
 	if in.Subscribed {
 		conds = append(conds, "EXISTS (SELECT 1 FROM issue_subscribers s WHERE s.issue_id = i.id AND s.user_id = "+arg(actorID)+"::uuid)")

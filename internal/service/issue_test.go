@@ -1049,3 +1049,66 @@ func TestListIssuesArchivedFilter(t *testing.T) {
 		}
 	}
 }
+
+// TestListIssuesStartDateAndUndated (C3T5): start_after/start_before bracket
+// issues.start_date, and undated matches issues with neither a target nor a
+// start date. Feeds the calendar view (due-dated, start-dated, unscheduled).
+func TestListIssuesStartDateAndUndated(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("cal-filt"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("cal-filt"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	mk := func(name string, start, target *time.Time) string {
+		iss, err := CreateIssue(ctx, pool, ws.Slug, p.Identifier, creator,
+			CreateIssueInput{Name: name, StartDate: start, TargetDate: target})
+		if err != nil {
+			t.Fatalf("CreateIssue %s: %v", name, err)
+		}
+		return iss.ID
+	}
+	oct5 := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	oct12 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	nov3 := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+
+	startOnlyID := mk("start only", &oct5, nil) // start Oct 5, no due
+	dueOnlyID := mk("due only", nil, &oct12)    // due Oct 12, no start
+	bothID := mk("both", &oct5, &nov3)          // start Oct 5, due Nov 3
+	undatedID := mk("undated", nil, nil)        // no dates at all
+
+	oct1 := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+
+	ids := func(in ListIssuesInput) map[string]bool {
+		res, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator, in)
+		if err != nil {
+			t.Fatalf("ListIssues %+v: %v", in, err)
+		}
+		m := map[string]bool{}
+		for _, it := range res.Issues {
+			m[it.ID] = true
+		}
+		return m
+	}
+
+	// Start range over October: the two issues with an October start.
+	byStart := ids(ListIssuesInput{StartAfter: &oct1, StartBefore: &nov1})
+	if len(byStart) != 2 || !byStart[startOnlyID] || !byStart[bothID] {
+		t.Errorf("start range: got %v, want start-only + both", byStart)
+	}
+
+	// Due range over October: only the October-dated target.
+	byDue := ids(ListIssuesInput{DueAfter: &oct1, DueBefore: &nov1})
+	if len(byDue) != 1 || !byDue[dueOnlyID] {
+		t.Errorf("due range: got %v, want only due-only", byDue)
+	}
+
+	// Undated: only the issue with neither date.
+	byUndated := ids(ListIssuesInput{Undated: true})
+	if len(byUndated) != 1 || !byUndated[undatedID] {
+		t.Errorf("undated: got %v, want only undated", byUndated)
+	}
+}
