@@ -225,3 +225,87 @@ func TestDoPinnedDelivers(t *testing.T) {
 		t.Errorf("body = %q, want ping payload", gotBody)
 	}
 }
+
+// TestWebhookRedirectNotFollowed (C2T8): a webhook target answering 302
+// must NOT be followed. The redirect target sees zero requests, and the
+// row goes back to pending via the normal delivery-error path
+// (recordFailure → backoff → failed), never "done".
+func TestWebhookRedirectNotFollowed(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
+
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	outboxID := enqueueOneWebhookRow(t, pool, ctx, wsSlug, actorID, redirector.URL)
+
+	d := NewWebhookDispatcher(pool)
+	d.allowPrivateTargets = true // httptest targets are loopback by construction
+	if err := d.Run(ctx); err != nil {
+		t.Fatalf("dispatcher run: %v", err)
+	}
+
+	var status string
+	var attempts int
+	if err := pool.QueryRow(ctx,
+		`SELECT status, attempts FROM outbox WHERE id = $1`, outboxID,
+	).Scan(&status, &attempts); err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("status = %q, want pending (3xx is a delivery failure, retried with backoff)", status)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1", attempts)
+	}
+	if targetHits != 0 {
+		t.Errorf("redirect target saw %d requests, want 0 (redirects must not be followed)", targetHits)
+	}
+}
+
+// TestDoPinnedDoesNotFollowRedirect (C2T8): the pinned-dial client also
+// refuses redirects — the guard vets the original target, so a 302 to
+// an unvetted URL must surface as-is rather than being followed.
+func TestDoPinnedDoesNotFollowRedirect(t *testing.T) {
+	ctx := context.Background()
+
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	d := NewWebhookDispatcher(nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, redirector.URL, strings.NewReader(`{"ping":1}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := d.doPinned(ctx, req, []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("doPinned: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want 302 (redirect returned as-is, not followed)", resp.StatusCode)
+	}
+	if targetHits != 0 {
+		t.Errorf("redirect target saw %d requests, want 0", targetHits)
+	}
+}

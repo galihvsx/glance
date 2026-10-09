@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/labstack/echo/v5"
@@ -38,6 +40,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("glance: %v", err)
 	}
+
+	// C2T8: the dispatchers and tickers below select on ctx.Done(), so
+	// ctx must actually BE cancelled on shutdown — a bare
+	// context.Background() never fires, and the goroutines would leak
+	// until the process was SIGKILLed. signal.NotifyContext ties the
+	// whole server lifecycle to SIGINT/SIGTERM.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := store.NewPool(ctx, cfg)
 	if err != nil {
@@ -112,6 +122,15 @@ func main() {
 	snoozeTicker.Start(ctx)
 
 	e := echo.New()
+
+	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via
+	// c.RealIP(). They are honored ONLY from TRUSTED_PROXY_CIDRS; with
+	// the env unset (default) the direct TCP peer is the client IP and
+	// spoofed XFF headers are ignored.
+	if len(cfg.TrustedProxyNets) > 0 {
+		e.IPExtractor = api.ProxyAwareIPExtractor(cfg.TrustedProxyNets)
+		log.Printf("glance: trusting X-Forwarded-For from proxies in %s", cfg.TrustedProxyCIDRs)
+	}
 	e.GET("/health", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "version": Version})
 	})
@@ -157,8 +176,23 @@ func main() {
 		log.Fatalf("glance: spa: %v", err)
 	}
 
-	if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("glance: server error: %v", err)
+	// C2T8: graceful shutdown via the standard library server (echo v5's
+	// Start has its own internal signal handling and no Shutdown method,
+	// so drive http.Server directly). The signal ctx above is shared with
+	// the mail/webhook dispatchers and the cycle ticker: SIGINT/SIGTERM
+	// cancels it (their <-ctx.Done() branches fire), then Shutdown drains
+	// in-flight requests before the process exits.
+	srv := &http.Server{Addr: ":" + cfg.Port, Handler: e}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("glance: server error: %v", err)
+		}
+	}()
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("glance: shutdown: %v", err)
 	}
 }
 

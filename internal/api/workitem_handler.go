@@ -56,10 +56,13 @@ func (h *IssueHandler) getWorkItemByDisplayID(c *echo.Context) error {
 func (h *IssueHandler) searchIssues(c *echo.Context) error {
 	qp := c.QueryParams()
 
+	// C2T8: per_page is REJECTED (400) when out of range — see listIssues
+	// for the rationale (documented contract "want 1-100"; fail fast
+	// instead of silently returning fewer rows).
 	perPage := 25
 	if s := qp.Get("per_page"); s != "" {
 		p, err := strconv.Atoi(s)
-		if err != nil || p < 1 {
+		if err != nil || p < 1 || p > 100 {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
 		}
 		perPage = p
