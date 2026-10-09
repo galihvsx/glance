@@ -28,6 +28,7 @@ const (
 	EventModuleUpdated       = "module.updated"
 	EventPageUpdated         = "page.updated"
 	EventReleaseUpdated      = "release.updated"
+	EventTemplateUpdated     = "template.updated"
 	EventIntakeUpdated       = "intake.updated"
 	EventNotificationCreated = "notification.created"
 )
@@ -193,5 +194,24 @@ func announceReleaseUpdated(ctx context.Context, pool *pgxpool.Pool, releaseID, 
 		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventReleaseUpdated,
 		map[string]string{"id": releaseID},
+	)
+}
+
+// announceTemplateUpdated fans a template.updated event out to the
+// project + workspace channels. Best-effort like its siblings: a lookup
+// failure skips the broadcast rather than failing the mutation.
+func announceTemplateUpdated(ctx context.Context, pool *pgxpool.Pool, templateID, projectID string) {
+	var wsSlug, identifier string
+	err := pool.QueryRow(ctx,
+		`SELECT w.slug, p.identifier
+		   FROM projects p JOIN workspaces w ON w.id = p.workspace_id
+		  WHERE p.id = $1::uuid`, projectID).Scan(&wsSlug, &identifier)
+	if err != nil {
+		return
+	}
+	announce(
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
+		EventTemplateUpdated,
+		map[string]string{"id": templateID},
 	)
 }
