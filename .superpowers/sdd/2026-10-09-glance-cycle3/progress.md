@@ -8,3 +8,11 @@ Ledger for cycle 3. Cycle 2 history lives in `.superpowers/sdd/2026-10-08-glance
 - Waves: W1 (T0+T1) → W2 (T2+T3) → W3 (T4+T5) → W4 (T6+T7) → W5 (T8), max 2 parallel implementers, one worktree each (`git worktree add -b <branch> <path> main`).
 - Wave-1 readiness: worktrees area clean (cycle-2 worktrees removed); branches namespace `cycle3/c3t<N>-<slug>` free. Ready to dispatch C3T0 + C3T1.
 - v0.2.0 GitHub Release still unpublished — galih checkpoint, orthogonal to cycle 3.
+
+## Wave 1 dispatched — 2026-10-09 ~09:55 +08 (by coordinator, right after watchdog resume)
+- C3T0 (invites endpoint) + C3T1 (modules backend) in parallel, isolated worktrees, corrected `worktree add -b` form.
+- **C3T1 merged** to main (adversarial review pass: member scoping ✓, cross-project assignment blocked ✓, idempotent migration ✓, delete guard ✓). Tests green post-merge. Worktree cleaned.
+- **C3T2 merged** (review pass: route/nav/api.del shared changes minimal & backward-compat; Modules.tsx mirrors Cycles patterns; tsc clean post-merge). Worktree cleaned.
+- **C3T3 merged** (review pass: project-scoped parent ✓, recursive-CTE cycle guard ✓, tx move/reorder ✓, idempotent migration ✓). Tests green post-merge. Worktree cleaned.
+- **C3T4 dispatched** (pages frontend) — dependency on C3T3 satisfied.
+- **C3T4 merged** (review pass: hand-rolled markdown renderer XSS-safe — escape-first, href allow-list, rel=noreferrer; zero new deps; 72 vitest green post-merge). Worktree cleaned.

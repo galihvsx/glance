@@ -202,6 +202,8 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
 // filters (?state=&assignee=&label=&priority=&estimate=&cycle=&q=,
 // ?created_after/before=&updated_after/before=&due_after/before=,
+// ?start_after/before= (C3T5: bracket issues.start_date for the calendar),
+// ?undated=1 (C3T5: issues with neither target nor start date),
 // ?subscribed=true), ordering (?order_by=-updated_at), cursor pagination
 // (?cursor=&per_page=), delta sync (?updated_after=), and sparse fieldsets
 // (?fields=description). Multi-value filters take comma-separated lists
@@ -266,7 +268,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 		}
 		return &tm, nil
 	}
-	var createdAfter, createdBefore, updatedAfter, updatedBefore, dueAfter, dueBefore *time.Time
+	var createdAfter, createdBefore, updatedAfter, updatedBefore, dueAfter, dueBefore, startAfter, startBefore *time.Time
 	for _, tc := range []struct {
 		name string
 		dst  **time.Time
@@ -277,6 +279,8 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 		{"updated_before", &updatedBefore},
 		{"due_after", &dueAfter},
 		{"due_before", &dueBefore},
+		{"start_after", &startAfter},
+		{"start_before", &startBefore},
 	} {
 		tm, err := parseTime(tc.name)
 		if err != nil {
@@ -308,6 +312,9 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			UpdatedBefore:  updatedBefore,
 			DueAfter:       dueAfter,
 			DueBefore:      dueBefore,
+			StartAfter:     startAfter,
+			StartBefore:    startBefore,
+			Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
 			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
 			Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
 			Fields:         fields,
