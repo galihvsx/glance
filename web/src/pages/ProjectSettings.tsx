@@ -15,6 +15,7 @@ import LabelsSection from "../components/settings/LabelsSection";
 import StatesSection from "../components/settings/StatesSection";
 import TemplatesSection from "../components/settings/TemplatesSection";
 import CustomFieldsSection from "../components/settings/CustomFieldsSection";
+import ImportSection from "../components/settings/ImportSection";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 
@@ -64,6 +65,7 @@ export default function ProjectSettings() {
             <TabsTrigger value="estimates">Estimates</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
             <TabsTrigger value="custom-fields">Custom fields</TabsTrigger>
+            <TabsTrigger value="import">Import</TabsTrigger>
           </TabsList>
           <TabsContent value="labels" className="mt-4">
             <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
@@ -87,6 +89,13 @@ export default function ProjectSettings() {
           </TabsContent>
           <TabsContent value="custom-fields" className="mt-4">
             <CustomFieldsSection
+              slug={slug}
+              identifier={identifier}
+              canEdit={canEdit}
+            />
+          </TabsContent>
+          <TabsContent value="import" className="mt-4">
+            <ImportSection
               slug={slug}
               identifier={identifier}
               canEdit={canEdit}

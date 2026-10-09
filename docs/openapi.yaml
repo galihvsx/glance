@@ -300,6 +300,26 @@
         "responses": { "200": { "description": "CSV template", "content": { "text/csv": { "schema": { "type": "string" } } } } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/github/preview": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Preview a GitHub issues import",
+        "description": "Fetches issues from the GitHub REST API (paginated, pull requests excluded) and reports how the first 10 would map: labels (missing ones would be created), assignee matches, comment counts, milestones (skipped). No writes. The token travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["owner", "repo"], "properties": { "owner": { "type": "string" }, "repo": { "type": "string" }, "token": { "type": "string", "description": "GitHub personal access token; empty works for public repos within unauthenticated rate limits" }, "state_filter": { "type": "string", "enum": ["open", "closed", "all"], "default": "open" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Preview result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GitHubImportPreview" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/github": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import issues from GitHub",
+        "description": "Imports GitHub issues as glance issues: labels are created when missing, comments are imported with attribution, assignees are matched best-effort by public email, milestones are skipped (glance has none). Idempotent via an imported-from marker in each issue's description: re-running skips already-imported issues. The token travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["owner", "repo"], "properties": { "owner": { "type": "string" }, "repo": { "type": "string" }, "token": { "type": "string", "description": "GitHub personal access token; empty works for public repos within unauthenticated rate limits" }, "state_filter": { "type": "string", "enum": ["open", "closed", "all"], "default": "open" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GitHubImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1515,7 +1535,8 @@
       "NotFound": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
       "Conflict": { "description": "Conflicting state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
       "RateLimited": { "description": "Too many requests", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-      "PayloadTooLarge": { "description": "Request body exceeds the size limit", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+      "PayloadTooLarge": { "description": "Request body exceeds the size limit", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "BadGateway": { "description": "Upstream service error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
     },
     "schemas": {
       "Error": {
@@ -1939,6 +1960,39 @@
           "created": { "type": "integer" },
           "failed": { "type": "integer" },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer" }, "error": { "type": "string" } } } }
+        }
+      },
+      "GitHubImportPreview": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "total": { "type": "integer" },
+          "rows": { "type": "array", "items": { "type": "object", "properties": {
+            "number": { "type": "integer" },
+            "title": { "type": "string" },
+            "state": { "type": "string" },
+            "labels": { "type": "array", "items": { "type": "string" } },
+            "new_labels": { "type": "array", "items": { "type": "string" } },
+            "assignees": { "type": "array", "items": { "type": "string" } },
+            "assignee_matched": { "type": "boolean" },
+            "comments": { "type": "integer" },
+            "milestone": { "type": "string", "nullable": true },
+            "already_imported": { "type": "boolean" }
+          } } }
+        }
+      },
+      "GitHubImportResult": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "created": { "type": "integer" },
+          "skipped": { "type": "integer" },
+          "prs_skipped": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "labels_created": { "type": "array", "items": { "type": "string" } },
+          "assignee_misses": { "type": "integer" },
+          "milestones_skipped": { "type": "integer" },
+          "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "GitHub issue number" }, "message": { "type": "string" } } } }
         }
       },
       "ShareLink": {
