@@ -320,6 +320,26 @@
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GitHubImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/jira/preview": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Preview a Jira Cloud issues import",
+        "description": "Fetches issues from the Jira Cloud REST v3 API (POST /rest/api/3/search/jql, token pagination) and reports how the first 10 would map: status → state (unmatched statuses would create new states), labels (missing ones would be created), priority, assignee matches, comment counts. No writes. Jira Cloud only — site is the Atlassian subdomain (host pinned to <site>.atlassian.net); Server/Data Center are not supported. The API token travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["site", "email", "api_token", "project_key"], "properties": { "site": { "type": "string", "description": "Atlassian subdomain only, e.g. \"acme\" (→ acme.atlassian.net)" }, "email": { "type": "string" }, "api_token": { "type": "string", "description": "Jira Cloud API token (from id.atlassian.com); sent as HTTP Basic auth, never stored" }, "project_key": { "type": "string", "description": "Jira project key, e.g. \"PROJ\"" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Preview result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JiraImportPreview" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/jira": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import issues from Jira Cloud",
+        "description": "Imports Jira Cloud issues as glance issues: statuses map to states by name (unmatched statuses create new states in the unstarted group), labels are created when missing, priorities are mapped, comments are imported with attribution and original timestamps, assignees are matched best-effort by email, sprints are skipped (glance cycles are manual), subtasks/epics import as flat issues. Idempotent via an imported-from marker in each issue's description: re-running skips already-imported issues. Jira Cloud only. The API token travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["site", "email", "api_token", "project_key"], "properties": { "site": { "type": "string", "description": "Atlassian subdomain only, e.g. \"acme\" (→ acme.atlassian.net)" }, "email": { "type": "string" }, "api_token": { "type": "string", "description": "Jira Cloud API token (from id.atlassian.com); sent as HTTP Basic auth, never stored" }, "project_key": { "type": "string", "description": "Jira project key, e.g. \"PROJ\"" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JiraImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2078,6 +2098,41 @@
           "assignee_misses": { "type": "integer" },
           "milestones_skipped": { "type": "integer" },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "GitHub issue number" }, "message": { "type": "string" } } } }
+        }
+      },
+      "JiraImportPreview": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "total": { "type": "integer", "description": "Issues actually fetched (the v3 search API returns no total count)" },
+          "rows": { "type": "array", "items": { "type": "object", "properties": {
+            "key": { "type": "string" },
+            "title": { "type": "string" },
+            "status": { "type": "string", "description": "Jira status name" },
+            "state": { "type": "string", "description": "Matched glance state name, or the status name when state_is_new" },
+            "state_is_new": { "type": "boolean" },
+            "labels": { "type": "array", "items": { "type": "string" } },
+            "new_labels": { "type": "array", "items": { "type": "string" } },
+            "priority": { "type": "integer", "description": "0=none 1=low 2=medium 3=high 4=urgent" },
+            "assignee": { "type": "string", "nullable": true, "description": "Jira assignee display name" },
+            "assignee_matched": { "type": "boolean" },
+            "comments": { "type": "integer" },
+            "issue_type": { "type": "string" },
+            "already_imported": { "type": "boolean" }
+          } } }
+        }
+      },
+      "JiraImportResult": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string" },
+          "created": { "type": "integer" },
+          "skipped": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "labels_created": { "type": "array", "items": { "type": "string" } },
+          "states_created": { "type": "array", "items": { "type": "string" } },
+          "assignee_misses": { "type": "integer" },
+          "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "1-based ordinal of the issue in the fetched batch" }, "message": { "type": "string" } } } }
         }
       },
       "ShareLink": {

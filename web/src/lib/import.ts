@@ -1,9 +1,10 @@
-// Issue import client (C4T8 CSV backend + C8T2 GitHub importer).
+// Issue import client (C4T8 CSV backend + C8T2 GitHub importer + C9T1
+// Jira Cloud importer).
 //
-// The CSV endpoints speak multipart/form-data (file + JSON mapping); the
-// GitHub endpoints speak JSON. Both share the preview → import → result
-// shape, and the ImportSection UI renders both through the same
-// preview-table / result-summary components.
+// The CSV endpoints speak multipart/form-data (file + JSON mapping);
+// the GitHub and Jira endpoints speak JSON. All share the preview →
+// import → result shape, and the ImportSection UI renders them through
+// the same preview-table / result-summary components.
 
 import { api } from "./api";
 
@@ -170,4 +171,91 @@ export function buildCsvMapping(raw: Record<string, string>): ImportMapping {
     if (v) Object.assign(out, { [key]: v });
   }
   return out;
+}
+
+// ---------- Jira import (C9T1 backend) ----------
+
+export interface JiraImportInput {
+  site: string;
+  email: string;
+  api_token: string;
+  project_key: string;
+  max?: number;
+}
+
+export interface JiraImportPreviewRow {
+  key: string;
+  title: string;
+  status: string;
+  state: string;
+  state_is_new: boolean;
+  labels: string[];
+  new_labels: string[];
+  priority: number;
+  assignee?: string | null;
+  assignee_matched: boolean;
+  comments: number;
+  issue_type: string;
+  already_imported: boolean;
+}
+
+export interface JiraImportPreview {
+  source: string;
+  total: number;
+  rows: JiraImportPreviewRow[];
+}
+
+export interface JiraImportResult {
+  source: string;
+  created: number;
+  skipped: number;
+  failed: number;
+  labels_created: string[];
+  states_created: string[];
+  assignee_misses: number;
+  errors: ImportRowError[];
+}
+
+export function previewJiraImport(
+  slug: string,
+  identifier: string,
+  input: JiraImportInput,
+): Promise<JiraImportPreview> {
+  return api.post<JiraImportPreview>(
+    `${importBase(slug, identifier)}/jira/preview`,
+    input,
+  );
+}
+
+export function runJiraImport(
+  slug: string,
+  identifier: string,
+  input: JiraImportInput,
+): Promise<JiraImportResult> {
+  return api.post<JiraImportResult>(
+    `${importBase(slug, identifier)}/jira`,
+    input,
+  );
+}
+
+// validateJiraForm is the pure client-side gate for the Jira import
+// form: site is the Atlassian subdomain only (the server pins
+// <site>.atlassian.net — Server/DC hosts are rejected), project_key is
+// Jira's key charset. The server re-validates strictly; this is just
+// fast feedback. Returns the error message or null when OK.
+export function validateJiraForm(
+  site: string,
+  email: string,
+  projectKey: string,
+): string | null {
+  const s = site.trim().toLowerCase();
+  if (!s) return "Site is required (your Atlassian subdomain, e.g. “acme”).";
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(s)) {
+    return "Site must be the subdomain only — letters, digits and hyphens (e.g. “acme”, not “acme.atlassian.net”).";
+  }
+  if (!email.trim()) return "Email is required.";
+  if (!/^[A-Za-z][A-Za-z0-9]{1,29}$/.test(projectKey.trim())) {
+    return "Project key must start with a letter and contain only letters and digits (e.g. “PROJ”).";
+  }
+  return null;
 }

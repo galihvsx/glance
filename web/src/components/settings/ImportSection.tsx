@@ -1,24 +1,29 @@
-// Issue import UI (C4T8 CSV backend + C8T2 GitHub importer).
+// Issue import UI (C4T8 CSV backend + C8T2 GitHub importer + C9T1 Jira
+// Cloud importer).
 //
-// Project settings → Import tab: a source selector (CSV file / GitHub
-// repo) with the shared preview → import → result flow. The CSV mapping
+// Project settings → Import tab: a source selector (Jira / GitHub / CSV
+// file) with the shared preview → import → result flow. The CSV mapping
 // form follows the backend's ImportMapping contract (title required, the
-// rest optional); the GitHub form collects owner/repo/token + filters.
-// The personal access token is sent in the JSON body only and is never
-// stored anywhere — the input is a password field and the value is
-// cleared from state after the import runs.
+// rest optional); the GitHub form collects owner/repo/token + filters;
+// the Jira form collects site/email/API token/project key. Secrets are
+// sent in the JSON body only and are never stored anywhere — the inputs
+// are password fields and the values are cleared from state after the
+// import runs.
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, FileUp, GitBranch } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch } from "lucide-react";
 import { ApiError } from "../../lib/api";
 import {
   buildCsvMapping,
   fetchImportTemplate,
   previewCsvImport,
   previewGitHubImport,
+  previewJiraImport,
   runCsvImport,
   runGitHubImport,
+  runJiraImport,
   validateGitHubForm,
+  validateJiraForm,
   type GitHubImportPreview,
   type GitHubImportPreviewRow,
   type GitHubImportResult,
@@ -26,6 +31,9 @@ import {
   type ImportPreview,
   type ImportResult,
   type ImportRowError,
+  type JiraImportPreview,
+  type JiraImportPreviewRow,
+  type JiraImportResult,
 } from "../../lib/import";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
@@ -54,7 +62,7 @@ function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-type Source = "csv" | "github";
+type Source = "csv" | "github" | "jira";
 
 // ---------- shared bits ----------
 
@@ -569,6 +577,348 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
   );
 }
 
+// ---------- Jira panel ----------
+
+const JIRA_PRIORITY_NAMES = ["none", "low", "medium", "high", "urgent"];
+
+function JiraPreviewTable({ preview }: { preview: JiraImportPreview }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Key</TableHead>
+          <TableHead>Title</TableHead>
+          <TableHead>Status → State</TableHead>
+          <TableHead>Priority</TableHead>
+          <TableHead>Labels</TableHead>
+          <TableHead>Assignee</TableHead>
+          <TableHead>Comments</TableHead>
+          <TableHead>Type</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {preview.rows.map((r: JiraImportPreviewRow) => (
+          <TableRow key={r.key} className={r.already_imported ? "opacity-60" : undefined}>
+            <TableCell className="font-mono">{r.key}</TableCell>
+            <TableCell className="max-w-64">
+              <span className="block truncate" title={r.title}>
+                {r.title}
+              </span>
+              {r.already_imported && (
+                <Badge variant="secondary" className="mt-1">
+                  already imported
+                </Badge>
+              )}
+            </TableCell>
+            <TableCell>
+              <div className="flex items-center gap-1">
+                <Badge variant="outline" title={`Jira status: ${r.status}`}>
+                  {r.status}
+                </Badge>
+                <span className="text-muted-foreground">→</span>
+                <Badge
+                  variant={r.state_is_new ? "default" : "outline"}
+                  title={r.state_is_new ? "Will be created as a new state" : "Existing state"}
+                >
+                  {r.state}
+                  {r.state_is_new ? " +" : ""}
+                </Badge>
+              </div>
+            </TableCell>
+            <TableCell>
+              <Badge variant="outline">{JIRA_PRIORITY_NAMES[r.priority] ?? r.priority}</Badge>
+            </TableCell>
+            <TableCell>
+              <div className="flex max-w-48 flex-wrap gap-1">
+                {r.labels.map((l) => (
+                  <Badge
+                    key={l}
+                    variant={r.new_labels.includes(l) ? "default" : "outline"}
+                    title={r.new_labels.includes(l) ? "Will be created" : "Exists"}
+                  >
+                    {l}
+                    {r.new_labels.includes(l) ? " +" : ""}
+                  </Badge>
+                ))}
+                {r.labels.length === 0 && <span className="text-muted-foreground">—</span>}
+              </div>
+            </TableCell>
+            <TableCell>
+              {r.assignee ? (
+                <div>
+                  <Badge variant="outline" title={r.assignee}>
+                    {r.assignee}
+                  </Badge>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {r.assignee_matched ? "matched a member" : "no member match"}
+                  </div>
+                </div>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </TableCell>
+            <TableCell className="font-mono">{r.comments}</TableCell>
+            <TableCell>
+              <Badge variant="outline">{r.issue_type || "—"}</Badge>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function JiraPanel({ slug, identifier }: { slug: string; identifier: string }) {
+  const [site, setSite] = useState("");
+  const [email, setEmail] = useState("");
+  const [apiToken, setApiToken] = useState("");
+  const [projectKey, setProjectKey] = useState("");
+  const [max, setMax] = useState("100");
+  const [preview, setPreview] = useState<JiraImportPreview | null>(null);
+  const [result, setResult] = useState<JiraImportResult | null>(null);
+  const [busy, setBusy] = useState<"preview" | "import" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const formError = validateJiraForm(site, email, projectKey);
+  const input = {
+    site: site.trim().toLowerCase(),
+    email: email.trim(),
+    api_token: apiToken,
+    project_key: projectKey.trim().toUpperCase(),
+    max: Math.max(1, parseInt(max, 10) || 100),
+  };
+
+  const doPreview = async () => {
+    if (formError) return;
+    setBusy("preview");
+    setError(null);
+    setResult(null);
+    try {
+      setPreview(await previewJiraImport(slug, identifier, input));
+    } catch (e) {
+      setError(errMsg(e, "Preview failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doImport = async () => {
+    if (formError) return;
+    if (
+      !window.confirm(
+        `Import up to ${input.max} issues from ${input.project_key} (${input.site}.atlassian.net) into this project?`,
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setError(null);
+    setPreview(null);
+    try {
+      const res = await runJiraImport(slug, identifier, input);
+      setResult(res);
+    } catch (e) {
+      setError(errMsg(e, "Import failed"));
+    } finally {
+      setBusy(null);
+      setApiToken(""); // the API token never lingers in the form after a run
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Label htmlFor="jira-site">Site *</Label>
+            <div className="flex items-center gap-0">
+              <Input
+                id="jira-site"
+                placeholder="acme"
+                value={site}
+                onChange={(e) => setSite(e.target.value)}
+                className="rounded-r-none"
+              />
+              <span className="rounded-r-md border border-l-0 bg-muted px-3 py-2 text-sm text-muted-foreground">
+                .atlassian.net
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Subdomain only. Jira Cloud only — Server/Data Center are not
+              supported.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="jira-email">Email *</Label>
+            <Input
+              id="jira-email"
+              type="email"
+              placeholder="you@company.com"
+              value={email}
+              autoComplete="off"
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="jira-token">API token *</Label>
+            <Input
+              id="jira-token"
+              type="password"
+              placeholder="ATATT3x… (from id.atlassian.com)"
+              value={apiToken}
+              autoComplete="off"
+              onChange={(e) => setApiToken(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Sent to {site.trim() ? `${site.trim().toLowerCase()}.atlassian.net` : "your site"} only,
+              never stored.
+            </p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="jira-key">Project key *</Label>
+              <Input
+                id="jira-key"
+                placeholder="PROJ"
+                value={projectKey}
+                onChange={(e) => setProjectKey(e.target.value.toUpperCase())}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="jira-max">Max issues</Label>
+              <Input
+                id="jira-max"
+                type="number"
+                min={1}
+                max={1000}
+                value={max}
+                onChange={(e) => setMax(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Statuses are matched to states by name; unmatched statuses
+            create new states. Labels are created when missing. Comments
+            are imported with attribution. Assignees are matched
+            best-effort by email — misses are reported, never fatal.
+            Sprints are skipped (glance cycles are manual). Subtasks and
+            epics import as flat issues. Re-running is safe:
+            already-imported issues are skipped.
+          </p>
+        </div>
+      </div>
+
+      {formError && (
+        <Alert>
+          <AlertDescription>{formError}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex gap-2">
+        <Button onClick={doPreview} disabled={!!formError || busy !== null} variant="outline">
+          {busy === "preview" ? <Spinner className="mr-2" /> : null}Preview
+        </Button>
+        <Button
+          onClick={doImport}
+          disabled={!!formError || busy !== null || !apiToken}
+        >
+          {busy === "import" ? <Spinner className="mr-2" /> : null}Import
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {preview && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">
+              Preview — {preview.rows.length} of {preview.total} issues from{" "}
+              {preview.source}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <JiraPreviewTable preview={preview} />
+          </CardContent>
+        </Card>
+      )}
+
+      {result && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
+              {result.source}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Stat label="Created" value={result.created} />
+              <Stat label="Skipped (already imported)" value={result.skipped} />
+              <Stat label="Failed" value={result.failed} />
+              <Stat
+                label="Labels created"
+                value={
+                  result.labels_created.length > 0 ? (
+                    <span title={result.labels_created.join(", ")}>
+                      {result.labels_created.length}
+                    </span>
+                  ) : (
+                    0
+                  )
+                }
+              />
+              <Stat
+                label="States created"
+                value={
+                  result.states_created.length > 0 ? (
+                    <span title={result.states_created.join(", ")}>
+                      {result.states_created.length}
+                    </span>
+                  ) : (
+                    0
+                  )
+                }
+              />
+              <Stat label="Assignee misses" value={result.assignee_misses} />
+            </div>
+            {result.states_created.length > 0 && (
+              <div>
+                <p className="mb-1 text-xs text-muted-foreground">New states:</p>
+                <div className="flex flex-wrap gap-1">
+                  {result.states_created.map((s) => (
+                    <Badge key={s} variant="outline">
+                      {s}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {result.labels_created.length > 0 && (
+              <div>
+                <p className="mb-1 text-xs text-muted-foreground">New labels:</p>
+                <div className="flex flex-wrap gap-1">
+                  {result.labels_created.map((l) => (
+                    <Badge key={l} variant="outline">
+                      {l}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            <RowErrors errors={result.errors} label="issue" />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ---------- section ----------
 
 export default function ImportSection({
@@ -598,6 +948,13 @@ export default function ImportSection({
         <CardTitle className="text-base">Import issues</CardTitle>
         <div className="flex gap-2 pt-2">
           <Button
+            variant={source === "jira" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSource("jira")}
+          >
+            <Cloud className="mr-2 h-4 w-4" /> Jira
+          </Button>
+          <Button
             variant={source === "github" ? "default" : "outline"}
             size="sm"
             onClick={() => setSource("github")}
@@ -614,7 +971,9 @@ export default function ImportSection({
         </div>
       </CardHeader>
       <CardContent>
-        {source === "github" ? (
+        {source === "jira" ? (
+          <JiraPanel slug={slug} identifier={identifier} />
+        ) : source === "github" ? (
           <GitHubPanel slug={slug} identifier={identifier} />
         ) : (
           <CsvPanel slug={slug} identifier={identifier} />
