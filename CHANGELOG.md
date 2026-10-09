@@ -38,6 +38,24 @@ queued onboarding follow-up (invites endpoint).
 - Due-date reminders (C8T6): batched scanner, atomic claim, watcher/assignee notify.
 - Duplicate detection on create (C8T7): beyond-parity similarity check.
 
+**App shell**
+- Plane-style persistent shell wrapping all protected routes (`/login`,
+  `/onboarding`, `/s/:token` stay chromeless): 240px sidebar ↔ 48px icon
+  rail (persisted), left drawer on mobile, sticky 48px top bar with
+  context label.
+- Sidebar sections: workspace switcher dropdown, Triage (Home / My Work /
+  Notifications with unread badge), Favorites, searchable/collapsible
+  project list, footer with account menu (Profile, API tokens, Admin,
+  Log out) + theme toggle.
+- ProjectNav becomes a sticky horizontal tab bar via portal into the
+  shell's `#shell-project-tabs` slot — no page rewrites.
+- Notifications slide-over (400px Sheet) sharing the `/notifications`
+  query cache; "View all" jumps to the full page.
+- Keyboard: `Cmd/Ctrl+B` toggle sidebar (typing-guard aware, single owner),
+  `g h` / `g m` / `g n`, `?` cheatsheet, `Esc` closes overlays.
+- Per-page global chrome removed (bell, theme toggle, logo top bars);
+  page-specific headers untouched.
+
 **Issue templates**
 - Reusable issue blueprints (C7T0 backend, C7T1 frontend): migration
   000027, CRUD, `POST .../templates/{id}/apply` (validates stale refs
