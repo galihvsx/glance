@@ -429,6 +429,7 @@ type updateIssueBody struct {
 	StateID   *string  `json:"state_id"`
 	SortOrder *float64 `json:"sort_order"`
 	IsDraft   *bool    `json:"is_draft"`
+	Archived  *bool    `json:"archived"` // true = archive, false = unarchive
 	// Tri-state fields: Set=false means omitted; Set with nil Value clears
 	// the column; Set with a Value assigns it.
 	Description     service.PatchField[json.RawMessage] `json:"description"`
@@ -482,6 +483,7 @@ func bindIssuePatch(body updateIssueBody) (service.IssuePatch, error) {
 		TargetDate:      target,
 		EstimatePointID: body.EstimatePointID,
 		IsDraft:         body.IsDraft,
+		Archived:        body.Archived,
 	}, nil
 }
 

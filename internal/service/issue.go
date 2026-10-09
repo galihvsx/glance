@@ -125,6 +125,7 @@ type IssuePatch struct {
 	TargetDate      PatchField[time.Time]
 	EstimatePointID PatchField[string]
 	IsDraft         *bool
+	Archived        *bool // true = archive (now()), false = unarchive (NULL), nil = untouched
 }
 
 // hasFields reports whether the patch carries anything at all.
@@ -132,7 +133,7 @@ func (p IssuePatch) hasFields() bool {
 	return p.Name != nil || p.Description.Set || p.Priority != nil ||
 		p.StateID != nil || p.ParentID.Set || p.SortOrder != nil ||
 		p.StartDate.Set || p.TargetDate.Set || p.EstimatePointID.Set ||
-		p.IsDraft != nil
+		p.IsDraft != nil || p.Archived != nil
 }
 
 // issueColumns is the bare column list for INSERT/UPDATE ... RETURNING and
@@ -714,6 +715,17 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	}
 	if patch.IsDraft != nil && *patch.IsDraft != old.IsDraft {
 		add("is_draft", "is_draft", "", *patch.IsDraft, old.IsDraft, *patch.IsDraft)
+	}
+	if patch.Archived != nil {
+		isArchived := old.ArchivedAt != nil
+		if *patch.Archived != isArchived {
+			if *patch.Archived {
+				sets = append(sets, "archived_at = now()")
+			} else {
+				sets = append(sets, "archived_at = NULL")
+			}
+			activities = append(activities, activity{"archived", isArchived, *patch.Archived})
+		}
 	}
 
 	if len(sets) == 0 {
