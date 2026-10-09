@@ -853,8 +853,7 @@ export default function Issues() {
           trailing={
             <SavedViewsMenu
               key={`${slug}:${identifier}`}
-              slug={slug}
-              identifier={identifier}
+              projectId={projectQuery.data?.id ?? ""}
               filters={filters}
               display={settings}
               onApplyDisplay={update}

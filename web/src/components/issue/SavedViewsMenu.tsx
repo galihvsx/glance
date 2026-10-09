@@ -13,18 +13,20 @@ import { Button, buttonVariants } from "../ui/button";
 import { Input } from "../ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Separator } from "../ui/separator";
+import { toast } from "../ui/toast";
 import { cn } from "cn";
 import {
   isFilterParam,
   serializeFilters,
   type IssueFilters,
 } from "../../lib/filters";
+import { ApiError } from "../../lib/api";
 import type { DisplaySettings } from "./useDisplaySettings";
 import { useSavedViews, type SavedView } from "./useSavedViews";
 
 interface SavedViewsMenuProps {
-  slug: string;
-  identifier: string;
+  /** Project UUID; views are fetched per project once this is known. */
+  projectId: string;
   filters: IssueFilters;
   /** Null on pages without display settings (spreadsheet): views saved and
    *  applied there carry filters only. */
@@ -32,18 +34,23 @@ interface SavedViewsMenuProps {
   onApplyDisplay: ((d: DisplaySettings) => void) | null;
 }
 
-/** Per-project saved views: named filter + display presets. Mounted in the
- *  project nav (via ProjectNav's `trailing` slot) on the list, board, and
- *  spreadsheet pages. */
+/** Per-project saved views: named filter + display presets, persisted
+ *  server-side (C9T2). Mounted in the project nav (via ProjectNav's
+ *  `trailing` slot) on the list, board, and spreadsheet pages. */
 export default function SavedViewsMenu({
-  slug,
-  identifier,
+  projectId,
   filters,
   display,
   onApplyDisplay,
 }: SavedViewsMenuProps) {
-  const { views, createView, renameView, deleteView, setDefaultView } =
-    useSavedViews(slug, identifier);
+  const {
+    views,
+    viewsLoading,
+    createView,
+    renameView,
+    deleteView,
+    setDefaultView,
+  } = useSavedViews(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -59,11 +66,11 @@ export default function SavedViewsMenu({
   function applyView(view: SavedView) {
     const next = new URLSearchParams();
     // Preserve non-filter params (e.g. ?peek=); replace filter params with
-    // the view's verbatim query string.
+    // the view's stored filters.
     for (const [k, v] of searchParams) {
       if (!isFilterParam(k)) next.set(k, v);
     }
-    for (const [k, v] of new URLSearchParams(view.filterQuery)) {
+    for (const [k, v] of serializeFilters(view.filters)) {
       next.set(k, v);
     }
     setSearchParams(next, { replace: true });
@@ -74,11 +81,11 @@ export default function SavedViewsMenu({
   }
 
   // Default view: applied once per mount when the URL carries no explicit
-  // filter params. (The menu is keyed by project in each page, so a project
-  // switch remounts and re-runs this.)
+  // filter params. Waits for the views to load first (the menu is keyed by
+  // project in each page, so a project switch remounts and re-runs this).
   const defaultApplied = useRef(false);
   useEffect(() => {
-    if (defaultApplied.current) return;
+    if (defaultApplied.current || viewsLoading) return;
     defaultApplied.current = true;
     let hasFilterParams = false;
     for (const k of searchParams.keys()) {
@@ -94,7 +101,7 @@ export default function SavedViewsMenu({
     for (const [k, v] of searchParams) {
       if (!isFilterParam(k)) next.set(k, v);
     }
-    for (const [k, v] of new URLSearchParams(def.filterQuery)) {
+    for (const [k, v] of serializeFilters(def.filters)) {
       next.set(k, v);
     }
     setSearchParams(next, { replace: true });
@@ -102,45 +109,83 @@ export default function SavedViewsMenu({
       onApplyDisplay(def.display);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [viewsLoading, views]);
 
   const currentQuery = serializeFilters(filters).toString();
   const activeView = views.find(
     (v) =>
-      v.filterQuery === currentQuery &&
+      serializeFilters(v.filters).toString() === currentQuery &&
       JSON.stringify(v.display) === JSON.stringify(display),
   );
 
-  function handleSave() {
-    const created = createView(
-      saveName,
-      serializeFilters(filters).toString(),
-      display,
-    );
-    if (!created) {
-      setSaveError(
-        saveName.trim()
-          ? "A view with that name already exists."
-          : "Give the view a name.",
-      );
+  async function handleSave() {
+    if (!saveName.trim()) {
+      setSaveError("Give the view a name.");
       return;
     }
-    setSaving(false);
-    setSaveName("");
-    setSaveError(null);
+    try {
+      const created = await createView(
+        saveName,
+        filters,
+        display,
+      );
+      if (!created) {
+        // Blank name (handled above) or the 50-view cap.
+        setSaveError("A view with that name already exists.");
+        return;
+      }
+      setSaving(false);
+      setSaveName("");
+      setSaveError(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setSaveError("A view with that name already exists.");
+      } else {
+        setSaveError(null);
+        setSaving(false);
+        toast.add({ title: "Could not save the view", type: "error" });
+      }
+    }
   }
 
-  function handleRename(id: string) {
-    if (renameView(id, renameName)) {
-      setRenamingId(null);
-      setRenameName("");
-      setRenameError(null);
-    } else {
-      setRenameError(
-        renameName.trim()
-          ? "A view with that name already exists."
-          : "Give the view a name.",
-      );
+  async function handleRename(id: string) {
+    if (!renameName.trim()) {
+      setRenameError("Give the view a name.");
+      return;
+    }
+    try {
+      if (await renameView(id, renameName)) {
+        setRenamingId(null);
+        setRenameName("");
+        setRenameError(null);
+      } else {
+        setRenameError("A view with that name already exists.");
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setRenameError("A view with that name already exists.");
+      } else {
+        setRenamingId(null);
+        toast.add({ title: "Could not rename the view", type: "error" });
+      }
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await deleteView(id);
+    } catch {
+      toast.add({ title: "Could not delete the view", type: "error" });
+    } finally {
+      setConfirmingDelete(null);
+    }
+  }
+
+  async function handleToggleDefault(view: SavedView) {
+    try {
+      await setDefaultView(view.isDefault ? null : view.id);
+    } catch {
+      toast.add({ title: "Could not update the default view", type: "error" });
     }
   }
 
@@ -159,7 +204,11 @@ export default function SavedViewsMenu({
         <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Saved views
         </p>
-        {views.length === 0 ? (
+        {viewsLoading ? (
+          <p className="px-2 py-3 text-sm text-muted-foreground">
+            Loading views…
+          </p>
+        ) : views.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">
             No saved views yet. Set your filters, then save the current view.
           </p>
@@ -218,10 +267,7 @@ export default function SavedViewsMenu({
                       size="sm"
                       variant="destructive"
                       className="h-7"
-                      onClick={() => {
-                        deleteView(view.id);
-                        setConfirmingDelete(null);
-                      }}
+                      onClick={() => handleDelete(view.id)}
                     >
                       Delete
                     </Button>
@@ -269,9 +315,7 @@ export default function SavedViewsMenu({
                         ? "Remove default"
                         : "Set as default view"
                     }
-                    onClick={() =>
-                      setDefaultView(view.isDefault ? null : view.id)
-                    }
+                    onClick={() => handleToggleDefault(view)}
                   >
                     <Star
                       className={cn(

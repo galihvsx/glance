@@ -212,6 +212,10 @@ func main() {
 	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
 	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})
 
+	// C9T2: saved views (per-user named filter+display presets) — auth-only,
+	// caller's own, project-scoped.
+	api.RegisterIssueViewRoutes(e, &api.IssueViewHandler{Pool: pool})
+
 	// C7T7: OpenAPI document — public metadata, no auth.
 	api.RegisterOpenAPIRoutes(e)
 

@@ -371,8 +371,7 @@ export default function Spreadsheet() {
           trailing={
             <SavedViewsMenu
               key={`${slug}:${identifier}`}
-              slug={slug}
-              identifier={identifier}
+              projectId={projectQuery.data?.id ?? ""}
               filters={filters}
               display={null}
               onApplyDisplay={null}
