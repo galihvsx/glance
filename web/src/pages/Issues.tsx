@@ -34,6 +34,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import IssueCard from "../components/issue/IssueCard";
+import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import PriorityPicker from "../components/issue/PriorityPicker";
@@ -734,6 +735,15 @@ export default function Issues() {
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Fix the login redirect"
                   required
+                />
+                {/* C8T7: duplicate detection — suggestions as the title is
+                    typed (debounced 400ms); each row opens the peek drawer. */}
+                <DuplicateSuggestions
+                  slug={slug}
+                  identifier={identifier}
+                  title={name}
+                  open={dialogOpen}
+                  onOpenPeek={openPeek}
                 />
               </div>
               <div className="space-y-2">
