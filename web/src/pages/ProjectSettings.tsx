@@ -13,6 +13,7 @@ import NotificationBell from "../components/notifications/NotificationBell";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import StatesSection from "../components/settings/StatesSection";
+import TemplatesSection from "../components/settings/TemplatesSection";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 
@@ -60,6 +61,7 @@ export default function ProjectSettings() {
             <TabsTrigger value="labels">Labels</TabsTrigger>
             <TabsTrigger value="states">States</TabsTrigger>
             <TabsTrigger value="estimates">Estimates</TabsTrigger>
+            <TabsTrigger value="templates">Templates</TabsTrigger>
           </TabsList>
           <TabsContent value="labels" className="mt-4">
             <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
@@ -69,6 +71,13 @@ export default function ProjectSettings() {
           </TabsContent>
           <TabsContent value="estimates" className="mt-4">
             <EstimatesSection
+              slug={slug}
+              identifier={identifier}
+              canEdit={canEdit}
+            />
+          </TabsContent>
+          <TabsContent value="templates" className="mt-4">
+            <TemplatesSection
               slug={slug}
               identifier={identifier}
               canEdit={canEdit}
