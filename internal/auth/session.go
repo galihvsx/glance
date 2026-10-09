@@ -38,11 +38,15 @@ func CreateSessionTx(ctx context.Context, tx pgx.Tx, userID, userAgent, ip strin
 // GET /api/v1/me, so its JSON shape is the API contract: nullable columns
 // (name, avatar_url, last_login_at) surface as null, never as "".
 type User struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	Name        *string    `json:"name"`
-	AvatarURL   *string    `json:"avatar_url"`
-	IsActive    bool       `json:"is_active"`
+	ID        string  `json:"id"`
+	Email     string  `json:"email"`
+	Name      *string `json:"name"`
+	AvatarURL *string `json:"avatar_url"`
+	IsActive  bool    `json:"is_active"`
+	// IsAdmin marks instance administrators (000025, C5T0): the only
+	// principals allowed behind /api/v1/admin/*. Serialized on /me so
+	// the SPA can gate the admin UI without a second round-trip.
+	IsAdmin     bool       `json:"is_admin"`
 	LastLoginAt *time.Time `json:"last_login_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
@@ -99,7 +103,7 @@ func AuthenticateSession(ctx context.Context, pool *pgxpool.Pool, token string) 
 	)
 	err := pool.QueryRow(ctx, `
 		SELECT s.id, s.last_seen_at, u.id, u.email, u.name, u.avatar_url,
-		       u.is_active, u.last_login_at, u.created_at, u.updated_at
+		       u.is_active, u.is_admin, u.last_login_at, u.created_at, u.updated_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1
 		  AND s.revoked_at IS NULL
@@ -108,7 +112,7 @@ func AuthenticateSession(ctx context.Context, pool *pgxpool.Pool, token string) 
 	).Scan(
 		&sessionID, &lastSeenAt,
 		&user.ID, &user.Email, &user.Name, &user.AvatarURL,
-		&user.IsActive, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.IsAdmin, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

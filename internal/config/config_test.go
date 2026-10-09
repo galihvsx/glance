@@ -213,3 +213,36 @@ func TestLoadAttachmentSettings(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadAdminEmails pins the C5T0 GLANCE_ADMIN_EMAILS parsing: comma-
+// separated, lowercased, trimmed, deduped, blanks dropped; empty means
+// no bootstrap list.
+func TestLoadAdminEmails(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=disable")
+	t.Setenv("OTP_PEPPER", "test-pepper")
+	t.Setenv("ALLOW_INSECURE_OTP_PEPPER", "")
+
+	t.Setenv("GLANCE_ADMIN_EMAILS", "Boss@Example.com, ops@example.com,,BOSS@example.com,  ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	want := []string{"boss@example.com", "ops@example.com"}
+	if len(cfg.AdminEmails) != len(want) {
+		t.Fatalf("AdminEmails = %v, want %v", cfg.AdminEmails, want)
+	}
+	for i := range want {
+		if cfg.AdminEmails[i] != want[i] {
+			t.Fatalf("AdminEmails = %v, want %v", cfg.AdminEmails, want)
+		}
+	}
+
+	t.Setenv("GLANCE_ADMIN_EMAILS", "")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if len(cfg.AdminEmails) != 0 {
+		t.Errorf("AdminEmails = %v, want empty", cfg.AdminEmails)
+	}
+}

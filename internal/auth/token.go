@@ -185,7 +185,7 @@ func AuthenticateToken(ctx context.Context, pool *pgxpool.Pool, token string) (*
 	err := pool.QueryRow(ctx, `
 		SELECT t.id, t.scopes, t.last_used_at, t.rate_limit,
 		       u.id, u.email, u.name, u.avatar_url,
-		       u.is_active, u.last_login_at, u.created_at, u.updated_at
+		       u.is_active, u.is_admin, u.last_login_at, u.created_at, u.updated_at
 		FROM api_tokens t JOIN users u ON u.id = t.user_id
 		WHERE t.token_hash = $1
 		  AND t.revoked_at IS NULL
@@ -195,7 +195,7 @@ func AuthenticateToken(ctx context.Context, pool *pgxpool.Pool, token string) (*
 	).Scan(
 		&auth.TokenID, &auth.Scopes, &lastUsed, &rateLimit,
 		&user.ID, &user.Email, &user.Name, &user.AvatarURL,
-		&user.IsActive, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.IsAdmin, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -330,16 +330,13 @@ func VerifyOTP(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, emai
 		return "", fmt.Errorf("auth: invalidate superseded codes: %w", err)
 	}
 
-	// Auto-provision the user on first successful verify (spec §7).
+	// Auto-provision the user on first successful verify (spec §7),
+	// including the C5T0 admin seeding (see provisionUserTx).
 	var userID string
 	var isActive bool
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO users (email) VALUES ($1)
-		ON CONFLICT (email) DO UPDATE SET last_login_at = now(), updated_at = now()
-		RETURNING id, is_active`,
-		email,
-	).Scan(&userID, &isActive); err != nil {
-		return "", fmt.Errorf("auth: provision user: %w", err)
+	userID, isActive, err = provisionUserTx(ctx, tx, cfg, email, nil, nil, false)
+	if err != nil {
+		return "", err
 	}
 	// Deactivated accounts cannot log back in; existing sessions are already
 	// dead via AuthenticateSession's is_active enforcement.

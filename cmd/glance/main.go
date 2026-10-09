@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"glance/internal/api"
+	"glance/internal/auth"
 	"glance/internal/config"
 	"glance/internal/mail"
 	"glance/internal/realtime"
@@ -62,6 +63,18 @@ func main() {
 	}
 	if err := store.Migrate(ctx, pool, migrationsFS); err != nil {
 		log.Fatalf("glance: %v", err)
+	}
+
+	// C5T0: instance-admin bootstrap. GLANCE_ADMIN_EMAILS is applied
+	// idempotently at every boot (promote-only, never demotes), so an
+	// operator can always regain admin access by setting the env var and
+	// restarting — no manual SQL needed. The first-ever registered user
+	// is seeded at registration time instead (see
+	// internal/auth.provisionUserTx).
+	if n, err := auth.SeedAdminEmails(ctx, pool, cfg.AdminEmails); err != nil {
+		log.Fatalf("glance: admin bootstrap: %v", err)
+	} else if n > 0 {
+		log.Printf("glance: admin bootstrap: promoted %d user(s) from GLANCE_ADMIN_EMAILS", n)
 	}
 
 	// Mail dispatcher: drains the transactional outbox (OTP emails, webhook
@@ -170,6 +183,7 @@ func main() {
 	api.RegisterWorkItemRoutes(e, issueHandler)
 	api.RegisterTokenRoutes(e, &api.TokenHandler{Pool: pool})
 	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
+	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)

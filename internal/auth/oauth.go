@@ -299,15 +299,6 @@ func VerifyOAuthState(cfg *config.Config, signed, raw string) bool {
 	return subtle.ConstantTimeCompare([]byte(parts[0]), []byte(raw)) == 1
 }
 
-// nullString maps an empty string to nil so nullable columns stay NULL
-// instead of accumulating empty strings.
-func nullString(s string) any {
-	if s == "" {
-		return nil
-	}
-	return s
-}
-
 // CompleteOAuthLogin runs the callback half of the flow: exchange the code,
 // fetch the verified identity, then authenticate. The provider_uid is the
 // stable identity: if it is already linked, the linked user logs in (their
@@ -401,18 +392,12 @@ func CompleteOAuthLogin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Con
 		// New uid: find-or-create the user by verified email — the
 		// provisioning key (spec §7). Provider name/avatar fill the
 		// profile only when empty; they are never identity and never
-		// overwrite values the user already has.
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO users (email, name, avatar_url) VALUES ($1, $2, $3)
-			ON CONFLICT (email) DO UPDATE SET
-				last_login_at = now(),
-				updated_at = now(),
-				name = COALESCE(NULLIF(users.name, ''), EXCLUDED.name),
-				avatar_url = COALESCE(NULLIF(users.avatar_url, ''), EXCLUDED.avatar_url)
-			RETURNING id`,
-			email, nullString(info.Name), nullString(info.AvatarURL),
-		).Scan(&userID); err != nil {
-			return "", fmt.Errorf("auth: provision user: %w", err)
+		// overwrite values the user already has. Admin seeding is shared
+		// with the OTP path (see provisionUserTx).
+		userID, _, err = provisionUserTx(ctx, tx, cfg, email,
+			strPtr(info.Name), strPtr(info.AvatarURL), true)
+		if err != nil {
+			return "", err
 		}
 
 		// Link the oauth account. provider_uid is globally unique: if a
