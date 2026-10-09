@@ -608,6 +608,12 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			if err := checkParentIssue(ctx, tx, projectID, pid); err != nil {
 				return nil, nil, err
 			}
+			// C5T4: PATCH must not bypass the SetParent cycle guard — a
+			// re-parent under one of the issue's own descendants would
+			// otherwise close a cycle the routes could never create.
+			if err := checkParentCycle(ctx, tx, old.ID, pid); err != nil {
+				return nil, nil, err
+			}
 			parentID = PatchField[string]{Set: true, Value: &pid}
 		} else {
 			parentID = PatchField[string]{Set: true}
@@ -928,6 +934,17 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 			return ErrIssueNotFound
 		}
+		return err
+	}
+
+	// C5T4: soft deletes never fire the FK's ON DELETE SET NULL, so detach
+	// the deleted issue's children explicitly — a deleted parent leaves
+	// its children as top-level issues (their own deleted_at rows are
+	// untouched; only live children are detached).
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET parent_id = NULL, updated_at = now()
+		 WHERE parent_id = $1::uuid AND deleted_at IS NULL`,
+		del.ID); err != nil {
 		return err
 	}
 
