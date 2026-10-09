@@ -516,6 +516,8 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 
 	// Notify the issue's watchers (subscribers + assignees), minus the
 	// commenter; fan the comment.created domain event out to webhooks.
+	// Mentioned members get a `mention` notification instead of
+	// comment.created — one ping per comment, not two.
 	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
 	if err != nil {
 		return nil, err
@@ -525,22 +527,32 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return nil, err
 	}
 	actorName := actorDisplayName(ctx, tx, actorID)
+	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	mentioned, err := resolveCommentMentions(ctx, tx, wsID, actorID, content)
+	if err != nil {
+		return nil, err
+	}
+	watchers = subtractStrings(watchers, mentioned)
+	notifyPayload := map[string]any{
+		"comment_id": c.ID,
+		"issue_id":   issueID,
+		"display_id": displayID,
+		"issue_name": name,
+		"actor_id":   actorID,
+		"project_id": projectID,
+	}
 	notified, err := notifyTx(ctx, tx, NotifyCommentCreated,
 		fmt.Sprintf("%s commented on %s", actorName, displayID),
 		fmt.Sprintf("Issue: %s", name),
-		map[string]any{
-			"comment_id": c.ID,
-			"issue_id":   issueID,
-			"display_id": displayID,
-			"issue_name": name,
-			"actor_id":   actorID,
-			"project_id": projectID,
-		},
+		notifyPayload,
 		actorID, watchers)
 	if err != nil {
 		return nil, err
 	}
-	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	mentionNotified, err := notifyMentionsTx(ctx, tx, actorName, displayID, name, notifyPayload, actorID, mentioned)
 	if err != nil {
 		return nil, err
 	}
@@ -561,7 +573,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		EventCommentCreated,
 		map[string]string{"id": c.ID, "issue_id": issueID},
 	)
-	announceNotifications(notified)
+	announceNotifications(append(notified, mentionNotified...))
 	return c, nil
 }
 
@@ -610,10 +622,35 @@ func ListComments(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, i
 	return roots, nil
 }
 
+// subtractStrings returns a minus b, order-preserving, in a fresh slice.
+func subtractStrings(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	drop := make(map[string]bool, len(b))
+	for _, s := range b {
+		drop[s] = true
+	}
+	out := make([]string, 0, len(a))
+	for _, s := range a {
+		if !drop[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // UpdateComment edits a comment's content. The author or a workspace admin
-// may edit; everyone else gets ErrForbidden.
+// may edit; everyone else gets ErrForbidden. @-mentions in the new body
+// notify the mentioned members (C8T1).
 func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string, content json.RawMessage) (*Comment, error) {
-	_, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	ident, projectID, role, err := resolveSatelliteIssue(ctx, tx, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -621,7 +658,7 @@ func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if len(content) == 0 || bytes.Equal(content, []byte("null")) {
 		return nil, ErrInvalidComment
 	}
-	c, err := getComment(ctx, pool, issueID, commentID)
+	c, err := getComment(ctx, tx, issueID, commentID)
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +666,7 @@ func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return nil, ErrForbidden
 	}
 	var id string
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`UPDATE comments SET content = $1::jsonb, updated_at = now()
 		 WHERE id = $2::uuid AND issue_id = $3::uuid AND deleted_at IS NULL
 		 RETURNING id::text`,
@@ -640,6 +677,37 @@ func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 		return nil, err
 	}
+
+	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	mentioned, err := resolveCommentMentions(ctx, tx, wsID, actorID, content)
+	if err != nil {
+		return nil, err
+	}
+	actorName := actorDisplayName(ctx, tx, actorID)
+	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+	if err != nil {
+		return nil, err
+	}
+	mentionNotified, err := notifyMentionsTx(ctx, tx, actorName, displayID, name,
+		map[string]any{
+			"comment_id": id,
+			"issue_id":   issueID,
+			"display_id": displayID,
+			"issue_name": name,
+			"actor_id":   actorID,
+			"project_id": projectID,
+		}, actorID, mentioned)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	announceNotifications(mentionNotified)
 	return getComment(ctx, pool, issueID, id)
 }
 

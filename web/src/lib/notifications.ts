@@ -58,6 +58,7 @@ export const NOTIFY_EVENT_LABELS: Record<string, string> = {
   "comment.created": "Comment created",
   "issue.state_changed": "Issue state changed",
   "intake.triaged": "Intake triaged",
+  "mention": "Mentioned in comment",
 };
 
 export function eventLabel(event: string): string {
