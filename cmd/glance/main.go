@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -155,6 +156,15 @@ func main() {
 	api.RegisterProjectRoutes(e, projectHandler)
 
 	issueHandler := &api.IssueHandler{Pool: pool}
+	// C4T2: issue attachment file storage, rooted at
+	// <GLANCE_DATA_DIR>/attachments. Fail boot if the directory cannot
+	// be created — uploads must never silently go nowhere.
+	attachmentStore, err := store.NewFileAttachmentStore(filepath.Join(cfg.DataDir, "attachments"))
+	if err != nil {
+		log.Fatalf("glance: attachment storage: %v", err)
+	}
+	issueHandler.Attachments = attachmentStore
+	issueHandler.MaxUploadBytes = int64(cfg.MaxUploadMB) << 20
 	api.RegisterIssueRoutes(e, issueHandler)
 	api.RegisterWorkItemRoutes(e, issueHandler)
 	api.RegisterTokenRoutes(e, &api.TokenHandler{Pool: pool})

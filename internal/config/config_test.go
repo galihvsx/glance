@@ -165,3 +165,51 @@ func TestLoadTrustedProxyCIDRs(t *testing.T) {
 		t.Errorf("len(TrustedProxyNets) = %d, want 0 (trust none)", len(cfg.TrustedProxyNets))
 	}
 }
+
+// TestLoadAttachmentSettings pins the C4T2 storage config: GLANCE_DATA_DIR
+// defaults to ./data, GLANCE_MAX_UPLOAD_MB defaults to 25, and a
+// non-positive/non-numeric limit fails boot (fail closed — a typo must
+// not silently lift the upload cap).
+func TestLoadAttachmentSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=<redacted>")
+	t.Setenv("OTP_PEPPER", "test-pepper")
+	t.Setenv("ALLOW_INSECURE_OTP_PEPPER", "")
+	t.Setenv("GLANCE_DATA_DIR", "")
+	t.Setenv("GLANCE_MAX_UPLOAD_MB", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.DataDir != "./data" {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "./data")
+	}
+	if cfg.MaxUploadMB != 25 {
+		t.Errorf("MaxUploadMB = %d, want 25", cfg.MaxUploadMB)
+	}
+
+	t.Setenv("GLANCE_DATA_DIR", "/var/lib/glance")
+	t.Setenv("GLANCE_MAX_UPLOAD_MB", "100")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if cfg.DataDir != "/var/lib/glance" {
+		t.Errorf("DataDir = %q, want /var/lib/glance", cfg.DataDir)
+	}
+	if cfg.MaxUploadMB != 100 {
+		t.Errorf("MaxUploadMB = %d, want 100", cfg.MaxUploadMB)
+	}
+
+	for _, bad := range []string{"0", "-5", "ten", "2.5", ""} {
+		// "" was already covered above (default); here it must also fail
+		// only when... no — empty means default. Skip it in the bad list.
+		if bad == "" {
+			continue
+		}
+		t.Setenv("GLANCE_MAX_UPLOAD_MB", bad)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load() with GLANCE_MAX_UPLOAD_MB=%q: expected error, got nil", bad)
+		}
+	}
+}

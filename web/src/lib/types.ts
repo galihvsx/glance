@@ -290,3 +290,17 @@ export interface TimeEntry {
   note: string;
   created_at: string;
 }
+
+export interface Attachment {
+  id: string;
+  issue_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by: {
+    id: string;
+    name?: string | null;
+    email: string;
+  };
+  created_at: string;
+}

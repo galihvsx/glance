@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"glance/internal/service"
+	"glance/internal/store"
 )
 
 // IssueHandler serves the issue endpoints (Task 14) nested under projects:
@@ -20,6 +21,12 @@ import (
 // no public surface here.
 type IssueHandler struct {
 	Pool *pgxpool.Pool
+	// Attachments is the file store for issue attachments (C4T2), rooted
+	// at <data-dir>/attachments. Nil means unconfigured: attachment
+	// routes fail closed (500) instead of writing nowhere.
+	Attachments store.AttachmentStore
+	// MaxUploadBytes caps a single attachment upload (GLANCE_MAX_UPLOAD_MB).
+	MaxUploadBytes int64
 }
 
 // RegisterIssueRoutes mounts the issue endpoints. Call this before the SPA
@@ -793,6 +800,10 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/time/stop", h.stopTimer)
 	g.POST("/time/log", h.logTimeEntry)
 	g.GET("/time", h.listTimeEntries)
+	g.GET("/attachments", h.listAttachments)
+	g.POST("/attachments", h.uploadAttachment)
+	g.GET("/attachments/:attachmentID", h.downloadAttachment)
+	g.DELETE("/attachments/:attachmentID", h.deleteAttachment)
 }
 
 func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor string, ok bool) {
