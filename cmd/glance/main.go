@@ -204,6 +204,9 @@ func main() {
 	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
 	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})
 
+	// C7T7: OpenAPI document — public metadata, no auth.
+	api.RegisterOpenAPIRoutes(e)
+
 	// C5T2: AI assist (description drafting + triage) over a
 	// provider-agnostic OpenAI-compatible endpoint. Fail-open at boot:
 	// without GLANCE_AI_API_KEY the endpoints answer 503
