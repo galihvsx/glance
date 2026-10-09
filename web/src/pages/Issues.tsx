@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Download, Plus, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
   Issue,
@@ -76,6 +76,11 @@ import {
   useIssueFilters,
   type IssueFilters,
 } from "../lib/filters";
+import {
+  buildExportUrl,
+  downloadExport,
+  type ExportFormat,
+} from "../lib/export";
 import { Checkbox } from "../components/ui/checkbox";
 import { toast } from "../components/ui/toast";
 import { priorityLabel } from "../lib/types";
@@ -134,6 +139,24 @@ export default function Issues() {
   const [filters, setFilters, clearFilters] = useIssueFilters();
   // Seed from the URL so a pasted link shows its query in the box.
   const [searchInput, setSearchInput] = useState(filters.q);
+  // C8T3: export state — format selector + download with the current filters.
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("csv");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadExport(
+        buildExportUrl(slug, identifier, filters, exportFormat),
+      );
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -872,6 +895,33 @@ export default function Issues() {
           >
             Clear
           </Button>
+        )}
+        {/* C8T3: export the current filtered set as CSV/JSON */}
+        <div className="ml-auto flex items-center gap-2">
+          <Select
+            value={exportFormat}
+            onValueChange={(v) => setExportFormat(v as ExportFormat)}
+          >
+            <SelectTrigger className="h-8 w-24" aria-label="Export format">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="csv">CSV</SelectItem>
+              <SelectItem value="json">JSON</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onExport}
+            disabled={exporting}
+          >
+            <Download className="mr-1 h-4 w-4" />
+            {exporting ? "Exporting…" : "Export"}
+          </Button>
+        </div>
+        {exportError && (
+          <span className="w-full text-sm text-destructive">{exportError}</span>
         )}
       </div>
 

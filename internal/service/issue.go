@@ -1741,6 +1741,40 @@ type ListIssuesInput struct {
 	Draft *bool
 }
 
+// validateListFilterValues checks the UUID/priority formats of a
+// ListIssuesInput. Shared by ListIssues and the export path (C8T3) so both
+// reject malformed filters identically.
+func validateListFilterValues(in ListIssuesInput) error {
+	for _, p := range in.Priorities {
+		if p < 0 || p > 4 {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, f := range []string{in.State, in.Cycle} {
+		if f != "" && !isUUIDFormat(f) {
+			return ErrInvalidListFilter
+		}
+	}
+	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
+	// "none" sentinel (validated separately below).
+	for _, id := range in.Labels {
+		if !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.Assignees {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.EstimatePoints {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	return nil
+}
+
 // IssueAssignee is one assignee on an issue, aggregated from
 // issue_assignees in the same query as the issue row (Task 16).
 type IssueAssignee struct {
@@ -1760,10 +1794,13 @@ type IssueLabel struct {
 // issue's relations as JSONB arrays inside the single list/detail query
 // — one query total, never per-row lookups (Review Focus #3). The outer
 // query must alias issues as i. COALESCE keeps the shape [] (never null)
-// for issues with no relations.
+// for issues with no relations. assigneesAgg also carries each user's
+// email (C8T3: the export CSV's assignee column); unmarshalRelations
+// ignores the extra key so the list shape is unchanged.
 const assigneesAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
 		'id', u.id::text,
-		'name', COALESCE(u.name, u.email::text))
+		'name', COALESCE(u.name, u.email::text),
+		'email', u.email::text)
 		ORDER BY COALESCE(u.name, u.email::text))::jsonb, '[]'::jsonb)
 	FROM issue_assignees ia JOIN users u ON u.id = ia.user_id
 	WHERE ia.issue_id = i.id)`
@@ -1786,6 +1823,116 @@ func unmarshalRelations(assigneesJSON, labelsJSON []byte, item *IssueListItem) e
 		return fmt.Errorf("service: decode labels: %w", err)
 	}
 	return nil
+}
+
+// issueListConds builds the WHERE fragments for the issue list query from
+// a ListIssuesInput. Shared by ListIssues and the export path (C8T3) so
+// both honor identical filter/scope semantics: what the user sees in the
+// list is what the export contains. Cursor pagination stays in ListIssues
+// (exports stream the whole filtered set in sequence order, unpaginated).
+func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any) string) []string {
+	var conds []string
+	conds = append(conds, "i.project_id = "+arg(projectID)+"::uuid")
+	conds = append(conds, "i.deleted_at IS NULL")
+	if !in.Archived {
+		conds = append(conds, "i.archived_at IS NULL")
+	}
+	if in.SequenceID > 0 {
+		// A direct sequence lookup names the exact issue (palette
+		// display-ID resolution) — it bypasses the draft filter.
+		conds = append(conds, "i.sequence_id = "+arg(in.SequenceID))
+	} else if in.Draft != nil && *in.Draft {
+		conds = append(conds, "i.is_draft = TRUE")
+	} else {
+		conds = append(conds, "i.is_draft = FALSE")
+	}
+	if in.State != "" {
+		conds = append(conds, "i.state_id = "+arg(in.State)+"::uuid")
+	}
+	if len(in.Priorities) > 0 {
+		conds = append(conds, "i.priority = ANY("+arg(in.Priorities)+")")
+	}
+	if len(in.Assignees) > 0 {
+		var ids []string
+		wantNone := false
+		for _, a := range in.Assignees {
+			if a == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, a)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.Labels) > 0 {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = ANY("+arg(in.Labels)+"::uuid[]))")
+	}
+	if len(in.EstimatePoints) > 0 {
+		var ids []string
+		wantNone := false
+		for _, e := range in.EstimatePoints {
+			if e == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, e)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.estimate_point_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.estimate_point_id IS NULL")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if in.Cycle != "" {
+		// Task 22: cycle_issues exists now — a real EXISTS filter on the
+		// junction table (spec §4 schema, not a cycle_id column on
+		// issues).
+		conds = append(conds, "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = "+arg(in.Cycle)+"::uuid)")
+	}
+	if in.Q != "" {
+		conds = append(conds, "i.search @@ plainto_tsquery('english', "+arg(in.Q)+")")
+	}
+	if in.UpdatedAfter != nil {
+		conds = append(conds, "i.updated_at > "+arg(in.UpdatedAfter)+"::timestamptz")
+	}
+	if in.CreatedAfter != nil {
+		conds = append(conds, "i.created_at >= "+arg(in.CreatedAfter)+"::timestamptz")
+	}
+	if in.CreatedBefore != nil {
+		conds = append(conds, "i.created_at < "+arg(in.CreatedBefore)+"::timestamptz")
+	}
+	if in.UpdatedBefore != nil {
+		conds = append(conds, "i.updated_at < "+arg(in.UpdatedBefore)+"::timestamptz")
+	}
+	if in.DueAfter != nil {
+		conds = append(conds, "i.target_date >= "+arg(in.DueAfter)+"::date")
+	}
+	if in.DueBefore != nil {
+		conds = append(conds, "i.target_date < "+arg(in.DueBefore)+"::date")
+	}
+	if in.StartAfter != nil {
+		conds = append(conds, "i.start_date >= "+arg(in.StartAfter)+"::date")
+	}
+	if in.StartBefore != nil {
+		conds = append(conds, "i.start_date < "+arg(in.StartBefore)+"::date")
+	}
+	if in.Undated {
+		conds = append(conds, "i.target_date IS NULL AND i.start_date IS NULL")
+	}
+	if in.Subscribed {
+		conds = append(conds, "EXISTS (SELECT 1 FROM issue_subscribers s WHERE s.issue_id = i.id AND s.user_id = "+arg(actorID)+"::uuid)")
+	}
+	return conds
 }
 
 // IssueListItem is one row of the list: the issue plus its aggregated
@@ -1837,32 +1984,8 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		perPage = maxListPerPage
 	}
 
-	for _, p := range in.Priorities {
-		if p < 0 || p > 4 {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, f := range []string{in.State, in.Cycle} {
-		if f != "" && !isUUIDFormat(f) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
-	// "none" sentinel (validated separately below).
-	for _, id := range in.Labels {
-		if !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, id := range in.Assignees {
-		if id != filterNone && !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
-	}
-	for _, id := range in.EstimatePoints {
-		if id != filterNone && !isUUIDFormat(id) {
-			return nil, ErrInvalidListFilter
-		}
+	if err := validateListFilterValues(in); err != nil {
+		return nil, err
 	}
 
 	var cur *listCursor
@@ -1901,13 +2024,16 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
 		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
 
-	var conds []string
 	var args []any
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
 
+	// The WHERE fragments come from issueListConds, shared with the
+	// export path (C8T3): one function, so the list and the export always
+	// see the same working set for the same filters.
+	conds := issueListConds(in, projectID, actorID, arg)
 	conds = append(conds, "i.project_id = "+arg(projectID)+"::uuid")
 	conds = append(conds, "i.deleted_at IS NULL")
 	if !in.Archived {

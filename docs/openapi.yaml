@@ -324,6 +324,34 @@
         "responses": { "201": { "description": "Created issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/export": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Export issues as CSV or JSON",
+        "description": "Streams the project's filtered working set as a downloadable file (Content-Disposition: attachment; filename glance-<IDENTIFIER>-issues-<YYYY-MM-DD>.csv|.json, UTC date). Honors the same filter params as the issue list (q, archived, state, priority, label, assignee, estimate, cycle, date ranges, undated, subscribed, draft); pagination/sort params are accepted and ignored — the whole filtered set streams in display-ID order. format defaults to csv. CSV columns: display_id, name, state, priority (none/low/medium/high/urgent), assignee (semicolon-joined emails), labels (semicolon-joined names), estimate (estimate-point key), due_date (YYYY-MM-DD), created_at, updated_at (RFC3339). Cells starting with =, +, - or @ get a single-quote prefix (spreadsheet formula-injection mitigation). JSON is an array of issue objects in the list shape (description always included). Rows stream from a DB cursor — never fully materialized. A pre-stream COUNT enforces the 50000-row cap: over-cap exports fail 400 naming the matched count (never a truncated file). Any workspace member (guests included) may export.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["csv", "json"], "default": "csv" } },
+          { "name": "q", "in": "query", "schema": { "type": "string", "description": "Full-text search (same as list)" } },
+          { "name": "archived", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Include archived issues (default: working set only)" } },
+          { "name": "state", "in": "query", "schema": { "type": "string", "format": "uuid", "description": "State UUID" } },
+          { "name": "priority", "in": "query", "schema": { "type": "string", "description": "Comma-separated ints 0-4" } },
+          { "name": "label", "in": "query", "schema": { "type": "string", "description": "Comma-separated label UUIDs" } },
+          { "name": "assignee", "in": "query", "schema": { "type": "string", "description": "Comma-separated user UUIDs; \"none\" = unassigned" } },
+          { "name": "estimate", "in": "query", "schema": { "type": "string", "description": "Comma-separated estimate-point UUIDs; \"none\" = no estimate" } },
+          { "name": "cycle", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "due_after", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339" } },
+          { "name": "due_before", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339" } },
+          { "name": "subscribed", "in": "query", "schema": { "type": "string", "enum": ["1", "true"] } },
+          { "name": "draft", "in": "query", "schema": { "type": "string", "enum": ["true", "false", "1", "0"], "description": "Draft tri-state; absent = working-set default (drafts excluded)" } }
+        ],
+        "responses": {
+          "200": { "description": "Exported file", "content": { "text/csv": { "schema": { "type": "string" } }, "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk": {
       "patch": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
