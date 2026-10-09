@@ -304,3 +304,14 @@ export interface Attachment {
   };
   created_at: string;
 }
+
+/** A directed dependency edge between issues (C4T0). `issue_id` blocks
+ *  `target_issue_id` when kind is "blocks". */
+export interface IssueLink {
+  id: string;
+  issue_id: string;
+  target_issue_id: string;
+  kind: string;
+  created_at: string;
+  direction?: string;
+}
