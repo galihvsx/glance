@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"strings"
@@ -119,7 +120,18 @@ func TestMigrateConcurrent(t *testing.T) {
 	}
 
 	// Every migration must be recorded exactly once, no matter how many
-	// migrators raced.
+	// migrators raced. The expected count is derived from the migration
+	// files themselves so adding 000018 doesn't break this test.
+	entries, err := fs.ReadDir(migrations.FS, ".")
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	want := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			want++
+		}
+	}
 	ctx := context.Background()
 	pool, err := NewPool(ctx, &config.Config{DatabaseURL: raceDBURL(t)})
 	if err != nil {
@@ -130,9 +142,8 @@ func TestMigrateConcurrent(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	// 16 migration files: 000001..000016.
-	if n != 16 {
-		t.Fatalf("expected 16 recorded migrations, got %d", n)
+	if n != want {
+		t.Fatalf("expected %d recorded migrations, got %d", want, n)
 	}
 	var dup int
 	if err := pool.QueryRow(ctx,

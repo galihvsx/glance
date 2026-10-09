@@ -25,6 +25,7 @@ const (
 	EventIssueDeleted        = "issue.deleted"
 	EventCommentCreated      = "comment.created"
 	EventCycleUpdated        = "cycle.updated"
+	EventModuleUpdated       = "module.updated"
 	EventIntakeUpdated       = "intake.updated"
 	EventNotificationCreated = "notification.created"
 )
@@ -112,6 +113,26 @@ func announceCycleUpdated(ctx context.Context, pool *pgxpool.Pool, cycleID, proj
 // the service mutation layer (it runs a raw UPDATE ... RETURNING).
 func BroadcastCycleUpdated(ctx context.Context, pool *pgxpool.Pool, cycleID, projectID, status string) {
 	announceCycleUpdated(ctx, pool, cycleID, projectID, status)
+}
+
+// announceModuleUpdated resolves the workspace/project channels for a
+// module from its project id and broadcasts module.updated. Best-effort:
+// a lookup failure skips the broadcast rather than failing the mutation.
+// The payload carries only the id — clients refetch via REST.
+func announceModuleUpdated(ctx context.Context, pool *pgxpool.Pool, moduleID, projectID string) {
+	var wsSlug, identifier string
+	err := pool.QueryRow(ctx,
+		`SELECT w.slug, p.identifier
+		   FROM projects p JOIN workspaces w ON w.id = p.workspace_id
+		  WHERE p.id = $1::uuid`, projectID).Scan(&wsSlug, &identifier)
+	if err != nil {
+		return
+	}
+	announce(
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
+		EventModuleUpdated,
+		map[string]string{"id": moduleID},
+	)
 }
 
 // BroadcastIntakeResurfaced announces intake rows whose snooze the
