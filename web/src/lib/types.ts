@@ -241,6 +241,19 @@ export interface Module {
   updated_at: string;
 }
 
+/** A project release/milestone (C4T6). release_date is YYYY-MM-DD or null. */
+export interface Release {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  status: "planned" | "released";
+  release_date?: string | null;
+  issue_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One day of a cycle burndown. `remaining` is null for future days. */
 export interface BurndownDay {
   date: string; // YYYY-MM-DD

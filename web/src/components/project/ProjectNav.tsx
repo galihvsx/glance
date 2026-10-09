@@ -22,6 +22,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Analytics", to: `${base}/analytics` },
     { label: "Cycles", to: `${base}/cycles` },
     { label: "Modules", to: `${base}/modules` },
+    { label: "Releases", to: `${base}/releases` },
     { label: "Pages", to: `${base}/pages` },
     { label: "Intake", to: `${base}/intake` },
   ];
