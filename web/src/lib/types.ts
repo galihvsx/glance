@@ -137,6 +137,13 @@ export interface HistoryEntry {
   created_at: string;
 }
 
+/** One issue_subscribers row (GET .../issues/{uuid}/subscribers). */
+export interface Subscriber {
+  user_id: string;
+  name?: string | null;
+  email: string;
+}
+
 /** Priority labels (0–4). */
 export const PRIORITY_LABELS = ["None", "Low", "Medium", "High", "Urgent"] as const;
 export function priorityLabel(p: number): string {
