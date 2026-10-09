@@ -21,6 +21,7 @@ import Calendar from "./pages/Calendar";
 import Gantt from "./pages/Gantt";
 import Analytics from "./pages/Analytics";
 import Activity from "./pages/Activity";
+import ProjectSettings from "./pages/ProjectSettings";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Releases from "./pages/Releases";
@@ -102,6 +103,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/activity"
                   element={<Activity />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/settings"
+                  element={<ProjectSettings />}
                 />
               </Route>
             </Route>

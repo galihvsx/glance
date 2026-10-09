@@ -185,6 +185,7 @@ func main() {
 	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
 	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
+	api.RegisterStateRoutes(e, &api.StateHandler{Pool: pool})
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
 	api.RegisterIssueLinkRoutes(e, issueHandler)

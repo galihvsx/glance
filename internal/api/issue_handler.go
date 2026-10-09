@@ -61,6 +61,8 @@ func RegisterTaxonomyRoutes(e *echo.Echo, h *IssueHandler) {
 	g.DELETE("/labels/:labelID", h.deleteLabel)
 	g.POST("/estimates", h.createEstimate)
 	g.GET("/estimates", h.listEstimates)
+	g.DELETE("/estimates/:estimateID", h.deleteEstimate)
+	g.POST("/estimates/:estimateID/points", h.addEstimatePoints)
 	g.POST("/issues/:uuid/labels/:labelID", h.assignLabel)
 	g.DELETE("/issues/:uuid/labels/:labelID", h.unassignLabel)
 	g.POST("/issues/:uuid/assignees/:userID", h.assignAssignee)
@@ -127,6 +129,8 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "estimate name already exists", nil)
 	case errors.Is(err, service.ErrInvalidEstimatePoint):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid estimate point", nil)
+	case errors.Is(err, service.ErrEstimateInUse):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "estimate scale is used by issues", nil)
 	case errors.Is(err, service.ErrAssigneeNotMember):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "assignee is not a workspace member", nil)
 	// Task 18: satellite errors.
@@ -843,6 +847,50 @@ func (h *IssueHandler) listEstimates(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"estimates": estimates})
+}
+
+// deleteEstimate implements DELETE
+// /api/v1/workspaces/{slug}/projects/{identifier}/estimates/{estimateID}.
+// 409 when live issues reference the scale's points.
+func (h *IssueHandler) deleteEstimate(c *echo.Context) error {
+	estimateID, ok := requireUUIDParam(c, "estimateID", "estimate id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteEstimate(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), estimateID, CurrentUser(c).ID); err != nil {
+		return issueError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+type addEstimatePointsBody struct {
+	Points []estimatePointBody `json:"points"`
+}
+
+// addEstimatePoints implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/estimates/{estimateID}/points.
+func (h *IssueHandler) addEstimatePoints(c *echo.Context) error {
+	estimateID, ok := requireUUIDParam(c, "estimateID", "estimate id")
+	if !ok {
+		return nil
+	}
+	var body addEstimatePointsBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	points := make([]service.EstimatePointInput, 0, len(body.Points))
+	for _, p := range body.Points {
+		points = append(points, service.EstimatePointInput{
+			Key: p.Key, Value: p.Value, Description: p.Description,
+		})
+	}
+	est, err := service.AddEstimatePoints(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), estimateID, CurrentUser(c).ID, points)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, est)
 }
 
 // ---------- Task 18: satellites ----------
