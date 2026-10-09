@@ -1,12 +1,19 @@
 import { useNavigate, useParams } from "react-router-dom";
-import { Calendar } from "lucide-react";
+import { Calendar, Copy, MoreVertical } from "lucide-react";
 import type { Issue, IssueState } from "../../lib/types";
 import { priorityLabel } from "../../lib/types";
 import { Badge } from "../ui/badge";
 import { CardHeader, CardTitle } from "../ui/card";
 import { ActionCard } from "../ui/action-card";
 import { Checkbox } from "../ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import StateBadge from "./StateBadge";
+import { useCloneIssue } from "./useCloneIssue";
 import {
   formatIssueDateRange,
   type DisplayFields,
@@ -17,7 +24,10 @@ import {
  *  (peek drawer), otherwise navigates to the detail page. The `fields`
  *  prop (from the Display panel) toggles which attributes render.
  *  `selected`/`onToggleSelect` render a multi-select checkbox (C5T8 bulk
- *  operations); the click is stopped so it never opens the issue. */
+ *  operations); the click is stopped so it never opens the issue.
+ *  `slug`/`identifier` override the route params for the clone action —
+ *  cards rendered outside the project route (e.g. Home's cross-project
+ *  "your work" list) must pass the issue's own project coordinates. */
 export default function IssueCard({
   issue,
   state,
@@ -25,6 +35,8 @@ export default function IssueCard({
   fields,
   selected,
   onToggleSelect,
+  slug: slugProp,
+  identifier: identifierProp,
 }: {
   issue: Issue;
   state: IssueState | undefined;
@@ -32,13 +44,25 @@ export default function IssueCard({
   fields: DisplayFields;
   selected?: boolean;
   onToggleSelect?: (checked: boolean) => void;
+  slug?: string;
+  identifier?: string;
 }) {
-  const { slug, identifier } = useParams<{
+  const params = useParams<{
     slug: string;
     identifier: string;
   }>();
+  const slug = slugProp ?? params.slug;
+  const identifier = identifierProp ?? params.identifier;
   const navigate = useNavigate();
   const dateRange = formatIssueDateRange(issue.start_date, issue.target_date);
+  // C8T4: row-menu clone — POST .../issues/{uuid}/clone, navigate to the
+  // new issue. The trigger lives inside the link-card, so clicks are
+  // stopped exactly like the multi-select checkbox below.
+  const {
+    cloneIssue,
+    cloning,
+    error: cloneError,
+  } = useCloneIssue(slug ?? "", identifier ?? "");
 
   return (
     <ActionCard
@@ -72,11 +96,42 @@ export default function IssueCard({
           </Badge>
           {fields.state && state && <StateBadge state={state} />}
           {fields.priority && (
-            <span className="ml-auto text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {priorityLabel(issue.priority)}
             </span>
           )}
+          {/* C8T4: row menu. stopPropagation: the card itself is a link —
+              opening the menu must not open the issue. */}
+          <span
+            className="ml-auto flex items-center"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                title="Issue actions"
+                aria-label={`Actions for issue ${issue.display_id}`}
+              >
+                <MoreVertical className="h-4 w-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => void cloneIssue(issue.id)}
+                  disabled={cloning}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {cloning ? "Cloning…" : "Clone issue"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
         </div>
+        {cloneError && (
+          <p className="text-xs text-destructive" role="alert">
+            {cloneError}
+          </p>
+        )}
         <CardTitle className="text-base font-medium">{issue.name}</CardTitle>
         {((fields.labels && issue.labels.length > 0) ||
           (fields.assignees && issue.assignees.length > 0)) && (

@@ -48,6 +48,10 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
+	// C8T4: clone endpoint. The static "clone" segment keeps this distinct
+	// from PATCH /:uuid by Echo's specificity rules (kept adjacent for
+	// readability, same style as /export and /bulk).
+	g.POST("/:uuid/clone", h.cloneIssue)
 	// C5T4: sub-issue parent endpoints on the same group.
 	registerIssueParentRoutes(g, h)
 }
@@ -437,6 +441,28 @@ func (h *IssueHandler) getIssue(c *echo.Context) error {
 	// C5T4: ?include_children=1 attaches the child summaries (detail
 	// only — the list query is untouched).
 	return h.getIssueChildren(c, iss)
+}
+
+// cloneIssue implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/clone
+// (C8T4): duplicates the issue into the same project via
+// service.CloneIssue and returns the new issue with 201. The member
+// (15)+ gate mirrors issue create; guests get 403, non-members and
+// cross-project sources 404.
+func (h *IssueHandler) cloneIssue(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	// Idempotency-Key is honored exactly like issue create (opt-in via
+	// header); without it the POST is a plain create.
+	return withIdempotency(c, h.Pool, "POST /issues/:uuid/clone", issueError, func() (int, any, error) {
+		iss, err := service.CloneIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusCreated, iss, nil
+	})
 }
 
 type updateIssueBody struct {
