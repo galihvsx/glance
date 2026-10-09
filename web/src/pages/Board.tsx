@@ -49,6 +49,7 @@ import QuickAdd from "../components/issue/QuickAdd";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
@@ -573,6 +574,7 @@ export default function Board() {
             onReset={reset}
             view="board"
           />
+          <NotificationBell />
           <ThemeToggle />
         </div>
       </div>

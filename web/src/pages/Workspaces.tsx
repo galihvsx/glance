@@ -25,6 +25,7 @@ import { ActionCard } from "../components/ui/action-card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 
 function slugify(name: string): string {
   return name
@@ -103,6 +104,7 @@ export default function Workspaces() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <NotificationBell />
           <ThemeToggle />
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <Button onClick={() => setDialogOpen(true)}>New workspace</Button>

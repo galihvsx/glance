@@ -12,6 +12,7 @@ import {
   type RecentIssue,
 } from "../components/issue/recents";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -171,6 +172,7 @@ export default function Home() {
           glance
         </Link>
         <div className="flex items-center gap-2">
+          <NotificationBell />
           <ThemeToggle />
           <Button variant="ghost" size="sm" onClick={() => void logout()}>
             Log out

@@ -1,5 +1,6 @@
 import { Link, useParams } from "react-router-dom";
 import ThemeToggle from "../components/ThemeToggle";
+import NotificationBell from "../components/notifications/NotificationBell";
 import IssueDetailContent from "../components/issue/IssueDetailContent";
 
 /** Full-page issue detail. The body is shared with the peek drawer. */
@@ -22,7 +23,12 @@ export default function IssueDetail() {
         slug={slug}
         identifier={identifier}
         uuid={uuid}
-        headerActions={<ThemeToggle />}
+        headerActions={
+          <>
+            <NotificationBell />
+            <ThemeToggle />
+          </>
+        }
       />
     </div>
   );
