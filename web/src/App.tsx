@@ -15,6 +15,7 @@ import Issues from "./pages/Issues";
 import IssueDetail from "./pages/IssueDetail";
 import Intake from "./pages/Intake";
 import Notifications from "./pages/Notifications";
+import ApiTokens from "./pages/ApiTokens";
 import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
 import Gantt from "./pages/Gantt";
@@ -40,6 +41,7 @@ export default function App() {
               <Route path="/onboarding" element={<Onboarding />} />
               <Route path="/" element={<Home />} />
               <Route path="/notifications" element={<Notifications />} />
+              <Route path="/settings/tokens" element={<ApiTokens />} />
               <Route
                 path="/admin"
                 element={
