@@ -17,6 +17,7 @@ import Board from "./pages/Board";
 import Calendar from "./pages/Calendar";
 import Gantt from "./pages/Gantt";
 import Analytics from "./pages/Analytics";
+import Activity from "./pages/Activity";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Releases from "./pages/Releases";
@@ -85,6 +86,10 @@ export default function App() {
                 <Route
                   path="/w/:slug/p/:identifier/pages"
                   element={<Pages />}
+                />
+                <Route
+                  path="/w/:slug/p/:identifier/activity"
+                  element={<Activity />}
                 />
               </Route>
             </Route>

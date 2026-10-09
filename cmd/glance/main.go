@@ -194,6 +194,7 @@ func main() {
 	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterPublicRoutes(e, issueHandler)
 	api.RegisterAnalyticsRoutes(e, issueHandler)
+	api.RegisterActivityRoutes(e, issueHandler)
 
 	// C5T2: AI assist (description drafting + triage) over a
 	// provider-agnostic OpenAI-compatible endpoint. Fail-open at boot:
