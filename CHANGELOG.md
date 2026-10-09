@@ -28,6 +28,37 @@ queued onboarding follow-up (invites endpoint).
   `?include_children=1` on issue detail, parent breadcrumb,
   sub-issue list with add/detach, create-with-parent.
 
+**Issue templates**
+- Reusable issue blueprints (C7T0 backend, C7T1 frontend): migration
+  000027, CRUD, `POST .../templates/{id}/apply` (validates stale refs
+  → 404). UI: project settings section, template picker in the create
+  flow with prefill + clear.
+
+**Custom fields**
+- Project-level custom fields — a Plane-paywalled feature, free in
+  glance (C7T2 backend, C7T3 frontend): migrations 000029/000030,
+  types text|number|date|select|checkbox, type-validated values,
+  `?include_custom=1` on issue detail. UI: settings section + issue
+  detail editors. `required` is stored-not-enforced (documented).
+
+**Favorites**
+- Star issues and projects (C7T4): migration 000028, idempotent
+  star/unstar, per-user isolation, sidebar Favorites section.
+
+**Archived issues**
+- Dedicated Archived view (C7T5): list, unarchive (PATCH
+  `{archived}` — backend gap closed in review), delete.
+
+**Keyboard shortcuts**
+- Cheatsheet (`?`), g-chords (`g m` → My work, `g h` → Home),
+  app-wide listener, shortcut registry with tests (C7T6).
+
+**OpenAPI**
+- Hand-written OpenAPI 3.0 spec for all 177 `/api/v1/` routes
+  (C7T7): `docs/openapi.yaml` (JSON-syntax YAML, zero deps),
+  served at `GET /api/v1/openapi.json`, route-coverage test keeps
+  it honest.
+
 **Workspace invites**
 - `POST /api/v1/workspaces/{slug}/invites`: admin-only, adds
   registered users as members by email; per-email statuses
