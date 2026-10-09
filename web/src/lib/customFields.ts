@@ -230,6 +230,23 @@ export function formatYMD(s: string): string {
   });
 }
 
+/**
+ * C9T4: spreadsheet custom-field columns. Returns the fields whose column
+ * is toggled on, ordered by position (name breaks ties for stability).
+ * Default OFF: a missing id or explicit false means hidden; ids not in
+ * `fields` (e.g. deleted fields) are ignored.
+ */
+export function resolveVisibleCustomFields(
+  fields: CustomField[],
+  visible: Record<string, boolean>,
+): CustomField[] {
+  return fields
+    .filter((f) => visible[f.id] === true)
+    .sort(
+      (a, b) => a.position - b.position || a.name.localeCompare(b.name),
+    );
+}
+
 /** Human display for a stored value; "—" when unset. */
 export function formatCustomValue(field: CustomField, value?: CustomValue): string {
   if (!value) return "—";

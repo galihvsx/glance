@@ -3,6 +3,7 @@ import {
   draftToInput,
   formatCustomValue,
   formatYMD,
+  resolveVisibleCustomFields,
   validateCustomValueInput,
   validateFieldDraft,
   valueToDraft,
@@ -242,5 +243,41 @@ describe("draftToInput", () => {
 
   it("sends an empty options array for non-select types", () => {
     expect(draftToInput(draft({ field_type: "date" })).options).toEqual([]);
+  });
+});
+
+describe("resolveVisibleCustomFields", () => {
+  const f1 = field({ id: "f1", name: "Beta", position: 2 });
+  const f2 = field({ id: "f2", name: "Alpha", position: 0 });
+  const f3 = field({ id: "f3", name: "Gamma", position: 1 });
+
+  it("defaults everything OFF: empty visibility shows no columns", () => {
+    expect(resolveVisibleCustomFields([f1, f2, f3], {})).toEqual([]);
+  });
+
+  it("shows only enabled fields, ordered by position", () => {
+    const out = resolveVisibleCustomFields([f1, f2, f3], {
+      f1: true,
+      f2: true,
+    });
+    expect(out.map((f) => f.id)).toEqual(["f2", "f1"]);
+  });
+
+  it("ignores unknown ids and explicit false", () => {
+    const out = resolveVisibleCustomFields([f1], {
+      f1: false,
+      "deleted-field": true,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("breaks position ties by name for a stable column order", () => {
+    const a = field({ id: "a", name: "Zebra", position: 0 });
+    const b = field({ id: "b", name: "Apple", position: 0 });
+    expect(
+      resolveVisibleCustomFields([a, b], { a: true, b: true }).map(
+        (f) => f.id,
+      ),
+    ).toEqual(["b", "a"]);
   });
 });
