@@ -162,6 +162,7 @@ func main() {
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
+	api.RegisterIssueLinkRoutes(e, issueHandler)
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterPageRoutes(e, issueHandler)
