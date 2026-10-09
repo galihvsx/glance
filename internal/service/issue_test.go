@@ -1112,3 +1112,63 @@ func TestListIssuesStartDateAndUndated(t *testing.T) {
 		t.Errorf("undated: got %v, want only undated", byUndated)
 	}
 }
+
+// TestListIssuesDraftFilter (C6T4): the tri-state draft filter. Default
+// (nil) excludes drafts from the working set; true shows drafts only.
+func TestListIssuesDraftFilter(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("draft-filt"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("draft-filt"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	live := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "live issue")
+	draft, err := CreateIssue(ctx, pool, ws.Slug, p.Identifier, creator,
+		CreateIssueInput{Name: "draft issue", IsDraft: true})
+	if err != nil {
+		t.Fatalf("CreateIssue draft: %v", err)
+	}
+
+	ids := func(res *ListIssuesResult) map[string]bool {
+		m := map[string]bool{}
+		for _, it := range res.Issues {
+			m[it.ID] = true
+		}
+		return m
+	}
+	boolPtr := func(b bool) *bool { return &b }
+
+	// Default (nil): drafts excluded from the working set.
+	def, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator, ListIssuesInput{})
+	if err != nil {
+		t.Fatalf("ListIssues default: %v", err)
+	}
+	dm := ids(def)
+	if !dm[live.ID] || dm[draft.ID] {
+		t.Errorf("default list: live=%v draft=%v, want only live", dm[live.ID], dm[draft.ID])
+	}
+
+	// draft=true: drafts only.
+	only, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator,
+		ListIssuesInput{Draft: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("ListIssues draft=true: %v", err)
+	}
+	om := ids(only)
+	if !om[draft.ID] || om[live.ID] {
+		t.Errorf("draft=true: draft=%v live=%v, want only draft", om[draft.ID], om[live.ID])
+	}
+
+	// draft=false: live only.
+	nodrafts, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator,
+		ListIssuesInput{Draft: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("ListIssues draft=false: %v", err)
+	}
+	nm := ids(nodrafts)
+	if !nm[live.ID] || nm[draft.ID] {
+		t.Errorf("draft=false: live=%v draft=%v, want only live", nm[live.ID], nm[draft.ID])
+	}
+}

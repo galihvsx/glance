@@ -319,6 +319,22 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	if s := qp.Get("fields"); s != "" {
 		fields = strings.Split(s, ",")
 	}
+	// C6T4: tri-state draft filter. Absent = today's behavior (no draft
+	// filtering); true/false filter explicitly. Anything else is 400 —
+	// silently coercing would hide client bugs.
+	var draft *bool
+	if s := qp.Get("draft"); s != "" {
+		var b bool
+		switch s {
+		case "true", "1":
+			b = true
+		case "false", "0":
+			b = false
+		default:
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid draft: want true or false", nil)
+		}
+		draft = &b
+	}
 
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
@@ -344,6 +360,7 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 			Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
 			Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
 			Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
+			Draft:          draft,
 			Fields:         fields,
 		})
 	if err != nil {

@@ -1715,6 +1715,14 @@ type ListIssuesInput struct {
 	// Archived includes archived issues. Default (false) excludes them:
 	// archived issues are out of the working set.
 	Archived bool
+	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
+	// default — drafts live in the Drafts view until published);
+	// true = drafts only; false = explicitly exclude drafts (same as
+	// the default, for callers that want to be explicit). Revised
+	// during implementation: no UI could create drafts before C6T4,
+	// so no existing flow depends on drafts appearing in lists, and
+	// "drafts hidden from the working set" is the only sane semantic.
+	Draft *bool
 }
 
 // IssueAssignee is one assignee on an issue, aggregated from
@@ -1888,6 +1896,11 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	conds = append(conds, "i.deleted_at IS NULL")
 	if !in.Archived {
 		conds = append(conds, "i.archived_at IS NULL")
+	}
+	if in.Draft != nil && *in.Draft {
+		conds = append(conds, "i.is_draft = TRUE")
+	} else {
+		conds = append(conds, "i.is_draft = FALSE")
 	}
 	if in.State != "" {
 		conds = append(conds, "i.state_id = "+arg(in.State)+"::uuid")
