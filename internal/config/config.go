@@ -68,6 +68,14 @@ type Config struct {
 	// logs it (non-fatal) and the AI endpoints answer 503
 	// (code ai_not_configured).
 	AI AIConfig
+	// AdminEmails is the instance's admin bootstrap list (C5T0), from
+	// GLANCE_ADMIN_EMAILS (comma-separated, lowercased, deduped). At
+	// boot, every matching user row is promoted to is_admin=true —
+	// idempotent, additive, never demotes. A newly registered user whose
+	// email is on the list also starts as admin. Empty = no bootstrap
+	// list; the first registered user still auto-becomes admin (see
+	// internal/auth seeding comments).
+	AdminEmails []string
 }
 
 // AIConfig holds the AI assist settings from GLANCE_AI_BASE_URL,
@@ -175,7 +183,29 @@ func Load() (*Config, error) {
 			cfg.TrustedProxyNets = append(cfg.TrustedProxyNets, ipNet)
 		}
 	}
+	// GLANCE_ADMIN_EMAILS (C5T0): comma-separated instance-admin bootstrap
+	// list. Lowercased + deduped; an empty value means no list. A
+	// malformed entry cannot happen (any non-empty trimmed token is a
+	// syntactically acceptable email candidate) — matching is against
+	// the users.email CITEXT column, so case-insensitive by construction.
+	cfg.AdminEmails = parseEmailList(os.Getenv("GLANCE_ADMIN_EMAILS"))
 	return cfg, nil
+}
+
+// parseEmailList splits a comma-separated env value into a lowercased,
+// deduped email list, dropping blanks. Used for GLANCE_ADMIN_EMAILS.
+func parseEmailList(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		email := strings.ToLower(strings.TrimSpace(part))
+		if email == "" || seen[email] {
+			continue
+		}
+		seen[email] = true
+		out = append(out, email)
+	}
+	return out
 }
 
 // IsProduction reports whether the deployment environment is production
