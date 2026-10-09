@@ -48,6 +48,22 @@ import {
 import ThemeToggle from "../components/ThemeToggle";
 import NotificationBell from "../components/notifications/NotificationBell";
 import StatePicker from "../components/issue/StatePicker";
+import EstimateSelect from "../components/issue/EstimateSelect";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
+import {
+  applyTemplateToForm,
+  fetchTemplates,
+  templateDataToDefaults,
+  templateKeys,
+  type IssueTemplate,
+} from "../lib/templates";
+import { fetchEstimates, type Estimate } from "../lib/taxonomy";
 import ProjectNav from "../components/project/ProjectNav";
 import FavoriteStar from "../components/favorites/FavoriteStar";
 import DisplayPanel from "../components/issue/DisplayPanel";
@@ -156,9 +172,16 @@ export default function Issues() {
   const [description, setDescription] = useState("");
   const [newPriority, setNewPriority] = useState(0);
   const [newStateId, setNewStateId] = useState("");
+  const [newEstimatePointId, setNewEstimatePointId] = useState("");
   const [parentIssue, setParentIssue] = useState<Issue | null>(null);
   const [createMore, setCreateMore] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // C7T1: template picked from the dropdown + any note about dropped
+  // defaults (stale refs, labels that can't be set at creation).
+  const [appliedTemplate, setAppliedTemplate] = useState<IssueTemplate | null>(
+    null,
+  );
+  const [templateNote, setTemplateNote] = useState<string | null>(null);
   // C5T3: true after a Draft-with-AI insert, until the user edits the
   // description or the form resets — drives the honesty hint.
   const [aiGenerated, setAiGenerated] = useState(false);
@@ -174,6 +197,86 @@ export default function Issues() {
     queryFn: () =>
       api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
   });
+
+  // C7T1: templates + estimates for the create modal's template picker.
+  // Fetched lazily — only once the create dialog opens.
+  const templatesQuery = useQuery({
+    queryKey: templateKeys(slug, identifier).templates,
+    queryFn: () => fetchTemplates(slug, identifier),
+    enabled: dialogOpen,
+  });
+  const estimatesQuery = useQuery({
+    queryKey: ["estimates", slug, identifier],
+    queryFn: () => fetchEstimates(slug, identifier),
+    enabled: dialogOpen,
+  });
+  const labelsForTemplateQuery = useQuery({
+    queryKey: ["labels", slug, identifier],
+    queryFn: () =>
+      api
+        .get<{ labels: ProjectLabel[] }>(`${base}/labels`)
+        .then((d) => d.labels),
+    enabled: dialogOpen,
+  });
+
+  /**
+   * Apply a template to the create form (C7T1). Explicit user action via the
+   * picker; the user reviews the prefilled values before saving. Refs that
+   * no longer exist (a state/estimate/label deleted after the template was
+   * saved) are dropped with an honest note instead of creating a wrong
+   * issue.
+   */
+  function applyTemplate(t: IssueTemplate) {
+    const states = statesQuery.data ?? [];
+    const estimates: Estimate[] = estimatesQuery.data ?? [];
+    const knownLabels = new Set(
+      (labelsForTemplateQuery.data ?? []).map((l) => l.id),
+    );
+    const merged = applyTemplateToForm(t, {
+      name,
+      description,
+      priority: newPriority,
+      stateId: newStateId,
+      estimatePointId: newEstimatePointId,
+      labelIds: [],
+    });
+    const notes: string[] = [];
+    let stateId = merged.stateId;
+    if (stateId && !states.some((s) => s.id === stateId)) {
+      stateId = "";
+      notes.push("its state no longer exists");
+    }
+    const pointIds = new Set(
+      estimates.flatMap((e) => e.points.map((p) => p.id)),
+    );
+    let estimatePointId = merged.estimatePointId;
+    if (estimatePointId && !pointIds.has(estimatePointId)) {
+      estimatePointId = "";
+      notes.push("its estimate no longer exists");
+    }
+    const defaults = templateDataToDefaults(t.template_data);
+    const liveLabelIds = defaults.labelIds.filter((id) =>
+      knownLabels.has(id),
+    );
+    if (liveLabelIds.length > 0) {
+      notes.push(
+        `sets ${liveLabelIds.length} label${liveLabelIds.length > 1 ? "s" : ""} — add them after creating the issue`,
+      );
+    } else if (defaults.labelIds.length > 0) {
+      notes.push("its labels no longer exist");
+    }
+    setName(merged.name);
+    setDescription(merged.description);
+    setNewPriority(merged.priority);
+    setNewStateId(stateId);
+    setNewEstimatePointId(estimatePointId);
+    setFormError(null);
+    setAiGenerated(false);
+    setAppliedTemplate(t);
+    setTemplateNote(
+      notes.length > 0 ? `Template "${t.name}": ${notes.join("; ")}.` : null,
+    );
+  }
 
   const issuesQuery = useInfiniteQuery({
     queryKey: ["issues", slug, identifier, filters, settings.orderBy],
@@ -237,6 +340,7 @@ export default function Issues() {
       description: unknown;
       priority: number;
       state_id?: string;
+      estimate_point_id?: string;
       parent_id?: string;
       is_draft?: boolean;
     }) => api.post<Issue>(`${base}/issues`, body),
@@ -268,9 +372,12 @@ export default function Issues() {
     setDescription("");
     setNewPriority(0);
     setNewStateId("");
+    setNewEstimatePointId("");
     setParentIssue(null);
     setFormError(null);
     setAiGenerated(false);
+    setAppliedTemplate(null);
+    setTemplateNote(null);
   }
 
   /** Success toast for a created issue: display_id + Copy link / View. */
@@ -323,6 +430,7 @@ export default function Issues() {
       description: textToTipTapDoc(description) ?? undefined,
       priority: newPriority,
       ...(newStateId ? { state_id: newStateId } : {}),
+      ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
     });
   }
@@ -337,6 +445,7 @@ export default function Issues() {
       description: textToTipTapDoc(description) ?? undefined,
       priority: newPriority,
       ...(newStateId ? { state_id: newStateId } : {}),
+      ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
       is_draft: true,
     });
@@ -517,8 +626,12 @@ export default function Issues() {
             open={dialogOpen}
             onOpenChange={(open) => {
               setDialogOpen(open);
-              // A picked parent must not leak into the next create.
-              if (!open) setParentIssue(null);
+              // A picked parent or template must not leak into the next create.
+              if (!open) {
+                setParentIssue(null);
+                setAppliedTemplate(null);
+                setTemplateNote(null);
+              }
             }}
           >
           <Button onClick={() => setDialogOpen(true)} className="gap-2">
@@ -533,6 +646,63 @@ export default function Issues() {
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={onCreate} className="space-y-4">
+              {/* C7T1: template picker — selecting one prefills the form;
+                  the user reviews before saving. */}
+              {(templatesQuery.data ?? []).length > 0 && (
+                <div className="space-y-2">
+                  <Label>Template</Label>
+                  <Select
+                    value={appliedTemplate?.id ?? "__none"}
+                    onValueChange={(v) => {
+                      const t = (templatesQuery.data ?? []).find(
+                        (x) => x.id === v,
+                      );
+                      if (t) applyTemplate(t);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Use a template…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none" disabled>
+                        Use a template…
+                      </SelectItem>
+                      {(templatesQuery.data ?? []).map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {appliedTemplate && (
+                    <div className="flex items-center justify-between rounded-md bg-accent px-2 py-1 text-xs">
+                      <span className="truncate">
+                        Using template{" "}
+                        <span className="font-medium">
+                          “{appliedTemplate.name}”
+                        </span>
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2"
+                        onClick={() => {
+                          setAppliedTemplate(null);
+                          setTemplateNote(null);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  )}
+                  {templateNote && (
+                    <p className="text-xs text-muted-foreground">
+                      {templateNote}
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="i-name">Title</Label>
                 <Input
@@ -574,7 +744,7 @@ export default function Issues() {
                   </p>
                 )}
               </div>
-              <div className="flex gap-4">
+              <div className="flex flex-wrap gap-4">
                 <div className="space-y-2">
                   <Label>Priority</Label>
                   <PriorityPicker
@@ -592,6 +762,14 @@ export default function Issues() {
                     />
                   </div>
                 )}
+                <div className="space-y-2">
+                  <Label>Estimate</Label>
+                  <EstimateSelect
+                    estimates={estimatesQuery.data ?? []}
+                    value={newEstimatePointId}
+                    onChange={setNewEstimatePointId}
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Parent</Label>
