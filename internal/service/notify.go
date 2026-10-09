@@ -60,6 +60,17 @@ const (
 	// AllNotifyEvents is enough for prefs to work (absent row = defaults:
 	// in_app on, email off).
 	NotifyStale = "stale"
+	// NotifyDigestDaily is the daily email digest (C10T2). It is NOT a
+	// per-event notification: the digest job aggregates the user's last
+	// 24h of digest-worthy notifications (issue.assigned, mention,
+	// issue.state_changed) into ONE "email.digest" outbox row per day.
+	// No migration needed: notification_prefs.event is unconstrained TEXT,
+	// so adding the key to AllNotifyEvents is enough for prefs to work.
+	// The digest is email-only and opt-in: absent row = email off, and
+	// in_app defaults to false — the in_app flag is stored but unused
+	// (see defaultNotificationPref). It is never passed to notifyTx, so no
+	// per-event rows are ever emitted for this key.
+	NotifyDigestDaily = "digest.daily"
 )
 
 // AllNotifyEvents lists every event type users can set delivery prefs for.
@@ -74,6 +85,7 @@ var AllNotifyEvents = []string{
 	NotifyDueSoon,
 	NotifyOverdue,
 	NotifyStale,
+	NotifyDigestDaily,
 }
 
 var (
@@ -372,10 +384,21 @@ func ListNotificationPrefs(ctx context.Context, pool *pgxpool.Pool, userID strin
 		if p, ok := byEvent[ev]; ok {
 			out = append(out, p)
 		} else {
-			out = append(out, NotificationPref{Event: ev, InApp: true, Email: false})
+			out = append(out, defaultNotificationPref(ev))
 		}
 	}
 	return out, nil
+}
+
+// defaultNotificationPref returns the absent-row defaults for one event.
+// Most events default to in_app on / email off (email is opt-in by
+// convention). The digest is email-only — its in_app toggle is inert, so
+// it defaults off to keep the prefs UI honest.
+func defaultNotificationPref(event string) NotificationPref {
+	if event == NotifyDigestDaily {
+		return NotificationPref{Event: event, InApp: false, Email: false}
+	}
+	return NotificationPref{Event: event, InApp: true, Email: false}
 }
 
 // SetNotificationPref upserts the (user, event) delivery gate. Unknown

@@ -59,6 +59,8 @@ export const NOTIFY_EVENT_LABELS: Record<string, string> = {
   "issue.state_changed": "Issue state changed",
   "intake.triaged": "Intake triaged",
   "mention": "Mentioned in comment",
+  // C10T2: the daily email digest (email-only; no in-app toggle).
+  "digest.daily": "Daily digest",
 };
 
 export function eventLabel(event: string): string {
