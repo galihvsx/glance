@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 
 /** View switcher shown on the project pages (list / board / spreadsheet /
  *  calendar / gantt / analytics / cycles / modules / pages / intake /
- *  activity).
+ *  activity / settings).
  *  `trailing` renders at the right end of the tab bar — used for the saved
  *  views menu (C2T6) on the filterable pages. */
 export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
@@ -27,6 +27,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Pages", to: `${base}/pages` },
     { label: "Activity", to: `${base}/activity` },
     { label: "Intake", to: `${base}/intake` },
+    { label: "Settings", to: `${base}/settings` },
   ];
   return (
     <nav className="flex items-center gap-1 border-b">
