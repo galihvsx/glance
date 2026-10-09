@@ -393,3 +393,53 @@ func TestListMembersHTTP(t *testing.T) {
 		t.Fatalf("outsider list members: status = %d, want 404", orec.Code)
 	}
 }
+
+func TestWorkspacePatchSlugAndDeleteHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testWorkspaceServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slugdel"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("slug-http")
+	createWorkspaceHTTP(t, e, cookie, "Sluggy", slug)
+
+	// PATCH with a new slug: persists and returns the new slug.
+	newSlug := uniqueSlug("slug-http-new")
+	prec := postAuthedJSON(t, e, http.MethodPatch, "/api/v1/workspaces/"+slug, cookie,
+		`{"name":"Sluggy","slug":"`+newSlug+`"}`)
+	if prec.Code != http.StatusOK {
+		t.Fatalf("patch slug: status = %d, want 200 (body: %s)", prec.Code, prec.Body.String())
+	}
+	var patched struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(prec.Body.Bytes(), &patched); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if patched.Slug != newSlug {
+		t.Fatalf("slug = %q, want %q", patched.Slug, newSlug)
+	}
+
+	// Old slug is gone; new slug resolves.
+	gone := getAuthed(t, e, http.MethodGet, "/api/v1/workspaces/"+slug, cookie)
+	if gone.Code != http.StatusNotFound {
+		t.Fatalf("old slug: status = %d, want 404", gone.Code)
+	}
+
+	// Invalid slug → 400.
+	bad := postAuthedJSON(t, e, http.MethodPatch, "/api/v1/workspaces/"+newSlug, cookie,
+		`{"name":"Sluggy","slug":"Bad_Slug!!"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad slug: status = %d, want 400", bad.Code)
+	}
+
+	// DELETE → 204; workspace gone afterwards.
+	drec := postAuthedJSON(t, e, http.MethodDelete, "/api/v1/workspaces/"+newSlug, cookie, ``)
+	if drec.Code != http.StatusNoContent {
+		t.Fatalf("delete: status = %d, want 204 (body: %s)", drec.Code, drec.Body.String())
+	}
+	after := getAuthed(t, e, http.MethodGet, "/api/v1/workspaces/"+newSlug, cookie)
+	if after.Code != http.StatusNotFound {
+		t.Fatalf("after delete: status = %d, want 404", after.Code)
+	}
+}
