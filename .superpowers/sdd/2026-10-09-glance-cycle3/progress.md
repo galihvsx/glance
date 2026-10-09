@@ -16,3 +16,7 @@ Ledger for cycle 3. Cycle 2 history lives in `.superpowers/sdd/2026-10-08-glance
 - **C3T3 merged** (review pass: project-scoped parent ✓, recursive-CTE cycle guard ✓, tx move/reorder ✓, idempotent migration ✓). Tests green post-merge. Worktree cleaned.
 - **C3T4 dispatched** (pages frontend) — dependency on C3T3 satisfied.
 - **C3T4 merged** (review pass: hand-rolled markdown renderer XSS-safe — escape-first, href allow-list, rel=noreferrer; zero new deps; 72 vitest green post-merge). Worktree cleaned.
+- **C3T5 merged** (review pass: start_after/before + undated params parameterized, reuse parse path; conflict in ProjectNav doc comment resolved keeping both tabs; post-resolve: tsc clean, 83 vitest green, go build/vet clean). Worktree cleaned.
+- **C3T6 merged** (review pass: admin-only delete ✓, slug validation + 409 ✓, ErrLastAdmin surfaced ✓). Tests green post-merge. Worktree cleaned.
+- **C3T8 dispatched** (bug bundle C) — dependency on C3T6 satisfied.
+- **C3T7 merged** (review pass: partial unique index → race-safe 409 ✓, satellite scoping helpers existing ✓, no realtime leak by design ✓). Tests green post-merge, tsc clean. Worktree cleaned.

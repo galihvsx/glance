@@ -470,3 +470,193 @@ func TestRemoveMemberConcurrentLastAdmin(t *testing.T) {
 		t.Fatalf("workspace left with %d admins; the last-admin guard was defeated by the race", admins)
 	}
 }
+func inviteResultsByEmail(results []InviteResult) map[string]string {
+	m := make(map[string]string, len(results))
+	for _, r := range results {
+		m[r.Email] = r.Status
+	}
+	return m
+}
+
+func TestInviteMembersHappyPath(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	adminEmail := uniqueTestEmail("ws-inv-admin")
+	admin := createTestUser(t, pool, adminEmail)
+	targetEmail := uniqueTestEmail("ws-inv-target")
+	createTestUser(t, pool, targetEmail)
+	invSlug := uniqueTestSlug("ws-invite")
+	createTestWorkspace(t, pool, "Invite", invSlug, admin)
+
+	results, err := InviteMembers(ctx, pool, invSlug, admin, []string{targetEmail}, 0)
+	if err != nil {
+		t.Fatalf("InviteMembers: %v", err)
+	}
+	if got := inviteResultsByEmail(results)[targetEmail]; got != InviteStatusInvited {
+		t.Fatalf("status = %q, want %q", got, InviteStatusInvited)
+	}
+
+	// The target is now a member with the default (member) role.
+	var role int
+	if err := pool.QueryRow(ctx,
+		`SELECT m.role FROM workspace_members m
+		 JOIN workspaces w ON w.id = m.workspace_id
+		 JOIN users u ON u.id = m.user_id
+		 WHERE w.slug = $1 AND u.email = $2`,
+		invSlug, targetEmail).Scan(&role); err != nil {
+		t.Fatalf("member row: %v", err)
+	}
+	if role != RoleMember {
+		t.Fatalf("role = %d, want %d (default member)", role, RoleMember)
+	}
+}
+
+func TestInviteMembersNotRegistered(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-invnr-admin"))
+	targetEmail := uniqueTestEmail("ws-invnr-target")
+	createTestUser(t, pool, targetEmail)
+	nrSlug := uniqueTestSlug("ws-invitenr")
+	createTestWorkspace(t, pool, "InviteNR", nrSlug, admin)
+
+	ghost := uniqueTestEmail("ws-invnr-ghost")
+	results, err := InviteMembers(ctx, pool, nrSlug, admin, []string{targetEmail, ghost}, RoleGuest)
+	if err != nil {
+		t.Fatalf("InviteMembers: %v", err)
+	}
+	byEmail := inviteResultsByEmail(results)
+	if byEmail[targetEmail] != InviteStatusInvited {
+		t.Fatalf("registered: status = %q, want invited", byEmail[targetEmail])
+	}
+	if byEmail[ghost] != InviteStatusNotRegistered {
+		t.Fatalf("unknown: status = %q, want not-registered", byEmail[ghost])
+	}
+
+	// The unknown email must not have created any user or member row.
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE email = $1`, ghost).Scan(&n); err != nil {
+		t.Fatalf("user count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("unknown email created %d user rows, want 0", n)
+	}
+}
+
+func TestInviteMembersIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-invid-admin"))
+	targetEmail := uniqueTestEmail("ws-invid-target")
+	createTestUser(t, pool, targetEmail)
+	idSlug := uniqueTestSlug("ws-inviteid")
+	createTestWorkspace(t, pool, "InviteID", idSlug, admin)
+
+	first, err := InviteMembers(ctx, pool, idSlug, admin, []string{targetEmail}, RoleMember)
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+	if inviteResultsByEmail(first)[targetEmail] != InviteStatusInvited {
+		t.Fatalf("first: status = %q, want invited", inviteResultsByEmail(first)[targetEmail])
+	}
+	second, err := InviteMembers(ctx, pool, idSlug, admin, []string{targetEmail}, RoleMember)
+	if err != nil {
+		t.Fatalf("second invite: %v", err)
+	}
+	if inviteResultsByEmail(second)[targetEmail] != InviteStatusAlreadyMember {
+		t.Fatalf("second: status = %q, want already-member", inviteResultsByEmail(second)[targetEmail])
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspace_members m
+		 JOIN workspaces w ON w.id = m.workspace_id
+		 JOIN users u ON u.id = m.user_id
+		 WHERE w.slug = $1 AND u.email = $2`,
+		idSlug, targetEmail).Scan(&n); err != nil {
+		t.Fatalf("member count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("member rows = %d, want 1 (no duplicates)", n)
+	}
+}
+
+func TestInviteMembersRoleChecks(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-invrc-admin"))
+	member := createTestUser(t, pool, uniqueTestEmail("ws-invrc-member"))
+	targetEmail := uniqueTestEmail("ws-invrc-target")
+	createTestUser(t, pool, targetEmail)
+	rcSlug := uniqueTestSlug("ws-inviterc")
+	createTestWorkspace(t, pool, "InviteRC", rcSlug, admin)
+	if err := UpsertMember(ctx, pool, rcSlug, admin, member, RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	// Non-admin member → ErrForbidden (not ErrNotFound: the workspace
+	// exists and the caller is a member).
+	if _, err := InviteMembers(ctx, pool, rcSlug, member, []string{targetEmail}, 0); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("member invite: err = %v, want ErrForbidden", err)
+	}
+	// Outsider → ErrNotFound (no workspace existence hint).
+	outsider := createTestUser(t, pool, uniqueTestEmail("ws-invrc-outsider"))
+	if _, err := InviteMembers(ctx, pool, rcSlug, outsider, []string{targetEmail}, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("outsider invite: err = %v, want ErrNotFound", err)
+	}
+	// Bad slug → ErrNotFound.
+	if _, err := InviteMembers(ctx, pool, uniqueTestSlug("ws-invrc-nosuch"), admin, []string{targetEmail}, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bad slug invite: err = %v, want ErrNotFound", err)
+	}
+	// Invalid role → ErrInvalidRole.
+	if _, err := InviteMembers(ctx, pool, rcSlug, admin, []string{targetEmail}, 99); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("bad role invite: err = %v, want ErrInvalidRole", err)
+	}
+}
+
+func TestInviteMembersNormalization(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, pool, uniqueTestEmail("ws-invnm-admin"))
+	targetEmail := uniqueTestEmail("ws-invnm-target")
+	createTestUser(t, pool, targetEmail)
+	nmSlug := uniqueTestSlug("ws-invitenm")
+	createTestWorkspace(t, pool, "InviteNM", nmSlug, admin)
+
+	// Mixed case, whitespace, duplicates, and one malformed address.
+	inputs := []string{
+		"  " + strings.ToUpper(targetEmail) + " ",
+		targetEmail,
+		"not-an-email",
+		"",
+	}
+	results, err := InviteMembers(ctx, pool, nmSlug, admin, inputs, 0)
+	if err != nil {
+		t.Fatalf("InviteMembers: %v", err)
+	}
+	// 4 inputs, 3 unique normalized: target (invited), "not-an-email"
+	// (invalid), "" (invalid).
+	if len(results) != 3 {
+		t.Fatalf("results = %d, want 3 (deduped)", len(results))
+	}
+	byEmail := inviteResultsByEmail(results)
+	if byEmail[targetEmail] != InviteStatusInvited {
+		t.Fatalf("normalized target: status = %q, want invited", byEmail[targetEmail])
+	}
+	if byEmail["not-an-email"] != InviteStatusInvalid {
+		t.Fatalf("malformed: status = %q, want invalid", byEmail["not-an-email"])
+	}
+	if byEmail[""] != InviteStatusInvalid {
+		t.Fatalf("empty: status = %q, want invalid", byEmail[""])
+	}
+}

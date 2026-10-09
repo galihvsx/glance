@@ -29,6 +29,7 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.POST("/:slug/members", h.upsertMember)
 	g.GET("/:slug/members", h.listMembers)
 	g.DELETE("/:slug/members/:user_id", h.removeMember)
+	g.POST("/:slug/invites", h.inviteMembers)
 }
 
 // workspaceError maps service sentinel errors to HTTP statuses. Unknown
@@ -177,4 +178,30 @@ func (h *WorkspaceHandler) listMembers(c *echo.Context) error {
 		return workspaceError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"members": members})
+}
+
+type inviteMembersBody struct {
+	Emails []string `json:"emails"`
+	Role   int      `json:"role"`
+}
+
+// inviteMembers implements POST /api/v1/workspaces/{slug}/invites: adds
+// registered users as workspace members by email. Admin only. Every email
+// gets a per-email result (invited | already-member | not-registered |
+// invalid) — unknown emails are results, not errors, so the onboarding
+// wizard keeps them as "Pending" without failing. 200 with the wrapped
+// {"results": [...]} shape.
+func (h *WorkspaceHandler) inviteMembers(c *echo.Context) error {
+	var body inviteMembersBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	results, err := service.InviteMembers(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Emails, body.Role)
+	if err != nil {
+		return workspaceError(c, err)
+	}
+	if results == nil {
+		results = []service.InviteResult{}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"results": results})
 }
