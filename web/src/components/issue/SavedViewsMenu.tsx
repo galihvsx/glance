@@ -5,6 +5,7 @@ import {
   Check,
   Pencil,
   Plus,
+  Share2,
   Star,
   Trash2,
   X,
@@ -36,7 +37,9 @@ interface SavedViewsMenuProps {
 
 /** Per-project saved views: named filter + display presets, persisted
  *  server-side (C9T2). Mounted in the project nav (via ProjectNav's
- *  `trailing` slot) on the list, board, and spreadsheet pages. */
+ *  `trailing` slot) on the list, board, and spreadsheet pages. Views the
+ *  owner shares with the project (C10T1) render under a "Shared" section
+ *  as read-only rows; the share/unshare toggle is owner-only. */
 export default function SavedViewsMenu({
   projectId,
   filters,
@@ -45,11 +48,14 @@ export default function SavedViewsMenu({
 }: SavedViewsMenuProps) {
   const {
     views,
+    ownViews,
+    sharedViews,
     viewsLoading,
     createView,
     renameView,
     deleteView,
     setDefaultView,
+    setViewShared,
   } = useSavedViews(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
@@ -81,8 +87,10 @@ export default function SavedViewsMenu({
   }
 
   // Default view: applied once per mount when the URL carries no explicit
-  // filter params. Waits for the views to load first (the menu is keyed by
-  // project in each page, so a project switch remounts and re-runs this).
+  // filter params. Only the caller's OWN views are eligible — a default
+  // set by another member on their shared view must never auto-apply.
+  // Waits for the views to load first (the menu is keyed by project in
+  // each page, so a project switch remounts and re-runs this).
   const defaultApplied = useRef(false);
   useEffect(() => {
     if (defaultApplied.current || viewsLoading) return;
@@ -95,7 +103,7 @@ export default function SavedViewsMenu({
       }
     }
     if (hasFilterParams) return;
-    const def = views.find((v) => v.isDefault);
+    const def = ownViews.find((v) => v.isDefault);
     if (!def) return;
     const next = new URLSearchParams();
     for (const [k, v] of searchParams) {
@@ -189,6 +197,15 @@ export default function SavedViewsMenu({
     }
   }
 
+  async function handleToggleShared(view: SavedView) {
+    try {
+      await setViewShared(view.id, !view.shared);
+    } catch {
+      // Honest error — no silent fallback: the toggle stays as it was.
+      toast.add({ title: "Could not update sharing", type: "error" });
+    }
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -208,13 +225,13 @@ export default function SavedViewsMenu({
           <p className="px-2 py-3 text-sm text-muted-foreground">
             Loading views…
           </p>
-        ) : views.length === 0 ? (
+        ) : ownViews.length === 0 && sharedViews.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">
             No saved views yet. Set your filters, then save the current view.
           </p>
         ) : (
           <div className="flex flex-col">
-            {views.map((view) => {
+            {ownViews.map((view) => {
               const active = activeView?.id === view.id;
               if (renamingId === view.id) {
                 return (
@@ -337,6 +354,26 @@ export default function SavedViewsMenu({
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
+                  {/* Share toggle (C10T1): owner-only — these rows are the
+                      caller's own views by construction. */}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                    title={
+                      view.shared
+                        ? `Stop sharing “${view.name}” with the project`
+                        : `Share “${view.name}” with the project`
+                    }
+                    onClick={() => handleToggleShared(view)}
+                  >
+                    <Share2
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        view.shared && "text-primary",
+                      )}
+                    />
+                  </Button>
                   <Button
                     size="icon"
                     variant="ghost"
@@ -349,6 +386,51 @@ export default function SavedViewsMenu({
                 </div>
               );
             })}
+            {/* Shared views (C10T1): other members' views, read-only.
+                Apply + owner attribution only — no rename/default/share/
+                delete controls for non-owners. */}
+            {sharedViews.length > 0 && (
+              <>
+                <Separator className="my-2" />
+                <p className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Shared
+                </p>
+                {sharedViews.map((view) => {
+                  const active = activeView?.id === view.id;
+                  return (
+                    <div
+                      key={view.id}
+                      className={cn(
+                        "group flex items-center gap-0.5 rounded px-1 py-0.5",
+                        active && "bg-muted",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => applyView(view)}
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                        title={`Apply view “${view.name}”`}
+                      >
+                        {active ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                        ) : (
+                          <span className="h-3.5 w-3.5 shrink-0" />
+                        )}
+                        <span className="truncate">{view.name}</span>
+                      </button>
+                      {view.ownerName && (
+                        <span
+                          className="max-w-24 truncate px-1 text-xs text-muted-foreground"
+                          title={`Shared by ${view.ownerName}`}
+                        >
+                          {view.ownerName}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
         <Separator className="my-2" />

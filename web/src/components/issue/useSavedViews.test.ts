@@ -34,6 +34,9 @@ function makeRow(overrides: Partial<IssueViewRow> = {}): IssueViewRow {
       showEmptyGroups: false,
     },
     is_default: false,
+    shared: false,
+    owner_id: "user-1",
+    owner_name: "Alice",
     created_at: "2026-10-10T00:00:00Z",
     ...overrides,
   };
@@ -190,5 +193,72 @@ describe("saved views backend wiring", () => {
     const view: SavedView | null = sanitizeView(row);
     expect(view?.filters.q).toBe("login bug");
     expect(view?.display).toBeNull();
+  });
+});
+
+describe("shared views (C10T1)", () => {
+  const PROJECT_ID = "11111111-2222-3333-4444-555555555555";
+
+  function mockFetch(handler: (url: string, init: RequestInit) => Response) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => handler(url, init)),
+    );
+  }
+
+  const ok = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sanitizeView maps the shared flag and owner annotation", () => {
+    const v = sanitizeView(
+      makeRow({ shared: true, owner_id: "user-2", owner_name: "Bob" }),
+    );
+    expect(v?.shared).toBe(true);
+    expect(v?.ownerId).toBe("user-2");
+    expect(v?.ownerName).toBe("Bob");
+  });
+
+  it("sanitizeView defaults a private row to shared=false", () => {
+    const v = sanitizeView(makeRow());
+    expect(v?.shared).toBe(false);
+    expect(v?.ownerId).toBe("user-1");
+    expect(v?.ownerName).toBe("Alice");
+  });
+
+  it("PATCHes {shared:true} to /views/{viewId} to share a view", async () => {
+    let seenUrl = "";
+    let seenBody: Record<string, unknown> = {};
+    mockFetch((url, init) => {
+      seenUrl = url;
+      seenBody = JSON.parse(init.body as string) as Record<string, unknown>;
+      return ok(200, makeRow({ shared: true }));
+    });
+    const row = await updateIssueView(PROJECT_ID, "view-1", { shared: true });
+    expect(seenUrl).toBe(`/api/v1/projects/${PROJECT_ID}/views/view-1`);
+    expect(seenBody).toEqual({ shared: true });
+    expect(row.shared).toBe(true);
+  });
+
+  it("surfaces a 403 on a non-owner share toggle as an ApiError", async () => {
+    mockFetch(() =>
+      ok(403, {
+        error: {
+          code: "forbidden",
+          message: "only the view owner can change it",
+        },
+      }),
+    );
+    const err = await updateIssueView(PROJECT_ID, "view-1", {
+      shared: true,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(403);
   });
 });

@@ -14,6 +14,13 @@ export interface IssueViewRow {
   filters: IssueFilters;
   display: DisplaySettings | null;
   is_default: boolean;
+  /** True once the owner shares the view with the project (C10T1):
+   *  the row then appears in every project member's list. */
+  shared: boolean;
+  /** Owner user id — the share/unshare toggle is owner-only. */
+  owner_id: string;
+  /** Display name of the owner (name, falling back to email). */
+  owner_name: string;
   created_at: string;
 }
 
@@ -48,6 +55,9 @@ export interface CreateViewInput {
 export interface UpdateViewInput {
   name?: string;
   is_default?: boolean;
+  /** Toggle project-wide visibility (C10T1). Owner-only: the backend
+   *  403s a non-owner. */
+  shared?: boolean;
 }
 
 /** POST a view. Throws ApiError (409 on a duplicate name). */

@@ -16,9 +16,13 @@ import {
 } from "../../lib/savedViews";
 import { toast } from "../ui/toast";
 
+import { useAuth } from "../../lib/auth";
+
 /** A named per-project saved view: an IssueFilters object plus the
  *  display preset that was active when it was saved. Persisted
- *  server-side (C9T2) so views roam across devices. */
+ *  server-side (C9T2) so views roam across devices. A view may be
+ *  shared with the project by its owner (C10T1): shared rows are
+ *  read-only for everyone but the owner. */
 export interface SavedView {
   id: string;
   name: string;
@@ -27,6 +31,12 @@ export interface SavedView {
   /** Null when saved from a page without display settings (spreadsheet). */
   display: DisplaySettings | null;
   isDefault: boolean;
+  /** True once the owner shares the view with the project. */
+  shared: boolean;
+  /** Owner user id — owner-only actions gate on this. */
+  ownerId: string;
+  /** Display name of the owner, for the "Shared" section. */
+  ownerName: string;
 }
 
 const MAX_VIEWS = 50;
@@ -101,6 +111,9 @@ export function sanitizeView(raw: unknown): SavedView | null {
     filters,
     display: sanitizeDisplay(v.display),
     isDefault,
+    shared: v.shared === true,
+    ownerId: typeof v.owner_id === "string" ? v.owner_id : "",
+    ownerName: typeof v.owner_name === "string" ? v.owner_name : "",
   };
 }
 
@@ -116,6 +129,8 @@ function toSavedView(row: IssueViewRow): SavedView | null {
  *  blank names are rejected inline, the 50-view cap is enforced
  *  client-side, and duplicate names surface as the backend's 409. */
 export function useSavedViews(projectId: string) {
+  const { user, loading: authLoading } = useAuth();
+  const currentUserId = user?.id ?? "";
   const query = useIssueViews(projectId);
   const createMutation = useCreateIssueView(projectId);
   const updateMutation = useUpdateIssueView(projectId);
@@ -143,6 +158,18 @@ export function useSavedViews(projectId: string) {
         .filter((v): v is SavedView => v !== null)
         .slice(0, MAX_VIEWS),
     [query.data],
+  );
+
+  /** Views the current user owns (private or shared). */
+  const ownViews = useMemo(
+    () => views.filter((v) => v.ownerId === currentUserId),
+    [views, currentUserId],
+  );
+  /** Views shared by other project members — read-only for this user. */
+  const sharedViews = useMemo(
+    () =>
+      views.filter((v) => v.shared && v.ownerId !== currentUserId),
+    [views, currentUserId],
   );
 
   /** Creates a view; returns it, or null when the name is blank or the
@@ -212,12 +239,33 @@ export function useSavedViews(projectId: string) {
     [views, projectId, updateMutation],
   );
 
+  /** Toggles project-wide sharing for an owned view (C10T1). Throws
+   *  ApiError on request failure (403 = not the owner) so the caller can
+   *  show an honest error. */
+  const setViewShared = useCallback(
+    async (id: string, shared: boolean): Promise<void> => {
+      if (!projectId) throw new Error("project not loaded yet");
+      if (!ownViews.some((v) => v.id === id))
+        throw new Error("only the view owner can change sharing");
+      await updateMutation.mutateAsync({ viewId: id, patch: { shared } });
+    },
+    [ownViews, projectId, updateMutation],
+  );
+
   return {
     views,
-    viewsLoading: query.isLoading,
+    /** Views owned by the current user (private or shared). */
+    ownViews,
+    /** Views shared by other members — read-only for this user. */
+    sharedViews,
+    // Gated on auth too: the own/shared split keys on the current user
+    // id, so the menu must not render (or auto-apply a default) before
+    // it resolves.
+    viewsLoading: query.isLoading || authLoading,
     createView,
     renameView,
     deleteView,
     setDefaultView,
+    setViewShared,
   };
 }
