@@ -2,8 +2,16 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { MessageSquare, Pencil } from "lucide-react";
+import {
+  Bell,
+  BellOff,
+  Check,
+  History as HistoryIcon,
+  Link2,
+  Pencil,
+} from "lucide-react";
 import { api, ApiError } from "../../lib/api";
+import { useAuth } from "../../lib/auth";
 import type {
   CommentNode,
   HistoryEntry,
@@ -11,6 +19,7 @@ import type {
   IssueState,
   Label as ProjectLabel,
   Member,
+  Subscriber,
 } from "../../lib/types";
 import { tiptapText } from "../../lib/tiptap";
 import { useProjectRealtime } from "../../lib/realtime";
@@ -55,6 +64,23 @@ function fmtTime(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Human-friendly relative timestamp ("just now", "5m ago", "2h ago",
+ *  "3d ago"); falls back to the absolute fmtTime for events older than
+ *  30 days. */
+function timeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return fmtTime(iso);
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return fmtTime(iso);
 }
 
 /** Human label for an activity field. */
@@ -171,7 +197,9 @@ function CommentItem({
           <span className="font-medium text-foreground">
             {actorName(comment.actor)}
           </span>
-          <span>{fmtTime(comment.created_at)}</span>
+          <span title={fmtTime(comment.created_at)}>
+            {timeAgo(comment.created_at)}
+          </span>
           <button
             className="ml-auto hover:underline"
             onClick={() => onReply(comment.id)}
@@ -218,14 +246,18 @@ export default function IssueDetailContent({
   headerActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const issuePath = `${base}/issues/${encodeURIComponent(uuid)}`;
+  const subscribersPath = `${issuePath}/subscribers`;
+  const subscribersKey = ["subscribers", slug, identifier, uuid];
 
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
@@ -271,6 +303,13 @@ export default function IssueDetailContent({
       api
         .get<{ history: HistoryEntry[] }>(`${issuePath}/history`)
         .then((d) => d.history),
+  });
+  const subscribersQuery = useQuery({
+    queryKey: subscribersKey,
+    queryFn: () =>
+      api
+        .get<{ subscribers: Subscriber[] }>(subscribersPath)
+        .then((d) => d.subscribers),
   });
 
   const issue = issueQuery.data;
@@ -385,6 +424,76 @@ export default function IssueDetailContent({
     },
   });
 
+  const subscribers = subscribersQuery.data ?? [];
+  const subscribed =
+    user !== null && subscribers.some((s) => s.user_id === user.id);
+
+  // Subscribe/unsubscribe the current user. Backend is idempotent
+  // (POST/DELETE .../subscribers → 204); optimistic so the button flips
+  // instantly, rolled back on error.
+  const subscribeMutation = useMutation({
+    mutationFn: (next: boolean) =>
+      next ? api.post<void>(subscribersPath) : api.del<void>(subscribersPath),
+    onMutate: async (next) => {
+      await queryClient.cancelQueries({ queryKey: subscribersKey });
+      const prev =
+        queryClient.getQueryData<Subscriber[]>(subscribersKey) ?? [];
+      if (user) {
+        queryClient.setQueryData<Subscriber[]>(
+          subscribersKey,
+          next
+            ? [...prev, { user_id: user.id, name: user.name, email: user.email }]
+            : prev.filter((s) => s.user_id !== user.id),
+        );
+      }
+      return { prev };
+    },
+    onError: (e, _next, ctx) => {
+      if (ctx) queryClient.setQueryData(subscribersKey, ctx.prev);
+      setError(
+        e instanceof ApiError ? e.message : "Failed to update subscription",
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: subscribersKey });
+    },
+  });
+
+  function onSubscribeToggle() {
+    if (!user || subscribeMutation.isPending) return;
+    subscribeMutation.mutate(!subscribed);
+  }
+
+  // Copy the issue's canonical full-page URL.
+  function onCopyLink() {
+    const url = `${window.location.origin}/w/${slug}/p/${identifier}/i/${uuid}`;
+    const done = () => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    };
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard
+        .writeText(url)
+        .then(done)
+        .catch(() => setError("Could not copy link to clipboard"));
+    } else {
+      // Non-secure context fallback.
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (document.execCommand("copy")) done();
+        else setError("Could not copy link to clipboard");
+      } catch {
+        setError("Could not copy link to clipboard");
+      }
+      document.body.removeChild(ta);
+    }
+  }
+
   function onCommentSubmit(e: FormEvent) {
     e.preventDefault();
     const doc = textToTipTapDoc(commentDraft);
@@ -407,6 +516,27 @@ export default function IssueDetailContent({
 
   const comments = commentsQuery.data ?? [];
   const history = historyQuery.data ?? [];
+
+  /** Unified activity timeline: top-level comments + history (system)
+   *  events, interleaved newest-first. Replies stay nested under their
+   *  parent comment. Relations aren't rendered on the detail page (no
+   *  relations read here), so the timeline covers exactly what the page
+   *  already fetches — nothing invented. */
+  type TimelineItem =
+    | { kind: "comment"; at: string; comment: CommentNode }
+    | { kind: "event"; at: string; entry: HistoryEntry };
+  const timeline: TimelineItem[] = [
+    ...comments.map(
+      (comment): TimelineItem => ({
+        kind: "comment",
+        at: comment.created_at,
+        comment,
+      }),
+    ),
+    ...history.map(
+      (entry): TimelineItem => ({ kind: "event", at: entry.created_at, entry }),
+    ),
+  ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 
   return (
     <div className="w-full">
@@ -434,11 +564,42 @@ export default function IssueDetailContent({
             {stateById.get(issue.state_id) && (
               <StateBadge state={stateById.get(issue.state_id)!} />
             )}
-            {headerActions && (
-              <span className="ml-auto flex items-center gap-1">
-                {headerActions}
-              </span>
-            )}
+            <span className="ml-auto flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={onSubscribeToggle}
+                disabled={!user || subscribeMutation.isPending}
+                title={
+                  subscribed
+                    ? "Stop receiving notifications for this issue"
+                    : "Get notified about updates to this issue"
+                }
+              >
+                {subscribed ? (
+                  <BellOff className="h-3.5 w-3.5" />
+                ) : (
+                  <Bell className="h-3.5 w-3.5" />
+                )}
+                {subscribed ? "Unsubscribe" : "Subscribe"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={onCopyLink}
+                title="Copy link to this issue"
+              >
+                {copied ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <Link2 className="h-3.5 w-3.5" />
+                )}
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+              {headerActions}
+            </span>
           </div>
 
           {titleEditing ? (
@@ -485,36 +646,20 @@ export default function IssueDetailContent({
                 }
               />
 
-              {/* Comments */}
+              {/* Activity: comments + system events, one timeline */}
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <MessageSquare className="h-4 w-4" />
-                    Comments
-                    {comments.length > 0 && (
+                    <HistoryIcon className="h-4 w-4" />
+                    Activity
+                    {timeline.length > 0 && (
                       <span className="text-sm font-normal text-muted-foreground">
-                        {comments.length}
+                        {timeline.length}
                       </span>
                     )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {commentsQuery.isPending ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-16 w-full" />
-                      <Skeleton className="h-16 w-full" />
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {comments.map((c) => (
-                        <CommentItem
-                          key={c.id}
-                          comment={c}
-                          onReply={(id) => setReplyTo(id)}
-                        />
-                      ))}
-                    </div>
-                  )}
                   <form onSubmit={onCommentSubmit} className="space-y-2">
                     {replyTo && (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -544,6 +689,53 @@ export default function IssueDetailContent({
                       {commentMutation.isPending ? "Posting…" : "Comment"}
                     </Button>
                   </form>
+                  {commentsQuery.isPending || historyQuery.isPending ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-16 w-full" />
+                      <Skeleton className="h-16 w-full" />
+                    </div>
+                  ) : timeline.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No activity yet.
+                    </p>
+                  ) : (
+                    <ul className="space-y-3">
+                      {timeline.map((item) =>
+                        item.kind === "comment" ? (
+                          <li key={item.comment.id}>
+                            <CommentItem
+                              comment={item.comment}
+                              onReply={(id) => setReplyTo(id)}
+                            />
+                          </li>
+                        ) : (
+                          <li
+                            key={item.entry.id}
+                            className="flex items-start gap-2 text-sm"
+                          >
+                            <HistoryIcon
+                              className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                              aria-hidden
+                            />
+                            <div>
+                              <span className="font-medium">
+                                {actorName(item.entry.actor)}
+                              </span>{" "}
+                              <span className="text-muted-foreground">
+                                {fieldLabel(item.entry.field)}
+                              </span>
+                              <div
+                                className="text-xs text-muted-foreground"
+                                title={fmtTime(item.entry.created_at)}
+                              >
+                                {timeAgo(item.entry.created_at)}
+                              </div>
+                            </div>
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -617,46 +809,6 @@ export default function IssueDetailContent({
                       }
                     />
                   </div>
-                </CardContent>
-              </Card>
-
-              {/* History */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Activity</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {historyQuery.isPending ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-8 w-full" />
-                      <Skeleton className="h-8 w-full" />
-                    </div>
-                  ) : history.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No activity yet.
-                    </p>
-                  ) : (
-                    <ul className="space-y-3">
-                      {history.map((h) => (
-                        <li
-                          key={h.id}
-                          className="text-sm"
-                        >
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="font-medium">
-                              {actorName(h.actor)}
-                            </span>
-                            <span className="text-muted-foreground">
-                              {fieldLabel(h.field)}
-                            </span>
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {fmtTime(h.created_at)}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
                 </CardContent>
               </Card>
             </div>
