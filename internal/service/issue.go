@@ -1712,6 +1712,10 @@ type ListIssuesInput struct {
 	Undated bool
 	// Subscribed limits to issues the actor subscribed to.
 	Subscribed bool
+	// SequenceID looks up one issue by its per-project sequence number
+	// (C6T5: the command palette's display-ID resolution). 0 = no filter.
+	// Sequence ids are dense from 1 — there is no valid 0 to confuse.
+	SequenceID int
 	// Archived includes archived issues. Default (false) excludes them:
 	// archived issues are out of the working set.
 	Archived bool
@@ -1897,7 +1901,11 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if !in.Archived {
 		conds = append(conds, "i.archived_at IS NULL")
 	}
-	if in.Draft != nil && *in.Draft {
+	if in.SequenceID > 0 {
+		// A direct sequence lookup names the exact issue (palette
+		// display-ID resolution) — it bypasses the draft filter.
+		conds = append(conds, "i.sequence_id = "+arg(in.SequenceID))
+	} else if in.Draft != nil && *in.Draft {
 		conds = append(conds, "i.is_draft = TRUE")
 	} else {
 		conds = append(conds, "i.is_draft = FALSE")

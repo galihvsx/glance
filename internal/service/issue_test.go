@@ -1172,3 +1172,54 @@ func TestListIssuesDraftFilter(t *testing.T) {
 		t.Errorf("draft=false: live=%v draft=%v, want only live", nm[live.ID], nm[draft.ID])
 	}
 }
+
+// TestListIssuesSequenceIDLookup (C6T5 T25): ?sequence_id= finds the exact
+// row in one query — no page-scanning. A direct sequence lookup bypasses
+// the draft filter (the caller named the exact issue).
+func TestListIssuesSequenceIDLookup(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	creator := createTestUser(t, pool, uniqueTestEmail("seq-lookup"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("seq-lookup"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+
+	first := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "first")
+	second := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "second")
+	draft, err := CreateIssue(ctx, pool, ws.Slug, p.Identifier, creator,
+		CreateIssueInput{Name: "a draft", IsDraft: true})
+	if err != nil {
+		t.Fatalf("CreateIssue draft: %v", err)
+	}
+
+	res, err := ListIssues(ctx, pool, ws.Slug, p.Identifier, creator,
+		ListIssuesInput{SequenceID: second.SequenceID})
+	if err != nil {
+		t.Fatalf("ListIssues sequence_id: %v", err)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].ID != second.ID {
+		t.Fatalf("sequence_id=%d: got %v, want only %s", second.SequenceID, res.Issues, second.ID)
+	}
+
+	// Drafts resolve too (draft filter bypassed for direct lookups).
+	res, err = ListIssues(ctx, pool, ws.Slug, p.Identifier, creator,
+		ListIssuesInput{SequenceID: draft.SequenceID})
+	if err != nil {
+		t.Fatalf("ListIssues sequence_id (draft): %v", err)
+	}
+	if len(res.Issues) != 1 || res.Issues[0].ID != draft.ID {
+		t.Fatalf("sequence_id=%d (draft): got %v, want only %s", draft.SequenceID, res.Issues, draft.ID)
+	}
+
+	// Miss → empty, not an error.
+	res, err = ListIssues(ctx, pool, ws.Slug, p.Identifier, creator,
+		ListIssuesInput{SequenceID: 999})
+	if err != nil {
+		t.Fatalf("ListIssues sequence_id=999: %v", err)
+	}
+	if len(res.Issues) != 0 {
+		t.Fatalf("sequence_id=999: got %d rows, want 0", len(res.Issues))
+	}
+	_ = first
+}

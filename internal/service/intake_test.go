@@ -434,6 +434,17 @@ func TestListSnoozedIntakeIssues(t *testing.T) {
 	// One plain pending row — never in the snoozed list.
 	createIntakeIssue(t, pool, wsSlug, identifier, creator, "stays pending")
 
+	// One snoozed row whose issue got archived: archived issues are out
+	// of the intake inbox (C6T5 T20).
+	arch := createIntakeIssue(t, pool, wsSlug, identifier, creator, "archived snooze")
+	if _, err := SnoozeIntakeIssue(ctx, pool, wsSlug, identifier, arch.ID, creator, time.Now().Add(2*time.Hour)); err != nil {
+		t.Fatalf("snooze archived: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET archived_at = now() WHERE id = $1::uuid`, arch.ID); err != nil {
+		t.Fatalf("archive snoozed issue: %v", err)
+	}
+
 	// One expired snooze: snoozed, then the clock ran past it. It reads
 	// as pending in the main inbox, not here.
 	expired := createIntakeIssue(t, pool, wsSlug, identifier, creator, "already awake")

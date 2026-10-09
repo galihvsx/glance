@@ -190,6 +190,23 @@ func TestCreateTokenValidatesScopes(t *testing.T) {
 	}
 }
 
+// TestCreateTokenDedupesScopes (C6T5 T29): duplicate scopes are stored
+// once — ["read","read"] becomes ["read"], not a doubled row.
+func TestCreateTokenDedupesScopes(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+
+	userID := createUserRow(t, pool)
+	ct, err := CreateToken(ctx, pool, userID, "dupes", []string{ScopeRead, ScopeRead, ScopeWrite, ScopeRead}, nil)
+	if err != nil {
+		t.Fatalf("CreateToken with dupes: %v", err)
+	}
+	if len(ct.Token.Scopes) != 2 {
+		t.Fatalf("scopes = %v, want 2 deduped entries", ct.Token.Scopes)
+	}
+}
+
 func TestScopeImplication(t *testing.T) {
 	// write implies read — a write-scoped token may read.
 	w := &TokenAuth{Scopes: []string{ScopeWrite}}

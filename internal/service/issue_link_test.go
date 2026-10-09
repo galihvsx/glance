@@ -133,20 +133,25 @@ func TestIssueLinkInvalidKind(t *testing.T) {
 	a := createTestIssue(t, pool, slug, ident, actor, "A")
 	b := createTestIssue(t, pool, slug, ident, actor, "B")
 
-	// Strict vocabulary: trimmed exact match, no case folding. "blocked_by"
-	// is deliberately NOT a kind — the reverse relationship is the same
+	// Strict vocabulary: trimmed, case-folded (C6T5). "blocked_by" is
+	// deliberately NOT a kind — the reverse relationship is the same
 	// edge addressed from the other side (issue_id/target_issue_id
 	// swapped), so it can never be a separate kind.
-	for _, kind := range []string{"parent_of", "BLOCKS", "blocked_by", "start_before", "whatever"} {
+	for _, kind := range []string{"parent_of", "blocked_by", "start_before", "whatever"} {
 		if _, err := CreateIssueLink(ctx, pool, slug, ident, a.ID, actor, b.ID, kind); !errors.Is(err, ErrInvalidIssueLink) {
 			t.Fatalf("kind %q: err = %v, want ErrInvalidIssueLink", kind, err)
 		}
 	}
-	// Accepted vocabulary: the first create succeeds; every repeat — any
-	// valid kind — is a conflict (the kind is accepted, the edge exists).
-	if _, err := CreateIssueLink(ctx, pool, slug, ident, a.ID, actor, b.ID, "blocks"); err != nil {
-		t.Fatalf("first create: %v", err)
+	// Case is folded: "BLOCKS" is accepted and stored as "blocks".
+	l, err := CreateIssueLink(ctx, pool, slug, ident, a.ID, actor, b.ID, "BLOCKS")
+	if err != nil {
+		t.Fatalf("kind BLOCKS: %v", err)
 	}
+	if l.Kind != "blocks" {
+		t.Fatalf("stored kind = %q, want blocks", l.Kind)
+	}
+	// The edge exists now; every repeat — any valid kind — is a conflict
+	// (the kind is accepted, the edge is a dup).
 	for _, kind := range []string{"blocks", "relates_to", "duplicates"} {
 		if _, err := CreateIssueLink(ctx, pool, slug, ident, a.ID, actor, b.ID, kind); !errors.Is(err, ErrIssueLinkConflict) {
 			t.Fatalf("kind %q: err = %v, want ErrIssueLinkConflict (dup, i.e. kind accepted)", kind, err)

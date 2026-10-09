@@ -77,10 +77,11 @@ type IssueLink struct {
 	Direction string `json:"direction,omitempty"`
 }
 
-// normalizeIssueLinkKind validates the kind: trimmed exact match, no
-// case folding. Empty → "" (caller lets the DB default 'blocks' apply).
+// normalizeIssueLinkKind validates the kind: trimmed, case-folded, strict
+// vocabulary match (C6T5: "BLOCKS" stores as "blocks"). Empty → ""
+// (caller lets the DB default 'blocks' apply).
 func normalizeIssueLinkKind(kind string) (string, error) {
-	k := strings.TrimSpace(kind)
+	k := strings.ToLower(strings.TrimSpace(kind))
 	if k == "" {
 		return "", nil
 	}
