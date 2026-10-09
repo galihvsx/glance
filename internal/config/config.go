@@ -4,7 +4,10 @@ package config
 import (
 	"errors"
 	"log"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // Config holds the runtime configuration for the glance server.
@@ -15,6 +18,17 @@ type Config struct {
 	Port string
 	// AppURL is the public base URL of the app (used for links in emails). Optional.
 	AppURL string
+	// Env is the deployment environment from APP_ENV ("production",
+	// "staging", "development", ...). Empty defaults to development
+	// behavior. Only "production" (case-insensitive) triggers the
+	// production hardening rules (e.g. the OTP_PEPPER hatch is ignored).
+	Env string
+	// TrustedProxyCIDRs is the raw TRUSTED_PROXY_CIDRS value
+	// (comma-separated CIDR list); TrustedProxyNets is the parsed form.
+	// Proxy headers (X-Forwarded-For) are honored ONLY from these ranges;
+	// empty means trust none (the direct TCP peer is the client IP).
+	TrustedProxyCIDRs string
+	TrustedProxyNets  []*net.IPNet
 	// SMTP settings for outbound mail. All optional; when unset, mail falls back to logging.
 	SMTPHost     string
 	SMTPPort     string
@@ -51,6 +65,7 @@ func Load() (*Config, error) {
 		DatabaseURL:  os.Getenv("DATABASE_URL"),
 		Port:         getenv("PORT", "8080"),
 		AppURL:       os.Getenv("APP_URL"),
+		Env:          os.Getenv("APP_ENV"),
 		SMTPHost:     os.Getenv("SMTP_HOST"),
 		SMTPPort:     os.Getenv("SMTP_PORT"),
 		SMTPUser:     os.Getenv("SMTP_USER"),
@@ -72,11 +87,46 @@ func Load() (*Config, error) {
 	// trivially brute-forced offline if the table ever leaks — so booting
 	// without one must be a deliberate, loud choice, never a silent
 	// default. The escape hatch exists for local dev only.
-	if cfg.OTPPepper == "" && os.Getenv("ALLOW_INSECURE_OTP_PEPPER") != "1" {
-		return nil, errors.New("config: OTP_PEPPER is required (refusing to boot with unpeppered OTP hashes); set OTP_PEPPER, or explicitly allow insecure dev mode with ALLOW_INSECURE_OTP_PEPPER=1")
-	}
+	//
+	// C2T8 hardening: in production (APP_ENV=production) the hatch is
+	// IGNORED — an empty pepper hard-fails boot even with
+	// ALLOW_INSECURE_OTP_PEPPER=1. A "warn and continue" in prod is how
+	// unpeppered hashes silently ship; the hatch must never be the thing
+	// standing between a prod deploy and a brute-forceable OTP table.
 	if cfg.OTPPepper == "" {
+		if cfg.IsProduction() {
+			return nil, errors.New("config: refusing to boot: OTP_PEPPER is empty and APP_ENV=production; set a real OTP_PEPPER (the ALLOW_INSECURE_OTP_PEPPER hatch is dev-only and is ignored in production)")
+		}
+		if os.Getenv("ALLOW_INSECURE_OTP_PEPPER") != "1" {
+			return nil, errors.New("config: OTP_PEPPER is required (refusing to boot with unpeppered OTP hashes); set OTP_PEPPER, or explicitly allow insecure dev mode with ALLOW_INSECURE_OTP_PEPPER=1")
+		}
 		log.Println("config: WARNING: ALLOW_INSECURE_OTP_PEPPER=1 — OTP code hashes are unpeppered and brute-forceable; NEVER use this in production")
 	}
+	// TRUSTED_PROXY_CIDRS: comma-separated CIDRs whose X-Forwarded-For we
+	// honor for client-IP-dependent logic (rate limits). Empty = trust
+	// none (direct TCP peer is the client IP). A malformed entry fails
+	// boot — silently ignoring it would either trust too much or too
+	// little, both wrong.
+	cfg.TrustedProxyCIDRs = os.Getenv("TRUSTED_PROXY_CIDRS")
+	if cfg.TrustedProxyCIDRs != "" {
+		for _, part := range strings.Split(cfg.TrustedProxyCIDRs, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			_, ipNet, err := net.ParseCIDR(part)
+			if err != nil {
+				return nil, errors.New("config: invalid TRUSTED_PROXY_CIDRS entry " + strconv.Quote(part) + ": want CIDR like 10.0.0.0/8")
+			}
+			cfg.TrustedProxyNets = append(cfg.TrustedProxyNets, ipNet)
+		}
+	}
 	return cfg, nil
+}
+
+// IsProduction reports whether the deployment environment is production
+// (APP_ENV=production, case-insensitive). Production-only hardening
+// rules key off this — never off hostname heuristics.
+func (c *Config) IsProduction() bool {
+	return strings.EqualFold(c.Env, "production")
 }

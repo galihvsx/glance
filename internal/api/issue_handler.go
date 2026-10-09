@@ -242,10 +242,15 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	labels := parseIDList("label")
 	assignees := parseIDList("assignee")
 	estimatePoints := parseIDList("estimate")
+	// C2T8: per_page is REJECTED (400) when out of range, on every list
+	// endpoint — never silently clamped. Rationale: the documented
+	// contract is "want 1-100"; fail-fast surfaces client bugs instead of
+	// returning fewer rows than asked for. (The service layer still
+	// clamps as defense-in-depth for direct internal callers.)
 	perPage := 25
 	if s := qp.Get("per_page"); s != "" {
 		p, err := strconv.Atoi(s)
-		if err != nil || p < 1 {
+		if err != nil || p < 1 || p > 100 {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
 		}
 		perPage = p
@@ -814,7 +819,11 @@ type createCommentBody struct {
 	ParentID *string         `json:"parent_id"`
 }
 
-// createComment implements POST .../issues/{uuid}/comments.
+// createComment implements POST .../issues/{uuid}/comments. Covered by
+// Idempotency-Key (C2T8): a retried POST with the same key returns the
+// original comment byte-identical instead of creating a duplicate.
+// Validation (body bind + issue params) runs BEFORE the key claim, so
+// malformed requests never consume a key.
 func (h *IssueHandler) createComment(c *echo.Context) error {
 	var body createCommentBody
 	if err := c.Bind(&body); err != nil {
@@ -824,11 +833,13 @@ func (h *IssueHandler) createComment(c *echo.Context) error {
 	if !ok {
 		return nil
 	}
-	comment, err := service.CreateComment(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Content, body.ParentID)
-	if err != nil {
-		return issueError(c, err)
-	}
-	return c.JSON(http.StatusCreated, comment)
+	return withIdempotency(c, h.Pool, "POST /issues/{uuid}/comments", issueError, func() (int, any, error) {
+		comment, err := service.CreateComment(c.Request().Context(), h.Pool, slug, ident, uuid, actor, body.Content, body.ParentID)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusCreated, comment, nil
+	})
 }
 
 type updateCommentBody struct {

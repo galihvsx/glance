@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"testing"
 )
 
@@ -83,5 +84,84 @@ func TestLoadAllowsInsecurePepperHatch(t *testing.T) {
 	}
 	if cfg.OTPPepper != "" {
 		t.Errorf("OTPPepper = %q, want empty (hatch path)", cfg.OTPPepper)
+	}
+}
+
+// TestLoadProductionIgnoresInsecurePepperHatch pins the C2T8 rule: in
+// production (APP_ENV=production) an empty OTP_PEPPER hard-fails boot
+// even with ALLOW_INSECURE_OTP_PEPPER=1 — the dev hatch must never be
+// the thing standing between a prod deploy and brute-forceable OTPs.
+func TestLoadProductionIgnoresInsecurePepperHatch(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=disable")
+	t.Setenv("OTP_PEPPER", "")
+	t.Setenv("ALLOW_INSECURE_OTP_PEPPER", "1")
+	t.Setenv("APP_ENV", "production")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() in production with empty OTP_PEPPER: expected refusal even with the hatch, got nil")
+	}
+}
+
+// TestLoadProductionEnvCaseInsensitive pins that "Production",
+// "PRODUCTION" etc. all trigger the production rule.
+func TestLoadProductionEnvCaseInsensitive(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=disable")
+	t.Setenv("OTP_PEPPER", "")
+	t.Setenv("ALLOW_INSECURE_OTP_PEPPER", "1")
+	t.Setenv("APP_ENV", "Production")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() with APP_ENV=Production: expected refusal, got nil")
+	}
+}
+
+// TestLoadNonProductionKeepsHatch pins that the dev hatch still works
+// outside production (dev/test ergonomics preserved).
+func TestLoadNonProductionKeepsHatch(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=disable")
+	t.Setenv("OTP_PEPPER", "")
+	t.Setenv("ALLOW_INSECURE_OTP_PEPPER", "1")
+	t.Setenv("APP_ENV", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() in dev with the hatch: unexpected error: %v", err)
+	}
+	if cfg.IsProduction() {
+		t.Error("IsProduction() = true for empty APP_ENV, want false")
+	}
+}
+
+// TestLoadTrustedProxyCIDRs pins parsing: valid CIDRs parse, garbage
+// fails boot (fail closed on misconfiguration).
+func TestLoadTrustedProxyCIDRs(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost:5432/glance?sslmode=disable")
+	t.Setenv("OTP_PEPPER", "test-pepper")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 192.168.0.0/16")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() with valid CIDRs: unexpected error: %v", err)
+	}
+	if len(cfg.TrustedProxyNets) != 2 {
+		t.Fatalf("len(TrustedProxyNets) = %d, want 2", len(cfg.TrustedProxyNets))
+	}
+	if !cfg.TrustedProxyNets[0].Contains(net.ParseIP("10.1.2.3")) {
+		t.Error("first CIDR does not contain 10.1.2.3")
+	}
+
+	t.Setenv("TRUSTED_PROXY_CIDRS", "not-a-cidr")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() with invalid CIDR: expected error, got nil")
+	}
+
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() with empty CIDRs: unexpected error: %v", err)
+	}
+	if len(cfg.TrustedProxyNets) != 0 {
+		t.Errorf("len(TrustedProxyNets) = %d, want 0 (trust none)", len(cfg.TrustedProxyNets))
 	}
 }

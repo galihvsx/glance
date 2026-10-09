@@ -12,8 +12,8 @@ import (
 )
 
 // IdempotencyKeyHeader is the request header clients send for safe retries
-// (spec §5). Honored on POST mutations: create issue, bulk-update,
-// bulk-delete.
+// (spec §5). Honored on POST mutations: create issue, create comment,
+// bulk-update, bulk-delete.
 const IdempotencyKeyHeader = "Idempotency-Key"
 
 // maxIdempotencyKeyLen caps the header value — a DoS guard on the stored key.

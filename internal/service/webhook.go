@@ -445,11 +445,25 @@ type WebhookDispatcher struct {
 	allowPrivateTargets bool
 }
 
+// noRedirect is the CheckRedirect for webhook delivery: redirects are
+// NEVER followed. A webhook target that 3xx-redirects is a
+// misconfiguration (receivers must answer 2xx); following it would let a
+// compromised or malicious endpoint bounce the signed delivery at an
+// arbitrary URL — including one the SSRF guard never vetted (the guard
+// only checks the original target). The 3xx surfaces as a non-2xx and
+// goes through the normal recordFailure → backoff → failed path.
+func noRedirect(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
 // NewWebhookDispatcher builds a dispatcher with a 10s per-attempt timeout.
 func NewWebhookDispatcher(pool *pgxpool.Pool) *WebhookDispatcher {
 	return &WebhookDispatcher{
-		pool:   pool,
-		client: &http.Client{Timeout: webhookHTTPTimeout},
+		pool: pool,
+		client: &http.Client{
+			Timeout:       webhookHTTPTimeout,
+			CheckRedirect: noRedirect,
+		},
 		lookupIP: func(ctx context.Context, host string) ([]net.IP, error) {
 			addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil {
@@ -716,7 +730,11 @@ func (d *WebhookDispatcher) doPinned(ctx context.Context, req *http.Request, ips
 			return nil, firstErr
 		},
 	}
-	return (&http.Client{Timeout: webhookHTTPTimeout, Transport: transport}).Do(req)
+	return (&http.Client{
+		Timeout:       webhookHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: noRedirect,
+	}).Do(req)
 }
 
 // webhookSignature is the hex HMAC-SHA256 of the body under the secret.
