@@ -35,8 +35,6 @@ import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import StatePicker from "../components/issue/StatePicker";
 import StateBadge from "../components/issue/StateBadge";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import ProjectNav from "../components/project/ProjectNav";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -296,8 +294,6 @@ export default function Spreadsheet() {
           </p>
         </div>
         <div className="flex gap-2">
-          <NotificationBell />
-          <ThemeToggle />
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <Button onClick={() => setDialogOpen(true)} className="gap-2">
               <Plus className="h-4 w-4" />

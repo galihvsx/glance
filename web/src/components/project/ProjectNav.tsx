@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { cn } from "../../lib/utils";
 
@@ -6,7 +7,12 @@ import { cn } from "../../lib/utils";
  *  spreadsheet / calendar / gantt / analytics / cycles / modules /
  *  pages / intake / activity / settings).
  *  `trailing` renders at the right end of the tab bar — used for the saved
- *  views menu (C2T6) on the filterable pages. */
+ *  views menu (C2T6) on the filterable pages.
+ *
+ *  App-shell integration: when the shell's `#shell-project-tabs` slot is
+ *  present (project routes rendered inside AppShell), the tab bar is
+ *  portaled into that node; otherwise it renders inline as before. The
+ *  inline fallback keeps the component usable standalone and in tests. */
 export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
   const { slug = "", identifier = "" } = useParams<{
     slug: string;
@@ -14,6 +20,12 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
   }>();
   const { pathname } = useLocation();
   const base = `/w/${slug}/p/${identifier}`;
+  // Shell slot lookup is deferred to an effect so server/test renders and
+  // pages mounted outside the shell never touch the DOM.
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setSlot(document.getElementById("shell-project-tabs"));
+  }, []);
   const tabs = [
     { label: "Overview", to: `${base}/overview` },
     { label: "List", to: base },
@@ -32,7 +44,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Drafts", to: `${base}/drafts` },
     { label: "Archived", to: `${base}/archived` },
   ];
-  return (
+  const bar = (
     <nav className="flex items-center gap-1 border-b">
       {tabs.map((t) => {
         const active =
@@ -55,4 +67,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
       {trailing && <div className="ml-auto pb-1">{trailing}</div>}
     </nav>
   );
+  // Portal into the shell's project-tabs slot when present (project routes
+  // inside AppShell); inline fallback keeps tests/standalone usage working.
+  return slot ? createPortal(bar, slot) : bar;
 }

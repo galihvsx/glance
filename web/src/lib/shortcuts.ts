@@ -22,7 +22,9 @@ export type ShortcutAction =
   | "open-cheatsheet"
   | "close-topmost"
   | "goto-home"
-  | "goto-mywork";
+  | "goto-mywork"
+  | "toggle-sidebar"
+  | "open-notifications";
 
 export type ShortcutContext =
   | "Global"
@@ -61,6 +63,19 @@ export const SHORTCUT_REGISTRY: ShortcutDefinition[] = [
     action: "open-cheatsheet",
     keys: ["?"],
     description: "Open keyboard shortcut cheatsheet",
+    contexts: ["Global"],
+  },
+  {
+    action: "toggle-sidebar",
+    keys: ["Ctrl/⌘", "B"],
+    description: "Toggle sidebar",
+    contexts: ["Global"],
+  },
+  {
+    action: "open-notifications",
+    keys: ["g", "n"],
+    chord: true,
+    description: "Open notifications",
     contexts: ["Global"],
   },
   {
@@ -172,6 +187,8 @@ export function resolveKeyPress(
     const lower = key.toLowerCase();
     if (lower === "m") return { action: "goto-mywork", pendingPrefix: null };
     if (lower === "h") return { action: "goto-home", pendingPrefix: null };
+    if (lower === "n")
+      return { action: "open-notifications", pendingPrefix: null };
     // Not a known chord: drop the prefix and fall through to normal keys.
   }
   switch (key) {
@@ -201,11 +218,14 @@ const CHORD_TIMEOUT_MS = 800;
 // returns a remover.
 //
 //   Cmd/Ctrl+K → toggle-palette (works even while typing)
+//   Cmd/Ctrl+B → toggle-sidebar (NOT while typing — plain "b" is
+//                unmapped and editors may want B for bold)
 //   Esc        → close-topmost (works even while typing; Radix
 //                Dialog/Sheet overlays also close natively on Esc)
 //   ?          → open-cheatsheet
 //   g then m   → goto-mywork
 //   g then h   → goto-home
+//   g then n   → open-notifications
 //   c          → new-issue
 //   /          → focus-search
 //   j / k      → next-item / prev-item
@@ -237,11 +257,19 @@ export function installGlobalShortcuts(): () => void {
       emitShortcutAction("close-topmost");
       return;
     }
-    if (e.metaKey || e.ctrlKey || e.altKey) {
+    if (isTypingTarget(e.target)) {
       clearChord();
       return;
     }
-    if (isTypingTarget(e.target)) {
+    // Cmd/Ctrl+B toggles the shell sidebar — deliberately NOT fired while
+    // typing, so editors keep their own B bindings (e.g. tiptap bold).
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      clearChord();
+      emitShortcutAction("toggle-sidebar");
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) {
       clearChord();
       return;
     }

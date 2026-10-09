@@ -17,8 +17,6 @@ import {
 } from "../lib/drafts";
 import { relativeTime } from "../lib/relativeTime";
 import ProjectNav from "../components/project/ProjectNav";
-import NotificationBell from "../components/notifications/NotificationBell";
-import ThemeToggle from "../components/ThemeToggle";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button, buttonVariants } from "../components/ui/button";
@@ -67,13 +65,7 @@ export default function Drafts() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Drafts</h1>
-        <div className="flex items-center gap-2">
-          <NotificationBell />
-          <ThemeToggle />
-        </div>
-      </div>
+      <h1 className="text-xl font-semibold">Drafts</h1>
       <ProjectNav />
 
       {error && (

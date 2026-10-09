@@ -21,8 +21,6 @@ import type { Page, PageRevision, Project } from "../lib/types";
 import { cn } from "../lib/utils";
 import ProjectNav from "../components/project/ProjectNav";
 import ShareModal from "../components/ShareModal";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import {
@@ -399,8 +397,6 @@ export default function Pages() {
             {projectQuery.data ? projectQuery.data.name : <Skeleton className="h-8 w-48" />}
           </h1>
           <div className="flex items-center gap-2">
-            <NotificationBell />
-            <ThemeToggle />
             <Button onClick={() => openCreate(null)} className="gap-2">
               <Plus className="h-4 w-4" /> New page
             </Button>

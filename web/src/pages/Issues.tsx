@@ -46,8 +46,6 @@ import {
   useBulkSelection,
   type BulkSetPayload,
 } from "../components/issue/bulkSelection";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import StatePicker from "../components/issue/StatePicker";
 import EstimateSelect from "../components/issue/EstimateSelect";
 import {
@@ -638,8 +636,6 @@ export default function Issues() {
           </p>
         </div>
         <div className="flex gap-2">
-          <NotificationBell />
-          <ThemeToggle />
           <Button
             variant="outline"
             onClick={() => navigate(`/w/${slug}/p/${identifier}/intake`)}

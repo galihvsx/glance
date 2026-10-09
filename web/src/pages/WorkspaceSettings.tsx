@@ -24,8 +24,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import WebhooksSection from "../components/settings/WebhooksSection";
 
 // Mirrors the backend contract (service.validSlug): lowercase alphanumeric
@@ -242,8 +240,6 @@ export default function WorkspaceSettings() {
             Manage this workspace, its members, webhooks and danger zone.
           </p>
         </div>
-        <NotificationBell />
-        <ThemeToggle />
       </div>
 
       {!isAdmin && (

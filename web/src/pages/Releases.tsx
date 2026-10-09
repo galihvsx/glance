@@ -14,8 +14,6 @@ import type {
   Release,
 } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
@@ -382,8 +380,6 @@ export default function Releases() {
             )}
           </h1>
           <div className="flex items-center gap-2">
-            <NotificationBell />
-            <ThemeToggle />
             <Button onClick={openCreate} className="gap-2">
               <Plus className="h-4 w-4" />
               New release
