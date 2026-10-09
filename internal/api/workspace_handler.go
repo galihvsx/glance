@@ -32,6 +32,8 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.POST("/:slug/invites", h.inviteMembers)
 	// C9T3: fire a probe message at the workspace's Slack webhook.
 	g.POST("/:slug/slack/test", h.testSlack)
+	// C10T3: stream the full workspace data archive (admin only).
+	g.GET("/:slug/export", h.exportWorkspace)
 }
 
 // workspaceError maps service sentinel errors to HTTP statuses. Unknown

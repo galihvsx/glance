@@ -192,6 +192,15 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/export": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Export full workspace data archive",
+        "description": "Admin only. Streams the entire workspace as a single JSON archive (format \"glance-export/1\") with chunked encoding: workspace, members, projects, states, labels, estimates, custom fields, cycles, modules, pages, and issues with nested comments, custom values, assignees, labels and attachment metadata. Attachment binaries are NOT included (metadata only) and the server-side stored_path is never exported. There is no archive importer yet — the format version pin and the schema_note embedded in the archive are the contract a future importer reads against.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "JSON archive download (Content-Disposition: attachment)", "content": { "application/json": { "schema": { "type": "object", "properties": { "format": { "type": "string", "example": "glance-export/1" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/slack/test": {
       "post": {
         "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
