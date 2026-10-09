@@ -39,6 +39,7 @@ import { usePeekParam } from "../components/issue/usePeek";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import ParentPicker from "../components/issue/ParentPicker";
 import QuickAdd from "../components/issue/QuickAdd";
+import DraftWithAI from "../components/issue/DraftWithAI";
 import BulkActionBar from "../components/issue/BulkActionBar";
 import {
   useBulkSelection,
@@ -157,6 +158,9 @@ export default function Issues() {
   const [parentIssue, setParentIssue] = useState<Issue | null>(null);
   const [createMore, setCreateMore] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // C5T3: true after a Draft-with-AI insert, until the user edits the
+  // description or the form resets — drives the honesty hint.
+  const [aiGenerated, setAiGenerated] = useState(false);
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
 
@@ -259,6 +263,7 @@ export default function Issues() {
     setNewStateId("");
     setParentIssue(null);
     setFormError(null);
+    setAiGenerated(false);
   }
 
   /** Success toast for a created issue: display_id + Copy link / View. */
@@ -513,14 +518,35 @@ export default function Issues() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="i-desc">Description</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="i-desc">Description</Label>
+                  <DraftWithAI
+                    slug={slug}
+                    identifier={identifier}
+                    title={name}
+                    onDraft={(d) => {
+                      setDescription(d);
+                      setAiGenerated(true);
+                    }}
+                    onError={setFormError}
+                    disabled={createMutation.isPending}
+                  />
+                </div>
                 <Textarea
                   id="i-desc"
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    setAiGenerated(false);
+                  }}
                   placeholder="What needs to happen…"
                   rows={4}
                 />
+                {aiGenerated && (
+                  <p className="text-xs text-muted-foreground">
+                    AI-generated — review before saving.
+                  </p>
+                )}
               </div>
               <div className="flex gap-4">
                 <div className="space-y-2">
