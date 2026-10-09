@@ -88,6 +88,9 @@ export interface Issue {
   priority: number;
   state_id: string;
   parent_id?: string | null;
+  /** Child summaries; present only on the detail endpoint fetched with
+   *  ?include_children=1. */
+  children?: IssueChild[];
   sort_order: number;
   start_date?: string | null;
   target_date?: string | null;
@@ -99,6 +102,15 @@ export interface Issue {
   updated_at: string;
   assignees: IssueAssignee[];
   labels: IssueLabel[];
+}
+
+/** One child summary attached to the issue detail response when fetched
+ *  with ?include_children=1 (C5T4). `state` is the state's display name. */
+export interface IssueChild {
+  uuid: string;
+  identifier: string;
+  title: string;
+  state: string;
 }
 
 /** List envelope: {"results": [...], "next_cursor"?: "..."}. */

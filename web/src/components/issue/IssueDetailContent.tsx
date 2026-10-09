@@ -44,6 +44,7 @@ import TimeTracker from "./TimeTracker";
 import Attachments from "./Attachments";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
+import SubIssues, { ParentBreadcrumb } from "./SubIssues";
 
 /** Wraps plain text as a minimal TipTap doc. */
 function textToTipTapDoc(text: string): unknown {
@@ -313,7 +314,9 @@ export default function IssueDetailContent({
 
   const issueQuery = useQuery({
     queryKey: issueKey,
-    queryFn: () => api.get<Issue>(issuePath),
+    // C5T5: ?include_children=1 attaches the child summaries for the
+    // Sub-issues section (detail only — the list query is untouched).
+    queryFn: () => api.get<Issue>(`${issuePath}?include_children=1`),
   });
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
@@ -601,6 +604,15 @@ export default function IssueDetailContent({
         </Alert>
       ) : (
         <div className="mt-2">
+          {/* C5T5: parent breadcrumb — "child of GLA-123". */}
+          {issue.parent_id && (
+            <ParentBreadcrumb
+              slug={slug}
+              identifier={identifier}
+              parentId={issue.parent_id}
+              compact={compact}
+            />
+          )}
           <div className="mb-6 flex items-center gap-3">
             <Badge variant="outline" className="font-mono">
               {issue.display_id}
@@ -700,6 +712,16 @@ export default function IssueDetailContent({
                 onSave={(doc) =>
                   patchMutation.mutate({ description: doc })
                 }
+              />
+
+              {/* C5T5: sub-issues — child list, add, detach. */}
+              <SubIssues
+                slug={slug}
+                identifier={identifier}
+                issue={issue}
+                issueKey={issueKey}
+                compact={compact}
+                onError={setError}
               />
 
               {/* Activity: comments + system events, one timeline */}
