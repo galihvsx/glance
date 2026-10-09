@@ -34,6 +34,7 @@ import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
 import PublicShare from "./pages/PublicShare";
 import ShortcutsHost from "./components/ShortcutsHost";
+import AppShell from "./components/shell/AppShell";
 import { Toaster } from "./components/ui/toast";
 
 export default function App() {
@@ -46,88 +47,93 @@ export default function App() {
             <Route path="/s/:token" element={<PublicShare />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/onboarding" element={<Onboarding />} />
-              <Route path="/" element={<Home />} />
-              <Route path="/notifications" element={<Notifications />} />
-              <Route path="/profile" element={<Profile />} />
-              <Route path="/settings/tokens" element={<ApiTokens />} />
-              <Route
-                path="/admin"
-                element={
-                  <AdminGuard>
-                    <Admin />
-                  </AdminGuard>
-                }
-              />
-              <Route path="/w" element={<Workspaces />} />
-              <Route path="/w/:slug" element={<Projects />} />
-              <Route path="/w/:slug/settings" element={<WorkspaceSettings />} />
-              <Route path="/w/:slug/my-work" element={<MyWork />} />
-              <Route element={<ProjectScope />}>
-                <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+              <Route element={<AppShell />}>
+                <Route path="/" element={<Home />} />
+                <Route path="/notifications" element={<Notifications />} />
+                <Route path="/profile" element={<Profile />} />
+                <Route path="/settings/tokens" element={<ApiTokens />} />
                 <Route
-                  path="/w/:slug/p/:identifier/overview"
-                  element={<Overview />}
+                  path="/admin"
+                  element={
+                    <AdminGuard>
+                      <Admin />
+                    </AdminGuard>
+                  }
                 />
+                <Route path="/w" element={<Workspaces />} />
+                <Route path="/w/:slug" element={<Projects />} />
                 <Route
-                  path="/w/:slug/p/:identifier/i/:uuid"
-                  element={<IssueDetail />}
+                  path="/w/:slug/settings"
+                  element={<WorkspaceSettings />}
                 />
-                <Route
-                  path="/w/:slug/p/:identifier/intake"
-                  element={<Intake />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/board"
-                  element={<Board />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/spreadsheet"
-                  element={<Spreadsheet />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/calendar"
-                  element={<Calendar />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/gantt"
-                  element={<Gantt />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/analytics"
-                  element={<Analytics />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/cycles"
-                  element={<Cycles />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/modules"
-                  element={<Modules />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/releases"
-                  element={<Releases />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/pages"
-                  element={<Pages />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/activity"
-                  element={<Activity />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/settings"
-                  element={<ProjectSettings />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/drafts"
-                  element={<Drafts />}
-                />
-                <Route
-                  path="/w/:slug/p/:identifier/archived"
-                  element={<Archived />}
-                />
+                <Route path="/w/:slug/my-work" element={<MyWork />} />
+                <Route element={<ProjectScope />}>
+                  <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+                  <Route
+                    path="/w/:slug/p/:identifier/overview"
+                    element={<Overview />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/i/:uuid"
+                    element={<IssueDetail />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/intake"
+                    element={<Intake />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/board"
+                    element={<Board />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/spreadsheet"
+                    element={<Spreadsheet />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/calendar"
+                    element={<Calendar />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/gantt"
+                    element={<Gantt />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/analytics"
+                    element={<Analytics />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/cycles"
+                    element={<Cycles />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/modules"
+                    element={<Modules />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/releases"
+                    element={<Releases />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/pages"
+                    element={<Pages />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/activity"
+                    element={<Activity />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/settings"
+                    element={<ProjectSettings />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/drafts"
+                    element={<Drafts />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/archived"
+                    element={<Archived />}
+                  />
+                </Route>
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
