@@ -176,6 +176,7 @@ func main() {
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterPageRoutes(e, issueHandler)
+	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterPublicRoutes(e, issueHandler)
 
 	// OTP_PEPPER enforcement lives in config.Load (fail closed; the

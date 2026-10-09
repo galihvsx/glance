@@ -27,6 +27,7 @@ const (
 	EventCycleUpdated        = "cycle.updated"
 	EventModuleUpdated       = "module.updated"
 	EventPageUpdated         = "page.updated"
+	EventReleaseUpdated      = "release.updated"
 	EventIntakeUpdated       = "intake.updated"
 	EventNotificationCreated = "notification.created"
 )
@@ -171,5 +172,26 @@ func BroadcastIntakeResurfaced(wsSlug, identifier, intakeIssueID, issueID string
 			"status":      IntakePending,
 			"status_name": IntakeStatusName(IntakePending),
 		},
+	)
+}
+
+// announceReleaseUpdated resolves the workspace/project channels for a
+// release from its project id and broadcasts release.updated.
+// Best-effort: a lookup failure skips the broadcast rather than failing
+// the mutation. The payload carries only the id — clients refetch via
+// REST.
+func announceReleaseUpdated(ctx context.Context, pool *pgxpool.Pool, releaseID, projectID string) {
+	var wsSlug, identifier string
+	err := pool.QueryRow(ctx,
+		`SELECT w.slug, p.identifier
+		   FROM projects p JOIN workspaces w ON w.id = p.workspace_id
+		  WHERE p.id = $1::uuid`, projectID).Scan(&wsSlug, &identifier)
+	if err != nil {
+		return
+	}
+	announce(
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
+		EventReleaseUpdated,
+		map[string]string{"id": releaseID},
 	)
 }
