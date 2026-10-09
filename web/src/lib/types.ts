@@ -241,3 +241,26 @@ export interface CycleBurndown {
   total_scope: number;
   days: BurndownDay[];
 }
+
+/** A project wiki/documentation page. `parent_id` is null/absent for roots. */
+export interface Page {
+  id: string;
+  project_id: string;
+  parent_id?: string | null;
+  title: string;
+  content: string;
+  position: number;
+  author_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One content snapshot of a page (newest first from the API). */
+export interface PageRevision {
+  id: string;
+  page_id: string;
+  title: string;
+  content: string;
+  author_id?: string | null;
+  created_at: string;
+}
