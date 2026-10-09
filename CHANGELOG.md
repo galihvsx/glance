@@ -63,6 +63,46 @@ queued onboarding follow-up (invites endpoint).
   membership rows serializes concurrent removals (20× race test
   green, incl. `-race`).
 
+**Gantt chart**
+- Full-stack timeline (C4T0 backend, C4T1 frontend): migration
+  000020 (`issue_links`, dependency edges, no self-loops, project-scoped);
+  `.../issues/{uuid}/links` CRUD + `?include_links=1` bulk contract.
+  UI: hand-rolled SVG 3-month timeline, rows by state group, drag-reschedule
+  (member-only, day-snapped PATCH), dependency arrows, unscheduled lane.
+  Zero new deps, no N+1.
+
+**Analytics**
+- Full-stack dashboard (C4T3 backend, C4T4 frontend): `.../analytics/summary`
+  (by state/priority/label, overdue, estimates), `/cycle/{id}/burndown`
+  (audit-log replay — exact counts; estimate uses current values,
+  documented), `/trends?days=N`. UI: donut, burndown line chart,
+  trends bars, all hand-rolled SVG.
+
+**Public share links**
+- Share issues/pages via URL-safe tokens (migration 000022): member
+  creates/manages, `GET /api/v1/public/s/{token}` serves a PII-sanitized
+  read-only payload (no UUIDs, emails, assignees, or comments); revoked/
+  expired → 404 (never 403). Share modal with expiry + revoke; public
+  page reuses the XSS-safe markdown renderer.
+
+**Attachments**
+- Upload/download/list/delete with storage abstraction, traversal-hardened
+  paths; SVGs are never served inline (forced download) after review
+  caught a stored-XSS vector.
+
+**Releases**
+- Full-stack milestones (C4T6 backend, C4T7 frontend): migrations 000023
+  (`releases`, unique per project) + 000024 (`issues.release_id`,
+  ON DELETE SET NULL); CRUD, bulk issue assign/unassign, delete guard
+  (409 unless `?reassign=` or `?force=true`). UI: project nav tab,
+  release list/detail, progress bar, 409-aware delete dialog.
+
+**CSV importer**
+- `POST .../imports` (multipart CSV + column mapping) with preview endpoint
+  and template download. Two-phase: validate all rows (per-row errors,
+  never silent), then single-transaction insert. Resolves states/priorities/
+  labels/assignees by name; unknown values → per-row errors.
+
 ## [v0.2.0] - unreleased
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
