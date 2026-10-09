@@ -3,6 +3,66 @@
 All notable changes to glance are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.3.0] - unreleased
+
+"Depth" milestone: the next tier of the Plane parity backlog — modules,
+wiki pages, calendar, workspace settings, time tracking — plus the
+queued onboarding follow-up (invites endpoint).
+
+### Added
+
+**Workspace invites**
+- `POST /api/v1/workspaces/{slug}/invites`: admin-only, adds
+  registered users as members by email; per-email statuses
+  (invited / already-member / not-registered / invalid). Onboarding
+  step 3 now calls it — registered teammates join immediately,
+  unknown emails stay as on-device "Pending" with honest copy.
+
+**Modules**
+- Full-stack modules (Plane "modules" = epics): migration 000017
+  (dates; tables shipped in 000012), CRUD + issue assignment via the
+  `module_issues` junction, delete guard (409 unless `?force=true`),
+  member-scoped. UI: project nav tab, list/detail pages, progress
+  header, assign/remove issues, create/edit modal.
+
+**Wiki pages**
+- Full-stack pages: migration 000018 (`pages` + `page_revisions`),
+  hierarchy (self-FK, cascade), move/reorder with cycle guard,
+  revision history + restore (undoable). UI: tree sidebar, page view
+  with a hand-rolled XSS-safe markdown renderer (zero new deps),
+  textarea editor, move dialog, revisions drawer.
+
+**Calendar**
+- Month-grid calendar view per project (nav tab): issues placed by
+  due date (start date fallback), click → peek drawer, month
+  navigation, "unscheduled" strip. Backend: additive
+  `start_after`/`start_before`/`undated` params on the existing list
+  endpoint (parameterized, same validation path). Prerequisite for
+  cycle-4 gantt.
+
+**Workspace settings**
+- `/w/:slug/settings`: rename (name + slug, inline validation),
+  members list with role changes, remove member (last-admin 409
+  surfaced honestly), delete workspace behind typed-slug
+  confirmation. Backend: `PATCH /:slug` gains optional slug change,
+  new admin-only `DELETE /:slug` (FK cascades).
+
+**Time tracking**
+- Worklogs: migration 000019 (`time_entries`), start/stop/log/list
+  endpoints per issue (partial unique index → race-safe one running
+  timer per user+issue, 409 on double-start), member-scoped. UI:
+  timer widget on the issue detail (live ticking, survives reload via
+  server reconciliation, manual log dialog, totals). No realtime
+  broadcast by design — worklogs are personal.
+
+### Fixed
+
+- `ws.smoke.test.ts` now cleans up its scratch rows (zero live rows
+  post-run; soft-delete audit trail preserved).
+- Last-admin removal/demotion race: `SELECT … FOR UPDATE` on
+  membership rows serializes concurrent removals (20× race test
+  green, incl. `-race`).
+
 ## [v0.2.0] - unreleased
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
