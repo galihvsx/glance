@@ -52,6 +52,14 @@ const (
 	// NotifyOverdue fires when the daily reminder job sees an issue whose
 	// target_date is before today, throttled to once per 24h (C8T6).
 	NotifyOverdue = "overdue"
+	// NotifyStale fires when the daily stale-nudge job (C9T5) sees an issue
+	// in a non-done state whose updated_at is older than 30 days. One nudge
+	// per issue until it is updated again; the mark is written to
+	// issue_reminders with kind='stale'. No migration needed:
+	// notification_prefs.event is unconstrained TEXT, so adding the key to
+	// AllNotifyEvents is enough for prefs to work (absent row = defaults:
+	// in_app on, email off).
+	NotifyStale = "stale"
 )
 
 // AllNotifyEvents lists every event type users can set delivery prefs for.
@@ -65,6 +73,7 @@ var AllNotifyEvents = []string{
 	NotifyMention,
 	NotifyDueSoon,
 	NotifyOverdue,
+	NotifyStale,
 }
 
 var (
