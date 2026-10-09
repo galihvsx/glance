@@ -20,8 +20,6 @@ import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 
 /**
  * The effective status of an inbox item. The server stores the snoozed
@@ -329,8 +327,6 @@ export default function Intake() {
             or mark as duplicate.
           </p>
         </div>
-        <NotificationBell />
-        <ThemeToggle />
       </div>
 
       {inboxQuery.isError && (

@@ -29,8 +29,6 @@ import {
   type NotificationContext,
 } from "../lib/notificationContext";
 import { relativeTime } from "../lib/relativeTime";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -44,20 +42,6 @@ const EMPTY_CONTEXT: NotificationContext = {
   projects: new Map(),
   actors: new Map(),
 };
-
-function PageHeader() {
-  return (
-    <div className="mb-8 flex items-center justify-between">
-      <Link to="/" className="text-lg font-bold tracking-tight">
-        glance
-      </Link>
-      <div className="flex items-center gap-2">
-        <NotificationBell />
-        <ThemeToggle />
-      </div>
-    </div>
-  );
-}
 
 function actorFor(
   ctx: NotificationContext | undefined,
@@ -303,7 +287,6 @@ export default function Notifications() {
 
   return (
     <div className="mx-auto w-full max-w-3xl p-6">
-      <PageHeader />
 
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Notifications</h1>

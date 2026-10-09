@@ -10,7 +10,6 @@
 //                mismatch on ?confirm=<name>)
 
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft,
@@ -37,8 +36,6 @@ import {
 } from "../lib/admin";
 import { formatBytes } from "../lib/format";
 import { relativeTime } from "../lib/relativeTime";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -75,20 +72,6 @@ function AdminError({ error }: { error: unknown }) {
         {error instanceof ApiError ? error.message : "Failed to load data"}
       </AlertDescription>
     </Alert>
-  );
-}
-
-function PageHeader() {
-  return (
-    <div className="mb-8 flex items-center justify-between">
-      <Link to="/" className="text-lg font-bold tracking-tight">
-        glance
-      </Link>
-      <div className="flex items-center gap-2">
-        <NotificationBell />
-        <ThemeToggle />
-      </div>
-    </div>
   );
 }
 
@@ -538,7 +521,6 @@ export default function Admin() {
 
   return (
     <div className="mx-auto w-full max-w-5xl p-6">
-      <PageHeader />
 
       <h1 className="mb-1 text-2xl font-semibold tracking-tight">
         Administration

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Clock, Inbox, Layers, Plus, Shield } from "lucide-react";
+import { ChevronRight, Clock, Inbox, Layers, Plus } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { initials } from "../lib/profile";
 import type { Issue, IssueListResult, Project, Workspace } from "../lib/types";
 import IssueCard from "../components/issue/IssueCard";
 import { DEFAULT_DISPLAY_SETTINGS } from "../components/issue/useDisplaySettings";
@@ -12,10 +11,8 @@ import {
   readRecentIssues,
   type RecentIssue,
 } from "../components/issue/recents";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import FavoritesSection from "../components/favorites/FavoritesSection";
-import { Button, buttonVariants } from "../components/ui/button";
+import { Button } from "../components/ui/button";
 import {
   Card,
   CardContent,
@@ -112,7 +109,7 @@ function SectionTitle({
 }
 
 export default function Home() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [now] = useState(() => new Date());
   // Recents are localStorage-only; re-read when the component mounts and
@@ -168,48 +165,6 @@ export default function Home() {
 
   return (
     <div className="mx-auto w-full max-w-6xl p-6">
-      {/* Top bar */}
-      <div className="mb-8 flex items-center justify-between">
-        <Link to="/" className="text-lg font-bold tracking-tight">
-          glance
-        </Link>
-        <div className="flex items-center gap-2">
-          {/* Instance admin entry (C5T1): visible only to is_admin users;
-              the /admin route itself is guarded by AdminGuard + server-side
-              RequireAdmin. */}
-          {user?.is_admin && (
-            <Link
-              to="/admin"
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-              aria-label="Administration"
-              title="Instance administration"
-            >
-              <Shield className="mr-1.5 h-4 w-4" />
-              Admin
-            </Link>
-          )}
-          <NotificationBell />
-          <ThemeToggle />
-          {/* Profile entry (C6T7): initials avatar linking to /profile. */}
-          <Link
-            to="/profile"
-            className={buttonVariants({ variant: "ghost", size: "sm" })}
-            aria-label="Profile and sessions"
-            title={user?.email ?? "Profile"}
-          >
-            <span
-              className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground"
-              aria-hidden
-            >
-              {initials(user?.name ?? null, user?.email ?? "?")}
-            </span>
-          </Link>
-          <Button variant="ghost" size="sm" onClick={() => void logout()}>
-            Log out
-          </Button>
-        </div>
-      </div>
-
       {/* Greeting */}
       <div className="mb-8">
         <h1 className="text-3xl font-semibold tracking-tight">

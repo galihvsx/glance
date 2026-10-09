@@ -8,8 +8,6 @@ import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Workspace } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
-import ThemeToggle from "../components/ThemeToggle";
-import NotificationBell from "../components/notifications/NotificationBell";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import StatesSection from "../components/settings/StatesSection";
@@ -47,13 +45,7 @@ export default function ProjectSettings() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Project settings</h1>
-        <div className="flex items-center gap-2">
-          <NotificationBell />
-          <ThemeToggle />
-        </div>
-      </div>
+      <h1 className="text-xl font-semibold">Project settings</h1>
       <ProjectNav />
       {role === null ? (
         <Skeleton className="h-64 w-full" />

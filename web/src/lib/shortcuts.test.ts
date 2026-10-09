@@ -80,6 +80,25 @@ describe("resolveKeyPress", () => {
       action: "goto-home",
       pendingPrefix: null,
     });
+    expect(resolveKeyPress("n", "g")).toEqual({
+      action: "open-notifications",
+      pendingPrefix: null,
+    });
+    expect(resolveKeyPress("N", "g")).toEqual({
+      action: "open-notifications",
+      pendingPrefix: null,
+    });
+  });
+
+  it("does not map plain b — toggle-sidebar is a mod chord only", () => {
+    expect(resolveKeyPress("b", null)).toEqual({
+      action: null,
+      pendingPrefix: null,
+    });
+    expect(resolveKeyPress("B", null)).toEqual({
+      action: null,
+      pendingPrefix: null,
+    });
   });
 
   it("falls through to normal keys when the chord is unknown", () => {
@@ -108,6 +127,8 @@ describe("SHORTCUT_REGISTRY", () => {
     "close-topmost",
     "goto-home",
     "goto-mywork",
+    "toggle-sidebar",
+    "open-notifications",
   ];
 
   it("documents every shortcut action exactly once", () => {
@@ -151,5 +172,17 @@ describe("SHORTCUT_REGISTRY", () => {
       if (def.chord) expect(def.keys.length).toBeGreaterThan(1);
       else expect(def.keys.length).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it("documents the app-shell keymap rows", () => {
+    const byAction = new Map(SHORTCUT_REGISTRY.map((d) => [d.action, d]));
+    const toggleSidebar = byAction.get("toggle-sidebar");
+    expect(toggleSidebar?.keys).toEqual(["Ctrl/⌘", "B"]);
+    expect(toggleSidebar?.chord).toBeFalsy();
+    expect(toggleSidebar?.contexts).toContain("Global");
+    const openNotifications = byAction.get("open-notifications");
+    expect(openNotifications?.keys).toEqual(["g", "n"]);
+    expect(openNotifications?.chord).toBe(true);
+    expect(openNotifications?.contexts).toContain("Global");
   });
 });

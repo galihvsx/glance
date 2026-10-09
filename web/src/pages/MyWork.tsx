@@ -18,8 +18,6 @@ import {
 } from "../lib/mywork";
 import { relativeTime } from "../lib/relativeTime";
 import { useWorkspaces } from "../lib/useWorkspaces";
-import NotificationBell from "../components/notifications/NotificationBell";
-import ThemeToggle from "../components/ThemeToggle";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
 import {
@@ -63,8 +61,7 @@ export default function MyWork() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold">My work</h1>
           {workspaces.length > 1 && (
             <NativeSelect
@@ -80,11 +77,6 @@ export default function MyWork() {
               ))}
             </NativeSelect>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <NotificationBell />
-          <ThemeToggle />
-        </div>
       </div>
 
       <Tabs
