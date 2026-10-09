@@ -22,6 +22,7 @@ func RegisterCycleRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("", h.createCycle)
 	g.GET("", h.listCycles)
 	g.GET("/:cycleID", h.getCycle)
+	g.GET("/:cycleID/burndown", h.getCycleBurndown)
 	g.PATCH("/:cycleID", h.updateCycle)
 	g.DELETE("/:cycleID", h.deleteCycle)
 	g.POST("/:cycleID/issues", h.addCycleIssues)
@@ -112,6 +113,24 @@ func (h *IssueHandler) getCycle(c *echo.Context) error {
 		return cycleError(c, err)
 	}
 	return c.JSON(http.StatusOK, cycle)
+}
+
+// getCycleBurndown implements GET
+// /api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/burndown:
+// the cycle's true burndown, reconstructed server-side from the
+// issue_activities audit log (one aggregate query instead of N+1
+// per-issue history fetches). Read-only; any workspace member may call.
+func (h *IssueHandler) getCycleBurndown(c *echo.Context) error {
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
+	bd, err := service.GetCycleBurndown(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID)
+	if err != nil {
+		return cycleError(c, err)
+	}
+	return c.JSON(http.StatusOK, bd)
 }
 
 // updateCycle implements PATCH .../cycles/{cycleID}. Partial semantics:

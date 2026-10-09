@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -613,4 +614,194 @@ func marshalSnapshot(snap map[string]int64) (string, error) {
 	}
 	b.WriteByte('}')
 	return b.String(), nil
+}
+
+// BurndownDay is one day of a cycle burndown chart. Remaining is nil for
+// days with no actual data yet (future days of an active cycle); Ideal is
+// always present — the straight line from total scope to zero.
+type BurndownDay struct {
+	Date      string  `json:"date"` // YYYY-MM-DD
+	Remaining *int    `json:"remaining"`
+	Ideal     float64 `json:"ideal"`
+}
+
+// CycleBurndown is the GET .../cycles/{id}/burndown response.
+type CycleBurndown struct {
+	CycleID    string        `json:"cycle_id"`
+	StartDate  string        `json:"start_date"` // YYYY-MM-DD
+	EndDate    string        `json:"end_date"`
+	Status     string        `json:"status"`
+	TotalScope int           `json:"total_scope"`
+	Days       []BurndownDay `json:"days"`
+}
+
+// doneStateGroups are the state groups that stop counting as remaining
+// scope on a burndown. Cancelled work is gone work, same as completed.
+var doneStateGroups = []string{"completed", "cancelled"}
+
+// GetCycleBurndown builds a true burndown from the issue_activities audit
+// log: for each day of the cycle, remaining = cycle issues whose state at
+// end of day was not in a done group. State is reconstructed per issue
+// from its state_id transitions (initial state = the first transition's
+// old_value, or the current state when the issue never moved).
+//
+// Design notes (deliberate):
+//   - One aggregate endpoint, not client-side: the per-issue history
+//     endpoint exists, but fetching it for every issue in the cycle is
+//     N+1 round trips. This is three indexed queries total.
+//   - Scope uses current cycle membership; an issue added mid-cycle
+//     counts from its cycle_issues.created_at day (scope growth is
+//     visible). Issues removed from the cycle leave no audit row, so a
+//     removal shrinks every day retroactively — documented limitation.
+//   - Day boundaries are UTC midnights; activity timestamps are bucketed
+//     by (created_at AT TIME ZONE 'UTC')::date.
+//   - Ideal is the straight line total_scope → 0 over the cycle's days,
+//     rounded to one decimal.
+func GetCycleBurndown(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, cycleID string) (*CycleBurndown, error) {
+	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, false)
+	if err != nil {
+		return nil, err
+	}
+	c, err := resolveCycle(ctx, pool, projectID, cycleID)
+	if err != nil {
+		return nil, err
+	}
+
+	done := map[string]bool{}
+	rows, err := pool.Query(ctx,
+		`SELECT id::text FROM states WHERE project_id = $1::uuid AND "group" = ANY($2)`,
+		projectID, doneStateGroups)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		done[id] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	type issueRow struct {
+		id      string
+		stateID string
+		added   string // YYYY-MM-DD (UTC)
+	}
+	var issues []issueRow
+	rows, err = pool.Query(ctx,
+		`SELECT i.id::text, i.state_id::text, (ci.created_at AT TIME ZONE 'UTC')::date::text
+		 FROM cycle_issues ci
+		 JOIN issues i ON i.id = ci.issue_id AND i.deleted_at IS NULL
+		 WHERE ci.cycle_id = $1::uuid`,
+		cycleID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var r issueRow
+		if err := rows.Scan(&r.id, &r.stateID, &r.added); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		issues = append(issues, r)
+		ids = append(ids, r.id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// All state_id transitions for these issues, oldest first. old_value /
+	// new_value are JSON strings holding the state UUIDs.
+	type transition struct {
+		day      string // YYYY-MM-DD (UTC)
+		oldState string
+		newState string
+	}
+	transByIssue := map[string][]transition{}
+	if len(ids) > 0 {
+		rows, err = pool.Query(ctx,
+			`SELECT issue_id::text, (created_at AT TIME ZONE 'UTC')::date::text,
+			        old_value #>> '{}', new_value #>> '{}'
+			 FROM issue_activities
+			 WHERE issue_id::text = ANY($1) AND field = 'state_id'
+			 ORDER BY created_at ASC`,
+			ids)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var issueID string
+			var tr transition
+			if err := rows.Scan(&issueID, &tr.day, &tr.oldState, &tr.newState); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			transByIssue[issueID] = append(transByIssue[issueID], tr)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	startDay := c.StartDate.Format("2006-01-02")
+	endDay := c.EndDate.Format("2006-01-02")
+	nDays := int(c.EndDate.Sub(c.StartDate).Hours()/24) + 1
+	if nDays < 1 {
+		nDays = 1
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	total := len(issues)
+
+	days := make([]BurndownDay, 0, nDays)
+	for i := 0; i < nDays; i++ {
+		day := c.StartDate.AddDate(0, 0, i).Format("2006-01-02")
+		bd := BurndownDay{Date: day}
+		// Ideal: straight line total → 0 across the cycle's days.
+		if nDays == 1 {
+			bd.Ideal = float64(total)
+		} else {
+			bd.Ideal = math.Round(float64(total)*float64(nDays-1-i)/float64(nDays-1)*10) / 10
+		}
+		// No actuals for future days.
+		if day <= today {
+			remaining := 0
+			for _, is := range issues {
+				if is.added > day {
+					continue // not in scope yet on this day
+				}
+				state := is.stateID
+				if trs := transByIssue[is.id]; len(trs) > 0 {
+					state = trs[0].oldState
+				}
+				for _, tr := range transByIssue[is.id] {
+					if tr.day > day {
+						break
+					}
+					state = tr.newState
+				}
+				if !done[state] {
+					remaining++
+				}
+			}
+			bd.Remaining = &remaining
+		}
+		days = append(days, bd)
+	}
+
+	return &CycleBurndown{
+		CycleID:    c.ID,
+		StartDate:  startDay,
+		EndDate:    endDay,
+		Status:     c.Status,
+		TotalScope: total,
+		Days:       days,
+	}, nil
 }
