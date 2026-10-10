@@ -3,8 +3,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCsvMapping,
+  buildPlaneResolutions,
   validateGitHubForm,
   validateJiraForm,
+  validatePlaneFile,
   validateTrelloForm,
 } from "./import";
 
@@ -85,6 +87,82 @@ describe("validateTrelloForm", () => {
     expect(validateTrelloForm("key", "http://trello.com/b/AbC123xY/x")).toBe(msg); // plain http
     expect(validateTrelloForm("key", "https://evil.com/b/AbC123xY/x")).toBe(msg); // wrong host
     expect(validateTrelloForm("key", "https://trello.com/c/AbC123xY/x")).toBe(msg); // card URL
+  });
+});
+
+describe("validatePlaneFile", () => {
+  it("requires a file", () => {
+    expect(validatePlaneFile(null)).toBe(
+      "Choose a Plane export file (.json or .zip).",
+    );
+  });
+
+  it("accepts .json and .zip", () => {
+    expect(validatePlaneFile({ name: "export.json" } as File)).toBeNull();
+    expect(validatePlaneFile({ name: "export.ZIP" } as File)).toBeNull();
+  });
+
+  it("rejects other extensions", () => {
+    expect(validatePlaneFile({ name: "export.csv" } as File)).toBe(
+      "Plane exports are .json or .zip files.",
+    );
+    expect(validatePlaneFile({ name: "export" } as File)).toBe(
+      "Plane exports are .json or .zip files.",
+    );
+  });
+});
+
+describe("buildPlaneResolutions", () => {
+  it("builds minimal resolutions from mapping choices", () => {
+    expect(
+      buildPlaneResolutions({
+        people: { "Ada Lovelace": "m1", "Grace Hopper": null },
+        states: {
+          "In Progress": { kind: "existing", id: "s1" },
+          Backlog: { kind: "create" },
+          Todo: { kind: "default" },
+        },
+        labels: {
+          bug: { kind: "existing", id: "l1" },
+          shiny: { kind: "create" },
+          stale: { kind: "default" },
+        },
+        cycles: {
+          "Sprint 1": { kind: "default" },
+          "Sprint 2": { kind: "create" },
+        },
+        modules: {
+          Auth: { kind: "existing", id: "mod1" },
+        },
+      }),
+    ).toEqual({
+      people: { "Ada Lovelace": { member_id: "m1" } },
+      states: {
+        "In Progress": { state_id: "s1" },
+        Backlog: { group: "backlog" },
+      },
+      labels: { bug: { label_id: "l1" }, shiny: {} },
+      cycles: { "Sprint 2": {} },
+      modules: { Auth: { module_id: "mod1" } },
+    });
+  });
+
+  it("returns empty maps when everything is default or unmapped", () => {
+    expect(
+      buildPlaneResolutions({
+        people: { "Ada Lovelace": null },
+        states: { Todo: { kind: "default" } },
+        labels: {},
+        cycles: {},
+        modules: {},
+      }),
+    ).toEqual({
+      people: {},
+      states: {},
+      labels: {},
+      cycles: {},
+      modules: {},
+    });
   });
 });
 
