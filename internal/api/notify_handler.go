@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -28,6 +29,12 @@ func RegisterNotifyRoutes(e *echo.Echo, h *NotifyHandler) {
 	g.POST("/notifications/:id/read", h.markNotificationRead)
 	g.GET("/notification-prefs", h.listNotificationPrefs)
 	g.PUT("/notification-prefs/:event", h.setNotificationPref)
+	// C11T2: digest schedule (frequency + send-after hour). The schedule
+	// rides notification_prefs via value-encoded keys (see
+	// service/digest_schedule.go), managed only through these endpoints —
+	// the generic pref endpoints reject the schedule keys.
+	g.GET("/digest-schedule", h.getDigestSchedule)
+	g.PUT("/digest-schedule", h.setDigestSchedule)
 
 	w := e.Group("/api/v1/workspaces/:slug/webhooks", RequireAuth(h.Pool))
 	w.POST("", h.createWebhook)
@@ -45,6 +52,10 @@ func notifyError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "notification not found", nil)
 	case errors.Is(err, service.ErrUnknownNotifyEvent):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "unknown notification event", nil)
+	case errors.Is(err, service.ErrBadDigestFrequency):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest frequency must be daily or weekly", nil)
+	case errors.Is(err, service.ErrBadDigestHour):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest hour must be 0-23", nil)
 	case errors.Is(err, service.ErrWebhookNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "webhook not found", nil)
 	case errors.Is(err, service.ErrBadWebhookURL):
@@ -143,6 +154,49 @@ func (h *NotifyHandler) setNotificationPref(c *echo.Context) error {
 		return notifyError(c, err)
 	}
 	return c.JSON(http.StatusOK, p)
+}
+
+// getDigestSchedule returns the caller's digest cadence (C11T2).
+// server_tz names the zone the hour is interpreted in — the glance
+// server's local zone. Per-user timezones are future work; the UI shows
+// this value so the caveat is honest, not buried.
+func (h *NotifyHandler) getDigestSchedule(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	sched, err := service.GetDigestSchedule(c.Request().Context(), h.Pool, u.ID)
+	if err != nil {
+		return WriteInternalError(c)
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"frequency": sched.Frequency,
+		"hour":      sched.Hour,
+		"server_tz": time.Local.String(),
+	})
+}
+
+type digestScheduleBody struct {
+	Frequency string `json:"frequency"`
+	Hour      int    `json:"hour"`
+}
+
+// setDigestSchedule stores the caller's digest cadence (C11T2). Invalid
+// frequency/hour → 400; the stored schedule is untouched on rejection.
+func (h *NotifyHandler) setDigestSchedule(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	var b digestScheduleBody
+	if err := c.Bind(&b); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid body", nil)
+	}
+	sched, err := service.SetDigestSchedule(c.Request().Context(), h.Pool, u.ID, b.Frequency, b.Hour)
+	if err != nil {
+		return notifyError(c, err)
+	}
+	return c.JSON(http.StatusOK, sched)
 }
 
 type webhookBody struct {

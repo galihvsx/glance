@@ -12,12 +12,15 @@ import { ApiError } from "../lib/api";
 import {
   NOTIFICATION_KEYS,
   eventLabel,
+  fetchDigestSchedule,
   fetchNotificationPrefs,
   fetchNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  setDigestSchedule,
   setNotificationPref,
   useInvalidateNotifications,
+  type DigestSchedule,
   type NotificationItem,
   type NotificationPrefItem,
 } from "../lib/notifications";
@@ -33,6 +36,10 @@ import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "../components/ui/native-select";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -118,8 +125,114 @@ function NotificationRow({
   );
 }
 
-// One preference row. The daily digest (C10T2) is email-only, so its row
-// renders a single Email toggle — no inert In-app switch.
+// C11T2: digest schedule controls (frequency + send-after hour), rendered
+// inside the digest pref row next to the email toggle. Disabled while the
+// digest email itself is off. The timezone caveat is stated honestly: the
+// hour is interpreted in the glance server's local zone (shown verbatim
+// from the API) — per-user time zones are future work.
+function DigestScheduleControls({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient();
+  const scheduleQuery = useQuery({
+    queryKey: NOTIFICATION_KEYS.schedule,
+    queryFn: fetchDigestSchedule,
+  });
+
+  const setSchedule = useMutation({
+    mutationFn: ({ frequency, hour }: { frequency: string; hour: number }) =>
+      setDigestSchedule(frequency, hour),
+    // Optimistic update: apply locally, roll back on failure.
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({
+        queryKey: NOTIFICATION_KEYS.schedule,
+      });
+      const previous = queryClient.getQueryData<DigestSchedule>(
+        NOTIFICATION_KEYS.schedule,
+      );
+      queryClient.setQueryData<DigestSchedule>(
+        NOTIFICATION_KEYS.schedule,
+        (old) =>
+          old
+            ? {
+                ...old,
+                frequency: vars.frequency as DigestSchedule["frequency"],
+                hour: vars.hour,
+              }
+            : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          NOTIFICATION_KEYS.schedule,
+          context.previous,
+        );
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: NOTIFICATION_KEYS.schedule,
+      });
+    },
+  });
+
+  const sched = scheduleQuery.data;
+  const frequency = sched?.frequency ?? "daily";
+  const hour = sched?.hour ?? 8;
+  const disabled =
+    !enabled || setSchedule.isPending || scheduleQuery.isLoading;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Frequency
+        <NativeSelect
+          size="sm"
+          value={frequency}
+          disabled={disabled}
+          onChange={(e) =>
+            setSchedule.mutate({ frequency: e.target.value, hour })
+          }
+          aria-label="Digest frequency"
+        >
+          <NativeSelectOption value="daily">Daily</NativeSelectOption>
+          <NativeSelectOption value="weekly">Weekly</NativeSelectOption>
+        </NativeSelect>
+      </label>
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Send after
+        <NativeSelect
+          size="sm"
+          value={String(hour)}
+          disabled={disabled}
+          onChange={(e) =>
+            setSchedule.mutate({ frequency, hour: Number(e.target.value) })
+          }
+          aria-label="Digest send-after hour"
+        >
+          {Array.from({ length: 24 }, (_, h) => (
+            <NativeSelectOption key={h} value={String(h)}>
+              {String(h).padStart(2, "0")}:00
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </label>
+      <span className="text-xs text-muted-foreground">
+        Server time{sched ? ` (${sched.server_tz})` : ""} — per-user time
+        zones not supported yet.
+      </span>
+      {setSchedule.isError && (
+        <span className="text-xs text-destructive">
+          Failed to save schedule
+        </span>
+      )}
+    </div>
+  );
+}
+
+// One preference row. The digest (C10T2/C11T2) is email-only, so its row
+// renders a single Email toggle — no inert In-app switch — plus the C11T2
+// schedule controls beneath it.
 function PrefRow({
   p,
   setPref,
@@ -131,52 +244,61 @@ function PrefRow({
   };
 }) {
   const isDigest = p.event === "digest.daily";
+  const emailToggle = (
+    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+      Email
+      <Switch
+        size="sm"
+        checked={p.email}
+        disabled={setPref.isPending}
+        onCheckedChange={(email) =>
+          setPref.mutate({
+            event: p.event,
+            inApp: p.in_app,
+            email,
+          })
+        }
+        aria-label={`Email notifications for ${eventLabel(p.event)}`}
+      />
+    </label>
+  );
+  if (isDigest) {
+    return (
+      <li className="flex flex-col gap-3 py-3">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-sm font-medium">
+            {eventLabel(p.event)}
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              One email summarizing assignments, mentions, and state changes
+            </span>
+          </span>
+          {emailToggle}
+        </div>
+        <DigestScheduleControls enabled={p.email} />
+      </li>
+    );
+  }
   return (
     <li className="flex items-center justify-between gap-4 py-3">
-      <span className="text-sm font-medium">
-        {eventLabel(p.event)}
-        {isDigest && (
-          <span className="ml-2 text-xs font-normal text-muted-foreground">
-            One email per day summarizing assignments, mentions, and state
-            changes
-          </span>
-        )}
-      </span>
+      <span className="text-sm font-medium">{eventLabel(p.event)}</span>
       <div className="flex items-center gap-4">
-        {!isDigest && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            In-app
-            <Switch
-              size="sm"
-              checked={p.in_app}
-              disabled={setPref.isPending}
-              onCheckedChange={(inApp) =>
-                setPref.mutate({
-                  event: p.event,
-                  inApp,
-                  email: p.email,
-                })
-              }
-              aria-label={`In-app notifications for ${eventLabel(p.event)}`}
-            />
-          </label>
-        )}
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          Email
+          In-app
           <Switch
             size="sm"
-            checked={p.email}
+            checked={p.in_app}
             disabled={setPref.isPending}
-            onCheckedChange={(email) =>
+            onCheckedChange={(inApp) =>
               setPref.mutate({
                 event: p.event,
-                inApp: p.in_app,
-                email,
+                inApp,
+                email: p.email,
               })
             }
-            aria-label={`Email notifications for ${eventLabel(p.event)}`}
+            aria-label={`In-app notifications for ${eventLabel(p.event)}`}
           />
         </label>
+        {emailToggle}
       </div>
     </li>
   );

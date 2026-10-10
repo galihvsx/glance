@@ -251,3 +251,76 @@ func TestWebhookHTTPCRUD(t *testing.T) {
 		t.Fatalf("unauthenticated: status = %d, want 401", rec.Code)
 	}
 }
+
+// TestDigestScheduleHTTPEndpoints (C11T2): GET/PUT /api/v1/digest-schedule
+// round-trips the caller's digest cadence; invalid frequency/hour → 400;
+// unauthenticated → 401. Real test database, no skips.
+func TestDigestScheduleHTTPEndpoints(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testNotifyServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("digest-sched"), "ua", "10.9.0.3")
+
+	var sched struct {
+		Frequency string `json:"frequency"`
+		Hour      int    `json:"hour"`
+		ServerTZ  string `json:"server_tz"`
+	}
+	decode := func(rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), &sched); err != nil {
+			t.Fatalf("decode schedule: %v (body: %s)", err, rec.Body.String())
+		}
+	}
+
+	// Defaults: daily at 08:00, server_tz named.
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get schedule: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec)
+	if sched.Frequency != "daily" || sched.Hour != 8 {
+		t.Fatalf("default schedule = %+v, want {daily 8}", sched)
+	}
+	if sched.ServerTZ == "" {
+		t.Fatal("server_tz empty — the UI needs it for the honest TZ caveat")
+	}
+
+	// PUT weekly/14 round-trips through GET.
+	rec = postAuthedJSON(t, e, http.MethodPut, "/api/v1/digest-schedule",
+		cookie, `{"frequency":"weekly","hour":14}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set schedule: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	decode(rec)
+	if sched.Frequency != "weekly" || sched.Hour != 14 {
+		t.Fatalf("schedule = %+v, want {weekly 14}", sched)
+	}
+
+	// Invalid inputs → 400, stored schedule untouched.
+	for _, body := range []string{
+		`{"frequency":"monthly","hour":8}`,
+		`{"frequency":"daily","hour":24}`,
+		`{"frequency":"daily","hour":-1}`,
+	} {
+		rec = postAuthedJSON(t, e, http.MethodPut, "/api/v1/digest-schedule", cookie, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("put %s: status = %d, want 400 (body: %s)", body, rec.Code, rec.Body.String())
+		}
+	}
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	decode(rec)
+	if sched.Frequency != "weekly" || sched.Hour != 14 {
+		t.Fatalf("schedule after rejected puts = %+v, want {weekly 14} (unchanged)", sched)
+	}
+
+	// Unauthenticated → 401.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/digest-schedule", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: status = %d, want 401", rec.Code)
+	}
+}
