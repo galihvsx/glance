@@ -155,6 +155,18 @@ type PlaneImportReport struct {
 	Warnings          []string              `json:"warnings"`
 }
 
+// planeImportRunPayload is what phase 2 persists in
+// idempotency_keys.response_body: the report for display, plus the
+// accumulated set of imported Plane identifiers. The identifier set is
+// the durable half of check-then-skip (design decision 9): it survives
+// runs that import nothing (an upserted run record would otherwise lose
+// the history), and it is unioned across runs and actors. Migration-free:
+// the record rides the existing idempotency_keys table.
+type planeImportRunPayload struct {
+	Report              *PlaneImportReport `json:"report"`
+	ImportedIdentifiers []string           `json:"imported_identifiers"`
+}
+
 // planeEstimateScale is the project's estimate points for import matching
 // (shared by T2 analysis and T3 execute — T2's lookups are derived from
 // this). A value matches when it equals a point's numeric value; a
@@ -377,6 +389,9 @@ type planeImportExecutor struct {
 	memberIDs     map[string]bool // workspace member user ids
 	scale         *planeEstimateScale
 
+	runKey        string          // idempotency_keys idem_key for this export
+	priorImported map[string]bool // identifiers imported by earlier runs
+
 	report *PlaneImportReport
 }
 
@@ -421,8 +436,49 @@ func ExecutePlaneImport(ctx context.Context, pool *pgxpool.Pool, projectID, acto
 	if err := x.validateResolutions(); err != nil {
 		return nil, err
 	}
+	x.runKey = "plane-import:" + projectID + ":" + parsed.ProjectIdentifier
+	x.priorImported = x.loadPriorImported()
 	valid := x.phase1(parsed.Rows)
 	return x.phase2(valid)
+}
+
+// loadPriorImported returns the identifiers imported by earlier runs of
+// this export (any actor): the union of every persisted run payload for
+// this idem_key. Tolerates the pre-envelope report-only format by
+// deriving identifiers from gap entries (every created issue has one).
+func (x *planeImportExecutor) loadPriorImported() map[string]bool {
+	out := map[string]bool{}
+	rows, err := x.pool.Query(x.ctx,
+		`SELECT response_body FROM idempotency_keys
+		  WHERE endpoint = 'plane-import-execute' AND idem_key = $1`, x.runKey)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil || strings.TrimSpace(body) == "" {
+			continue
+		}
+		var p planeImportRunPayload
+		if err := json.Unmarshal([]byte(body), &p); err != nil {
+			continue
+		}
+		for _, id := range p.ImportedIdentifiers {
+			out[id] = true
+		}
+		if len(p.ImportedIdentifiers) == 0 {
+			var legacy PlaneImportReport
+			if err := json.Unmarshal([]byte(body), &legacy); err == nil {
+				for _, g := range legacy.Gaps {
+					if g.Identifier != "" {
+						out[g.Identifier] = true
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // authorize resolves the project's workspace and gates membership:
@@ -716,35 +772,44 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 	}
 	defer tx.Rollback(ctx) // no-op after Commit
 
-	// Idempotency, durable and migration-free: an issue with this
-	// (project_id, sequence_id) already present means this row was
-	// imported by an earlier run — skip it. The in-tx set also dedupes
-	// repeated identifiers inside one export (first wins).
-	seenSeq := map[int]bool{}
+	// takenSeq holds every sequence_id already present in the project —
+	// native issues included. A Plane row is skipped only when its
+	// identifier was imported by an earlier run (check-then-skip); a row
+	// whose sequence collides with an issue we did NOT import becomes a
+	// per-row error below — silent skipping there would lose data.
+	takenSeq := map[int]bool{}
 	srows, err := tx.Query(ctx,
 		`SELECT sequence_id FROM issues WHERE project_id = $1::uuid`, x.projectID)
 	if err != nil {
-		return nil, fmt.Errorf("service: plane import idempotency scan: %w", err)
+		return nil, fmt.Errorf("service: plane import sequence scan: %w", err)
 	}
 	for srows.Next() {
 		var seq int
 		if err := srows.Scan(&seq); err != nil {
 			srows.Close()
-			return nil, fmt.Errorf("service: plane import idempotency scan: %w", err)
+			return nil, fmt.Errorf("service: plane import sequence scan: %w", err)
 		}
-		seenSeq[seq] = true
+		takenSeq[seq] = true
 	}
 	srows.Close()
 	if err := srows.Err(); err != nil {
-		return nil, fmt.Errorf("service: plane import idempotency scan: %w", err)
+		return nil, fmt.Errorf("service: plane import sequence scan: %w", err)
 	}
+	// skipIdent is the check-then-skip set: identifiers imported by
+	// earlier runs, plus identifiers imported in this tx (first wins on
+	// duplicates inside one export).
+	skipIdent := map[string]bool{}
+	for id := range x.priorImported {
+		skipIdent[id] = true
+	}
+	thisRunImported := map[string]bool{}
 
 	// Ensure taxonomy first (states, then labels/cycles/modules), so issue
 	// inserts can reference everything.
 	stateIDs := map[string]string{} // lower(state name) -> state id
 	dropped := map[string]bool{}    // identifiers rejected under strict_states
 	for _, v := range valid {
-		if seenSeq[v.row.SequenceID] {
+		if skipIdent[v.row.Identifier] {
 			continue
 		}
 		name := strings.TrimSpace(v.row.StateName)
@@ -782,7 +847,7 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 	cycleIDs := map[string]string{}
 	moduleIDs := map[string]string{}
 	for _, v := range valid {
-		if seenSeq[v.row.SequenceID] {
+		if skipIdent[v.row.Identifier] {
 			continue
 		}
 		for _, nm := range v.row.Labels {
@@ -825,8 +890,19 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 	identToID := map[string]string{} // Plane identifier -> new issue UUID
 	maxSeq := 0
 	for _, v := range valid {
-		if seenSeq[v.row.SequenceID] {
+		if skipIdent[v.row.Identifier] {
 			x.report.Skipped++
+			continue
+		}
+		if takenSeq[v.row.SequenceID] {
+			// An issue we did not import holds this sequence (a native
+			// glance issue, most likely). Skipping silently would drop
+			// the Plane row without a trace; inserting would violate
+			// UNIQUE(project_id, sequence_id) and abort the whole
+			// import. Fail the row loudly so the user can resolve it.
+			x.failRow(v.row.Identifier, fmt.Sprintf(
+				"sequence_id %d is already taken by an existing issue in this project (not imported by a previous Plane run) — resolve the conflict and re-run",
+				v.row.SequenceID))
 			continue
 		}
 		stateID := x.defaultStateID(stateIDs, v.row.StateName)
@@ -856,7 +932,9 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 		if err != nil {
 			return nil, fmt.Errorf("service: plane import insert issue %s: %w", v.row.Identifier, err)
 		}
-		seenSeq[v.row.SequenceID] = true
+		takenSeq[v.row.SequenceID] = true
+		skipIdent[v.row.Identifier] = true
+		thisRunImported[v.row.Identifier] = true
 		if _, dup := identToID[v.row.Identifier]; !dup {
 			identToID[v.row.Identifier] = issueID
 		}
@@ -925,9 +1003,30 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 	// the audit trail for idempotency. The durable skip guard is the
 	// sequence check above; this row documents the run. Re-running the
 	// same export refreshes it.
-	reportJSON, err := json.Marshal(x.report)
+	// Accumulate the imported identifier set across runs: a re-run that
+	// imports nothing must not wipe the history (the upsert below would
+	// otherwise lose it).
+	accumulated := make([]string, 0, len(x.priorImported)+len(thisRunImported))
+	seen := map[string]bool{}
+	for id := range x.priorImported {
+		if !seen[id] {
+			seen[id] = true
+			accumulated = append(accumulated, id)
+		}
+	}
+	for id := range thisRunImported {
+		if !seen[id] {
+			seen[id] = true
+			accumulated = append(accumulated, id)
+		}
+	}
+	sort.Strings(accumulated)
+	payloadJSON, err := json.Marshal(planeImportRunPayload{
+		Report:              x.report,
+		ImportedIdentifiers: accumulated,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("service: plane import marshal report: %w", err)
+		return nil, fmt.Errorf("service: plane import marshal run record: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO idempotency_keys (user_id, idem_key, endpoint, status, response_code, response_body)
@@ -935,7 +1034,7 @@ func (x *planeImportExecutor) phase2(valid []*planeValidatedRow) (*PlaneImportRe
 		 ON CONFLICT (user_id, idem_key) DO UPDATE
 		 SET status = 'completed', response_code = 200, response_body = EXCLUDED.response_body,
 		     created_at = now()`,
-		x.actorID, "plane-import:"+x.projectID+":"+x.report.ProjectIdentifier, string(reportJSON)); err != nil {
+		x.actorID, x.runKey, string(payloadJSON)); err != nil {
 		return nil, fmt.Errorf("service: plane import run record: %w", err)
 	}
 

@@ -439,6 +439,60 @@ func TestExecutePlaneImportIdempotent(t *testing.T) {
 	}
 }
 
+// TestExecutePlaneImportNativeSequenceCollision: a native glance issue
+// holding a sequence a Plane row wants is a loud per-row error — never a
+// silent skip — and it must not poison the other rows, the native issue,
+// or the idempotency record.
+func TestExecutePlaneImportNativeSequenceCollision(t *testing.T) {
+	pool, slug, ident, admin, projectID := planeExecuteSetup(t)
+	seedPlaneAnalysisTargets(t, pool, slug, ident, admin, projectID)
+	ctx := context.Background()
+
+	// Native issue squatting sequence 42 (the fixture's ACME-42).
+	var stateID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM states WHERE project_id = $1::uuid LIMIT 1`, projectID).Scan(&stateID); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO issues (project_id, sequence_id, name, state_id, created_by)
+		 VALUES ($1::uuid, 42, 'native squatter', $2::uuid, $3::uuid)`,
+		projectID, stateID, admin); err != nil {
+		t.Fatalf("seed native issue: %v", err)
+	}
+
+	rep := executeFixture(t, pool, projectID, admin, PlaneImportResolutions{}, PlaneImportExecuteOpts{})
+	if rep.Created != 1 {
+		t.Fatalf("created = %d, want 1 (only the non-colliding row)", rep.Created)
+	}
+	if rep.Failed != 1 {
+		t.Fatalf("failed = %d, want 1 (the colliding row must fail loudly, not vanish)", rep.Failed)
+	}
+	found := false
+	for _, e := range rep.Errors {
+		if e.Identifier == "ACME-42" && strings.Contains(e.Message, "already taken") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no 'already taken' row error for ACME-42; errors=%v", rep.Errors)
+	}
+	// Re-run: stable and idempotent — the imported row skips by
+	// identifier, the colliding row fails again.
+	rep2 := executeFixture(t, pool, projectID, admin, PlaneImportResolutions{}, PlaneImportExecuteOpts{})
+	if rep2.Created != 0 || rep2.Skipped != 1 || rep2.Failed != 1 {
+		t.Fatalf("re-run created=%d skipped=%d failed=%d, want 0/1/1",
+			rep2.Created, rep2.Skipped, rep2.Failed)
+	}
+	// The native issue is untouched.
+	var name string
+	if err := pool.QueryRow(ctx,
+		`SELECT name FROM issues WHERE project_id = $1::uuid AND sequence_id = 42 AND name = 'native squatter'`,
+		projectID).Scan(&name); err != nil {
+		t.Fatalf("native issue disturbed: %v", err)
+	}
+}
+
 func TestExecutePlaneImportPeopleMapping(t *testing.T) {
 	pool, slug, _, admin, projectID := planeExecuteSetup(t)
 	ctx := context.Background()
