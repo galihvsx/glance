@@ -428,7 +428,9 @@ func automationActive(ctx context.Context) bool {
 // updateIssueTx's state-changed branch (guarded by !automationActive).
 // It never returns an error: rule-selection failures and per-action
 // failures are logged via slog and the state change proceeds — a broken
-// rule must not roll back the user's move. Returned notifications are
+// rule must not roll back the user's move. Every firing writes exactly
+// one automation_runs row in this same tx (C12T1 run history), recording
+// the per-action ok/error outcomes. Returned notifications are
 // for the caller to announce after commit.
 func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, fromStateID, toStateID string) []*Notification {
 	if automationActive(ctx) {
@@ -479,6 +481,9 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 				"rule_id", r.ID, "error", err)
 			continue
 		}
+		// C12T1: record each action's outcome for the run row written
+		// after the loop — one row per firing, never per action.
+		results := make([]AutomationActionResult, 0, len(actions))
 		for i, a := range actions {
 			ns, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
 			if err != nil {
@@ -487,10 +492,17 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 				slog.Error("automation: action failed; continuing with next action",
 					"rule_id", r.ID, "rule_name", r.Name,
 					"action_index", i, "action_type", a.Type, "error", err)
+				errText := err.Error()
+				results = append(results, AutomationActionResult{Type: a.Type, OK: false, Error: &errText})
 				continue
 			}
 			notified = append(notified, ns...)
+			results = append(results, AutomationActionResult{Type: a.Type, OK: true})
 		}
+		// C12T1: one run row per firing, in this same tx — the state
+		// change and its log commit atomically. A run-row insert
+		// failure is logged, never fatal (same ethos as actions).
+		recordAutomationRunTx(actx, tx, r.ID, issueID, trig.Type, results)
 	}
 	return notified
 }
