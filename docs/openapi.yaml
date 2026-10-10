@@ -2507,11 +2507,14 @@
       },
       "AutomationTrigger": {
         "type": "object",
-        "description": "Trigger: issue.state_changed with optional from/to state filters (null matches any), or issue.created (fires on issue creation; takes no filters in v1 — filters on it are rejected). Automation-driven changes never re-trigger automations.",
+        "description": "Trigger: issue.state_changed with optional from/to state filters (null matches any); issue.created (fires on issue creation; takes no filters in v1 — filters on it are rejected); issue.assigned / issue.unassigned (an assignee is added / removed; no filters in v1); issue.labels_changed (a label is attached or detached; optional label_ids filter fires only when a listed label is added or removed, null matches any label change); issue.priority_changed (optional from_priorities / to_priorities filters, 0-4: none/low/medium/high/urgent, null matches any); issue.due_date_changed (the issue's target date changes; no filters in v1); issue.estimate_changed (the estimate point changes; no filters in v1); issue.comment_added (a comment is posted; no filters in v1). Filters that don't belong to a trigger type are rejected rather than silently ignored. Automation-driven changes never re-trigger automations.",
         "properties": {
-          "type": { "type": "string", "enum": ["issue.state_changed", "issue.created"], "example": "issue.state_changed" },
+          "type": { "type": "string", "enum": ["issue.state_changed", "issue.created", "issue.assigned", "issue.unassigned", "issue.labels_changed", "issue.priority_changed", "issue.due_date_changed", "issue.estimate_changed", "issue.comment_added"], "example": "issue.state_changed" },
           "from_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true },
-          "to_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true }
+          "to_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true },
+          "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true, "description": "issue.labels_changed only: fires when any listed label is added or removed. Null matches any label change." },
+          "from_priorities": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4 }, "nullable": true, "description": "issue.priority_changed only: 0-4 (none/low/medium/high/urgent). Null matches any." },
+          "to_priorities": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4 }, "nullable": true, "description": "issue.priority_changed only: 0-4 (none/low/medium/high/urgent). Null matches any." }
         }
       },
       "AutomationAction": {

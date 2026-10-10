@@ -578,6 +578,15 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 	}
 
+	// C16T0: a posted comment fires issue.comment_added rules in this
+	// same tx — a rolled-back comment can never fire a rule. Automation
+	// comments bypass this path (direct tx SQL under the loop guard),
+	// so they can never re-trigger.
+	if !automationActive(ctx) {
+		notified = append(notified,
+			runAutomationCommentAddedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
