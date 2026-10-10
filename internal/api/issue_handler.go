@@ -113,6 +113,17 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "parent issue is in another project", nil)
 	case errors.Is(err, service.ErrIssueCyclicParent):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "parent assignment would create a cycle", nil)
+	// C16T3: blocker guard. 409 with code open_blockers; details names
+	// the open blockers by display ID so the client can list them.
+	case errors.Is(err, service.ErrOpenBlockers):
+		var obe *service.OpenBlockersError
+		blockers := []string{}
+		if errors.As(err, &obe) && obe.Blockers != nil {
+			blockers = obe.Blockers
+		}
+		return WriteError(c, http.StatusConflict, ErrCodeOpenBlockers,
+			"issue has open blockers: "+strings.Join(blockers, ", "),
+			map[string]any{"blockers": blockers})
 	case errors.Is(err, service.ErrInvalidDateRange):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "start_date must not be after target_date", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):
@@ -484,6 +495,9 @@ type updateIssueBody struct {
 	StartDate       service.PatchField[string]          `json:"start_date"` // YYYY-MM-DD
 	TargetDate      service.PatchField[string]          `json:"target_date"`
 	EstimatePointID service.PatchField[string]          `json:"estimate_point_id"`
+	// C16T3: bypasses the open-blocker guard when moving to a completed
+	// state. A request directive, not a patch field (never persisted).
+	IgnoreBlockers bool `json:"ignore_blockers"`
 }
 
 // toDatePatch converts a tri-state YYYY-MM-DD string patch field into a
@@ -531,6 +545,7 @@ func bindIssuePatch(body updateIssueBody) (service.IssuePatch, error) {
 		EstimatePointID: body.EstimatePointID,
 		IsDraft:         body.IsDraft,
 		Archived:        body.Archived,
+		IgnoreBlockers:  body.IgnoreBlockers,
 	}, nil
 }
 
@@ -608,6 +623,9 @@ type bulkSetFields struct {
 	// AssigneeID is tri-state: omitted = untouched, null = clear all
 	// assignees, value = replace with that single user.
 	AssigneeID service.PatchField[string] `json:"assignee_id"`
+	// C16T3: bypasses the open-blocker guard when the set moves issues
+	// to a completed state (applies to the whole batch).
+	IgnoreBlockers bool `json:"ignore_blockers"`
 }
 
 type bulkSetBody struct {
@@ -629,10 +647,11 @@ func (h *IssueHandler) bulkSetIssues(c *echo.Context) error {
 	updated, ids, err := service.BulkSetIssues(c.Request().Context(), h.Pool,
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IssueIDs,
 		service.BulkIssueSet{
-			StateID:    body.Set.StateID,
-			Priority:   body.Set.Priority,
-			LabelIDs:   body.Set.LabelIDs,
-			AssigneeID: body.Set.AssigneeID,
+			StateID:        body.Set.StateID,
+			Priority:       body.Set.Priority,
+			LabelIDs:       body.Set.LabelIDs,
+			AssigneeID:     body.Set.AssigneeID,
+			IgnoreBlockers: body.Set.IgnoreBlockers,
 		})
 	if err != nil {
 		return issueError(c, err)

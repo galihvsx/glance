@@ -10,13 +10,17 @@ import (
 // Every handler error path answers with one of these — never a bare
 // status and never a free-form string the client must substring-match.
 const (
-	ErrCodeBadRequest      = "bad_request"
-	ErrCodeUnauthorized    = "unauthorized"
-	ErrCodeForbidden       = "forbidden"
-	ErrCodeNotFound        = "not_found"
-	ErrCodeUserNotFound    = "user_not_found"
-	ErrCodeMemberNotFound  = "member_not_found"
-	ErrCodeConflict        = "conflict"
+	ErrCodeBadRequest     = "bad_request"
+	ErrCodeUnauthorized   = "unauthorized"
+	ErrCodeForbidden      = "forbidden"
+	ErrCodeNotFound       = "not_found"
+	ErrCodeUserNotFound   = "user_not_found"
+	ErrCodeMemberNotFound = "member_not_found"
+	ErrCodeConflict       = "conflict"
+	// ErrCodeOpenBlockers is the 409 code (C16T3) when an issue is moved
+	// to a completed state while it has open blockers. details carries
+	// {"blockers":[...]} — the blocker display IDs.
+	ErrCodeOpenBlockers    = "open_blockers"
 	ErrCodeRateLimited     = "rate_limited"
 	ErrCodeGone            = "gone"
 	ErrCodePayloadTooLarge = "payload_too_large"

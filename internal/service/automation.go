@@ -841,6 +841,13 @@ func automationSetStateTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 	if err != nil {
 		return nil, false, err
 	}
+	// C16T3: blocker guard — an automation move into a completed state is
+	// rejected when open blockers point at the issue. The failure surfaces
+	// on the run row as ok:false (a loud failure, never a silent skip);
+	// the issue keeps its current state and the firing tx is untouched.
+	if err := assertNoOpenBlockersTx(ctx, tx, projectID, ident, issueID, sid); err != nil {
+		return nil, false, err
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE issues SET state_id = $1::uuid, updated_at = now() WHERE id = $2::uuid`,
 		sid, issueID); err != nil {

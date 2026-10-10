@@ -500,17 +500,17 @@
       "patch": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Atomically set fields on many issues",
-        "description": "Applies ONE set to many issues in a single fully-atomic transaction — any unknown, deleted, cross-project, or malformed id, or any invalid set field, aborts the whole batch (no partial application). 200 with {updated, issue_ids}. Member (15)+.",
+        "description": "Applies ONE set to many issues in a single fully-atomic transaction — any unknown, deleted, cross-project, or malformed id, or any invalid set field, aborts the whole batch (no partial application). 200 with {updated, issue_ids}. Member (15)+. The blocker guard applies per issue: a move into a completed state with open blockers aborts the batch with 409 code open_blockers unless set.ignore_blockers=true.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids", "set"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "set": { "type": "object", "properties": { "state_id": { "type": "string", "format": "uuid" }, "priority": { "type": "integer" }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "null = untouched; non-null replaces the label set (empty clears)" }, "assignee_id": { "type": "object", "description": "Tri-state: omitted = untouched, null value = clear all, value = replace with that user", "properties": { "set": { "type": "boolean" }, "value": { "type": "string", "format": "uuid", "nullable": true } } } } } } } } } },
-        "responses": { "200": { "description": "Bulk set result", "content": { "application/json": { "schema": { "type": "object", "properties": { "updated": { "type": "integer" }, "issue_ids": { "type": "array", "items": { "type": "string" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids", "set"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "set": { "type": "object", "properties": { "state_id": { "type": "string", "format": "uuid" }, "priority": { "type": "integer" }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "null = untouched; non-null replaces the label set (empty clears)" }, "assignee_id": { "type": "object", "description": "Tri-state: omitted = untouched, null value = clear all, value = replace with that user", "properties": { "set": { "type": "boolean" }, "value": { "type": "string", "format": "uuid", "nullable": true } } }, "ignore_blockers": { "type": "boolean", "description": "Bypass the open-blocker guard for the whole batch" } } } } } } } },
+        "responses": { "200": { "description": "Bulk set result", "content": { "application/json": { "schema": { "type": "object", "properties": { "updated": { "type": "integer" }, "issue_ids": { "type": "array", "items": { "type": "string" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-update": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Bulk-update many issues (partial success)",
-        "description": "Applies one tri-state patch to many issues inside a single transaction (per-item savepoints → partial success). 200 with {results:[{id, ok, error?}]}. Member (15)+. Honors Idempotency-Key.",
+        "description": "Applies one tri-state patch to many issues inside a single transaction (per-item savepoints → partial success). 200 with {results:[{id, ok, error?}]}. The blocker guard applies per item: a blocked move reports ok:false with an \"open blockers\" error (pass patch.ignore_blockers=true to force the batch). Member (15)+. Honors Idempotency-Key.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids", "patch"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "patch": { "$ref": "#/components/schemas/IssuePatch" } } } } } },
         "responses": { "200": { "description": "Per-item results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "ok": { "type": "boolean" }, "error": { "type": "string" } } } } } } } } } } 
@@ -549,10 +549,10 @@
       "patch": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update an issue",
-        "description": "Partial update. Plain pointers: nil = omitted, leave untouched. Tri-state fields (description, parent_id, dates, estimate_point_id): omitted = untouched, explicit null = clear, value = assign. archived=true archives, false unarchives.",
+        "description": "Partial update. Plain pointers: nil = omitted, leave untouched. Tri-state fields (description, parent_id, dates, estimate_point_id): omitted = untouched, explicit null = clear, value = assign. archived=true archives, false unarchives. Moving to a completed-group state while the issue has open 'blocks' blockers (blocking issues that are neither completed nor archived) is rejected with 409 code open_blockers — details.blockers lists the blocker display IDs; pass ignore_blockers=true to complete anyway.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuePatch" } } } },
-        "responses": { "200": { "description": "Updated issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Updated issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       },
       "delete": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1990,7 +1990,8 @@
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "start_date": { "type": "string", "format": "date", "nullable": true },
           "target_date": { "type": "string", "format": "date", "nullable": true },
-          "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true }
+          "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true },
+          "ignore_blockers": { "type": "boolean", "description": "Bypass the open-blocker guard when moving to a completed state. Request directive, never persisted." }
         }
       },
       "IssueDetail": {
@@ -2519,7 +2520,7 @@
       },
       "AutomationAction": {
         "type": "object",
-        "description": "One ordered action: assign (user_id), add_label (label_id), add_comment (body), set_priority (priority 0-4: none/low/medium/high/urgent), or set_state (state_id, a state UUID in this project). set_priority/set_state targeting the current value are no-ops: no activity row, and a firing of only no-ops writes no run row.",
+        "description": "One ordered action: assign (user_id), add_label (label_id), add_comment (body), set_priority (priority 0-4: none/low/medium/high/urgent), or set_state (state_id, a state UUID in this project). set_priority/set_state targeting the current value are no-ops: no activity row, and a firing of only no-ops writes no run row. A set_state move into a completed state is rejected by the blocker guard when the issue has open blockers — recorded on the run row as ok:false, never a silent skip.",
         "properties": {
           "type": { "type": "string", "enum": ["assign", "add_label", "add_comment", "set_priority", "set_state"] },
           "user_id": { "type": "string", "format": "uuid" },
