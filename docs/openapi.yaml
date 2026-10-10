@@ -388,6 +388,26 @@
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TrelloImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/plane-import/analyze": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Analyze a Plane export for import",
+        "description": "Read-only first half of the Plane-native import: parses the Plane JSON export (raw .json, or .zip containing a single .json — the shape Plane delivers for download; 256MB cap, top-level array required) and resolves everything that can be resolved without user input: states, labels, cycles and modules are matched by name (case-insensitive); people are ALWAYS reported as unresolved (Plane exports display names only — no silent guessing); estimate values are checked against the project's estimate scales. Returns the unresolved inventory the execute step needs. No writes. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file"], "properties": { "file": { "type": "string", "format": "binary", "description": "Plane JSON export: raw .json or .zip containing one .json (256MB limit)" } } } } } },
+        "responses": { "200": { "description": "Analysis result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlaneImportAnalysis" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/plane-import/execute": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import issues from a Plane export",
+        "description": "Write half of the Plane-native import: validates every row, then inserts everything in ONE transaction (never partial state). Missing states/labels/cycles/modules are created per the resolutions (created states land in the backlog group; strict_states opts into error-on-unknown instead). Issues keep their Plane sequence_id; parent_id is wired in a second pass; comments keep original timestamps (naive values read as UTC); links, subscribers and relations are applied or reported as per-issue gaps (glance has no issue-to-issue relations; relations are counted as drops). Idempotent per (project, plane project): re-running skips already-imported sequence ids. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file", "resolutions"], "properties": { "file": { "type": "string", "format": "binary", "description": "Plane JSON export: raw .json or .zip containing one .json (256MB limit)" }, "resolutions": { "type": "string", "description": "JSON PlaneImportResolutions: explicit mapping of the unresolved people/states/labels/cycles/modules returned by the analyze step" }, "options": { "type": "string", "description": "JSON PlaneImportExecuteOpts: {\"strict_states\": true} rejects unknown states as row errors instead of creating them; \"max_rows\" overrides the 50000-row soft cap" } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlaneImportReport" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2298,6 +2318,55 @@
           "assignee_misses": { "type": "integer" },
           "checklists_skipped": { "type": "integer" },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "1-based ordinal of the card in the fetched batch" }, "message": { "type": "string" } } } }
+        }
+      },
+      "PlaneImportUnresolved": {
+        "type": "object",
+        "properties": {
+          "people": { "type": "array", "items": { "type": "string" }, "description": "Plane display names (assignees, creators, comment authors, subscribers) that could not be matched to workspace members — always unresolved, no silent guessing" },
+          "states": { "type": "array", "items": { "type": "string" }, "description": "State names with no case-insensitive match in the target project" },
+          "labels": { "type": "array", "items": { "type": "string" }, "description": "Label names with no case-insensitive match" },
+          "cycles": { "type": "array", "items": { "type": "string" }, "description": "Cycle names with no case-insensitive match" },
+          "modules": { "type": "array", "items": { "type": "string" }, "description": "Module names with no case-insensitive match" }
+        }
+      },
+      "PlaneImportAnalysis": {
+        "type": "object",
+        "properties": {
+          "project_identifier": { "type": "string", "description": "The Plane project_identifier all rows share" },
+          "issue_count": { "type": "integer" },
+          "unresolved": { "$ref": "#/components/schemas/PlaneImportUnresolved" },
+          "warnings": { "type": "array", "items": { "type": "string" }, "description": "Non-fatal notes: estimate mismatches, ambiguous people, duplicate identifiers, row-level parse failures" }
+        }
+      },
+      "PlaneImportRowError": {
+        "type": "object",
+        "properties": {
+          "identifier": { "type": "string", "description": "Plane issue identifier (e.g. ACME-42)" },
+          "message": { "type": "string" }
+        }
+      },
+      "PlaneImportGap": {
+        "type": "object",
+        "properties": {
+          "identifier": { "type": "string", "description": "Plane issue identifier (e.g. ACME-42)" },
+          "losses": { "type": "array", "items": { "type": "string" }, "description": "Honest loss list for the issue: dropped relations, links, unset estimates, dangling parents, attachment counts without files" }
+        }
+      },
+      "PlaneImportReport": {
+        "type": "object",
+        "properties": {
+          "project_identifier": { "type": "string" },
+          "created": { "type": "integer" },
+          "skipped": { "type": "integer", "description": "Rows skipped as already imported (idempotent re-run)" },
+          "failed": { "type": "integer" },
+          "errors": { "type": "array", "items": { "$ref": "#/components/schemas/PlaneImportRowError" } },
+          "gaps": { "type": "array", "items": { "$ref": "#/components/schemas/PlaneImportGap" } },
+          "states_created": { "type": "array", "items": { "type": "string" }, "description": "Created states land in the backlog group unless a resolution pinned the group" },
+          "labels_created": { "type": "array", "items": { "type": "string" } },
+          "cycles_created": { "type": "array", "items": { "type": "string" }, "description": "Reported as \"name (start → end)\"" },
+          "modules_created": { "type": "array", "items": { "type": "string" } },
+          "warnings": { "type": "array", "items": { "type": "string" } }
         }
       },
       "ShareLink": {
