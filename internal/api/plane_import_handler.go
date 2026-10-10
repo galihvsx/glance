@@ -6,7 +6,7 @@ package api
 //   POST .../imports/plane-import/analyze — multipart `file` = the Plane
 //     JSON export (raw .json or .zip containing one .json). Parses and
 //     returns the unresolved inventory (service.PlaneImportAnalysis); no
-//     writes. Workspace member (15)+.
+//     writes. Member (any role)+, per design decision 9.
 //   POST .../imports/plane-import/execute — multipart `file` +
 //     `resolutions` (JSON service.PlaneImportResolutions) + optional
 //     `options` (JSON service.PlaneImportExecuteOpts, e.g. strict_states).
