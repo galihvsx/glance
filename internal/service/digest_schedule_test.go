@@ -24,10 +24,10 @@ func pinTestLocal(t *testing.T) {
 }
 
 // setDigestSchedule is the test helper that writes a user's schedule via
-// the service API under test.
+// the service API under test (server-local zone — no tz pref).
 func setDigestSchedule(t *testing.T, f *digestFixture, frequency string, hour int) {
 	t.Helper()
-	if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, frequency, hour); err != nil {
+	if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, frequency, hour, ""); err != nil {
 		t.Fatalf("SetDigestSchedule(%q, %d): %v", frequency, hour, err)
 	}
 }
@@ -66,7 +66,7 @@ func TestGetDigestScheduleDefaults(t *testing.T) {
 // and the stored rows use the documented key encoding.
 func TestSetDigestScheduleRoundTrip(t *testing.T) {
 	f := setupDigestFixture(t)
-	got, err := SetDigestSchedule(f.ctx, f.pool, f.user, DigestFrequencyWeekly, 14)
+	got, err := SetDigestSchedule(f.ctx, f.pool, f.user, DigestFrequencyWeekly, 14, "")
 	if err != nil {
 		t.Fatalf("SetDigestSchedule: %v", err)
 	}
@@ -106,12 +106,12 @@ func TestSetDigestScheduleValidation(t *testing.T) {
 		{"daily", 24},
 		{"weekly", 100},
 	} {
-		if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, tc.freq, tc.hour); err == nil {
+		if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, tc.freq, tc.hour, ""); err == nil {
 			t.Errorf("SetDigestSchedule(%q, %d): want error, got nil", tc.freq, tc.hour)
 		}
 	}
 	for _, hour := range []int{0, 23} {
-		if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, DigestFrequencyDaily, hour); err != nil {
+		if _, err := SetDigestSchedule(f.ctx, f.pool, f.user, DigestFrequencyDaily, hour, ""); err != nil {
 			t.Errorf("SetDigestSchedule(daily, %d): %v", hour, err)
 		}
 	}

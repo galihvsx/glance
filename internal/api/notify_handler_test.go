@@ -324,3 +324,79 @@ func TestDigestScheduleHTTPEndpoints(t *testing.T) {
 		t.Fatalf("unauthenticated: status = %d, want 401", rec.Code)
 	}
 }
+
+// TestDigestScheduleTZHTTPEndpoints (C13T1): the tz field round-trips;
+// invalid IANA names → 400 with the stored schedule untouched; empty tz
+// resets to the server-local default.
+func TestDigestScheduleTZHTTPEndpoints(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testNotifyServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("digest-sched-tz"), "ua", "10.9.0.4")
+
+	var sched struct {
+		Frequency string `json:"frequency"`
+		Hour      int    `json:"hour"`
+		TZ        string `json:"tz"`
+	}
+	decode := func(rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), &sched); err != nil {
+			t.Fatalf("decode schedule: %v (body: %s)", err, rec.Body.String())
+		}
+	}
+
+	// Default: no tz set → tz names the server zone.
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get schedule: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec)
+	if sched.TZ == "" {
+		t.Fatal("tz empty — GET must report the effective zone, never blank")
+	}
+
+	// PUT a timezone round-trips.
+	rec = postAuthedJSON(t, e, http.MethodPut, "/api/v1/digest-schedule",
+		cookie, `{"frequency":"daily","hour":8,"tz":"Asia/Makassar"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set schedule tz: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec)
+	if sched.TZ != "Asia/Makassar" {
+		t.Fatalf("put response tz = %q, want Asia/Makassar", sched.TZ)
+	}
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	decode(rec)
+	if sched.TZ != "Asia/Makassar" {
+		t.Fatalf("get tz = %q, want Asia/Makassar", sched.TZ)
+	}
+
+	// Invalid IANA names → 400, stored schedule untouched.
+	for _, body := range []string{
+		`{"frequency":"daily","hour":8,"tz":"Not/AZone"}`,
+		`{"frequency":"daily","hour":8,"tz":"UTC+7"}`,
+	} {
+		rec = postAuthedJSON(t, e, http.MethodPut, "/api/v1/digest-schedule", cookie, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("put %s: status = %d, want 400 (body: %s)", body, rec.Code, rec.Body.String())
+		}
+	}
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/digest-schedule", cookie)
+	decode(rec)
+	if sched.TZ != "Asia/Makassar" {
+		t.Fatalf("tz after rejected puts = %q, want Asia/Makassar (unchanged)", sched.TZ)
+	}
+
+	// Empty tz resets to the server-local default.
+	rec = postAuthedJSON(t, e, http.MethodPut, "/api/v1/digest-schedule",
+		cookie, `{"frequency":"daily","hour":8,"tz":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset tz: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec)
+	if sched.TZ == "Asia/Makassar" {
+		t.Fatalf("tz after reset = %q, want server-local default", sched.TZ)
+	}
+}

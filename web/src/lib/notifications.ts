@@ -52,15 +52,69 @@ export interface NotificationPrefItem {
 }
 
 /**
- * Digest schedule (C11T2) from GET /api/v1/digest-schedule.
- * frequency: "daily" | "weekly"; hour: 0-23 in the glance server's local
- * time zone (server_tz names it — per-user time zones are future work).
+ * Digest schedule (C11T2, C13T1) from GET /api/v1/digest-schedule.
+ * frequency: "daily" | "weekly"; hour: 0-23; tz: the IANA timezone the
+ * hour is evaluated in — GET always reports the EFFECTIVE zone (the
+ * user's pref, or the server zone name when unset). server_tz is kept
+ * for compatibility: it names the server zone tz falls back to.
  */
 export interface DigestSchedule {
   frequency: "daily" | "weekly";
   hour: number;
+  tz: string;
   server_tz: string;
 }
+
+/**
+ * Shortlist of common IANA timezones offered in the digest settings
+ * datalist (C13T1). The field is free-text: any IANA name the server's
+ * time.LoadLocation accepts is valid — the server rejects the rest
+ * (400). Lean by design: a shortlist + honest free entry beats a
+ * 600-entry select.
+ */
+export const DIGEST_TZ_SHORTLIST: readonly string[] = [
+  "UTC",
+  "Asia/Jakarta",
+  "Asia/Makassar",
+  "Asia/Jayapura",
+  "Asia/Singapore",
+  "Asia/Kuala_Lumpur",
+  "Asia/Bangkok",
+  "Asia/Manila",
+  "Asia/Hong_Kong",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Kolkata",
+  "Asia/Karachi",
+  "Asia/Dhaka",
+  "Asia/Dubai",
+  "Europe/Istanbul",
+  "Europe/Moscow",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  "Europe/Madrid",
+  "Europe/Zurich",
+  "Africa/Cairo",
+  "Africa/Lagos",
+  "Africa/Nairobi",
+  "America/Sao_Paulo",
+  "America/Buenos_Aires",
+  "America/Halifax",
+  "America/New_York",
+  "America/Toronto",
+  "America/Chicago",
+  "America/Mexico_City",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Vancouver",
+  "Pacific/Honolulu",
+  "Pacific/Auckland",
+  "Australia/Sydney",
+  "Australia/Perth",
+];
 
 /** Known event types (service.AllNotifyEvents). Unknown types render raw. */
 export const NOTIFY_EVENT_LABELS: Record<string, string> = {
@@ -132,12 +186,13 @@ export async function setNotificationPref(
   );
 }
 
-// C11T2: digest schedule endpoints. Contract mirrors
+// C11T2: digest schedule endpoints. C13T1 adds the tz field (IANA name;
+// empty resets to the server-local default). Contract mirrors
 // internal/api/notify_handler.go:
 //
 //   GET  /api/v1/digest-schedule            → DigestSchedule
 //   PUT  /api/v1/digest-schedule            → DigestSchedule
-//        body {frequency: "daily"|"weekly", hour: 0-23}
+//        body {frequency: "daily"|"weekly", hour: 0-23, tz?: string}
 //
 export async function fetchDigestSchedule(): Promise<DigestSchedule> {
   return api.get<DigestSchedule>("/api/v1/digest-schedule");
@@ -146,10 +201,12 @@ export async function fetchDigestSchedule(): Promise<DigestSchedule> {
 export async function setDigestSchedule(
   frequency: string,
   hour: number,
+  tz: string,
 ): Promise<DigestSchedule> {
   return api.put<DigestSchedule>("/api/v1/digest-schedule", {
     frequency,
     hour,
+    tz,
   });
 }
 

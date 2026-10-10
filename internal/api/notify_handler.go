@@ -56,6 +56,8 @@ func notifyError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest frequency must be daily or weekly", nil)
 	case errors.Is(err, service.ErrBadDigestHour):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest hour must be 0-23", nil)
+	case errors.Is(err, service.ErrBadDigestTimezone):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest timezone must be a valid IANA timezone name", nil)
 	case errors.Is(err, service.ErrWebhookNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "webhook not found", nil)
 	case errors.Is(err, service.ErrBadWebhookURL):
@@ -156,10 +158,11 @@ func (h *NotifyHandler) setNotificationPref(c *echo.Context) error {
 	return c.JSON(http.StatusOK, p)
 }
 
-// getDigestSchedule returns the caller's digest cadence (C11T2).
-// server_tz names the zone the hour is interpreted in — the glance
-// server's local zone. Per-user timezones are future work; the UI shows
-// this value so the caveat is honest, not buried.
+// getDigestSchedule returns the caller's digest cadence (C11T2, C13T1).
+// tz names the zone the hour is evaluated in: the user's own IANA
+// timezone when set, otherwise the server's local zone name. server_tz
+// is kept for compatibility — it names the server zone that tz falls
+// back to when the user never set one.
 func (h *NotifyHandler) getDigestSchedule(c *echo.Context) error {
 	u := CurrentUser(c)
 	if u == nil {
@@ -172,6 +175,7 @@ func (h *NotifyHandler) getDigestSchedule(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{
 		"frequency": sched.Frequency,
 		"hour":      sched.Hour,
+		"tz":        sched.EffectiveTimezone(),
 		"server_tz": time.Local.String(),
 	})
 }
@@ -179,10 +183,13 @@ func (h *NotifyHandler) getDigestSchedule(c *echo.Context) error {
 type digestScheduleBody struct {
 	Frequency string `json:"frequency"`
 	Hour      int    `json:"hour"`
+	Tz        string `json:"tz"`
 }
 
-// setDigestSchedule stores the caller's digest cadence (C11T2). Invalid
-// frequency/hour → 400; the stored schedule is untouched on rejection.
+// setDigestSchedule stores the caller's digest cadence (C11T2, C13T1).
+// Invalid frequency/hour/timezone → 400; the stored schedule is
+// untouched on rejection. An empty tz resets the timezone to the
+// server-local default.
 func (h *NotifyHandler) setDigestSchedule(c *echo.Context) error {
 	u := CurrentUser(c)
 	if u == nil {
@@ -192,7 +199,7 @@ func (h *NotifyHandler) setDigestSchedule(c *echo.Context) error {
 	if err := c.Bind(&b); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid body", nil)
 	}
-	sched, err := service.SetDigestSchedule(c.Request().Context(), h.Pool, u.ID, b.Frequency, b.Hour)
+	sched, err := service.SetDigestSchedule(c.Request().Context(), h.Pool, u.ID, b.Frequency, b.Hour, b.Tz)
 	if err != nil {
 		return notifyError(c, err)
 	}

@@ -1559,14 +1559,15 @@
       "get": {
         "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Get my digest schedule",
-        "description": "Digest cadence (C11T2): frequency daily|weekly and the server-local send-after hour (0-23). server_tz names the server zone the hour is interpreted in — per-user timezones are future work.",
-        "responses": { "200": { "description": "Schedule", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 }, "server_tz": { "type": "string" } } } } } } }
+        "description": "Digest cadence (C11T2, C13T1): frequency daily|weekly, the send-after hour (0-23) and the IANA timezone the hour is evaluated in. tz is the effective zone: the user's digest.tz pref when set, otherwise the server zone (server_tz names it).",
+        "responses": { "200": { "description": "Schedule", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 }, "tz": { "type": "string", "description": "IANA timezone the digest hour is evaluated in (effective)" }, "server_tz": { "type": "string" } } } } } } }
       },
       "put": {
         "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Set my digest schedule",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["frequency", "hour"], "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 } } } } } },
-        "responses": { "200": { "description": "Schedule saved", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+        "description": "Digest cadence (C11T2, C13T1). tz is an IANA timezone name (e.g. Asia/Makassar); an invalid name is rejected with 400 and the stored schedule is untouched. An empty tz resets to the server-local default.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["frequency", "hour"], "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 }, "tz": { "type": "string", "description": "IANA timezone for the digest hour; empty = server-local default" } } } } } },
+        "responses": { "200": { "description": "Schedule saved", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 }, "tz": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
     },
     "/api/v1/favorites": {
