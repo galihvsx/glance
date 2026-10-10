@@ -227,6 +227,42 @@ queued onboarding follow-up (invites endpoint).
   never silent), then single-transaction insert. Resolves states/priorities/
   labels/assignees by name; unknown values → per-row errors.
 
+**Restore & automate (cycle 11)**
+- Workspace archive importer (C11T0): admin-only (role 20)
+  `POST /api/v1/workspaces/{slug}/import` (multipart archive JSON, 100MB
+  cap) restores `glance-export/1` archives with restore-by-UUID semantics
+  (UUID preserved on new rows; same UUID already present → skipped, so
+  re-import is idempotent); streaming `json.Decoder` (memory flat), single
+  all-or-nothing tx, format pin (`!= glance-export/1` → 400, zero writes);
+  members matched by email (never auto-created, unmapped skipped +
+  reported); attachments skipped but counted; workspace-settings Data
+  section gains an "Import archive" UI with honest copy.
+- Workflow automations v1 (C11T1, beyond parity — Plane paywalls this
+  class): migration `000037_automation_rules` (idempotent up/down); per-
+  project rules — on issue state change, run actions (assign user, add
+  label, post comment); max 25 rules per project; depth-1 loop guard
+  (automation-driven changes never re-trigger automations); action failures
+  logged, never block the state change; `GET/POST .../projects/{id}/
+  automations`, `PATCH/DELETE .../automations/{ruleId}` (read = member(15)+,
+  write = member(15)+ — documented: this codebase has no maintainer role);
+  project-settings "Automations" section with rule builder and enable/
+  disable toggle.
+- Digest scheduling granularity (C11T2): per-user digest cadence stored in
+  `notification_prefs` with no migration (value-encoded keys
+  `digest.frequency:<daily|weekly>` + `digest.hour:<0-23>`, defaults daily
+  after 08:00 server-local); the digest ticker now runs hourly and gates
+  each opted-in user on due-ness (send-after hour in the server's local
+  timezone, daily = no watermark today, weekly = last watermark ≥ 7 days
+  old); `GET/PUT /api/v1/digest-schedule` (GET also returns `server_tz`);
+  notification prefs gain frequency + hour selects with honest copy
+  (per-user time zones not supported yet). Known limitation: weekly digests
+  still aggregate the trailing 24h, not 7 days.
+- Trello checklist import (C11T3): closes the C10T0 skip-documented item —
+  per-card checklists (name + checked/unchecked items) are appended to the
+  imported issue's description as markdown (`## <name>` sections,
+  `- [x]/[ ]` items); fetch failure is a per-card error, the batch
+  continues; SSRF guard covers the new fetch path.
+
 ### Fixed
 
 - Slack webhook clear path (C9T3 follow-up): PATCH
