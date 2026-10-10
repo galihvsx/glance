@@ -37,6 +37,25 @@ export interface AdminWorkspace {
   created_at: string;
 }
 
+export interface AdminAuditEntry {
+  id: string;
+  at: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  workspace_id: string | null;
+  ip: string | null;
+  meta: Record<string, unknown>;
+}
+
+export interface AdminAuditFilters {
+  action?: string;
+  actorId?: string;
+  entityType?: string;
+}
+
 export interface AdminPage<T> {
   items: T[];
   total: number;
@@ -48,6 +67,8 @@ export const ADMIN_KEYS = {
   stats: ["admin", "stats"] as const,
   users: (page: number) => ["admin", "users", page] as const,
   workspaces: (page: number) => ["admin", "workspaces", page] as const,
+  auditLog: (page: number, filters: AdminAuditFilters) =>
+    ["admin", "audit-log", page, filters] as const,
 };
 
 export const ADMIN_PER_PAGE = 25;
@@ -104,6 +125,25 @@ export async function deleteAdminWorkspace(
 ): Promise<void> {
   await api.del(
     `/api/v1/admin/workspaces/${encodeURIComponent(id)}?confirm=${encodeURIComponent(confirmName)}`,
+  );
+}
+
+/** Reads the append-only audit log. Empty filter fields are dropped from
+ *  the query string — the server treats them as "no filter". */
+export function fetchAdminAuditLog(
+  page = 1,
+  filters: AdminAuditFilters = {},
+  perPage = ADMIN_PER_PAGE,
+): Promise<AdminPage<AdminAuditEntry>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  });
+  if (filters.action) params.set("action", filters.action);
+  if (filters.actorId) params.set("actor_id", filters.actorId);
+  if (filters.entityType) params.set("entity_type", filters.entityType);
+  return api.get<AdminPage<AdminAuditEntry>>(
+    `/api/v1/admin/audit-log?${params.toString()}`,
   );
 }
 

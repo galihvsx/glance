@@ -8,6 +8,8 @@
 //   Workspaces — paginated usage table; delete behind a typed-name
 //                confirmation (the server enforces 400 missing / 409
 //                mismatch on ?confirm=<name>)
+//   Audit log  — append-only admin audit trail: filters (action /
+//                actor_id / entity_type), newest first, relative times
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,12 +27,15 @@ import {
   ADMIN_PER_PAGE,
   deactivateAdminUser,
   deleteAdminWorkspace,
+  fetchAdminAuditLog,
   fetchAdminStats,
   fetchAdminUsers,
   fetchAdminWorkspaces,
   reactivateAdminUser,
   setAdminUser,
   totalPages,
+  type AdminAuditEntry,
+  type AdminAuditFilters,
   type AdminUser,
   type AdminWorkspace,
 } from "../lib/admin";
@@ -63,6 +68,13 @@ import {
   TableRow,
 } from "../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { toast } from "../components/ui/toast";
 
 function AdminError({ error }: { error: unknown }) {
@@ -516,6 +528,185 @@ function WorkspacesTab() {
   );
 }
 
+const AUDIT_ACTIONS = [
+  "user.role_changed",
+  "user.deactivated",
+  "user.reactivated",
+  "workspace.deleted",
+];
+
+function AuditTab() {
+  const [page, setPage] = useState(1);
+  // Draft = what the inputs show; applied = what the query actually uses.
+  // Filters only hit the server on Apply, so typing doesn't refetch.
+  const [draft, setDraft] = useState<AdminAuditFilters>({});
+  const [applied, setApplied] = useState<AdminAuditFilters>({});
+
+  const auditQuery = useQuery({
+    queryKey: ADMIN_KEYS.auditLog(page, applied),
+    queryFn: () => fetchAdminAuditLog(page, applied),
+  });
+
+  const applyFilters = () => {
+    setApplied(draft);
+    setPage(1);
+  };
+  const clearFilters = () => {
+    setDraft({});
+    setApplied({});
+    setPage(1);
+  };
+
+  const rows = auditQuery.data?.items ?? [];
+  const short = (id: string) =>
+    id.length > 8 ? `${id.slice(0, 8)}…` : id;
+
+  return (
+    <div>
+      {auditQuery.isError && <AdminError error={auditQuery.error} />}
+      <Card className="mb-4">
+        <CardContent className="pt-6">
+          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+            <div className="space-y-1.5">
+              <Label htmlFor="audit-action">Action</Label>
+              <Input
+                id="audit-action"
+                placeholder="e.g. user.deactivated"
+                value={draft.action ?? ""}
+                onChange={(e) =>
+                  setDraft({ ...draft, action: e.target.value || undefined })
+                }
+                list="audit-actions"
+                autoComplete="off"
+              />
+              <datalist id="audit-actions">
+                {AUDIT_ACTIONS.map((a) => (
+                  <option key={a} value={a} />
+                ))}
+              </datalist>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="audit-actor">Actor ID</Label>
+              <Input
+                id="audit-actor"
+                placeholder="Actor UUID"
+                value={draft.actorId ?? ""}
+                onChange={(e) =>
+                  setDraft({ ...draft, actorId: e.target.value || undefined })
+                }
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="audit-entity-type">Entity type</Label>
+              <Select
+                value={draft.entityType ?? "__any"}
+                onValueChange={(v) =>
+                  setDraft({
+                    ...draft,
+                    entityType:
+                      v === "__any" || v == null ? undefined : v,
+                  })
+                }
+              >
+                <SelectTrigger id="audit-entity-type" className="w-full">
+                  <SelectValue placeholder="Any type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__any">Any type</SelectItem>
+                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="workspace">Workspace</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end gap-2">
+              <Button size="sm" onClick={applyFilters}>
+                Apply
+              </Button>
+              <Button size="sm" variant="ghost" onClick={clearFilters}>
+                Clear
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Actor</TableHead>
+              <TableHead>Action</TableHead>
+              <TableHead>Entity</TableHead>
+              <TableHead>IP</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {auditQuery.isLoading &&
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell colSpan={5}>
+                    <Skeleton className="h-5 w-full" />
+                  </TableCell>
+                </TableRow>
+              ))}
+            {!auditQuery.isLoading &&
+              rows.map((a: AdminAuditEntry) => (
+                <TableRow key={a.id}>
+                  <TableCell
+                    className="whitespace-nowrap text-sm text-muted-foreground"
+                    title={a.at}
+                  >
+                    {relativeTime(a.at)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{a.actor_email ?? "—"}</div>
+                    {a.actor_id && (
+                      <div
+                        className="font-mono text-xs text-muted-foreground"
+                        title={a.actor_id}
+                      >
+                        {short(a.actor_id)}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className="font-mono text-xs">
+                      {a.action}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-mono text-xs">{a.entity_type}</div>
+                    <div
+                      className="font-mono text-xs text-muted-foreground"
+                      title={a.entity_id}
+                    >
+                      {short(a.entity_id)}
+                    </div>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {a.ip ?? "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+          </TableBody>
+        </Table>
+      </Card>
+      {!auditQuery.isLoading && rows.length === 0 && (
+        <div className="mt-4 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+          No audit entries match these filters.
+        </div>
+      )}
+      <PageControls
+        page={page}
+        total={auditQuery.data?.total ?? 0}
+        perPage={ADMIN_PER_PAGE}
+        onPage={setPage}
+      />
+    </div>
+  );
+}
+
 export default function Admin() {
   const { user } = useAuth();
 
@@ -534,6 +725,7 @@ export default function Admin() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
+          <TabsTrigger value="audit-log">Audit log</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">
           <OverviewTab />
@@ -543,6 +735,9 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="workspaces">
           <WorkspacesTab />
+        </TabsContent>
+        <TabsContent value="audit-log">
+          <AuditTab />
         </TabsContent>
       </Tabs>
     </div>
