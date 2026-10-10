@@ -94,8 +94,9 @@ func (h *AutomationHandler) listAutomations(c *echo.Context) error {
 
 // listAutomationRuns implements GET .../automations/runs: the
 // project's automation run history, newest first. Query params:
-// rule_id?, issue_id? (UUID filters), limit? (default 20, clamped to
-// 100). Member (15)+.
+// rule_id?, issue_id? (UUID filters, 400 on malformed), limit?
+// (default 20; 0/absent = default, negative or non-integer = 400,
+// >100 clamped to 100). Member (15)+.
 func (h *AutomationHandler) listAutomationRuns(c *echo.Context) error {
 	filter := service.AutomationRunFilter{}
 	if raw := c.QueryParam("rule_id"); raw != "" {
