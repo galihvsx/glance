@@ -428,17 +428,31 @@ func resolveIssueForTaxonomy(ctx context.Context, q queryRower, wsSlug, identifi
 // AssignLabel attaches a workspace label to an issue. Idempotent:
 // assigning twice succeeds with no duplicate row. The label must belong
 // to the workspace (a foreign label is ErrLabelNotFound). Member (15)+.
+// C16T0: the attach and its issue.labels_changed automation evaluation
+// share one tx, so a rolled-back attach can never fire a rule; the
+// idempotent re-attach (0 rows) fires nothing.
 func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, labelID, actorID string) error {
-	wsID, _, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
+	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
 	}
 	if role < RoleMember {
 		return ErrForbidden
 	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
 	lid := strings.ToLower(strings.TrimSpace(labelID))
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
 	var owner string
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT workspace_id::text FROM labels WHERE id = $1::uuid`, lid).Scan(&owner)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
@@ -449,17 +463,32 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if owner != wsID {
 		return ErrLabelNotFound
 	}
-	_, err = pool.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO issue_labels (issue_id, label_id) VALUES ($1::uuid, $2::uuid)
 		 ON CONFLICT DO NOTHING`,
 		issueID, lid)
-	return err
+	if err != nil {
+		return err
+	}
+	var notified []*Notification
+	if tag.RowsAffected() > 0 && !automationActive(ctx) {
+		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+			[]string{lid}, nil)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceNotifications(notified)
+	return nil
 }
 
 // UnassignLabel detaches a label from an issue. Idempotent: unassigning
-// an absent label succeeds silently. Member (15)+.
+// an absent label succeeds silently. Member (15)+. C16T0: the detach and
+// its issue.labels_changed automation evaluation share one tx, so a
+// rolled-back detach can never fire a rule; detaching an absent label
+// (0 rows) fires nothing.
 func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, labelID, actorID string) error {
-	_, _, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
+	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
 	}
@@ -470,10 +499,34 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// Malformed ids match nothing — the idempotent no-op answer.
 		return nil
 	}
-	_, err = pool.Exec(ctx,
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
+	lid := strings.ToLower(strings.TrimSpace(labelID))
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_labels WHERE issue_id = $1::uuid AND label_id = $2::uuid`,
-		issueID, labelID)
-	return err
+		issueID, lid)
+	if err != nil {
+		return err
+	}
+	var notified []*Notification
+	if tag.RowsAffected() > 0 && !automationActive(ctx) {
+		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+			nil, []string{lid})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	announceNotifications(notified)
+	return nil
 }
 
 // AssignAssignee assigns a workspace member to an issue. Idempotent.
@@ -540,6 +593,12 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 		if err != nil {
 			return err
 		}
+		// C16T0: a real assignment fires issue.assigned rules in this
+		// same tx — a rolled-back assignment can never fire a rule.
+		if !automationActive(ctx) {
+			notified = append(notified,
+				runAutomationAssignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -602,6 +661,13 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 			actorID, []string{uid})
 		if err != nil {
 			return err
+		}
+		// C16T0: a real unassignment fires issue.unassigned rules in
+		// this same tx — a rolled-back unassignment can never fire a
+		// rule.
+		if !automationActive(ctx) {
+			notified = append(notified,
+				runAutomationUnassignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

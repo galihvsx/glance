@@ -6,7 +6,13 @@ package service
 //
 // Triggers: issue.state_changed (fires when an issue's state changes and
 // the transition matches the trigger filter) and issue.created (C12T2 —
-// fires on issue creation, no filters in v1). Actions run in order
+// fires on issue creation, no filters in v1), plus the C16T0 field
+// events: issue.assigned / issue.unassigned (an assignee is added /
+// removed), issue.labels_changed (a label is attached or detached;
+// optional label_ids filter), issue.priority_changed (optional
+// from_priorities / to_priorities filters), issue.due_date_changed (the
+// target date changes), issue.estimate_changed (the estimate point
+// changes) and issue.comment_added. Actions run in order
 // inside the firing transaction: assign, add_label, add_comment,
 // set_priority, set_state (C12T2). An action failure is LOGGED (slog)
 // and never blocks the firing event. Automation-driven changes never
@@ -64,11 +70,23 @@ var (
 // AutomationTrigger fires a rule. C11T1 shipped issue.state_changed with
 // optional from/to state filters (a null/empty filter matches any
 // state); C12T2 adds issue.created, which fires on issue creation and
-// takes no filters in v1.
+// takes no filters in v1. C16T0 adds the field-level events:
+// issue.assigned / issue.unassigned (an assignee is added / removed),
+// issue.labels_changed (a label is attached or detached; the optional
+// label_ids filter fires only when a listed label is added or removed),
+// issue.priority_changed (optional from_priorities / to_priorities
+// filters, 0-4), issue.due_date_changed (the issue's target date — its
+// due date — changes), issue.estimate_changed (the estimate point
+// changes) and issue.comment_added. Apart from labels_changed and
+// priority_changed, the new events take no filters in v1: a filter on
+// them is rejected rather than silently ignored.
 type AutomationTrigger struct {
-	Type       string   `json:"type"`
-	FromStates []string `json:"from_states"`
-	ToStates   []string `json:"to_states"`
+	Type           string   `json:"type"`
+	FromStates     []string `json:"from_states"`
+	ToStates       []string `json:"to_states"`
+	LabelIDs       []string `json:"label_ids,omitempty"`
+	FromPriorities []int    `json:"from_priorities,omitempty"`
+	ToPriorities   []int    `json:"to_priorities,omitempty"`
 }
 
 // AutomationAction is one ordered step: exactly one of assign (user_id),
@@ -158,20 +176,62 @@ func resolveAutomationProject(ctx context.Context, q queryRower, wsSlug, identif
 // takes optional from/to state filters (every listed state must be a
 // UUID of a state in this project — checkStateInProject's ErrInvalidState
 // is mapped to ErrInvalidAutomationTrigger so callers see one sentinel).
-// issue.created (C12T2) takes no fields in v1: a filter on a created
-// trigger is rejected rather than silently ignored. Unknown types are
-// rejected as before.
-func validateAutomationTrigger(ctx context.Context, q queryRower, projectID string, t AutomationTrigger) error {
+// issue.labels_changed takes an optional label_ids filter (every listed
+// label must be a UUID of a label in this workspace). issue.priority_changed
+// takes optional from/to priority filters pinned to the schema enum
+// (0-4). The remaining types take no filters at all. Filters that don't
+// belong to a trigger type are rejected rather than silently ignored.
+// Unknown types are rejected as before.
+func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectID string, t AutomationTrigger) error {
+	// filterless reports whether the trigger carries no filter field at
+	// all; filterless event types reject any of them.
+	filterless := len(t.FromStates) == 0 && len(t.ToStates) == 0 &&
+		len(t.LabelIDs) == 0 && len(t.FromPriorities) == 0 && len(t.ToPriorities) == 0
 	switch t.Type {
 	case "issue.state_changed":
+		if len(t.LabelIDs) > 0 || len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 {
+			return ErrInvalidAutomationTrigger
+		}
 		for _, sid := range append(append([]string{}, t.FromStates...), t.ToStates...) {
 			if _, err := checkStateInProject(ctx, q, projectID, sid); err != nil {
 				return ErrInvalidAutomationTrigger
 			}
 		}
 		return nil
-	case "issue.created":
-		if len(t.FromStates) > 0 || len(t.ToStates) > 0 {
+	case "issue.labels_changed":
+		if len(t.FromStates) > 0 || len(t.ToStates) > 0 ||
+			len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 {
+			return ErrInvalidAutomationTrigger
+		}
+		for _, lid := range t.LabelIDs {
+			lid = strings.ToLower(strings.TrimSpace(lid))
+			var owner string
+			err := q.QueryRow(ctx,
+				`SELECT workspace_id::text FROM labels WHERE id = $1::uuid`, lid).Scan(&owner)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+					return ErrInvalidAutomationTrigger
+				}
+				return err
+			}
+			if owner != wsID {
+				return ErrInvalidAutomationTrigger
+			}
+		}
+		return nil
+	case "issue.priority_changed":
+		if len(t.FromStates) > 0 || len(t.ToStates) > 0 || len(t.LabelIDs) > 0 {
+			return ErrInvalidAutomationTrigger
+		}
+		for _, p := range append(append([]int{}, t.FromPriorities...), t.ToPriorities...) {
+			if p < 0 || p > 4 {
+				return ErrInvalidAutomationTrigger
+			}
+		}
+		return nil
+	case "issue.created", "issue.assigned", "issue.unassigned",
+		"issue.due_date_changed", "issue.estimate_changed", "issue.comment_added":
+		if !filterless {
 			return ErrInvalidAutomationTrigger
 		}
 		return nil
@@ -306,7 +366,7 @@ func CreateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 	if role < RoleMember {
 		return nil, ErrForbidden
 	}
-	if err := validateAutomationTrigger(ctx, pool, projectID, in.Trigger); err != nil {
+	if err := validateAutomationTrigger(ctx, pool, wsID, projectID, in.Trigger); err != nil {
 		return nil, err
 	}
 	if err := validateAutomationActions(ctx, pool, wsID, projectID, in.Actions); err != nil {
@@ -352,7 +412,7 @@ func UpdateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 		return nil, ErrForbidden
 	}
 	if patch.Trigger != nil {
-		if err := validateAutomationTrigger(ctx, pool, projectID, *patch.Trigger); err != nil {
+		if err := validateAutomationTrigger(ctx, pool, wsID, projectID, *patch.Trigger); err != nil {
 			return nil, err
 		}
 	}
@@ -446,6 +506,50 @@ func (t AutomationTrigger) matches(fromStateID, toStateID string) bool {
 	return true
 }
 
+// matchesEvent reports whether the event fires this trigger. The type
+// was already matched by the caller. Filterless event types always
+// match; a null/empty filter (nil from JSON null) matches any value of
+// its kind. label_ids fires when any listed label is added OR removed.
+func (t AutomationTrigger) matchesEvent(ev automationEvent) bool {
+	switch ev.typ {
+	case "issue.state_changed":
+		return t.matches(ev.fromStateID, ev.toStateID)
+	case "issue.priority_changed":
+		if len(t.FromPriorities) > 0 && !slices.Contains(t.FromPriorities, ev.fromPriority) {
+			return false
+		}
+		if len(t.ToPriorities) > 0 && !slices.Contains(t.ToPriorities, ev.toPriority) {
+			return false
+		}
+		return true
+	case "issue.labels_changed":
+		if len(t.LabelIDs) == 0 {
+			return true
+		}
+		for _, id := range slices.Concat(ev.addedLabelIDs, ev.removedLabelIDs) {
+			if slices.Contains(t.LabelIDs, id) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// automationEvent is one firing event: the trigger type plus the
+// filter-matching payload. Payload fields apply only to their event
+// type; filterless events carry just the type.
+type automationEvent struct {
+	typ string
+	// issue.state_changed
+	fromStateID, toStateID string
+	// issue.priority_changed
+	fromPriority, toPriority int
+	// issue.labels_changed
+	addedLabelIDs, removedLabelIDs []string
+}
+
 // automationActiveKey is the depth-1 loop guard: while automation
 // actions execute, state-change evaluation is suppressed so an
 // automation's own writes (notably add_comment) can never cascade into
@@ -470,7 +574,7 @@ func automationActive(ctx context.Context) bool {
 // notifications are for the caller to announce after commit.
 func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, fromStateID, toStateID string) []*Notification {
 	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
-		"issue.state_changed", fromStateID, toStateID)
+		automationEvent{typ: "issue.state_changed", fromStateID: fromStateID, toStateID: toStateID})
 }
 
 // runAutomationCreatedRulesTx evaluates enabled issue.created rules for a
@@ -481,15 +585,78 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 // same logging ethos as the state-change path.
 func runAutomationCreatedRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
 	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
-		"issue.created", "", "")
+		automationEvent{typ: "issue.created"})
 }
 
-// runAutomationRulesForEventTx is the shared firing core. eventType is
-// the trigger type being evaluated; rules carrying any other trigger
-// type are skipped, so a created rule can never fire on a state change
-// and vice versa. fromStateID/toStateID apply only to the state_changed
-// event (the created event has no filters in v1).
-func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, eventType, fromStateID, toStateID string) []*Notification {
+// runAutomationAssignedTx evaluates enabled issue.assigned rules: an
+// assignee was newly added to the issue. Call it only from the
+// assignee-write paths (guarded by !automationActive), in the same tx
+// as the assignment so a rolled-back write can never fire a rule.
+// Never returns an error; same logging ethos as the state-change path.
+func runAutomationAssignedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.assigned"})
+}
+
+// runAutomationUnassignedTx evaluates enabled issue.unassigned rules:
+// an assignee was removed from the issue. Same-tx, same ethos as
+// runAutomationAssignedTx.
+func runAutomationUnassignedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.unassigned"})
+}
+
+// runAutomationLabelsChangedTx evaluates enabled issue.labels_changed
+// rules: labels were attached (added) and/or detached (removed). A rule
+// with a label_ids filter fires when any listed label appears on either
+// side. Same-tx, same ethos as the other field events.
+func runAutomationLabelsChangedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, added, removed []string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.labels_changed", addedLabelIDs: added, removedLabelIDs: removed})
+}
+
+// runAutomationPriorityChangedTx evaluates enabled
+// issue.priority_changed rules for the priority transition
+// fromPriority -> toPriority. Same-tx, same ethos as the state-change
+// path.
+func runAutomationPriorityChangedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, fromPriority, toPriority int) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.priority_changed", fromPriority: fromPriority, toPriority: toPriority})
+}
+
+// runAutomationDueDateChangedTx evaluates enabled issue.due_date_changed
+// rules: the issue's target date (its due date) changed. Same-tx, same
+// ethos as the other field events.
+func runAutomationDueDateChangedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.due_date_changed"})
+}
+
+// runAutomationEstimateChangedTx evaluates enabled issue.estimate_changed
+// rules: the issue's estimate point changed. Same-tx, same ethos as
+// the other field events.
+func runAutomationEstimateChangedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.estimate_changed"})
+}
+
+// runAutomationCommentAddedTx evaluates enabled issue.comment_added
+// rules: a comment was posted on the issue. Call it only from
+// CreateComment (guarded by !automationActive), in the same tx.
+// Automation-driven comments bypass CreateComment (direct tx SQL under
+// the loop guard), so they can never re-trigger.
+func runAutomationCommentAddedTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		automationEvent{typ: "issue.comment_added"})
+}
+
+// runAutomationRulesForEventTx is the shared firing core. ev is the
+// event being evaluated; rules carrying any other trigger type are
+// skipped, so a created rule can never fire on a state change and vice
+// versa. The event's filter payload is matched by
+// AutomationTrigger.matchesEvent: filterless event types always match
+// once the type matched.
+func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, ev automationEvent) []*Notification {
 	if automationActive(ctx) {
 		return nil
 	}
@@ -531,10 +698,10 @@ func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectI
 		}
 		// Trigger types are event-scoped: a rule only ever fires for
 		// the event its trigger names.
-		if trig.Type != eventType {
+		if trig.Type != ev.typ {
 			continue
 		}
-		if eventType == "issue.state_changed" && !trig.matches(fromStateID, toStateID) {
+		if !trig.matchesEvent(ev) {
 			continue
 		}
 		var actions []AutomationAction

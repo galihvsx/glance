@@ -846,6 +846,26 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 				projectID, ident, issueID, actorID, old.StateID, updated.StateID)...)
 		}
 	}
+	// C16T0: field-level automation events. The activities slice holds
+	// the before/after image of every real change, so each event fires
+	// exactly when its field changed — evaluated in this same tx, so a
+	// rolled-back write can never fire a rule. The priority activity
+	// always carries ints (see the add call above).
+	if !automationActive(ctx) {
+		for _, a := range activities {
+			switch a.field {
+			case "priority":
+				notified = append(notified, runAutomationPriorityChangedTx(ctx, tx, wsID,
+					projectID, ident, issueID, actorID, a.oldVal.(int), a.newVal.(int))...)
+			case "target_date":
+				notified = append(notified, runAutomationDueDateChangedTx(ctx, tx, wsID,
+					projectID, ident, issueID, actorID)...)
+			case "estimate_point_id":
+				notified = append(notified, runAutomationEstimateChangedTx(ctx, tx, wsID,
+					projectID, ident, issueID, actorID)...)
+			}
+		}
+	}
 	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
 		"id":             updated.ID,
 		"display_id":     updated.DisplayID,
@@ -1391,9 +1411,11 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 		notified = append(notified, itemNotified...)
 		if set.LabelIDs != nil {
-			if err := replaceIssueLabelsTx(ctx, tx, id, actorID, labelIDs); err != nil {
+			ln, err := replaceIssueLabelsTx(ctx, tx, wsID, projectID, ident, id, actorID, labelIDs)
+			if err != nil {
 				return 0, nil, err
 			}
+			notified = append(notified, ln...)
 		}
 		if assigneeID.Set {
 			added, err := replaceIssueAssigneesTx(ctx, tx, wsID, projectID, ident, id, actorID, assigneeID.Value)
@@ -1457,37 +1479,41 @@ func equalStringSlices(a, b []string) bool {
 // given (canonical, sorted) ids — empty clears. It writes one "labels"
 // issue_activities row with the old/new id arrays, but only when the set
 // actually changed (mirroring updateIssueTx's changed-only convention).
-func replaceIssueLabelsTx(ctx context.Context, tx pgx.Tx, issueID, actorID string, labelIDs []string) error {
+// It returns the notifications created for the caller to announce after
+// commit. C16T0: when the set changed it also evaluates
+// issue.labels_changed automations in this same tx (guarded by
+// !automationActive) — a rolled-back replace can never fire a rule.
+func replaceIssueLabelsTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, labelIDs []string) ([]*Notification, error) {
 	var old []string
 	rows, err := tx.Query(ctx,
 		`SELECT label_id::text FROM issue_labels WHERE issue_id = $1::uuid ORDER BY label_id::text`, issueID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		old = append(old, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if equalStringSlices(old, labelIDs) {
-		return nil
+		return nil, nil
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM issue_labels WHERE issue_id = $1::uuid`, issueID); err != nil {
-		return err
+		return nil, err
 	}
 	for _, lid := range labelIDs {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO issue_labels (issue_id, label_id) VALUES ($1::uuid, $2::uuid)
 			 ON CONFLICT DO NOTHING`, issueID, lid); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	oldArr := old
@@ -1498,17 +1524,42 @@ func replaceIssueLabelsTx(ctx context.Context, tx pgx.Tx, issueID, actorID strin
 		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
 		 VALUES ($1::uuid, $2::uuid, 'labels', $3::jsonb, $4::jsonb)`,
 		issueID, actorID, toJSONBParam(oldArr), toJSONBParam(labelIDs)); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	oldSet := make(map[string]struct{}, len(old))
+	for _, id := range old {
+		oldSet[id] = struct{}{}
+	}
+	newSet := make(map[string]struct{}, len(labelIDs))
+	for _, id := range labelIDs {
+		newSet[id] = struct{}{}
+	}
+	var added, removed []string
+	for _, id := range labelIDs {
+		if _, ok := oldSet[id]; !ok {
+			added = append(added, id)
+		}
+	}
+	for _, id := range old {
+		if _, ok := newSet[id]; !ok {
+			removed = append(removed, id)
+		}
+	}
+	var notified []*Notification
+	if !automationActive(ctx) {
+		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID, added, removed)
+	}
+	return notified, nil
 }
 
 // replaceIssueAssigneesTx replaces the issue's assignee set with the
 // given single user (nil clears). It writes one "assignees"
 // issue_activities row when the set changed, and notifies the assignee
 // when they were newly added — the same notification AssignAssignee
-// sends. Returns the created notifications for the caller to announce
-// after commit.
+// sends. C16T0: it also evaluates issue.assigned / issue.unassigned
+// automations in this same tx when the set gained / lost members
+// (guarded by !automationActive). Returns the created notifications for
+// the caller to announce after commit.
 func replaceIssueAssigneesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, assigneeID *string) ([]*Notification, error) {
 	var old []string
 	rows, err := tx.Query(ctx,
@@ -1561,14 +1612,36 @@ func replaceIssueAssigneesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, id
 	for _, id := range old {
 		oldSet[id] = struct{}{}
 	}
-	var added []string
+	wantSet := make(map[string]struct{}, len(want))
+	for _, id := range want {
+		wantSet[id] = struct{}{}
+	}
+	var added, removed []string
 	for _, uid := range want {
 		if _, ok := oldSet[uid]; !ok {
 			added = append(added, uid)
 		}
 	}
+	for _, id := range old {
+		if _, ok := wantSet[id]; !ok {
+			removed = append(removed, id)
+		}
+	}
+	// C16T0: assignee add/remove automation events — in this same tx,
+	// so a rolled-back bulk set can never fire a rule.
+	var autoNotified []*Notification
+	if !automationActive(ctx) {
+		if len(added) > 0 {
+			autoNotified = append(autoNotified,
+				runAutomationAssignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+		}
+		if len(removed) > 0 {
+			autoNotified = append(autoNotified,
+				runAutomationUnassignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+		}
+	}
 	if len(added) == 0 {
-		return nil, nil
+		return autoNotified, nil
 	}
 	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
 	if err != nil {
@@ -1590,7 +1663,7 @@ func replaceIssueAssigneesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, id
 	if err != nil {
 		return nil, err
 	}
-	return notified, nil
+	return append(autoNotified, notified...), nil
 }
 
 // listSortKind classifies a whitelisted sort column so cursor values can
