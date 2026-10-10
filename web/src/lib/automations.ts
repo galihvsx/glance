@@ -56,6 +56,7 @@ function base(slug: string, identifier: string): string {
 export function automationKeys(slug: string, identifier: string) {
   return {
     rules: ["automations", `${slug}/${identifier}`, "rules"] as const,
+    runs: ["automations", `${slug}/${identifier}`, "runs"] as const,
   };
 }
 
@@ -91,6 +92,48 @@ export function deleteAutomationRule(
   id: string,
 ): Promise<void> {
   return api.del<void>(`${base(slug, identifier)}/${id}`);
+}
+
+/** One fired action's recorded outcome (backend AutomationActionResult). */
+export interface AutomationActionResult {
+  type: "assign" | "add_label" | "add_comment";
+  ok: boolean;
+  error?: string;
+}
+
+/** One automation rule firing (backend AutomationRun shape). */
+export interface AutomationRun {
+  id: string;
+  rule_id: string;
+  rule_name: string;
+  issue_id: string;
+  issue_display_id: string | null;
+  trigger_type: string;
+  fired_at: string;
+  actions: AutomationActionResult[];
+}
+
+export interface AutomationRunFilter {
+  rule_id?: string;
+  issue_id?: string;
+  limit?: number;
+}
+
+export function fetchAutomationRuns(
+  slug: string,
+  identifier: string,
+  filter: AutomationRunFilter = {},
+): Promise<AutomationRun[]> {
+  const params = new URLSearchParams();
+  if (filter.rule_id) params.set("rule_id", filter.rule_id);
+  if (filter.issue_id) params.set("issue_id", filter.issue_id);
+  if (filter.limit != null) params.set("limit", String(filter.limit));
+  const qs = params.toString();
+  return api
+    .get<{ runs: AutomationRun[] }>(
+      `${base(slug, identifier)}/runs${qs ? `?${qs}` : ""}`,
+    )
+    .then((r) => r.runs ?? []);
 }
 
 /** Human summary of a trigger for the rule list. */

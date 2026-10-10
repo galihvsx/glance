@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AutomationsSection from "./AutomationsSection";
 import {
@@ -8,11 +9,12 @@ import {
   createAutomationRule,
   updateAutomationRule,
   deleteAutomationRule,
+  fetchAutomationRuns,
 } from "../../lib/automations";
 import { fetchStates, fetchLabels } from "../../lib/taxonomy";
 import { api } from "../../lib/api";
 import { toast } from "../ui/toast";
-import type { AutomationRule } from "../../lib/automations";
+import type { AutomationRule, AutomationRun } from "../../lib/automations";
 
 vi.mock("../../lib/automations", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/automations")>();
@@ -22,6 +24,7 @@ vi.mock("../../lib/automations", async (importOriginal) => {
     createAutomationRule: vi.fn(),
     updateAutomationRule: vi.fn(),
     deleteAutomationRule: vi.fn(),
+    fetchAutomationRuns: vi.fn(),
   };
 });
 vi.mock("../../lib/taxonomy", async (importOriginal) => {
@@ -35,6 +38,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
 vi.mock("../ui/toast", () => ({ toast: { add: vi.fn() } }));
 
 const mockFetchRules = vi.mocked(fetchAutomationRules);
+const mockFetchRuns = vi.mocked(fetchAutomationRuns);
 const mockCreate = vi.mocked(createAutomationRule);
 const mockUpdate = vi.mocked(updateAutomationRule);
 const mockDelete = vi.mocked(deleteAutomationRule);
@@ -42,6 +46,20 @@ const mockFetchStates = vi.mocked(fetchStates);
 const mockFetchLabels = vi.mocked(fetchLabels);
 const mockApiGet = vi.mocked(api.get);
 const mockToastAdd = vi.mocked(toast.add);
+
+const run: AutomationRun = {
+  id: "run-1",
+  rule_id: "rule-1",
+  rule_name: "Ping on done",
+  issue_id: "issue-9",
+  issue_display_id: "ENG-42",
+  trigger_type: "issue.state_changed",
+  fired_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  actions: [
+    { type: "assign", ok: true },
+    { type: "add_comment", ok: false, error: "boom" },
+  ],
+};
 
 const rule: AutomationRule = {
   id: "rule-1",
@@ -60,6 +78,7 @@ function setup(canEdit = true) {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   mockFetchRules.mockResolvedValue([rule]);
+  mockFetchRuns.mockResolvedValue([run]);
   mockFetchStates.mockResolvedValue([
     { id: "state-backlog", project_id: "p1", name: "Backlog", group: "backlog", color: "#fff", sequence: 1 },
     { id: "state-started", project_id: "p1", name: "In progress", group: "started", color: "#fff", sequence: 2 },
@@ -69,9 +88,11 @@ function setup(canEdit = true) {
     members: [{ id: "user-2", name: "Bob", email: "bob@example.com", role: 15 }],
   });
   render(
-    <QueryClientProvider client={client}>
-      <AutomationsSection slug="acme" identifier="ENG" canEdit={canEdit} />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <AutomationsSection slug="acme" identifier="ENG" canEdit={canEdit} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -144,5 +165,50 @@ describe("AutomationsSection", () => {
     expect(await screen.findByText("Assign QA on start")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New rule/ })).toBeNull();
     expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("renders recent runs with rule name, issue link, relative time, and action chips", async () => {
+    setup();
+    expect(await screen.findByText("Recent runs")).toBeTruthy();
+    // Rule name + issue display-id link.
+    const issueLink = await screen.findByRole("link", { name: "ENG-42" });
+    expect(issueLink.getAttribute("href")).toBe("/w/acme/p/ENG/i/issue-9");
+    // Relative time.
+    expect(await screen.findByText("5m ago")).toBeTruthy();
+    // Per-action chips: ok and failed.
+    expect(await screen.findByText("assign · ok")).toBeTruthy();
+    expect(await screen.findByText("add_comment · failed")).toBeTruthy();
+    // Error text on the failed action.
+    expect(await screen.findByText(/boom/)).toBeTruthy();
+  });
+
+  it("shows an honest empty state when there are no runs", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    mockFetchRuns.mockResolvedValue([]);
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <AutomationsSection slug="acme" identifier="ENG" canEdit={true} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/No automation runs yet/)).toBeTruthy();
+  });
+
+  it("shows an honest error when the runs feed fails", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    mockFetchRuns.mockRejectedValueOnce(new Error("nope"));
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <AutomationsSection slug="acme" identifier="ENG" canEdit={true} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/Could not load automation runs/)).toBeTruthy();
   });
 });
