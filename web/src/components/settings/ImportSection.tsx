@@ -1,22 +1,30 @@
 // Issue import UI (C4T8 CSV backend + C8T2 GitHub importer + C9T1 Jira
-// Cloud importer + C10T0 Trello importer).
+// Cloud importer + C10T0 Trello importer + C14T5 Plane export importer).
 //
 // Project settings → Import tab: a source selector (Jira / GitHub /
-// Trello / CSV file) with the shared preview → import → result flow.
+// Trello / CSV file / Plane export) with the shared preview → import →
+// result flow.
 // The CSV mapping form follows the backend's ImportMapping contract
 // (title required, the rest optional); the GitHub form collects
 // owner/repo/token + filters; the Jira form collects site/email/API
 // token/project key; the Trello form collects API key/token/board.
+// The Plane panel uploads a Plane JSON export, calls analyze, offers an
+// inline mapping UI for the unresolved names (people/states/labels/
+// cycles/modules), then executes with the chosen resolutions and renders
+// the import report (counts, per-issue errors, per-issue loss gaps).
 // Secrets are sent in the JSON body only and are never stored anywhere
 // — the inputs are password fields and the values are cleared from state
 // after the import runs.
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch, KanbanSquare } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch, KanbanSquare, Plane } from "lucide-react";
 import { ApiError } from "../../lib/api";
 import {
+  analyzePlaneImport,
   buildCsvMapping,
+  buildPlaneResolutions,
   fetchImportTemplate,
+  fetchPlaneRefData,
   previewCsvImport,
   previewGitHubImport,
   previewJiraImport,
@@ -24,9 +32,11 @@ import {
   runCsvImport,
   runGitHubImport,
   runJiraImport,
+  runPlaneImport,
   runTrelloImport,
   validateGitHubForm,
   validateJiraForm,
+  validatePlaneFile,
   validateTrelloForm,
   type GitHubImportPreview,
   type GitHubImportPreviewRow,
@@ -38,14 +48,22 @@ import {
   type JiraImportPreview,
   type JiraImportPreviewRow,
   type JiraImportResult,
+  type PlaneImportAnalysis,
+  type PlaneImportGap,
+  type PlaneImportReport,
+  type PlaneImportRowError,
+  type PlaneMappingChoice,
+  type PlaneRefData,
   type TrelloImportPreview,
   type TrelloImportPreviewRow,
   type TrelloImportResult,
 } from "../../lib/import";
+import { groupLabel } from "../../lib/taxonomy";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import {
@@ -69,7 +87,7 @@ function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-type Source = "csv" | "github" | "jira" | "trello";
+type Source = "csv" | "github" | "jira" | "trello" | "plane";
 
 // ---------- shared bits ----------
 
@@ -1270,6 +1288,501 @@ function TrelloPanel({ slug, identifier }: { slug: string; identifier: string })
   );
 }
 
+// ---------- Plane panel (C14T5) ----------
+
+// The honest-loss list (design decision 7): what a Plane export cannot
+// carry, shown up front so nobody expects descriptions to migrate.
+const PLANE_LOSSES = [
+  "Descriptions: Plane never exports them — every issue imports with an empty body.",
+  "Relations: issue-to-issue links are dropped (glance has no relation model).",
+  "Attachments: only the counts arrive, never the files.",
+  "Estimates: unset estimates stay unset.",
+  "Parents: dangling parent references are severed (imported as roots).",
+  "Triage/draft/archived issues import into whichever state you map them to.",
+];
+
+function choiceValue(c: PlaneMappingChoice | undefined): string {
+  if (!c || c.kind === "default") return "default";
+  if (c.kind === "create") return "create";
+  return `id:${c.id}`;
+}
+
+function parseChoice(v: string | null): PlaneMappingChoice {
+  if (v === "create") return { kind: "create" };
+  if (v?.startsWith("id:")) return { kind: "existing", id: v.slice(3) };
+  return { kind: "default" };
+}
+
+function MappingTable({
+  title,
+  names,
+  hint,
+  render,
+}: {
+  title: string;
+  names: string[];
+  hint: string;
+  render: (name: string) => React.ReactNode;
+}) {
+  if (names.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <p className="text-sm font-medium">
+        {title}{" "}
+        <span className="font-normal text-muted-foreground">
+          ({names.length} unresolved)
+        </span>
+      </p>
+      <p className="text-xs text-muted-foreground">{hint}</p>
+      <div className="space-y-1.5">
+        {names.map((name) => (
+          <div key={name} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm" title={name}>
+              {name}
+            </span>
+            <div className="w-56 shrink-0">{render(name)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlaneRowErrors({ errors }: { errors: PlaneImportRowError[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <Alert variant="destructive" className="mt-4">
+      <AlertTriangle className="h-4 w-4" />
+      <AlertDescription>
+        <p className="font-medium">
+          {errors.length} {errors.length === 1 ? "issue error" : "issue errors"}
+        </p>
+        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm">
+          {errors.map((e) => (
+            <li key={e.identifier} className="font-mono text-xs">
+              {e.identifier}: {e.message}
+            </li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function PlaneGaps({ gaps }: { gaps: PlaneImportGap[] }) {
+  if (gaps.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-sm font-medium">
+        Data that did not survive the import (
+        {gaps.length} {gaps.length === 1 ? "issue" : "issues"})
+      </p>
+      <div className="max-h-64 space-y-2 overflow-y-auto">
+        {gaps.map((g) => (
+          <div key={g.identifier} className="rounded-md border px-3 py-2">
+            <p className="font-mono text-xs font-medium">{g.identifier}</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+              {g.losses.map((l, i) => (
+                <li key={i}>{l}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlaneCreatedLists({ report }: { report: PlaneImportReport }) {
+  const groups: { title: string; items: string[] }[] = [
+    { title: "New states", items: report.states_created },
+    { title: "New labels", items: report.labels_created },
+    { title: "New cycles", items: report.cycles_created },
+    { title: "New modules", items: report.modules_created },
+  ];
+  const nonEmpty = groups.filter((g) => g.items.length > 0);
+  if (nonEmpty.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {nonEmpty.map((g) => (
+        <div key={g.title}>
+          <p className="mb-1 text-xs text-muted-foreground">
+            {g.title} ({g.items.length}):
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {g.items.map((i) => (
+              <Badge key={i} variant="outline">
+                {i}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PlaneResultCard({ report }: { report: PlaneImportReport }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
+          {report.project_identifier}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <Stat label="Created" value={report.created} />
+          <Stat label="Skipped (already imported)" value={report.skipped} />
+          <Stat label="Failed" value={report.failed} />
+        </div>
+        {report.warnings.length > 0 && (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              <ul className="list-disc space-y-0.5 pl-5 text-xs">
+                {report.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+        <PlaneCreatedLists report={report} />
+        <PlaneRowErrors errors={report.errors} />
+        <PlaneGaps gaps={report.gaps} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function PlanePanel({ slug, identifier }: { slug: string; identifier: string }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [strictStates, setStrictStates] = useState(false);
+  const [analysis, setAnalysis] = useState<PlaneImportAnalysis | null>(null);
+  const [refs, setRefs] = useState<PlaneRefData | null>(null);
+  const [peopleMap, setPeopleMap] = useState<Record<string, string | null>>({});
+  const [stateMap, setStateMap] = useState<Record<string, PlaneMappingChoice>>({});
+  const [labelMap, setLabelMap] = useState<Record<string, PlaneMappingChoice>>({});
+  const [cycleMap, setCycleMap] = useState<Record<string, PlaneMappingChoice>>({});
+  const [moduleMap, setModuleMap] = useState<Record<string, PlaneMappingChoice>>({});
+  const [result, setResult] = useState<PlaneImportReport | null>(null);
+  const [busy, setBusy] = useState<"analyze" | "refs" | "import" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const formError = validatePlaneFile(file);
+
+  const doAnalyze = async () => {
+    if (formError || !file) return;
+    setBusy("analyze");
+    setError(null);
+    setResult(null);
+    setAnalysis(null);
+    setRefs(null);
+    try {
+      const a = await analyzePlaneImport(slug, identifier, file);
+      setAnalysis(a);
+      setPeopleMap({});
+      setStateMap({});
+      setLabelMap({});
+      setCycleMap({});
+      setModuleMap({});
+      setBusy("refs");
+      try {
+        setRefs(await fetchPlaneRefData(slug, identifier));
+      } catch (e) {
+        setError(
+          `Analysis succeeded, but the workspace data for mapping failed to load: ${errMsg(e, "request failed")}`,
+        );
+      }
+    } catch (e) {
+      setError(errMsg(e, "Analyze failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doImport = async () => {
+    if (!file || !analysis) return;
+    if (
+      !window.confirm(
+        `Import ${analysis.issue_count} issues from the Plane export into this project?`,
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setError(null);
+    try {
+      const resolutions = buildPlaneResolutions({
+        people: peopleMap,
+        states: stateMap,
+        labels: labelMap,
+        cycles: cycleMap,
+        modules: moduleMap,
+      });
+      setResult(
+        await runPlaneImport(slug, identifier, file, resolutions, {
+          strict_states: strictStates,
+        }),
+      );
+    } catch (e) {
+      setError(errMsg(e, "Import failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const unresolvedCount = analysis
+    ? analysis.unresolved.people.length +
+      analysis.unresolved.states.length +
+      analysis.unresolved.labels.length +
+      analysis.unresolved.cycles.length +
+      analysis.unresolved.modules.length
+    : 0;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Export from Plane via Settings → Exports → JSON, then upload the file
+        here. The import is two-phase: analyze first, map the names the
+        analyzer can't resolve, then import. Unmapped people become
+        unassigned issues — nothing is guessed silently. Re-running the same
+        export is safe: already-imported issues are skipped.
+      </p>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <Label htmlFor="plane-file">Plane export (.json or .zip)</Label>
+          <Input
+            id="plane-file"
+            type="file"
+            accept=".json,.zip,application/json,application/zip"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+          <div className="flex items-center gap-2 pt-1">
+            <Checkbox
+              id="plane-strict"
+              checked={strictStates}
+              onCheckedChange={(v) => setStrictStates(v === true)}
+            />
+            <Label htmlFor="plane-strict" className="text-sm font-normal">
+              Strict states — fail rows with unknown states instead of creating
+              them
+            </Label>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <p className="text-sm font-medium">What doesn't survive the import</p>
+          <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+            {PLANE_LOSSES.map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      {formError && (
+        <Alert>
+          <AlertDescription>{formError}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex gap-2">
+        <Button onClick={doAnalyze} disabled={!!formError || busy !== null} variant="outline">
+          {busy === "analyze" ? <Spinner className="mr-2" /> : null}Analyze
+        </Button>
+        <Button onClick={doImport} disabled={!analysis || !refs || busy !== null}>
+          {busy === "import" ? <Spinner className="mr-2" /> : null}Import
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {analysis && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">
+              Analysis — {analysis.issue_count} issues from{" "}
+              {analysis.project_identifier}
+              {unresolvedCount > 0 && (
+                <span className="font-normal text-muted-foreground">
+                  {" "}· {unresolvedCount} unresolved{" "}
+                  {unresolvedCount === 1 ? "name" : "names"}
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {analysis.warnings.length > 0 && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  <ul className="list-disc space-y-0.5 pl-5 text-xs">
+                    {analysis.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
+            {unresolvedCount === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Everything resolved automatically — no mapping needed. Hit
+                Import when ready.
+              </p>
+            ) : busy === "refs" || !refs ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner /> Loading workspace data for mapping…
+              </p>
+            ) : (
+              <>
+                <MappingTable
+                  title="People"
+                  names={analysis.unresolved.people}
+                  hint="Unmapped names stay unassigned; their comments are attributed to you."
+                  render={(name) => (
+                    <Select
+                      value={peopleMap[name] ?? "unmapped"}
+                      onValueChange={(v) =>
+                        setPeopleMap({
+                          ...peopleMap,
+                          [name]: v === "unmapped" ? null : v,
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unmapped">Leave unmapped</SelectItem>
+                        {refs.members.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.name || m.email} ({m.email})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <MappingTable
+                  title="States"
+                  names={analysis.unresolved.states}
+                  hint="Created states land in the Backlog group."
+                  render={(name) => (
+                    <Select
+                      value={choiceValue(stateMap[name])}
+                      onValueChange={(v) =>
+                        setStateMap({ ...stateMap, [name]: parseChoice(v) })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">
+                          Match or create automatically
+                        </SelectItem>
+                        <SelectItem value="create">Create new (Backlog)</SelectItem>
+                        {refs.states.map((s) => (
+                          <SelectItem key={s.id} value={`id:${s.id}`}>
+                            {s.name} ({groupLabel(s.group)})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <MappingTable
+                  title="Labels"
+                  names={analysis.unresolved.labels}
+                  hint="Missing labels are created with the default color."
+                  render={(name) => (
+                    <Select
+                      value={choiceValue(labelMap[name])}
+                      onValueChange={(v) =>
+                        setLabelMap({ ...labelMap, [name]: parseChoice(v) })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Create if missing</SelectItem>
+                        {refs.labels.map((l) => (
+                          <SelectItem key={l.id} value={`id:${l.id}`}>
+                            {l.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <MappingTable
+                  title="Cycles"
+                  names={analysis.unresolved.cycles}
+                  hint="Missing cycles are created as upcoming with a 30-day window."
+                  render={(name) => (
+                    <Select
+                      value={choiceValue(cycleMap[name])}
+                      onValueChange={(v) =>
+                        setCycleMap({ ...cycleMap, [name]: parseChoice(v) })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Create if missing</SelectItem>
+                        {refs.cycles.map((c) => (
+                          <SelectItem key={c.id} value={`id:${c.id}`}>
+                            {c.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+                <MappingTable
+                  title="Modules"
+                  names={analysis.unresolved.modules}
+                  hint="Missing modules are created as active."
+                  render={(name) => (
+                    <Select
+                      value={choiceValue(moduleMap[name])}
+                      onValueChange={(v) =>
+                        setModuleMap({ ...moduleMap, [name]: parseChoice(v) })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Create if missing</SelectItem>
+                        {refs.modules.map((m) => (
+                          <SelectItem key={m.id} value={`id:${m.id}`}>
+                            {m.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {result && <PlaneResultCard report={result} />}
+    </div>
+  );
+}
+
 // ---------- section ----------
 
 export default function ImportSection({
@@ -1326,6 +1839,13 @@ export default function ImportSection({
           >
             <KanbanSquare className="mr-2 h-4 w-4" /> Trello
           </Button>
+          <Button
+            variant={source === "plane" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSource("plane")}
+          >
+            <Plane className="mr-2 h-4 w-4" /> Plane
+          </Button>
         </div>
       </CardHeader>
       <CardContent>
@@ -1335,6 +1855,8 @@ export default function ImportSection({
           <GitHubPanel slug={slug} identifier={identifier} />
         ) : source === "trello" ? (
           <TrelloPanel slug={slug} identifier={identifier} />
+        ) : source === "plane" ? (
+          <PlanePanel slug={slug} identifier={identifier} />
         ) : (
           <CsvPanel slug={slug} identifier={identifier} />
         )}

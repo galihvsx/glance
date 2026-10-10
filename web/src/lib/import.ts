@@ -7,6 +7,8 @@
 // the same preview-table / result-summary components.
 
 import { api } from "./api";
+import { fetchLabels, fetchStates, type TaxLabel, type TaxState } from "./taxonomy";
+import type { WorkspaceMember } from "./types";
 
 // ---------- CSV import (C4T8 backend) ----------
 
@@ -342,6 +344,217 @@ export function validateJiraForm(
     return "Project key must start with a letter and contain only letters and digits (e.g. “PROJ”).";
   }
   return null;
+}
+
+// ---------- Plane import (C14 backend) ----------
+//
+// Two-phase like analyze → mapping → execute. The endpoints speak
+// multipart/form-data: analyze takes the export `file`; execute takes
+// `file` + `resolutions` (JSON PlaneImportResolutions) + `options`
+// (JSON PlaneImportExecuteOpts). Shapes mirror the Go structs in
+// internal/service/plane_import_{analyze,execute}.go (JSON tags kept
+// verbatim).
+
+export interface PlaneImportUnresolved {
+  people: string[];
+  states: string[];
+  labels: string[];
+  cycles: string[];
+  modules: string[];
+}
+
+export interface PlaneImportAnalysis {
+  project_identifier: string;
+  issue_count: number;
+  unresolved: PlaneImportUnresolved;
+  warnings: string[];
+}
+
+export interface PlanePersonResolution {
+  member_id: string;
+}
+
+export interface PlaneStateResolution {
+  state_id?: string;
+  group?: string;
+}
+
+export interface PlaneLabelResolution {
+  label_id?: string;
+}
+
+export interface PlaneCycleResolution {
+  cycle_id?: string;
+  start_date?: string;
+  end_date?: string;
+}
+
+export interface PlaneModuleResolution {
+  module_id?: string;
+}
+
+export interface PlaneImportResolutions {
+  people: Record<string, PlanePersonResolution>;
+  states: Record<string, PlaneStateResolution>;
+  labels: Record<string, PlaneLabelResolution>;
+  cycles: Record<string, PlaneCycleResolution>;
+  modules: Record<string, PlaneModuleResolution>;
+}
+
+export interface PlaneImportExecuteOpts {
+  strict_states?: boolean;
+  max_rows?: number;
+}
+
+export interface PlaneImportRowError {
+  identifier: string;
+  message: string;
+}
+
+export interface PlaneImportGap {
+  identifier: string;
+  losses: string[];
+}
+
+export interface PlaneImportReport {
+  project_identifier: string;
+  created: number;
+  skipped: number;
+  failed: number;
+  errors: PlaneImportRowError[];
+  gaps: PlaneImportGap[];
+  states_created: string[];
+  labels_created: string[];
+  cycles_created: string[];
+  modules_created: string[];
+  warnings: string[];
+}
+
+function projectBase(slug: string, identifier: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+}
+
+function planeImportBase(slug: string, identifier: string): string {
+  return `${projectBase(slug, identifier)}/imports/plane-import`;
+}
+
+export function analyzePlaneImport(
+  slug: string,
+  identifier: string,
+  file: File,
+): Promise<PlaneImportAnalysis> {
+  const form = new FormData();
+  form.append("file", file);
+  return api.postForm<PlaneImportAnalysis>(`${planeImportBase(slug, identifier)}/analyze`, form);
+}
+
+export function runPlaneImport(
+  slug: string,
+  identifier: string,
+  file: File,
+  resolutions: PlaneImportResolutions,
+  options?: PlaneImportExecuteOpts,
+): Promise<PlaneImportReport> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("resolutions", JSON.stringify(resolutions));
+  if (options) form.append("options", JSON.stringify(options));
+  return api.postForm<PlaneImportReport>(`${planeImportBase(slug, identifier)}/execute`, form);
+}
+
+// validatePlaneFile is the pure client-side gate for the Plane import
+// form: Plane delivers exports as a bare JSON array (.json) or a zip
+// holding that .json. The server re-validates strictly (size cap, shape,
+// single project) — this is just fast feedback.
+export function validatePlaneFile(file: File | null): string | null {
+  if (!file) return "Choose a Plane export file (.json or .zip).";
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".json") || name.endsWith(".zip")) return null;
+  return "Plane exports are .json or .zip files.";
+}
+
+// One unresolved name's UI choice. "default" = omit from the resolutions
+// and let the server policy handle it (match-or-create for states,
+// create for labels/cycles/modules, leave unmapped for people); "create"
+// = ask the server to create it; "existing" = map to an existing row id.
+export type PlaneMappingChoice =
+  | { kind: "default" }
+  | { kind: "create" }
+  | { kind: "existing"; id: string };
+
+// The mapping panel's raw input: one choice per unresolved name.
+export interface PlaneMappingsInput {
+  people: Record<string, string | null>; // Plane name -> workspace member id (null = unmapped)
+  states: Record<string, PlaneMappingChoice>;
+  labels: Record<string, PlaneMappingChoice>;
+  cycles: Record<string, PlaneMappingChoice>;
+  modules: Record<string, PlaneMappingChoice>;
+}
+
+// buildPlaneResolutions turns the mapping panel's raw input into the
+// backend's PlaneImportResolutions: only names with an explicit choice
+// are included, everything else follows the server default policy.
+// Created states land in the "backlog" group (design decision 6); people
+// have no create option — glance has no identity to fabricate from a
+// bare display name.
+export function buildPlaneResolutions(m: PlaneMappingsInput): PlaneImportResolutions {
+  const people: Record<string, PlanePersonResolution> = {};
+  for (const [name, memberId] of Object.entries(m.people)) {
+    if (memberId) people[name] = { member_id: memberId };
+  }
+  const states: Record<string, PlaneStateResolution> = {};
+  for (const [name, choice] of Object.entries(m.states)) {
+    if (choice.kind === "existing") states[name] = { state_id: choice.id };
+    else if (choice.kind === "create") states[name] = { group: "backlog" };
+  }
+  const labels: Record<string, PlaneLabelResolution> = {};
+  for (const [name, choice] of Object.entries(m.labels)) {
+    if (choice.kind === "existing") labels[name] = { label_id: choice.id };
+    else if (choice.kind === "create") labels[name] = {};
+  }
+  const cycles: Record<string, PlaneCycleResolution> = {};
+  for (const [name, choice] of Object.entries(m.cycles)) {
+    if (choice.kind === "existing") cycles[name] = { cycle_id: choice.id };
+    else if (choice.kind === "create") cycles[name] = {};
+  }
+  const modules: Record<string, PlaneModuleResolution> = {};
+  for (const [name, choice] of Object.entries(m.modules)) {
+    if (choice.kind === "existing") modules[name] = { module_id: choice.id };
+    else if (choice.kind === "create") modules[name] = {};
+  }
+  return { people, states, labels, cycles, modules };
+}
+
+// Ref data feeding the Plane mapping dropdowns: workspace members for
+// people, the project's states/labels/cycles/modules for the rest.
+export interface PlaneRefData {
+  members: WorkspaceMember[];
+  states: TaxState[];
+  labels: TaxLabel[];
+  cycles: { id: string; name: string }[];
+  modules: { id: string; name: string }[];
+}
+
+export async function fetchPlaneRefData(
+  slug: string,
+  identifier: string,
+): Promise<PlaneRefData> {
+  const [membersRes, states, labels, cyclesRes, modulesRes] = await Promise.all([
+    api.get<{ members: WorkspaceMember[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+    ),
+    fetchStates(slug, identifier),
+    fetchLabels(slug, identifier),
+    api.get<{ cycles: { id: string; name: string }[] }>(`${projectBase(slug, identifier)}/cycles`),
+    api.get<{ modules: { id: string; name: string }[] }>(`${projectBase(slug, identifier)}/modules`),
+  ]);
+  return {
+    members: membersRes.members ?? [],
+    states,
+    labels,
+    cycles: cyclesRes.cycles ?? [],
+    modules: modulesRes.modules ?? [],
+  };
 }
 
 // ---------- Workspace archive import (C11T0 backend) ----------
