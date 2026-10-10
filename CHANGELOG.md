@@ -363,6 +363,59 @@ queued onboarding follow-up (invites endpoint).
   per-issue errors and gaps. The honest-loss list is shown up front,
   before upload.
 
+**Finish the gaps (cycle 15)**
+- Gantt dependency editing (C15T0, frontend-only): create/delete issue
+  links (`blocks`/`blocked-by`) directly on the Gantt timeline —
+  link-mode toggle or drag-from-bar-handle to draw a dependency edge,
+  click an edge to delete (confirm); optimistic updates with toast
+  rollback; keyboard-accessible link editor in the issue detail panel.
+  Reuses the cycle-8 issue-link API; no backend changes.
+- Admin audit log (C15T1): append-only `audit_log` table (migration
+  `000038_admin_audit_log`: at, actor, action, entity, workspace, ip,
+  meta jsonb) fed by a service hook on all admin mutations (user
+  deactivate/reactivate/role change, workspace delete, …); no
+  update/delete API. `GET /api/v1/admin/audit-log` (admin-only,
+  paginated, filter by action/actor/entity); "Audit log" tab in
+  `Admin.tsx` with filters and relative timestamps. Refused mutations
+  (self-demote/deactivate, unknown user, confirm mismatch) return
+  before any audit write.
+- Scheduled backups (C15T2): `GLANCE_BACKUP_INTERVAL` (empty = disabled,
+  default), `GLANCE_BACKUP_DIR`, `GLANCE_BACKUP_RETENTION` config; a
+  ticker backs up every workspace on schedule into gzipped
+  glance-export/1 archives (same streaming implementation as the
+  interactive export — no format drift), each with a manifest sidecar
+  (slug, at, byte size, sha256, migration version) and a `backup_runs`
+  row (migration `000041_backup_runs`); verify = sha256 recompute +
+  streaming header decode (format pin + slug match); failed runs are
+  recorded, never silent; retention keeps the newest N per workspace
+  (rows stay as `pruned`, files deleted). `GET/POST
+  /api/v1/admin/backups` (admin group, 207 on partial failure); "Backups"
+  tab in `Admin.tsx` with schedule/retention display, run-now, and a
+  filterable history table. Restore path = gunzip + the existing
+  archive importer.
+- iCal subscription feeds (C15T3): `GET
+  /api/v1/workspaces/{slug}/projects/{identifier}/calendar.ics` and
+  `.../cycles/{cycleID}/calendar.ics` — `text/calendar` feeds of dated
+  issues (RFC 5545 escaping, CRLF folding, UID/DTSTAMP/SUMMARY/DUE/
+  DESCRIPTION with issue URL), authenticated by opaque per-user
+  `glcal_…` feed tokens (migration `000042_calendar_feed_tokens`;
+  crypto/rand 32B, SHA-256 hash stored only, single live token per user,
+  per-token rate limit, revoked/missing → generic 401 with no
+  enumeration). Token management (`GET/POST/DELETE
+  /api/v1/me/calendar-token`) sits behind session auth — a feed token
+  can never mint or revoke tokens. "Copy iCal URL" in the Calendar view
+  + regenerate in Profile settings.
+- PWA installability (C15T4, frontend-only): `manifest.webmanifest`
+  (name/short_name `glance`, standalone, dark theme color, 192/512 PNG
+  icons incl. maskable, generated from the existing logo artwork) +
+  minimal service worker (cache-first app shell with precache +
+  runtime cache for hashed `/assets/*`, network-first for `/api/*`,
+  offline navigation fallback; no sync, no push), registered in
+  `main.tsx` and guarded out of dev mode; subtle install affordance in
+  the shell footer (beforeinstallprompt hook, dismiss persists in
+  localStorage); manifest link, theme-color meta, and apple-touch-icon
+  in `index.html`.
+
 ### Fixed
 
 - `TestExecutePlaneImportRelationsDropped` asserted a global
