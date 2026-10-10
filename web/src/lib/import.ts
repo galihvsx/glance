@@ -435,7 +435,7 @@ function projectBase(slug: string, identifier: string): string {
 }
 
 function planeImportBase(slug: string, identifier: string): string {
-  return `${projectBase(slug, identifier)}/plane-import`;
+  return `${projectBase(slug, identifier)}/imports/plane-import`;
 }
 
 export function analyzePlaneImport(
