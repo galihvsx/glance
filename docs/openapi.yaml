@@ -96,6 +96,26 @@
         "responses": { "200": { "description": "Current user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
       }
     },
+    "/api/v1/me/calendar-token": {
+      "get": {
+        "tags": ["calendar"], "security": [{ "sessionCookie": [] }],
+        "summary": "Get calendar feed token status",
+        "description": "Whether the caller has a live iCal feed token (glcal_…) and its timestamps. Session-cookie only: a token must never manage feed tokens. The secret itself is never returned — it is shown once at creation.",
+        "responses": { "200": { "description": "Feed token status", "content": { "application/json": { "schema": { "type": "object", "properties": { "active": { "type": "boolean" }, "created_at": { "type": "string", "format": "date-time" }, "last_used_at": { "type": "string", "format": "date-time" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "post": {
+        "tags": ["calendar"], "security": [{ "sessionCookie": [] }],
+        "summary": "Mint or regenerate the calendar feed token",
+        "description": "Session-cookie only. Regenerate semantics: any existing live feed token is revoked first, so at most one live token per user exists. The plaintext (glcal_…) is returned exactly once in the 201 body — there is no endpoint that reveals it again. Append it as ?token= to a calendar.ics URL for external calendar apps.",
+        "responses": { "201": { "description": "Created (plaintext shown once)", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" } }
+      },
+      "delete": {
+        "tags": ["calendar"], "security": [{ "sessionCookie": [] }],
+        "summary": "Revoke the calendar feed token",
+        "description": "Session-cookie only. After revocation, feed fetches with the old token answer 401.",
+        "responses": { "204": { "description": "Revoked" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/auth/sessions": {
       "get": {
         "tags": ["auth"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1052,6 +1072,24 @@
         "responses": { "200": { "description": "Burndown data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Burndown" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/calendar.ics": {
+      "get": {
+        "tags": ["calendar"], "security": [{ "feedToken": [] }],
+        "summary": "Project calendar subscription feed (iCal)",
+        "description": "A VEVENT per issue with a due date (target_date); archived issues excluded. Authenticated by the per-user calendar feed token (glcal_…) in the ?token= query parameter (Authorization: Bearer accepted as a fallback) — the session cookie and gl_ API tokens are NOT honored here, so external calendar apps can subscribe by URL. Membership gates are the issue list's: any workspace member (guests included).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "token", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Calendar feed token (glcal_…) minted via POST /api/v1/me/calendar-token" } ],
+        "responses": { "200": { "description": "iCalendar feed", "content": { "text/calendar": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/calendar.ics": {
+      "get": {
+        "tags": ["calendar"], "security": [{ "feedToken": [] }],
+        "summary": "Cycle calendar subscription feed (iCal)",
+        "description": "Like the project feed, but scoped to the issues assigned to the cycle. The cycle must belong to the project.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "token", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Calendar feed token (glcal_…) minted via POST /api/v1/me/calendar-token" } ],
+        "responses": { "200": { "description": "iCalendar feed", "content": { "text/calendar": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/modules": {
       "get": {
         "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1747,6 +1785,10 @@
       "apiToken": {
         "type": "http", "scheme": "bearer",
         "description": "Personal API token minted via POST /api/v1/tokens (prefix gl_). Bearer <redacted> that do not start with gl_ are ignored by the middleware. Scopes: read (GETs), write (implies read)."
+      },
+      "feedToken": {
+        "type": "apiKey", "in": "query", "name": "token",
+        "description": "Per-user calendar feed token minted via POST /api/v1/me/calendar-token (prefix glcal_). Authenticates the calendar.ics subscription feeds only; not honored on session/API-token routes."
       }
     },
     "parameters": {

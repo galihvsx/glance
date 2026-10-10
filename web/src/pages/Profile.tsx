@@ -26,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
+import CalendarFeedCard from "../components/profile/CalendarFeedCard";
 
 function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -185,6 +186,9 @@ export default function Profile() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Calendar feed (iCal subscription token) */}
+      <CalendarFeedCard />
 
       {/* Sessions */}
       <Card>

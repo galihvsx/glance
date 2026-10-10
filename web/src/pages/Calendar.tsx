@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import ProjectNav from "../components/project/ProjectNav";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { api, ApiError } from "../lib/api";
+import {
+  createFeedToken,
+  fetchFeedTokenStatus,
+  projectFeedURL,
+} from "../lib/calendarFeed";
 import type { Issue, IssueListResult } from "../lib/types";
 import {
   bucketIssuesByDay,
@@ -128,6 +133,44 @@ export default function Calendar() {
     year: "numeric",
   });
 
+  // iCal subscription: the first click mints the user's feed token (if
+  // none is active) and copies the subscription URL. A live token's
+  // plaintext can never be re-shown, so when one is already active the
+  // user regenerates from Profile → Calendar feed instead.
+  const [copying, setCopying] = useState(false);
+  const [feedMsg, setFeedMsg] = useState<string | null>(null);
+
+  async function copyICalURL() {
+    setCopying(true);
+    setFeedMsg(null);
+    try {
+      const status = await fetchFeedTokenStatus();
+      if (status.active) {
+        setFeedMsg(
+          "A feed token is already active — regenerate it from Profile → Calendar feed to get a new subscription URL.",
+        );
+        return;
+      }
+      const created = await createFeedToken();
+      const url = projectFeedURL(
+        window.location.origin,
+        slug,
+        identifier,
+        created.token,
+      );
+      await navigator.clipboard.writeText(url);
+      setFeedMsg(
+        "iCal URL copied to clipboard. The token is shown once — save the URL somewhere safe.",
+      );
+    } catch (e) {
+      setFeedMsg(
+        e instanceof ApiError ? e.message : "Failed to copy the iCal URL",
+      );
+    } finally {
+      setCopying(false);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col gap-4 p-4">
       <ProjectNav />
@@ -156,10 +199,35 @@ export default function Calendar() {
           <ChevronRight className="h-4 w-4" />
         </button>
         <h2 className="ml-2 text-base font-semibold">{monthLabel}</h2>
-        <span className="ml-auto text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={copyICalURL}
+          disabled={copying}
+          className="ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+        >
+          <CalendarPlus className="h-3.5 w-3.5" />
+          {copying ? "Copying…" : "Copy iCal URL"}
+        </button>
+        <span className="text-xs text-muted-foreground">
           Placed by due date, start date when there is no due date
         </span>
       </div>
+
+      {feedMsg && (
+        <p className="text-xs text-muted-foreground">
+          {feedMsg.includes("Profile") ? (
+            <>
+              A feed token is already active — regenerate it from{" "}
+              <Link to="/profile" className="underline">
+                Profile → Calendar feed
+              </Link>{" "}
+              to get a new subscription URL.
+            </>
+          ) : (
+            feedMsg
+          )}
+        </p>
+      )}
 
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading calendar…</p>

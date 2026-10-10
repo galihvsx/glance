@@ -49,6 +49,7 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterIssueRoutes(e, issueHandler)
 	RegisterWorkItemRoutes(e, issueHandler)
 	RegisterTokenRoutes(e, &TokenHandler{})
+	RegisterCalendarFeedRoutes(e, &CalendarFeedHandler{})
 	RegisterNotifyRoutes(e, &NotifyHandler{})
 	RegisterAdminRoutes(e, &AdminHandler{})
 	RegisterTaxonomyRoutes(e, issueHandler)
