@@ -323,6 +323,34 @@ queued onboarding follow-up (invites endpoint).
   export is a bare array with no version envelope — the importer must
   validate by shape.
 
+**Plane-native import (cycle 14)**
+- Plane JSON-export importer (C14T1–C14T6): bring a Plane project over
+  from **Settings → Exports → JSON** in Plane. Accepts the raw `.json`
+  or the `.zip` Plane downloads it in (exactly one `.json` per zip);
+  the export is a bare JSON array with no version envelope, so rows are
+  validated by shape — wrongly typed or identifier-less rows fail
+  per-row (keyed by Plane `identifier`), never the whole file. One
+  import run = one Plane project → one glance project; multi-project
+  files are rejected. 256 MiB input cap; no migration.
+- Two-phase like the other importers: **analyze** parses the file and
+  reports everything unresolved — people (Plane exports name-strings
+  only, no emails/IDs) map explicitly to workspace members, never
+  guessed; states/labels/cycles/modules matched case-insensitively,
+  unmatched ones created (in the `backlog` group, per the import design) — then **execute** imports in a single transaction.
+- Honest-loss policy: the import report carries a per-issue `gaps` list
+  documenting what didn't survive. Upstream truth first: **Plane never
+  exports issue descriptions**, so those are gone before glance ever
+  sees the file; issue-to-issue relations are dropped (glance has no
+  relations model); attachment *files* never come over (counts only);
+  unset estimates stay unset; comment timestamps are naive in the
+  export and are read as UTC. Dangling parents (parent identifier not
+  in the file) import as root issues with a warning in their gaps.
+- User guide at `docs/importing-from-plane.md`, including the
+  triage/draft/archived caveat: Plane exports the whole project, so
+  clean up triage, drafts, and archived issues in Plane before
+  exporting — otherwise they come across as-is and you'll map
+  throwaway states in the analyze step.
+
 ### Fixed
 
 - Slack webhook clear path (C9T3 follow-up): PATCH
