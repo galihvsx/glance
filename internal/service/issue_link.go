@@ -26,6 +26,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -52,6 +53,12 @@ var (
 	// link id, or a malformed issue id in the batch fetch. The handler
 	// maps it to 400 bad_request.
 	ErrInvalidIssueLink = errors.New("service: invalid issue link")
+	// ErrOpenBlockers is returned when an issue is moved to a
+	// completed-group state while it has open 'blocks' inbound edges
+	// (issues blocking it that are not themselves completed or archived).
+	// The typed *OpenBlockersError carries the blocker display IDs; the
+	// handler maps it to 409 with code "open_blockers".
+	ErrOpenBlockers = errors.New("service: issue has open blockers")
 )
 
 // issueLinkKinds is the strict vocabulary enforced by CreateIssueLink.
@@ -89,6 +96,73 @@ func normalizeIssueLinkKind(kind string) (string, error) {
 		return "", ErrInvalidIssueLink
 	}
 	return k, nil
+}
+
+// OpenBlockersError is returned when a move into a completed state is
+// rejected by the blocker guard (C16T3). Blockers holds the display IDs
+// ({IDENTIFIER}-{sequence}) of the open blockers, so the API can name
+// them in the 409 details.
+type OpenBlockersError struct {
+	Blockers []string
+}
+
+func (e *OpenBlockersError) Error() string {
+	return fmt.Sprintf("service: issue has open blockers: %s",
+		strings.Join(e.Blockers, ", "))
+}
+
+func (e *OpenBlockersError) Unwrap() error { return ErrOpenBlockers }
+
+// assertNoOpenBlockersTx is the shared blocker guard (C16T3): moving an
+// issue into a completed-group state is rejected while open 'blocks'
+// inbound edges point at it. An inbound edge (X → issue, kind 'blocks')
+// is OPEN when X is a live, unarchived issue of the same project whose
+// state's group is NOT 'completed'. A blocker that is completed or
+// archived is not open; moves into non-completed states never check.
+// Called by updateIssueTx (single PATCH, bulk-update, bulk-set) and by
+// automationSetStateTx — the automation failure surfaces on the run row
+// (ok:false), never as a silent skip.
+func assertNoOpenBlockersTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, stateID string) error {
+	var group string
+	if err := tx.QueryRow(ctx,
+		`SELECT "group" FROM states WHERE id = $1::uuid`, stateID).Scan(&group); err != nil {
+		return err
+	}
+	if group != "completed" {
+		return nil
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT $3 || '-' || i.sequence_id::text
+		 FROM issue_links l
+		 JOIN issues i ON i.id = l.issue_id
+		 JOIN states s ON s.id = i.state_id
+		 WHERE l.target_issue_id = $1::uuid
+		   AND l.kind = 'blocks'
+		   AND i.project_id = $2::uuid
+		   AND i.deleted_at IS NULL
+		   AND i.archived_at IS NULL
+		   AND s."group" != 'completed'
+		 ORDER BY i.sequence_id`,
+		issueID, projectID, ident)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var blockers []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return err
+		}
+		blockers = append(blockers, d)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(blockers) > 0 {
+		return &OpenBlockersError{Blockers: blockers}
+	}
+	return nil
 }
 
 // scanIssueLink scans a full link row (no direction).

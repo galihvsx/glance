@@ -58,6 +58,7 @@ import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
 import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
+import BlockerConfirmDialog from "./BlockerConfirmDialog";
 import { useCloneIssue } from "./useCloneIssue";
 import {
   DropdownMenu,
@@ -362,6 +363,12 @@ export default function IssueDetailContent({
   } | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // C16T3: pending open-blockers confirm — the state id the user picked
+  // plus the blocker display IDs from the 409 details.
+  const [blockerConfirm, setBlockerConfirm] = useState<{
+    stateId: string;
+    blockers: string[];
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   // C8T4: clone action — POST .../issues/{uuid}/clone, then navigate to
@@ -467,8 +474,23 @@ export default function IssueDetailContent({
       }
       return { prev };
     },
-    onError: (e, _body, ctx) => {
+    onError: (e, body, ctx) => {
       if (ctx?.prev) queryClient.setQueryData(issueKey, ctx.prev);
+      // C16T3: the blocker guard rejected the move — show the confirm
+      // dialog instead of the error banner.
+      if (e instanceof ApiError && e.code === "open_blockers") {
+        const details = e.details as
+          | { blockers?: string[] }
+          | undefined;
+        const blockers = Array.isArray(details?.blockers)
+          ? details.blockers.filter((b): b is string => typeof b === "string")
+          : [];
+        const stateId = body.state_id;
+        if (typeof stateId === "string") {
+          setBlockerConfirm({ stateId, blockers });
+          return;
+        }
+      }
       setError(
         e instanceof ApiError ? e.message : "Failed to update issue",
       );
@@ -1133,6 +1155,24 @@ export default function IssueDetailContent({
         <ShareModal
           resource={`/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/share`}
           onClose={() => setShareOpen(false)}
+        />
+      )}
+      {/* C16T3: open-blockers confirm — retry the state move with
+          ignore_blockers=true. */}
+      {blockerConfirm && (
+        <BlockerConfirmDialog
+          open={blockerConfirm !== null}
+          blockers={blockerConfirm.blockers}
+          pending={patchMutation.isPending}
+          onCancel={() => setBlockerConfirm(null)}
+          onConfirm={() => {
+            const bc = blockerConfirm;
+            setBlockerConfirm(null);
+            patchMutation.mutate({
+              state_id: bc.stateId,
+              ignore_blockers: true,
+            });
+          }}
         />
       )}
     </div>

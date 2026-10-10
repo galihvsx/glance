@@ -126,6 +126,10 @@ type IssuePatch struct {
 	EstimatePointID PatchField[string]
 	IsDraft         *bool
 	Archived        *bool // true = archive (now()), false = unarchive (NULL), nil = untouched
+	// IgnoreBlockers is a request directive, not a field: when true, the
+	// C16T3 blocker guard is bypassed on moves into a completed state.
+	// It is never counted by hasFields.
+	IgnoreBlockers bool
 }
 
 // hasFields reports whether the patch carries anything at all.
@@ -620,6 +624,15 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		}
 		stateID = &sid
 	}
+	// C16T3: blocker guard — moving into a completed state while open
+	// 'blocks' inbound edges point at the issue is rejected, unless the
+	// request carries ignore_blockers. Lives in the shared tx core, so it
+	// covers single PATCH, bulk-update, and bulk-set alike.
+	if stateID != nil && *stateID != old.StateID && !patch.IgnoreBlockers {
+		if err := assertNoOpenBlockersTx(ctx, tx, projectID, ident, issueID, *stateID); err != nil {
+			return nil, nil, err
+		}
+	}
 	var parentID PatchField[string]
 	if patch.ParentID.Set {
 		if patch.ParentID.Value != nil {
@@ -1073,6 +1086,12 @@ func bulkItemErrMessage(err error) string {
 		return "name is required"
 	case errors.Is(err, ErrNothingToUpdate):
 		return "nothing to update"
+	case errors.Is(err, ErrOpenBlockers):
+		var obe *OpenBlockersError
+		if errors.As(err, &obe) && len(obe.Blockers) > 0 {
+			return "open blockers: " + strings.Join(obe.Blockers, ", ")
+		}
+		return "open blockers"
 	default:
 		return "internal error"
 	}
@@ -1244,6 +1263,9 @@ type BulkIssueSet struct {
 	Priority   *int
 	LabelIDs   *[]string
 	AssigneeID PatchField[string]
+	// IgnoreBlockers bypasses the C16T3 blocker guard on moves into a
+	// completed state for the whole batch.
+	IgnoreBlockers bool
 }
 
 func (s BulkIssueSet) hasFields() bool {
@@ -1380,6 +1402,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		if set.Priority != nil {
 			patch.Priority = set.Priority
 		}
+		patch.IgnoreBlockers = set.IgnoreBlockers
 		// updateIssueTx is the single-issue PATCH core: row lock,
 		// per-field activity rows, version snapshot, state-change
 		// notifications, webhook fan-out. A patch with no changed fields

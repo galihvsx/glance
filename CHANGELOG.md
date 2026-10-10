@@ -363,6 +363,18 @@ queued onboarding follow-up (invites endpoint).
   per-issue errors and gaps. The honest-loss list is shown up front,
   before upload.
 
+**Automation 2.0 — rules that see everything (cycle 16)**
+- Blocker guard on completion (C16T3): moving an issue into a
+  completed-group state while it has open `blocks` blockers (blocking
+  issues that are neither completed nor archived) is rejected with 409
+  code `open_blockers` — `details.blockers` names the blocker display
+  IDs; `ignore_blockers=true` bypasses. Enforced in the shared
+  state-transition path, so it covers single PATCH, bulk-update
+  (per-item failure), atomic bulk-set (aborts the batch), and the
+  automation `set_state` action (failure recorded `ok:false` on the run
+  row, never a silent skip). Issue detail + board drag show a confirm
+  dialog with "Complete anyway". No migration (reads `issue_links`).
+
 **Finish the gaps (cycle 15)**
 - Gantt dependency editing (C15T0, frontend-only): create/delete issue
   links (`blocks`/`blocked-by`) directly on the Gantt timeline —

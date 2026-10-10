@@ -47,6 +47,7 @@ import { priorityLabel } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
 import QuickAdd from "../components/issue/QuickAdd";
 import PeekDrawer from "../components/issue/PeekDrawer";
+import BlockerConfirmDialog from "../components/issue/BlockerConfirmDialog";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
@@ -236,6 +237,14 @@ export default function Board() {
   const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
+  // C16T3: pending open-blockers confirm on a board drag into a completed
+  // column — the drop plus the blocker display IDs from the 409 details.
+  const [blockerConfirm, setBlockerConfirm] = useState<{
+    id: string;
+    stateId: string;
+    sortOrder: number;
+    blockers: string[];
+  } | null>(null);
   const { settings, update, updateFields, reset } = useDisplaySettings(
     slug,
     identifier,
@@ -297,15 +306,36 @@ export default function Board() {
     : null;
 
   const patchMutation = useMutation({
-    mutationFn: (body: { id: string; state_id: string; sort_order: number }) =>
+    mutationFn: (body: {
+      id: string;
+      state_id: string;
+      sort_order: number;
+      ignore_blockers?: boolean;
+    }) =>
       api.patch<Issue>(`${base}/issues/${body.id}`, {
         state_id: body.state_id,
         sort_order: body.sort_order,
+        ...(body.ignore_blockers ? { ignore_blockers: true } : {}),
       }),
-    onError: (e) => {
-      setBoardError(
-        e instanceof ApiError ? e.message : "Failed to move issue",
-      );
+    onError: (e, body) => {
+      // C16T3: the blocker guard rejected the drop — offer "complete
+      // anyway" instead of just the error banner.
+      if (e instanceof ApiError && e.code === "open_blockers") {
+        const details = e.details as { blockers?: string[] } | undefined;
+        const blockers = Array.isArray(details?.blockers)
+          ? details.blockers.filter((b): b is string => typeof b === "string")
+          : [];
+        setBlockerConfirm({
+          id: body.id,
+          stateId: body.state_id,
+          sortOrder: body.sort_order,
+          blockers,
+        });
+      } else {
+        setBoardError(
+          e instanceof ApiError ? e.message : "Failed to move issue",
+        );
+      }
       void queryClient.invalidateQueries({ queryKey: issuesKey });
     },
     onSettled: () => {
@@ -401,7 +431,12 @@ export default function Board() {
     });
   }
 
-  function writeDrop(activeId: string, destStateId: string, sortOrder: number) {
+  function writeDrop(
+    activeId: string,
+    destStateId: string,
+    sortOrder: number,
+    ignoreBlockers = false,
+  ) {
     setBoardError(null);
     queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
       old?.map((i) =>
@@ -414,6 +449,7 @@ export default function Board() {
       id: activeId,
       state_id: destStateId,
       sort_order: sortOrder,
+      ...(ignoreBlockers ? { ignore_blockers: true } : {}),
     });
   }
 
@@ -658,6 +694,22 @@ export default function Board() {
           identifier={identifier}
           uuid={peekUuid}
           onClose={closePeek}
+        />
+      )}
+
+      {/* C16T3: open-blockers confirm — retry the drop with
+          ignore_blockers=true. */}
+      {blockerConfirm && (
+        <BlockerConfirmDialog
+          open={blockerConfirm !== null}
+          blockers={blockerConfirm.blockers}
+          pending={patchMutation.isPending}
+          onCancel={() => setBlockerConfirm(null)}
+          onConfirm={() => {
+            const bc = blockerConfirm;
+            setBlockerConfirm(null);
+            writeDrop(bc.id, bc.stateId, bc.sortOrder, true);
+          }}
         />
       )}
     </div>
