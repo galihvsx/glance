@@ -1,10 +1,23 @@
 import { useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import ProjectNav from "../components/project/ProjectNav";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
+import { Button } from "../components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import { Kbd } from "../components/ui/kbd";
+import { toast } from "../components/ui/toast";
 import { api } from "../lib/api";
 import type {
   Issue,
@@ -22,6 +35,18 @@ import {
   ganttDays,
   ganttMonths,
 } from "../lib/gantt";
+import {
+  cancelLinkDraw,
+  closeLinkDelete,
+  dropTargetAt,
+  enterLinkMode,
+  exitLinkMode,
+  initialGanttLinkUiState,
+  requestLinkDelete,
+  resolveLinkDrop,
+  startLinkDraw,
+  useGanttLinkMutations,
+} from "../components/gantt/ganttLinks";
 import { cn } from "../lib/utils";
 
 /** State-group order for the row grouping (same vocabulary as cycles). */
@@ -150,6 +175,25 @@ export default function Gantt() {
     return { issues, links };
   }, [dueQuery.data, startQuery.data, undatedQuery.data]);
 
+  // Dependency editing (C15T0): optimistic create/delete of `blocks`
+  // edges over the merged server links. The peek drawer already carries
+  // the cycle-8 linked-issues panel, which is the keyboard path —
+  // every gutter row is a native button that opens it.
+  const {
+    links: visLinks,
+    createMutation: createLinkMutation,
+    deleteMutation: deleteLinkMutation,
+  } = useGanttLinkMutations(slug, identifier, links);
+  const [linkUi, setLinkUi] = useState(initialGanttLinkUiState);
+  // Cursor position while drawing an edge (svg coordinates).
+  const [drawPos, setDrawPos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+
+  const issueById = useMemo(() => new Map(issues.map((i) => [i.id, i])), [
+    issues,
+  ]);
+
   const statesById = useMemo(() => {
     const m = new Map<string, IssueState>();
     for (const s of statesQuery.data ?? []) m.set(s.id, s);
@@ -206,9 +250,19 @@ export default function Gantt() {
 
   // Dependency arrows: A blocks B (issue_id → target_issue_id) draws from
   // the blocker's bar right edge to the blocked issue's bar left edge.
+  // Rendered over visLinks (server + optimistic), each carrying its link
+  // so a click can open the delete confirm. Only "blocks" edges are
+  // drawn — other kinds are managed in the issue detail panel.
   const arrows = useMemo(() => {
-    const out: { x1: number; y1: number; x2: number; y2: number }[] = [];
-    for (const l of links) {
+    const out: {
+      id: string;
+      link: IssueLink;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+    }[] = [];
+    for (const l of visLinks) {
       if (l.kind !== "blocks") continue;
       const fromY = rowY.get(l.issue_id);
       const toY = rowY.get(l.target_issue_id);
@@ -223,10 +277,21 @@ export default function Gantt() {
       const x2 = dayToX(tb.start, windowStart, DAY_W);
       const y1 = fromY + ROW_H / 2;
       const y2 = toY + ROW_H / 2;
-      out.push({ x1, y1, x2, y2 });
+      out.push({ id: l.id, link: l, x1, y1, x2, y2 });
     }
     return out;
-  }, [links, rowY, issues, windowStart]);
+  }, [visLinks, rowY, issues, windowStart]);
+
+  // Dated rows as drop targets for edge drawing (svg coordinates).
+  const dropRows = useMemo(() => {
+    const out: { id: string; y: number }[] = [];
+    rows.forEach((r, idx) => {
+      if (r.kind === "issue" || r.kind === "issue-undated") {
+        out.push({ id: r.issue.id, y: HEADER_H + idx * ROW_H });
+      }
+    });
+    return out;
+  }, [rows]);
 
   // Drag-to-reschedule.
   const [drag, setDrag] = useState<{
@@ -254,6 +319,10 @@ export default function Gantt() {
     const rect = svgRef.current?.getBoundingClientRect();
     return rect ? clientX - rect.left : 0;
   };
+  const svgY = (clientY: number) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    return rect ? clientY - rect.top : 0;
+  };
 
   const onBarPointerDown = (
     e: React.PointerEvent,
@@ -261,6 +330,13 @@ export default function Gantt() {
     b: { start: string; end: string },
   ) => {
     if (!canEdit || e.button !== 0) return;
+    // Link mode: a press on a bar starts an edge draw instead of a move.
+    if (linkUi.linkMode) {
+      e.preventDefault();
+      setLinkUi(startLinkDraw(linkUi, issue.id));
+      setDrawPos({ x: svgX(e.clientX), y: svgY(e.clientY) });
+      return;
+    }
     e.preventDefault();
     setDrag({
       id: issue.id,
@@ -272,11 +348,36 @@ export default function Gantt() {
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (linkUi.drawingFrom) {
+      setDrawPos({ x: svgX(e.clientX), y: svgY(e.clientY) });
+      return;
+    }
     if (!drag) return;
     setDrag({ ...drag, dx: svgX(e.clientX) - drag.startX });
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
+    // Finish an edge draw: resolve the drop against the dated rows.
+    if (linkUi.drawingFrom) {
+      const fromId = linkUi.drawingFrom;
+      const toId = dropTargetAt(dropRows, svgY(e.clientY), ROW_H);
+      setLinkUi(cancelLinkDraw(linkUi));
+      setDrawPos(null);
+      const resolution = resolveLinkDrop(fromId, toId);
+      if (resolution === "create") {
+        suppressClick.current = true;
+        setTimeout(() => {
+          suppressClick.current = false;
+        }, 0);
+        createLinkMutation.mutate({ fromId, toId: toId! });
+      } else if (resolution === "self") {
+        toast.add({
+          title: "An issue can't depend on itself",
+          type: "info",
+        });
+      }
+      return;
+    }
     if (!drag) return;
     const dayDelta = Math.round(drag.dx / DAY_W);
     setDrag(null);
@@ -311,7 +412,18 @@ export default function Gantt() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 p-4">
+    <div
+      className="flex h-full flex-col gap-4 p-4"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        if (linkUi.drawingFrom) {
+          setLinkUi(cancelLinkDraw(linkUi));
+          setDrawPos(null);
+        } else if (linkUi.linkMode) {
+          setLinkUi(exitLinkMode(linkUi));
+        }
+      }}
+    >
       <ProjectNav />
       <div className="flex items-center gap-2">
         <button
@@ -344,12 +456,42 @@ export default function Gantt() {
         <span className="text-sm font-medium">
           {monthLabel(days[0])} – {monthLabel(days[days.length - 1])}
         </span>
+        {canEdit && (
+          <Button
+            type="button"
+            variant={linkUi.linkMode ? "secondary" : "outline"}
+            size="sm"
+            aria-pressed={linkUi.linkMode}
+            onClick={() =>
+              setLinkUi(
+                linkUi.linkMode ? exitLinkMode(linkUi) : enterLinkMode(linkUi),
+              )
+            }
+            title="Draw dependency edges between issue bars"
+            className="gap-1.5"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            {linkUi.linkMode ? "Linking…" : "Add dependencies"}
+          </Button>
+        )}
         {!canEdit && (
           <span className="text-xs text-muted-foreground">
             Guest access — timeline is read-only.
           </span>
         )}
       </div>
+      {linkUi.linkMode && canEdit && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>
+            Link mode: drag from one issue bar to another to create a{" "}
+            <span className="font-medium text-foreground">blocks</span>{" "}
+            dependency. Click an existing edge to remove it.
+          </span>
+          <span className="flex items-center gap-1">
+            <Kbd>Esc</Kbd> to exit
+          </span>
+        </div>
+      )}
 
       {loading && (
         <div className="text-sm text-muted-foreground">Loading timeline…</div>
@@ -433,7 +575,10 @@ export default function Gantt() {
               ref={svgRef}
               width={width}
               height={height}
-              className={cn(drag && "cursor-grabbing select-none")}
+              className={cn(
+                drag && "cursor-grabbing select-none",
+                linkUi.linkMode && "cursor-crosshair select-none",
+              )}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerLeave={onPointerUp}
@@ -539,20 +684,68 @@ export default function Gantt() {
                   />
                 );
               })}
-              {/* Dependency arrows (under the bars) */}
-              {arrows.map((a, i) => {
+              {/* Dependency arrows (under the bars). Clicking an edge opens
+                  the delete confirm; a fat invisible hit path makes the
+                  1.5px line easy to grab. */}
+              {arrows.map((a) => {
                 const midX = (a.x1 + a.x2) / 2;
                 return (
-                  <path
-                    key={i}
-                    d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
-                    fill="none"
-                    strokeWidth={1.5}
-                    className="stroke-muted-foreground"
-                    markerEnd="url(#gantt-arrow)"
-                  />
+                  <g
+                    key={a.id}
+                    className={cn(canEdit && "cursor-pointer")}
+                    onClick={() => {
+                      if (!canEdit || linkUi.drawingFrom) return;
+                      setLinkUi(requestLinkDelete(linkUi, a.link));
+                    }}
+                  >
+                    <path
+                      d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={12}
+                      pointerEvents="stroke"
+                    >
+                      <title>
+                        {`${issueById.get(a.link.issue_id)?.display_id ?? ""} blocks ${issueById.get(a.link.target_issue_id)?.display_id ?? ""} — click to remove`}
+                      </title>
+                    </path>
+                    <path
+                      d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
+                      fill="none"
+                      strokeWidth={1.5}
+                      className={cn(
+                        "stroke-muted-foreground",
+                        canEdit && "transition-colors hover:stroke-destructive",
+                      )}
+                      markerEnd="url(#gantt-arrow)"
+                      pointerEvents="none"
+                    />
+                  </g>
                 );
               })}
+              {/* In-progress edge draw preview. */}
+              {linkUi.drawingFrom &&
+                drawPos &&
+                (() => {
+                  const from = issues.find(
+                    (i) => i.id === linkUi.drawingFrom,
+                  );
+                  const fb = from && barSpan(from.start_date, from.target_date);
+                  const fromY = from && rowY.get(from.id);
+                  if (!fb?.start || !fb?.end || fromY === undefined) return null;
+                  const x1 = dayToX(fb.end, windowStart, DAY_W) + DAY_W;
+                  const y1 = fromY + ROW_H / 2;
+                  return (
+                    <path
+                      d={`M ${x1} ${y1} L ${drawPos.x} ${drawPos.y}`}
+                      fill="none"
+                      strokeWidth={1.5}
+                      strokeDasharray="4 3"
+                      className="stroke-primary"
+                      pointerEvents="none"
+                    />
+                  );
+                })()}
               {/* Bars */}
               {rows.map((r, idx) => {
                 if (r.kind !== "issue") return null;
@@ -585,7 +778,10 @@ export default function Gantt() {
                       rx={4}
                       fill={color}
                       fillOpacity={0.85}
-                      className={cn(canEdit && "cursor-grab")}
+                      className={cn(
+                        canEdit && !linkUi.linkMode && "cursor-grab",
+                        canEdit && linkUi.linkMode && "cursor-crosshair",
+                      )}
                       onPointerDown={(e) =>
                         onBarPointerDown(e, r.issue, {
                           start: b.start!,
@@ -593,12 +789,23 @@ export default function Gantt() {
                         })
                       }
                       onClick={() => {
-                        if (!drag && !suppressClick.current)
+                        if (!drag && !suppressClick.current && !linkUi.linkMode)
                           openPeek(r.issue.id);
                       }}
                     >
                       <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
                     </rect>
+                    {/* Link-mode draw handle at the bar's right edge. */}
+                    {linkUi.linkMode && canEdit && (
+                      <circle
+                        cx={x + 2 + Math.max(w, 8)}
+                        cy={y + ROW_H / 2}
+                        r={4.5}
+                        className="fill-primary stroke-background"
+                        strokeWidth={1.5}
+                        pointerEvents="none"
+                      />
+                    )}
                   </g>
                 );
               })}
@@ -619,6 +826,42 @@ export default function Gantt() {
           onClose={closePeek}
         />
       )}
+      {/* Delete-dependency confirm (C15T0). */}
+      <AlertDialog
+        open={!!linkUi.confirmDelete}
+        onOpenChange={(open) => {
+          if (!open) setLinkUi(closeLinkDelete(linkUi));
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this dependency?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {linkUi.confirmDelete &&
+                `Remove the "blocks" dependency — ${
+                  issueById.get(linkUi.confirmDelete.issue_id)?.display_id ??
+                  "?"
+                } → ${
+                  issueById.get(linkUi.confirmDelete.target_issue_id)
+                    ?.display_id ?? "?"
+                }? The issues themselves are not affected.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteLinkMutation.isPending}
+              onClick={() => {
+                const target = linkUi.confirmDelete;
+                setLinkUi(closeLinkDelete(linkUi));
+                if (target) deleteLinkMutation.mutate(target);
+              }}
+            >
+              Remove dependency
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
