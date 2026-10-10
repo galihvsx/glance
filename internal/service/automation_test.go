@@ -188,7 +188,9 @@ func TestAutomationValidation(t *testing.T) {
 		{"label unknown", automationRuleInput(fx, nil, []AutomationAction{{Type: "add_label", LabelID: autoStrPtr("00000000-0000-0000-0000-000000000000")}}), ErrInvalidAutomationAction},
 		{"comment blank", automationRuleInput(fx, nil, []AutomationAction{{Type: "add_comment", Body: autoStrPtr("  ")}}), ErrInvalidAutomationAction},
 	}
-	cases[1].in.Trigger.Type = "issue.created"
+	// C12T2: issue.created is now a valid trigger; use a genuinely
+	// unknown type for the bad-trigger case.
+	cases[1].in.Trigger.Type = "issue.deleted"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := CreateAutomationRule(ctx, fx.pool, fx.slug, fx.ident, fx.admin, tc.in); !errors.Is(err, tc.want) {

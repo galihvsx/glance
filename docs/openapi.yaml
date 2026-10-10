@@ -2357,21 +2357,23 @@
       },
       "AutomationTrigger": {
         "type": "object",
-        "description": "v1 trigger: issue.state_changed with optional from/to state filters; null matches any.",
+        "description": "Trigger: issue.state_changed with optional from/to state filters (null matches any), or issue.created (fires on issue creation; takes no filters in v1 — filters on it are rejected). Automation-driven changes never re-trigger automations.",
         "properties": {
-          "type": { "type": "string", "example": "issue.state_changed" },
+          "type": { "type": "string", "enum": ["issue.state_changed", "issue.created"], "example": "issue.state_changed" },
           "from_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true },
           "to_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true }
         }
       },
       "AutomationAction": {
         "type": "object",
-        "description": "One ordered action: assign (user_id), add_label (label_id), or add_comment (body).",
+        "description": "One ordered action: assign (user_id), add_label (label_id), add_comment (body), set_priority (priority 0-4: none/low/medium/high/urgent), or set_state (state_id, a state UUID in this project). set_priority/set_state targeting the current value are no-ops: no activity row, and a firing of only no-ops writes no run row.",
         "properties": {
-          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment"] },
+          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment", "set_priority", "set_state"] },
           "user_id": { "type": "string", "format": "uuid" },
           "label_id": { "type": "string", "format": "uuid" },
-          "body": { "type": "string", "maxLength": 10000 }
+          "body": { "type": "string", "maxLength": 10000 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+          "state_id": { "type": "string", "format": "uuid" }
         }
       },
       "AutomationRule": {
@@ -2404,7 +2406,7 @@
       "AutomationActionResult": {
         "type": "object",
         "properties": {
-          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment"] },
+          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment", "set_priority", "set_state"] },
           "ok": { "type": "boolean" },
           "error": { "type": "string" }
         }

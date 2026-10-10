@@ -419,10 +419,22 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, err
 	}
 
+	// C12T2: issue.created workflow automations. Matching rules run
+	// their actions in this same tx — creation, automation writes, and
+	// run rows commit atomically. The depth-1 loop guard
+	// (!automationActive) means automation-driven changes never
+	// re-trigger evaluation, so an automation's own set_state on this
+	// path produces no cascade.
+	var notified []*Notification
+	if !automationActive(ctx) {
+		notified = runAutomationCreatedRulesTx(ctx, tx, wsID, projectID, ident, iss.ID, actorID)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	announceIssueCreated(wsSlug, ident, iss)
+	announceNotifications(notified)
 	return iss, nil
 }
 

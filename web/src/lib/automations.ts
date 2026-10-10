@@ -7,20 +7,26 @@
 // gate (403). Max 25 rules per project (409 beyond).
 
 import { api } from "./api";
+import { PRIORITY_LABELS } from "./types";
 
-/** v1 trigger: issue.state_changed with optional from/to state filters. */
+/** Trigger: issue.state_changed with optional from/to state filters, or
+ *  issue.created (C12T2 — fires on creation, no filters in v1). */
 export interface AutomationTrigger {
-  type: "issue.state_changed";
+  type: "issue.state_changed" | "issue.created";
   from_states: string[] | null;
   to_states: string[] | null;
 }
 
 /** One ordered action. */
 export interface AutomationAction {
-  type: "assign" | "add_label" | "add_comment";
+  type: "assign" | "add_label" | "add_comment" | "set_priority" | "set_state";
   user_id?: string;
   label_id?: string;
   body?: string;
+  /** set_priority: 0-4 (None/Low/Medium/High/Urgent). */
+  priority?: number;
+  /** set_state: target state UUID in this project. */
+  state_id?: string;
 }
 
 /** A stored automation rule (backend AutomationRule shape). */
@@ -96,7 +102,7 @@ export function deleteAutomationRule(
 
 /** One fired action's recorded outcome (backend AutomationActionResult). */
 export interface AutomationActionResult {
-  type: "assign" | "add_label" | "add_comment";
+  type: "assign" | "add_label" | "add_comment" | "set_priority" | "set_state";
   ok: boolean;
   error?: string;
 }
@@ -141,6 +147,9 @@ export function describeTrigger(
   trigger: AutomationTrigger,
   states: { id: string; name: string }[],
 ): string {
+  if (trigger.type === "issue.created") {
+    return "When an issue is created";
+  }
   const nameOf = (id: string) =>
     states.find((s) => s.id === id)?.name ?? "unknown state";
   const from =
@@ -159,6 +168,7 @@ export function describeAction(
   action: AutomationAction,
   users: { id: string; name?: string | null; email: string }[],
   labels: { id: string; name: string }[],
+  states: { id: string; name: string }[] = [],
 ): string {
   switch (action.type) {
     case "assign": {
@@ -173,5 +183,11 @@ export function describeAction(
       return `Post comment: “${(action.body ?? "").slice(0, 60)}${
         (action.body ?? "").length > 60 ? "…" : ""
       }”`;
+    case "set_priority":
+      return `Set priority to ${PRIORITY_LABELS[action.priority ?? 0] ?? `P${action.priority}`}`;
+    case "set_state": {
+      const s = states.find((x) => x.id === action.state_id);
+      return `Move to ${s?.name || "unknown state"}`;
+    }
   }
 }

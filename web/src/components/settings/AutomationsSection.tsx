@@ -34,7 +34,7 @@ import {
   type TaxState,
 } from "../../lib/taxonomy";
 import { relativeTime } from "../../lib/relativeTime";
-import type { WorkspaceMember } from "../../lib/types";
+import { PRIORITY_LABELS, type WorkspaceMember } from "../../lib/types";
 import { toast } from "../ui/toast";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -68,6 +68,8 @@ interface DraftAction {
   user_id: string;
   label_id: string;
   body: string;
+  priority: number; // set_priority target (0-4)
+  state_id: string; // set_state target ("" = unset)
 }
 
 const emptyDraftAction = (): DraftAction => ({
@@ -75,10 +77,13 @@ const emptyDraftAction = (): DraftAction => ({
   user_id: "",
   label_id: "",
   body: "",
+  priority: 2,
+  state_id: "",
 });
 
 interface RuleDraft {
   name: string;
+  triggerType: AutomationTrigger["type"];
   fromState: string; // "" = any
   toState: string; // "" = any
   actions: DraftAction[];
@@ -86,6 +91,7 @@ interface RuleDraft {
 
 const emptyDraft = (): RuleDraft => ({
   name: "",
+  triggerType: "issue.state_changed",
   fromState: "",
   toState: "",
   actions: [emptyDraftAction()],
@@ -95,6 +101,7 @@ function draftFromRule(rule: AutomationRule): RuleDraft {
   const t = rule.trigger;
   return {
     name: rule.name,
+    triggerType: t.type,
     fromState: t.from_states?.[0] ?? "",
     toState: t.to_states?.[0] ?? "",
     actions: rule.actions.map((a) => ({
@@ -102,6 +109,8 @@ function draftFromRule(rule: AutomationRule): RuleDraft {
       user_id: a.user_id ?? "",
       label_id: a.label_id ?? "",
       body: a.body ?? "",
+      priority: a.priority ?? 2,
+      state_id: a.state_id ?? "",
     })),
   };
 }
@@ -110,12 +119,16 @@ const ACTION_LABELS: Record<DraftAction["type"], string> = {
   assign: "Assign user",
   add_label: "Add label",
   add_comment: "Post comment",
+  set_priority: "Set priority",
+  set_state: "Set state",
 };
 
-// describeRunTrigger renders the stored trigger_type honestly: v1 only
-// knows issue.state_changed; anything else falls back to the raw value.
+// describeRunTrigger renders the stored trigger_type honestly; anything
+// unknown falls back to the raw value.
 function describeRunTrigger(triggerType: string): string {
-  return triggerType === "issue.state_changed" ? "on state change" : triggerType;
+  if (triggerType === "issue.state_changed") return "on state change";
+  if (triggerType === "issue.created") return "on issue creation";
+  return triggerType;
 }
 
 function RunActionChips({ actions }: { actions: AutomationActionResult[] }) {
@@ -197,11 +210,15 @@ export default function AutomationsSection({
   }
 
   function draftToInput(d: RuleDraft): AutomationRuleInput | null {
-    const trigger: AutomationTrigger = {
-      type: "issue.state_changed",
-      from_states: d.fromState ? [d.fromState] : null,
-      to_states: d.toState ? [d.toState] : null,
-    };
+    // issue.created takes no filters in v1 (server rejects them).
+    const trigger: AutomationTrigger =
+      d.triggerType === "issue.created"
+        ? { type: "issue.created", from_states: null, to_states: null }
+        : {
+            type: "issue.state_changed",
+            from_states: d.fromState ? [d.fromState] : null,
+            to_states: d.toState ? [d.toState] : null,
+          };
     const actions: AutomationAction[] = [];
     for (const a of d.actions) {
       if (a.type === "assign" && a.user_id) {
@@ -210,6 +227,10 @@ export default function AutomationsSection({
         actions.push({ type: "add_label", label_id: a.label_id });
       } else if (a.type === "add_comment" && a.body.trim()) {
         actions.push({ type: "add_comment", body: a.body.trim() });
+      } else if (a.type === "set_priority") {
+        actions.push({ type: "set_priority", priority: a.priority });
+      } else if (a.type === "set_state" && a.state_id) {
+        actions.push({ type: "set_state", state_id: a.state_id });
       } else {
         return null; // incomplete action — honest block, not silent drop
       }
@@ -287,8 +308,10 @@ export default function AutomationsSection({
         <div>
           <CardTitle>Automations</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            When an issue changes state, do things automatically — assign a
-            user, add a label, or post a comment. Free in glance.
+            When an issue is created or changes state, do things
+            automatically — assign a user, add a label, post a comment,
+            set priority, or move it to another state. Automation-driven
+            changes never trigger other rules. Free in glance.
           </p>
         </div>
         {canEdit && (
@@ -331,7 +354,7 @@ export default function AutomationsSection({
                   <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
                     {rule.actions.map((a, i) => (
                       <li key={i}>
-                        → {describeAction(a, members, labels)}
+                        → {describeAction(a, members, labels, states)}
                       </li>
                     ))}
                   </ul>
@@ -394,44 +417,72 @@ export default function AutomationsSection({
                   maxLength={120}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label htmlFor="auto-from">From state</Label>
-                  <select
-                    id="auto-from"
-                    className={`${selectClass} w-full`}
-                    value={draft.fromState}
-                    onChange={(e) =>
-                      setDraft((d) => ({ ...d, fromState: e.target.value }))
-                    }
-                  >
-                    <option value="">Any state</option>
-                    {states.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <Label htmlFor="auto-to">To state</Label>
-                  <select
-                    id="auto-to"
-                    className={`${selectClass} w-full`}
-                    value={draft.toState}
-                    onChange={(e) =>
-                      setDraft((d) => ({ ...d, toState: e.target.value }))
-                    }
-                  >
-                    <option value="">Any state</option>
-                    {states.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <Label htmlFor="auto-trigger">When</Label>
+                <select
+                  id="auto-trigger"
+                  className={`${selectClass} w-full`}
+                  value={draft.triggerType}
+                  onChange={(e) =>
+                    setDraft((d) => ({
+                      ...d,
+                      triggerType: e.target
+                        .value as RuleDraft["triggerType"],
+                    }))
+                  }
+                >
+                  <option value="issue.state_changed">
+                    Issue state changes
+                  </option>
+                  <option value="issue.created">Issue created</option>
+                </select>
+                {draft.triggerType === "issue.created" && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Fires on every issue creation. No filters in this
+                    version.
+                  </p>
+                )}
               </div>
+              {draft.triggerType === "issue.state_changed" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label htmlFor="auto-from">From state</Label>
+                    <select
+                      id="auto-from"
+                      className={`${selectClass} w-full`}
+                      value={draft.fromState}
+                      onChange={(e) =>
+                        setDraft((d) => ({ ...d, fromState: e.target.value }))
+                      }
+                    >
+                      <option value="">Any state</option>
+                      {states.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <Label htmlFor="auto-to">To state</Label>
+                    <select
+                      id="auto-to"
+                      className={`${selectClass} w-full`}
+                      value={draft.toState}
+                      onChange={(e) =>
+                        setDraft((d) => ({ ...d, toState: e.target.value }))
+                      }
+                    >
+                      <option value="">Any state</option>
+                      {states.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
               <div>
                 <Label>Actions (run in order)</Label>
                 <div className="mt-2 space-y-3">
@@ -512,6 +563,43 @@ export default function AutomationsSection({
                             maxLength={10000}
                           />
                         )}
+                        {a.type === "set_priority" && (
+                          <select
+                            aria-label={`Action ${i + 1} priority`}
+                            className={`${selectClass} w-full`}
+                            value={a.priority}
+                            onChange={(e) =>
+                              updateDraftAction(i, {
+                                priority: Number(e.target.value),
+                              })
+                            }
+                          >
+                            {PRIORITY_LABELS.map((label, p) => (
+                              <option key={p} value={p}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        {a.type === "set_state" && (
+                          <select
+                            aria-label={`Action ${i + 1} state`}
+                            className={`${selectClass} w-full`}
+                            value={a.state_id}
+                            onChange={(e) =>
+                              updateDraftAction(i, {
+                                state_id: e.target.value,
+                              })
+                            }
+                          >
+                            <option value="">Select state…</option>
+                            {states.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
                       {draft.actions.length > 1 && (
                         <Button
@@ -589,7 +677,7 @@ export default function AutomationsSection({
         ) : runs.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No automation runs yet. A run appears here each time a rule
-            fires on a state change.
+            fires on a state change or issue creation.
           </p>
         ) : (
           <ul className="space-y-3">

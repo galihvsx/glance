@@ -1,15 +1,18 @@
 package service
 
-// Workflow automations v1 (C11T1): per-project rules that react to issue
-// state changes. Plane paywalls this class of feature; glance ships it
-// free.
+// Workflow automations (C11T1 v1, C12T2 expansion): per-project rules
+// that react to issue events. Plane paywalls this class of feature;
+// glance ships it free.
 //
-// A rule fires when an issue's state changes and the transition matches
-// the trigger filter. Actions run in order inside the state-change
-// transaction; an action failure is LOGGED (slog) and never blocks the
-// state change. Automation-driven changes never re-trigger automations:
-// the depth-1 loop guard (automationActiveKey) suppresses evaluation
-// while automation actions run, so a rule's own add_comment can never
+// Triggers: issue.state_changed (fires when an issue's state changes and
+// the transition matches the trigger filter) and issue.created (C12T2 —
+// fires on issue creation, no filters in v1). Actions run in order
+// inside the firing transaction: assign, add_label, add_comment,
+// set_priority, set_state (C12T2). An action failure is LOGGED (slog)
+// and never blocks the firing event. Automation-driven changes never
+// re-trigger automations: the depth-1 loop guard (automationActiveKey)
+// suppresses evaluation while automation actions run, so a rule's own
+// add_comment — or its set_state, even on the creation path — can never
 // cascade. The guard is belt-and-braces — actions are direct tx-scoped
 // SQL that never calls updateIssueTx — but it is enforced explicitly so
 // a future action that routes through UpdateIssue stays safe.
@@ -58,8 +61,10 @@ var (
 	ErrInvalidAutomationAction  = errors.New("service: invalid automation action")
 )
 
-// AutomationTrigger is the v1 trigger: issue.state_changed with optional
-// from/to state filters. A null/empty filter matches any state.
+// AutomationTrigger fires a rule. C11T1 shipped issue.state_changed with
+// optional from/to state filters (a null/empty filter matches any
+// state); C12T2 adds issue.created, which fires on issue creation and
+// takes no filters in v1.
 type AutomationTrigger struct {
 	Type       string   `json:"type"`
 	FromStates []string `json:"from_states"`
@@ -67,12 +72,15 @@ type AutomationTrigger struct {
 }
 
 // AutomationAction is one ordered step: exactly one of assign (user_id),
-// add_label (label_id), add_comment (body).
+// add_label (label_id), add_comment (body), set_priority (priority,
+// 0-4), set_state (state_id, a state UUID in this project).
 type AutomationAction struct {
-	Type    string  `json:"type"`
-	UserID  *string `json:"user_id,omitempty"`
-	LabelID *string `json:"label_id,omitempty"`
-	Body    *string `json:"body,omitempty"`
+	Type     string  `json:"type"`
+	UserID   *string `json:"user_id,omitempty"`
+	LabelID  *string `json:"label_id,omitempty"`
+	Body     *string `json:"body,omitempty"`
+	Priority *int    `json:"priority,omitempty"`
+	StateID  *string `json:"state_id,omitempty"`
 }
 
 // AutomationRule is a stored rule row.
@@ -146,27 +154,39 @@ func resolveAutomationProject(ctx context.Context, q queryRower, wsSlug, identif
 	return wsID, projectID, role, nil
 }
 
-// validateAutomationTrigger checks the v1 trigger shape: type must be
-// issue.state_changed and every listed state must be a UUID of a state
-// in this project (reuses checkStateInProject; its ErrInvalidState is
-// mapped to ErrInvalidAutomationTrigger so callers see one sentinel).
+// validateAutomationTrigger checks the trigger shape. issue.state_changed
+// takes optional from/to state filters (every listed state must be a
+// UUID of a state in this project — checkStateInProject's ErrInvalidState
+// is mapped to ErrInvalidAutomationTrigger so callers see one sentinel).
+// issue.created (C12T2) takes no fields in v1: a filter on a created
+// trigger is rejected rather than silently ignored. Unknown types are
+// rejected as before.
 func validateAutomationTrigger(ctx context.Context, q queryRower, projectID string, t AutomationTrigger) error {
-	if t.Type != "issue.state_changed" {
-		return ErrInvalidAutomationTrigger
-	}
-	for _, sid := range append(append([]string{}, t.FromStates...), t.ToStates...) {
-		if _, err := checkStateInProject(ctx, q, projectID, sid); err != nil {
+	switch t.Type {
+	case "issue.state_changed":
+		for _, sid := range append(append([]string{}, t.FromStates...), t.ToStates...) {
+			if _, err := checkStateInProject(ctx, q, projectID, sid); err != nil {
+				return ErrInvalidAutomationTrigger
+			}
+		}
+		return nil
+	case "issue.created":
+		if len(t.FromStates) > 0 || len(t.ToStates) > 0 {
 			return ErrInvalidAutomationTrigger
 		}
+		return nil
+	default:
+		return ErrInvalidAutomationTrigger
 	}
-	return nil
 }
 
 // validateAutomationActions checks each action's shape and referential
 // targets at write time: assign needs a workspace member, add_label a
-// label in this workspace, add_comment a non-empty body. Targets can
-// still vanish later — execution failures are logged, never fatal.
-func validateAutomationActions(ctx context.Context, q queryRower, wsID string, actions []AutomationAction) error {
+// label in this workspace, add_comment a non-empty body, set_priority a
+// priority pinned to the schema enum (0-4), set_state a state in this
+// project (like add_label's write-time check). Targets can still vanish
+// later — execution failures are logged, never fatal.
+func validateAutomationActions(ctx context.Context, q queryRower, wsID, projectID string, actions []AutomationAction) error {
 	if len(actions) == 0 || len(actions) > MaxAutomationActionsPerRule {
 		return ErrInvalidAutomationAction
 	}
@@ -207,6 +227,20 @@ func validateAutomationActions(ctx context.Context, q queryRower, wsID string, a
 		case "add_comment":
 			if a.Body == nil || strings.TrimSpace(*a.Body) == "" ||
 				len(*a.Body) > MaxAutomationCommentLen {
+				return ErrInvalidAutomationAction
+			}
+		case "set_priority":
+			if a.Priority == nil || *a.Priority < 0 || *a.Priority > 4 {
+				return ErrInvalidAutomationAction
+			}
+		case "set_state":
+			if a.StateID == nil {
+				return ErrInvalidAutomationAction
+			}
+			if _, err := checkStateInProject(ctx, q, projectID,
+				strings.ToLower(strings.TrimSpace(*a.StateID))); err != nil {
+				// Bad UUID or a state from another project: a write-time
+				// 400, same as add_label's target check.
 				return ErrInvalidAutomationAction
 			}
 		default:
@@ -275,7 +309,7 @@ func CreateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 	if err := validateAutomationTrigger(ctx, pool, projectID, in.Trigger); err != nil {
 		return nil, err
 	}
-	if err := validateAutomationActions(ctx, pool, wsID, in.Actions); err != nil {
+	if err := validateAutomationActions(ctx, pool, wsID, projectID, in.Actions); err != nil {
 		return nil, err
 	}
 
@@ -323,7 +357,7 @@ func UpdateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 		}
 	}
 	if patch.Actions != nil {
-		if err := validateAutomationActions(ctx, pool, wsID, *patch.Actions); err != nil {
+		if err := validateAutomationActions(ctx, pool, wsID, projectID, *patch.Actions); err != nil {
 			return nil, err
 		}
 	}
@@ -430,9 +464,32 @@ func automationActive(ctx context.Context) bool {
 // failures are logged via slog and the state change proceeds — a broken
 // rule must not roll back the user's move. Every firing writes exactly
 // one automation_runs row in this same tx (C12T1 run history), recording
-// the per-action ok/error outcomes. Returned notifications are
-// for the caller to announce after commit.
+// the per-action ok/error outcomes — except a firing whose every action
+// was a no-op (C12T2: set_priority/set_state targeting the current
+// value), which writes no run row and no activity. Returned
+// notifications are for the caller to announce after commit.
 func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, fromStateID, toStateID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		"issue.state_changed", fromStateID, toStateID)
+}
+
+// runAutomationCreatedRulesTx evaluates enabled issue.created rules for a
+// newly created issue and runs matching actions inside the caller's tx.
+// Call it only from CreateIssue after the insert (guarded by
+// !automationActive), in the same tx so the creation, its automation
+// writes, and the run rows commit atomically. Never returns an error;
+// same logging ethos as the state-change path.
+func runAutomationCreatedRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) []*Notification {
+	return runAutomationRulesForEventTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		"issue.created", "", "")
+}
+
+// runAutomationRulesForEventTx is the shared firing core. eventType is
+// the trigger type being evaluated; rules carrying any other trigger
+// type are skipped, so a created rule can never fire on a state change
+// and vice versa. fromStateID/toStateID apply only to the state_changed
+// event (the created event has no filters in v1).
+func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, eventType, fromStateID, toStateID string) []*Notification {
 	if automationActive(ctx) {
 		return nil
 	}
@@ -472,7 +529,12 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 				"rule_id", r.ID, "error", err)
 			continue
 		}
-		if !trig.matches(fromStateID, toStateID) {
+		// Trigger types are event-scoped: a rule only ever fires for
+		// the event its trigger names.
+		if trig.Type != eventType {
+			continue
+		}
+		if eventType == "issue.state_changed" && !trig.matches(fromStateID, toStateID) {
 			continue
 		}
 		var actions []AutomationAction
@@ -484,8 +546,9 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 		// C12T1: record each action's outcome for the run row written
 		// after the loop — one row per firing, never per action.
 		results := make([]AutomationActionResult, 0, len(actions))
+		anyEffect := false
 		for i, a := range actions {
-			ns, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
+			ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
 			if err != nil {
 				// Logged, never fatal: the state change already
 				// happened; a broken action must not roll it back.
@@ -494,10 +557,20 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 					"action_index", i, "action_type", a.Type, "error", err)
 				errText := err.Error()
 				results = append(results, AutomationActionResult{Type: a.Type, OK: false, Error: &errText})
+				anyEffect = true
 				continue
 			}
 			notified = append(notified, ns...)
 			results = append(results, AutomationActionResult{Type: a.Type, OK: true})
+			if !noop {
+				anyEffect = true
+			}
+		}
+		if !anyEffect {
+			// C12T2: the firing changed nothing (every action was a
+			// no-op, e.g. set_state to the issue's current state) —
+			// no run row, no activity, nothing to announce.
+			continue
 		}
 		// C12T1: one run row per firing, in this same tx — the state
 		// change and its log commit atomically. A run-row insert
@@ -507,30 +580,142 @@ func runAutomationRulesTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident
 	return notified
 }
 
-// execAutomationActionTx runs one action inside the state-change tx.
-// Failures are returned for the caller to log; the tx is untouched.
-func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, a AutomationAction) ([]*Notification, error) {
+// execAutomationActionTx runs one action inside the firing tx and
+// reports (notifications, noop, error). noop is true when the action
+// evaluated cleanly but changed nothing (C12T2: set_priority/set_state
+// targeting the current value) — the caller records it ok:true but a
+// firing whose every action was a no-op writes no run row. Failures are
+// returned for the caller to log; the tx is untouched.
+func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, a AutomationAction) ([]*Notification, bool, error) {
 	switch a.Type {
 	case "assign":
 		if a.UserID == nil {
-			return nil, ErrInvalidAutomationAction
+			return nil, false, ErrInvalidAutomationAction
 		}
-		return automationAssignTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+		ns, err := automationAssignTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			strings.ToLower(strings.TrimSpace(*a.UserID)))
+		return ns, false, err
 	case "add_label":
 		if a.LabelID == nil {
-			return nil, ErrInvalidAutomationAction
+			return nil, false, ErrInvalidAutomationAction
 		}
-		return nil, automationAddLabelTx(ctx, tx, wsID, issueID, actorID,
+		return nil, false, automationAddLabelTx(ctx, tx, wsID, issueID, actorID,
 			strings.ToLower(strings.TrimSpace(*a.LabelID)))
 	case "add_comment":
 		if a.Body == nil {
-			return nil, ErrInvalidAutomationAction
+			return nil, false, ErrInvalidAutomationAction
 		}
-		return automationAddCommentTx(ctx, tx, wsID, projectID, ident, issueID, actorID, *a.Body)
+		ns, err := automationAddCommentTx(ctx, tx, wsID, projectID, ident, issueID, actorID, *a.Body)
+		return ns, false, err
+	case "set_priority":
+		if a.Priority == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationSetPriorityTx(ctx, tx, issueID, actorID, *a.Priority)
+	case "set_state":
+		if a.StateID == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationSetStateTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
+			strings.ToLower(strings.TrimSpace(*a.StateID)))
 	default:
-		return nil, ErrInvalidAutomationAction
+		return nil, false, ErrInvalidAutomationAction
 	}
+}
+
+// automationSetPriorityTx sets the issue's priority directly (never
+// through UpdateIssue, so the loop guard is belt-and-braces). A target
+// equal to the current priority is a no-op: no activity row, and the
+// caller skips the run row when the whole firing was no-ops. Manual
+// priority changes notify nobody in-app, so neither does this.
+func automationSetPriorityTx(ctx context.Context, tx pgx.Tx, issueID, actorID string, priority int) ([]*Notification, bool, error) {
+	var old int
+	if err := tx.QueryRow(ctx,
+		`SELECT priority FROM issues WHERE id = $1::uuid`, issueID).Scan(&old); err != nil {
+		return nil, false, err
+	}
+	if old == priority {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET priority = $1, updated_at = now() WHERE id = $2::uuid`,
+		priority, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'priority', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(old), toJSONBParam(priority)); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationSetStateTx moves the issue to the target state directly
+// (never through UpdateIssue — the depth-1 loop guard makes a cascade
+// structurally impossible even if this were refactored later). The
+// target was validated at rule-write time but may have been deleted
+// since: a vanished target fails the action (logged, ok:false), never
+// the firing. A target equal to the current state is a no-op: no
+// activity row, and the caller skips the run row when the whole firing
+// was no-ops. A real move mirrors the manual move's fan-out — one
+// state_id activity row plus NotifyStateChanged to the watchers — but
+// enqueues no webhooks/Slack in v1 (documented scope cut).
+func automationSetStateTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID, stateID string) ([]*Notification, bool, error) {
+	var old string
+	if err := tx.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&old); err != nil {
+		return nil, false, err
+	}
+	if old == stateID {
+		return nil, true, nil
+	}
+	sid, err := checkStateInProject(ctx, tx, projectID, stateID)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET state_id = $1::uuid, updated_at = now() WHERE id = $2::uuid`,
+		sid, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'state_id', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(old), toJSONBParam(sid)); err != nil {
+		return nil, false, err
+	}
+	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	var stateName string
+	if err := tx.QueryRow(ctx,
+		`SELECT name FROM states WHERE id = $1::uuid`, sid).Scan(&stateName); err != nil {
+		return nil, false, err
+	}
+	watchers, err := issueWatchersTx(ctx, tx, issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	actorName := actorDisplayName(ctx, tx, actorID)
+	notified, err := notifyTx(ctx, tx, NotifyStateChanged,
+		fmt.Sprintf("%s moved %s to %s", actorName, displayID, stateName),
+		fmt.Sprintf("Issue: %s", name),
+		map[string]any{
+			"issue_id":   issueID,
+			"display_id": displayID,
+			"issue_name": name,
+			"state_id":   sid,
+			"state_name": stateName,
+			"actor_id":   actorID,
+			"project_id": projectID,
+		},
+		actorID, watchers)
+	if err != nil {
+		return nil, false, err
+	}
+	return notified, false, nil
 }
 
 // automationAssignTx adds the user as an assignee (idempotent — mirrors
