@@ -15,13 +15,20 @@ import (
 )
 
 // planeAnalyzeSetup mirrors importTestSetup and additionally returns the
-// project's uuid for direct seed inserts.
+// project's uuid for direct seed inserts. The project lookup is scoped by
+// workspace slug: project identifiers are truncated to 12 chars by
+// importTestSetup, so two tests in one full-suite run can share an
+// identifier in different workspaces (e.g. "imp-p-<pid>-1000" vs
+// "imp-p-<pid>-10000" truncate identically) — a bare identifier lookup
+// would return an arbitrary test's project.
 func planeAnalyzeSetup(t *testing.T) (*pgxpool.Pool, string, string, string, string) {
 	t.Helper()
 	pool, slug, ident, admin := importTestSetup(t)
 	var projectID string
 	if err := pool.QueryRow(context.Background(),
-		`SELECT id::text FROM projects WHERE identifier = $1`, ident).Scan(&projectID); err != nil {
+		`SELECT p.id::text FROM projects p
+		  JOIN workspaces w ON w.id = p.workspace_id
+		 WHERE w.slug = $1 AND p.identifier = $2`, slug, ident).Scan(&projectID); err != nil {
 		t.Fatalf("lookup project id: %v", err)
 	}
 	return pool, slug, ident, admin, projectID
