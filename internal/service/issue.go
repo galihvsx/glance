@@ -824,6 +824,15 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			slackStateChangedText(updated.DisplayID, updated.Name, stateName, actorName)); err != nil {
 			return nil, nil, err
 		}
+		// C11T1: workflow automations. Matching rules run their actions
+		// in this same tx; a failing action is logged, never fatal, and
+		// the depth-1 loop guard (!automationActive) means automation
+		// writes can never re-trigger evaluation. old.StateID is the
+		// before-image (stateChanged implies it differs from new).
+		if !automationActive(ctx) {
+			notified = append(notified, runAutomationRulesTx(ctx, tx, wsID,
+				projectID, ident, issueID, actorID, old.StateID, updated.StateID)...)
+		}
 	}
 	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
 		"id":             updated.ID,

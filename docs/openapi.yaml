@@ -1299,6 +1299,40 @@
         "responses": { "200": { "description": "Activity entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "activity": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/automations": {
+      "get": {
+        "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List automation rules",
+        "description": "Per-project workflow automation rules (C11T1): when an issue's state changes, matching rules run their actions automatically. Member (15)+; free in glance (Plane paywalls this class of feature).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Automation rules, oldest first", "content": { "application/json": { "schema": { "type": "object", "properties": { "automations": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationRule" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create automation rule",
+        "description": "Member (15)+. Max 25 rules per project (409 beyond). Trigger v1: {\"type\":\"issue.state_changed\",\"from_states\":[...]|null,\"to_states\":[...]|null} — null matches any. Actions (ordered, max 10): {\"type\":\"assign\",\"user_id\"} | {\"type\":\"add_label\",\"label_id\"} | {\"type\":\"add_comment\",\"body\"}.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "trigger", "actions"], "properties": { "name": { "type": "string", "maxLength": 120 }, "trigger": { "$ref": "#/components/schemas/AutomationTrigger" }, "actions": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/AutomationAction" } } } } }  } },
+        "responses": { "201": { "description": "Created rule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationRule" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/automations/{ruleID}": {
+      "patch": {
+        "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update automation rule",
+        "description": "Partial update: name, enabled, trigger, actions. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "ruleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string", "maxLength": 120 }, "enabled": { "type": "boolean" }, "trigger": { "$ref": "#/components/schemas/AutomationTrigger" }, "actions": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/AutomationAction" } } } } }  } },
+        "responses": { "200": { "description": "Updated rule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AutomationRule" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete automation rule",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "ruleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/overview": {
       "get": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2292,6 +2326,39 @@
           "issue": { "$ref": "#/components/schemas/Issue" },
           "workspace_slug": { "type": "string" },
           "project_identifier": { "type": "string" }
+        }
+      },
+      "AutomationTrigger": {
+        "type": "object",
+        "description": "v1 trigger: issue.state_changed with optional from/to state filters; null matches any.",
+        "properties": {
+          "type": { "type": "string", "example": "issue.state_changed" },
+          "from_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true },
+          "to_states": { "type": "array", "items": { "type": "string", "format": "uuid" }, "nullable": true }
+        }
+      },
+      "AutomationAction": {
+        "type": "object",
+        "description": "One ordered action: assign (user_id), add_label (label_id), or add_comment (body).",
+        "properties": {
+          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment"] },
+          "user_id": { "type": "string", "format": "uuid" },
+          "label_id": { "type": "string", "format": "uuid" },
+          "body": { "type": "string", "maxLength": 10000 }
+        }
+      },
+      "AutomationRule": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "trigger": { "$ref": "#/components/schemas/AutomationTrigger" },
+          "actions": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationAction" } },
+          "enabled": { "type": "boolean" },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       }
     }
