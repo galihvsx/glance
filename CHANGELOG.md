@@ -336,8 +336,7 @@ queued onboarding follow-up (invites endpoint).
   reports everything unresolved — people (Plane exports name-strings
   only, no emails/IDs) map explicitly to workspace members, never
   guessed; states/labels/cycles/modules matched case-insensitively,
-  unmatched ones created (`unstarted` group for states, default gray
-  for labels) — then **execute** imports in a single transaction.
+  unmatched ones created (in the `backlog` group, per the import design) — then **execute** imports in a single transaction.
 - Honest-loss policy: the import report carries a per-issue `gaps` list
   documenting what didn't survive. Upstream truth first: **Plane never
   exports issue descriptions**, so those are gone before glance ever

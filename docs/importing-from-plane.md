@@ -28,10 +28,10 @@ Rules the importer enforces up front:
 
 No migration is involved: this importer reads the file and writes issues
 through the normal issue path. Each imported issue records its Plane
-identifier, so the report can be correlated back to the source rows —
-run the same export twice and you get two copies; fix problems in one
-pass and re-run only with a corrected file whose already-imported rows
-were removed (the row errors tell you exactly which those are).
+identifier, and each import run is recorded per Plane project — re-running
+the same export skips rows already imported, so re-runs are safe. Still,
+fix problems in one pass: the row errors tell you exactly which rows need
+attention.
 
 ## 2. Analyze → map → execute
 
@@ -45,8 +45,8 @@ resolve on its own:
   workspace member, explicitly, one by one. Unmapped names stay unassigned
   and are recorded as gaps — never guessed.
 - **States** — Plane state names are matched case-insensitively against
-  your project's states; unmatched names are created (in the `unstarted`
-  group, the neutral "tracked, not yet worked" bucket).
+  your project's states; unmatched names are created in the `backlog`
+  group.
 - **Labels, cycles, modules** — same matched-or-created rule as states.
   New labels get the default gray (Plane exports no colors for them).
 
