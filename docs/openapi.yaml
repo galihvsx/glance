@@ -1333,6 +1333,19 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/automations/runs": {
+      "get": {
+        "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List automation run history",
+        "description": "Per-firing run log for the project's automation rules (C12T1): one row per rule firing with per-action ok/error outcomes — the answer to \"why did this issue change?\". Newest first. Member (15)+; rule_id/issue_id narrow the feed; limit defaults to 20 and is clamped to 100. No retention pruning in v1 (documented in migration 000038).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
+          { "name": "rule_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "issue_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 } }
+        ],
+        "responses": { "200": { "description": "Automation runs, newest first", "content": { "application/json": { "schema": { "type": "object", "properties": { "runs": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationRun" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/overview": {
       "get": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2373,6 +2386,27 @@
           "created_by": { "type": "string", "format": "uuid" },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AutomationRun": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "rule_id": { "type": "string", "format": "uuid" },
+          "rule_name": { "type": "string" },
+          "issue_id": { "type": "string", "format": "uuid" },
+          "issue_display_id": { "type": "string", "nullable": true },
+          "trigger_type": { "type": "string" },
+          "fired_at": { "type": "string", "format": "date-time" },
+          "actions": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationActionResult" } }
+        }
+      },
+      "AutomationActionResult": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment"] },
+          "ok": { "type": "boolean" },
+          "error": { "type": "string" }
         }
       }
     }

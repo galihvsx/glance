@@ -6,6 +6,7 @@
 // honest toasts, never silent.
 
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2, X } from "lucide-react";
 import { ApiError, api } from "../../lib/api";
@@ -16,10 +17,13 @@ import {
   describeAction,
   describeTrigger,
   fetchAutomationRules,
+  fetchAutomationRuns,
   updateAutomationRule,
   type AutomationAction,
+  type AutomationActionResult,
   type AutomationRule,
   type AutomationRuleInput,
+  type AutomationRun,
   type AutomationTrigger,
 } from "../../lib/automations";
 import {
@@ -29,6 +33,7 @@ import {
   type TaxLabel,
   type TaxState,
 } from "../../lib/taxonomy";
+import { relativeTime } from "../../lib/relativeTime";
 import type { WorkspaceMember } from "../../lib/types";
 import { toast } from "../ui/toast";
 import { Badge } from "../ui/badge";
@@ -107,6 +112,24 @@ const ACTION_LABELS: Record<DraftAction["type"], string> = {
   add_comment: "Post comment",
 };
 
+// describeRunTrigger renders the stored trigger_type honestly: v1 only
+// knows issue.state_changed; anything else falls back to the raw value.
+function describeRunTrigger(triggerType: string): string {
+  return triggerType === "issue.state_changed" ? "on state change" : triggerType;
+}
+
+function RunActionChips({ actions }: { actions: AutomationActionResult[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {actions.map((a, i) => (
+        <Badge key={i} variant={a.ok ? "outline" : "destructive"}>
+          {a.type} · {a.ok ? "ok" : "failed"}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 export default function AutomationsSection({
   slug,
   identifier,
@@ -127,6 +150,10 @@ export default function AutomationsSection({
   const rulesQuery = useQuery({
     queryKey: keys.rules,
     queryFn: () => fetchAutomationRules(slug, identifier),
+  });
+  const runsQuery = useQuery({
+    queryKey: keys.runs,
+    queryFn: () => fetchAutomationRuns(slug, identifier),
   });
   const statesQuery = useQuery({
     queryKey: taxKeys.states,
@@ -150,9 +177,12 @@ export default function AutomationsSection({
   const labels: TaxLabel[] = labelsQuery.data ?? [];
   const members: WorkspaceMember[] = membersQuery.data ?? [];
   const rules: AutomationRule[] = rulesQuery.data ?? [];
+  const runs: AutomationRun[] = runsQuery.data ?? [];
 
-  const invalidate = () =>
+  const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: keys.rules });
+    queryClient.invalidateQueries({ queryKey: keys.runs });
+  };
 
   function openCreate() {
     setEditing(null);
@@ -251,6 +281,7 @@ export default function AutomationsSection({
   }
 
   return (
+    <>
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
@@ -537,5 +568,78 @@ export default function AutomationsSection({
         </Dialog>
       </CardContent>
     </Card>
+
+    <Card className="mt-6">
+      <CardHeader>
+        <div>
+          <CardTitle>Recent runs</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Every rule firing, newest first — what changed and whether
+            each action succeeded.
+          </p>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {runsQuery.isLoading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : runsQuery.isError ? (
+          <p className="text-sm text-destructive">
+            Could not load automation runs.
+          </p>
+        ) : runs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No automation runs yet. A run appears here each time a rule
+            fires on a state change.
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {runs.map((run) => (
+              <li
+                key={run.id}
+                className="rounded-md border p-3"
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium">{run.rule_name}</span>
+                  <span className="text-muted-foreground">on</span>
+                  {run.issue_display_id ? (
+                    <Link
+                      to={`/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}/i/${encodeURIComponent(run.issue_id)}`}
+                      className="font-mono text-primary underline-offset-4 hover:underline"
+                    >
+                      {run.issue_display_id}
+                    </Link>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      removed issue
+                    </span>
+                  )}
+                  <span className="ml-auto shrink-0 text-muted-foreground">
+                    {relativeTime(run.fired_at)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {describeRunTrigger(run.trigger_type)}
+                </p>
+                <div className="mt-2">
+                  <RunActionChips actions={run.actions} />
+                </div>
+                {run.actions
+                  .filter((a) => !a.ok)
+                  .map((a, i) => (
+                    <p
+                      key={i}
+                      className="mt-1 text-xs text-destructive"
+                    >
+                      {a.type} failed
+                      {a.error ? `: ${a.error}` : ""}
+                    </p>
+                  ))}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+    </>
   );
 }

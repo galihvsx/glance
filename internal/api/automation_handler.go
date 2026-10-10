@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -12,6 +13,7 @@ import (
 
 // Workflow automation rules (C11T1):
 //   GET    /api/v1/workspaces/{slug}/projects/{identifier}/automations
+//   GET    /api/v1/workspaces/{slug}/projects/{identifier}/automations/runs
 //   POST   /api/v1/workspaces/{slug}/projects/{identifier}/automations
 //   PATCH  /api/v1/workspaces/{slug}/projects/{identifier}/automations/{ruleID}
 //   DELETE /api/v1/workspaces/{slug}/projects/{identifier}/automations/{ruleID}
@@ -36,6 +38,7 @@ type AutomationHandler struct {
 func RegisterAutomationRoutes(e *echo.Echo, h *AutomationHandler) {
 	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/automations", RequireAuth(h.Pool))
 	g.GET("", h.listAutomations)
+	g.GET("/runs", h.listAutomationRuns)
 	g.POST("", h.createAutomation)
 	g.PATCH("/:ruleID", h.updateAutomation)
 	g.DELETE("/:ruleID", h.deleteAutomation)
@@ -56,6 +59,8 @@ func automationError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid automation action", nil)
 	case errors.Is(err, service.ErrNameRequired):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+	case errors.Is(err, service.ErrInvalidAutomationRunLimit):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid limit: want 1-100", nil)
 	case errors.Is(err, service.ErrNothingToUpdate):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
 	default:
@@ -85,6 +90,40 @@ func (h *AutomationHandler) listAutomations(c *echo.Context) error {
 		return automationError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"automations": rules})
+}
+
+// listAutomationRuns implements GET .../automations/runs: the
+// project's automation run history, newest first. Query params:
+// rule_id?, issue_id? (UUID filters, 400 on malformed), limit?
+// (default 20; 0/absent = default, negative or non-integer = 400,
+// >100 clamped to 100). Member (15)+.
+func (h *AutomationHandler) listAutomationRuns(c *echo.Context) error {
+	filter := service.AutomationRunFilter{}
+	if raw := c.QueryParam("rule_id"); raw != "" {
+		if !validUUID(raw) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid rule_id", nil)
+		}
+		filter.RuleID = raw
+	}
+	if raw := c.QueryParam("issue_id"); raw != "" {
+		if !validUUID(raw) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid issue_id", nil)
+		}
+		filter.IssueID = raw
+	}
+	if raw := c.QueryParam("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return automationError(c, service.ErrInvalidAutomationRunLimit)
+		}
+		filter.Limit = n
+	}
+	runs, err := service.ListAutomationRuns(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, filter)
+	if err != nil {
+		return automationError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"runs": runs})
 }
 
 // createAutomation implements POST .../automations. Member (15)+; the
