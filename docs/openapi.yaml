@@ -192,11 +192,21 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/import": {
+      "post": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import a workspace data archive",
+        "description": "Admin only. Restores a glance-export/1 JSON archive (as produced by GET /api/v1/workspaces/{slug}/export) into this workspace. multipart/form-data with a `file` field (the archive JSON); 100MB limit. Restore-by-UUID: rows whose UUID already exists are skipped, so re-import is idempotent. Members are matched to instance users by email (never auto-created); unmapped members are skipped and reported. Attachment binaries are never exported and cannot be restored — attachment metadata is counted as skipped. Returns an honest import report {format, source_workspace, target_workspace, imported, skipped}. Archives with an unknown format version are refused with 400 and import nothing.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["file"], "properties": { "file": { "type": "string", "format": "binary", "description": "glance-export/1 archive JSON" } } } } } },
+        "responses": { "200": { "description": "Import report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ArchiveImportReport" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/export": {
       "get": {
         "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Export full workspace data archive",
-        "description": "Admin only. Streams the entire workspace as a single JSON archive (format \"glance-export/1\") with chunked encoding: workspace, members, projects, states, labels, estimates, custom fields, cycles, modules, pages, and issues with nested comments, custom values, assignees, labels and attachment metadata. Attachment binaries are NOT included (metadata only) and the server-side stored_path is never exported. There is no archive importer yet — the format version pin and the schema_note embedded in the archive are the contract a future importer reads against.",
+        "description": "Admin only. Streams the entire workspace as a single JSON archive (format \"glance-export/1\") with chunked encoding: workspace, members, projects, states, labels, estimates, custom fields, cycles, modules, pages, and issues with nested comments, custom values, assignees, labels and attachment metadata. Attachment binaries are NOT included (metadata only) and the server-side stored_path is never exported. Restore an archive with POST /api/v1/workspaces/{slug}/import (admin only); the importer honors the format version pin and refuses unknown versions.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
         "responses": { "200": { "description": "JSON archive download (Content-Disposition: attachment)", "content": { "application/json": { "schema": { "type": "object", "properties": { "format": { "type": "string", "example": "glance-export/1" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
@@ -2104,6 +2114,17 @@
         "properties": {
           "created": { "type": "integer" },
           "failed": { "type": "integer" },
+    "ArchiveImportReport": {
+      "type": "object",
+      "required": ["format", "target_workspace", "imported", "skipped"],
+      "properties": {
+        "format": { "type": "string", "example": "glance-export/1" },
+        "source_workspace": { "type": "string", "description": "Slug of the workspace the archive was exported from (informational)" },
+        "target_workspace": { "type": "string", "description": "Slug of the workspace the archive was imported into" },
+        "imported": { "type": "object", "description": "Rows created per section (members, projects, states, labels, estimates, estimate_points, custom_fields, cycles, cycle_issues, modules, module_issues, pages, issues, issue_assignees, issue_labels, issue_custom_values, comments, attachments)", "additionalProperties": { "type": "integer" } },
+        "skipped": { "type": "object", "required": ["count", "reasons"], "properties": { "count": { "type": "integer", "description": "Total skipped rows (exact)" }, "reasons": { "type": "array", "items": { "type": "string" }, "description": "Bounded sample of human-readable skip reasons" } } }
+      }
+    },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer" }, "error": { "type": "string" } } } }
         }
       },

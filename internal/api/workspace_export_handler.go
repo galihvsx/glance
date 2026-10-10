@@ -20,10 +20,10 @@ package api
 // filename-safe by the slug contract).
 //
 // The archive carries attachment METADATA only (filename, content_type,
-// size_bytes): binaries are not included. There is no archive importer
-// yet — import is planned future work; the format version pin and the
-// schema_note embedded in the archive are the contract it will read
-// against.
+// size_bytes): binaries are not included. Archives are restored by the
+// importer at POST /api/v1/workspaces/{slug}/import (C11T0), which reads
+// against the format version pin and the schema_note embedded in the
+// archive.
 
 import (
 	"fmt"

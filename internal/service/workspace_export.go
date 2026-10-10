@@ -61,9 +61,11 @@ package service
 //     configuration, notification prefs, API tokens, page revisions,
 //     sessions/OTP material. The archive covers the current data model,
 //     not audit history or integration config.
-//   - There is NO archive importer in this task: import is planned future
-//     work. The format version pin and this schema note are the contract
-//     that importer will read against.
+//   - There IS an archive importer for this format:
+//     ImportWorkspaceArchive in internal/service/workspace_import.go
+//     (C11T0), served at POST /api/v1/workspaces/{slug}/import. It reads
+//     against the format version pin and this schema note, and refuses
+//     unknown versions rather than mis-importing.
 
 import (
 	"context"
@@ -93,8 +95,8 @@ const exportSchemaNote = "glance workspace data archive, format glance-export/1.
 	"binaries are NOT included and the server-side stored_path is never exported. " +
 	"Not exported: Slack webhook URL (secret), issue activity history, reactions, votes, issue links, " +
 	"intake items, webhooks config, notification prefs, API tokens, page revisions, sessions/OTP. " +
-	"There is no archive importer yet; a future cycle implementing import must honor the format " +
-	"version pin and refuse unknown versions."
+	"An archive importer is available at POST /api/v1/workspaces/{slug}/import (admin only); " +
+	"it honors the format version pin and refuses unknown versions."
 
 // exportStreamWriter writes a JSON document incrementally: structural
 // tokens via raw(), values via value() (which flushes when the writer
