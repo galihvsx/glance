@@ -1,0 +1,143 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/labstack/echo/v5"
+
+	"glance/internal/service"
+)
+
+// Workflow automation rules (C11T1):
+//   GET    /api/v1/workspaces/{slug}/projects/{identifier}/automations
+//   POST   /api/v1/workspaces/{slug}/projects/{identifier}/automations
+//   PATCH  /api/v1/workspaces/{slug}/projects/{identifier}/automations/{ruleID}
+//   DELETE /api/v1/workspaces/{slug}/projects/{identifier}/automations/{ruleID}
+//
+// Auth (contract-first): reads need member (15)+, writes need member
+// (15)+ — the project-settings convention (UpdateProject), documented
+// in internal/service/automation.go. Guests (5) get 403 on both; the
+// route sits behind RequireAuth so non-members never reach it.
+// Errors use the spec §5 envelope via automationError, which delegates
+// the shared sentinels (ErrNotFound, ErrForbidden, ErrProjectNotFound)
+// to projectError.
+
+// AutomationHandler serves the project automation-rule endpoints.
+type AutomationHandler struct {
+	Pool *pgxpool.Pool
+}
+
+// RegisterAutomationRoutes mounts the automation endpoints. Call this
+// before the SPA catch-all so API routes are never shadowed. Keep
+// internal/api/openapi_test.go's registerAllAPIRoutes mirror in
+// lockstep (route-coverage test).
+func RegisterAutomationRoutes(e *echo.Echo, h *AutomationHandler) {
+	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/automations", RequireAuth(h.Pool))
+	g.GET("", h.listAutomations)
+	g.POST("", h.createAutomation)
+	g.PATCH("/:ruleID", h.updateAutomation)
+	g.DELETE("/:ruleID", h.deleteAutomation)
+}
+
+// automationError maps automation sentinel errors to HTTP statuses,
+// delegating the shared sentinels to projectError.
+func automationError(c *echo.Context, err error) error {
+	switch {
+	case errors.Is(err, service.ErrAutomationRuleNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "automation rule not found", nil)
+	case errors.Is(err, service.ErrAutomationRuleLimit):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict,
+			"automation rule limit reached (max 25 per project)", nil)
+	case errors.Is(err, service.ErrInvalidAutomationTrigger):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid automation trigger", nil)
+	case errors.Is(err, service.ErrInvalidAutomationAction):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid automation action", nil)
+	case errors.Is(err, service.ErrNameRequired):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+	case errors.Is(err, service.ErrNothingToUpdate):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+	default:
+		return projectError(c, err)
+	}
+}
+
+type automationRuleBody struct {
+	Name    string                     `json:"name"`
+	Trigger service.AutomationTrigger  `json:"trigger"`
+	Actions []service.AutomationAction `json:"actions"`
+}
+
+type automationRulePatchBody struct {
+	Name    *string                     `json:"name"`
+	Enabled *bool                       `json:"enabled"`
+	Trigger *service.AutomationTrigger  `json:"trigger"`
+	Actions *[]service.AutomationAction `json:"actions"`
+}
+
+// listAutomations implements GET .../automations: the project's rules,
+// oldest first. Member (15)+.
+func (h *AutomationHandler) listAutomations(c *echo.Context) error {
+	rules, err := service.ListAutomationRules(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID)
+	if err != nil {
+		return automationError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"automations": rules})
+}
+
+// createAutomation implements POST .../automations. Member (15)+; the
+// 26th rule per project is 409.
+func (h *AutomationHandler) createAutomation(c *echo.Context) error {
+	var body automationRuleBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	r, err := service.CreateAutomationRule(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, service.AutomationRuleInput{
+			Name:    body.Name,
+			Trigger: body.Trigger,
+			Actions: body.Actions,
+		})
+	if err != nil {
+		return automationError(c, err)
+	}
+	return c.JSON(http.StatusCreated, r)
+}
+
+// updateAutomation implements PATCH .../automations/{ruleID}. Member (15)+.
+func (h *AutomationHandler) updateAutomation(c *echo.Context) error {
+	var body automationRulePatchBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	ruleID, ok := requireUUIDParam(c, "ruleID", "automation rule id")
+	if !ok {
+		return nil
+	}
+	r, err := service.UpdateAutomationRule(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), ruleID, CurrentUser(c).ID, service.AutomationRulePatch{
+			Name:    body.Name,
+			Enabled: body.Enabled,
+			Trigger: body.Trigger,
+			Actions: body.Actions,
+		})
+	if err != nil {
+		return automationError(c, err)
+	}
+	return c.JSON(http.StatusOK, r)
+}
+
+// deleteAutomation implements DELETE .../automations/{ruleID}. Member (15)+.
+func (h *AutomationHandler) deleteAutomation(c *echo.Context) error {
+	ruleID, ok := requireUUIDParam(c, "ruleID", "automation rule id")
+	if !ok {
+		return nil
+	}
+	if err := service.DeleteAutomationRule(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), ruleID, CurrentUser(c).ID); err != nil {
+		return automationError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}

@@ -43,6 +43,7 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	projectHandler := &ProjectHandler{}
 	RegisterProjectRoutes(e, projectHandler)
 	RegisterImportRoutes(e, projectHandler)
+	RegisterAutomationRoutes(e, &AutomationHandler{})
 
 	issueHandler := &IssueHandler{}
 	RegisterIssueRoutes(e, issueHandler)
