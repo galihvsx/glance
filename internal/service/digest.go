@@ -2,8 +2,9 @@ package service
 
 // Email digest (C10T2).
 //
-// Once a day the digest pass aggregates each digest-opted-in user's last
-// 24h of digest-worthy events into ONE email. Digest-worthy = the
+// Once a day the digest pass aggregates each digest-opted-in user's
+// digest-worthy events since the last successfully-sent digest into ONE
+// email. Digest-worthy = the
 // notification types that already carry the right recipient gating at
 // notify time: issue.assigned (the assignee), mention (the mentioned
 // user), issue.state_changed (watchers + assignees). The notifications
@@ -44,9 +45,15 @@ package service
 // than the pass time. Watermark claiming stays the race guard: two
 // concurrent passes may both see "due", exactly one wins the INSERT.
 //
-// Known limitation (documented, not forgotten): the aggregation window
-// stays 24h for weekly digests too — a weekly digest covers the trailing
-// 24h, not the trailing 7 days. Extending the window is future work.
+// Aggregation window (C12T0): notifications in (last_watermark_date,
+// now], i.e. since the last successfully-sent digest — capped at 7 days
+// for weekly users and 24h for daily users, one code path for both. A
+// weekly digest honestly covers the trailing 7 days (previously: the
+// trailing 24h — a dishonest "weekly" digest, fixed here); a daily
+// digest covers the trailing ~24h, unchanged from before.
+//
+// Empty window → no email, no watermark claim (existing behavior — a
+// re-run converges silently).
 
 import (
 	"context"
@@ -61,8 +68,32 @@ import (
 	"glance/internal/mail"
 )
 
-// digestWindow is how far back the digest aggregates.
-const digestWindow = 24 * time.Hour
+// digestWindowCaps are the maximum aggregation windows per frequency:
+// the digest covers notifications in (last_watermark_date, now], so a
+// weekly digest honestly aggregates the trailing 7 days and a daily
+// digest the trailing ~24h, one code path for both.
+const (
+	digestDailyWindowCap  = 24 * time.Hour
+	digestWeeklyWindowCap = 7 * 24 * time.Hour
+)
+
+// digestWindowCap returns the maximum aggregation window for a digest
+// frequency.
+func digestWindowCap(frequency string) time.Duration {
+	if frequency == DigestFrequencyWeekly {
+		return digestWeeklyWindowCap
+	}
+	return digestDailyWindowCap
+}
+
+// digestWindowPhrase is the honest window label used in the digest
+// subject and body.
+func digestWindowPhrase(frequency string) string {
+	if frequency == DigestFrequencyWeekly {
+		return "past 7 days"
+	}
+	return "past 24 hours"
+}
 
 // digestEventTypes are the notification types aggregated into the digest.
 var digestEventTypes = []string{NotifyIssueAssigned, NotifyMention, NotifyStateChanged}
@@ -82,9 +113,9 @@ func digestSection(eventType string) string {
 }
 
 // RunDigest performs one digest pass against the given clock. The
-// explicit now makes the 24h window and the digest_date watermark
-// deterministic under a test clock: production passes time.Now(), tests
-// pass a fake.
+// explicit now makes the aggregation window and the digest_date
+// watermark deterministic under a test clock: production passes
+// time.Now(), tests pass a fake.
 func RunDigest(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 	users, err := digestRecipients(ctx, pool)
 	if err != nil {
@@ -155,18 +186,46 @@ type digestEvent struct {
 	title     string
 }
 
-// digestOneUser aggregates one user's last-24h digest-worthy events and,
-// when there is at least one, claims the day's watermark and enqueues a
-// single "email.digest" outbox row in one tx. Empty digests send nothing
-// and claim nothing.
+// digestWindowStart returns the start of one user's aggregation
+// window: the send time of the last successfully-sent digest, floored
+// at the frequency's cap (7 days for weekly, 24h for daily) so a stale
+// or absent watermark cannot drag ancient events into the digest. A
+// user with no watermark gets the trailing cap period. The strict lower
+// bound pairs with claimDigestDay's sent_at: each digest covers exactly
+// the notifications that arrived after the previous digest was sent —
+// no gaps, no double-sends.
+func digestWindowStart(ctx context.Context, pool *pgxpool.Pool, userID, frequency string, now time.Time) (time.Time, error) {
+	cap := digestWindowCap(frequency)
+	floor := now.Add(-cap)
+	var last *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT MAX(sent_at) FROM digest_watermarks WHERE user_id = $1::uuid`,
+		userID).Scan(&last); err != nil {
+		return time.Time{}, err
+	}
+	if last == nil || last.Before(floor) {
+		return floor, nil
+	}
+	return *last, nil
+}
+
+// digestOneUser aggregates one user's digest-worthy events in the
+// (last_watermark_date, now] window and, when there is at least one,
+// claims the day's watermark and enqueues a single "email.digest"
+// outbox row in one tx. Empty digests send nothing and claim nothing.
 func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, now time.Time) error {
+	since, err := digestWindowStart(ctx, pool, u.id, u.schedule.Frequency, now)
+	if err != nil {
+		return err
+	}
 	rows, err := pool.Query(ctx,
 		`SELECT type, title FROM notifications
 		  WHERE user_id = $1::uuid
 		    AND type = ANY($2)
-		    AND created_at >= $3
+		    AND created_at > $3
+		    AND created_at <= $4
 		  ORDER BY created_at`,
-		u.id, digestEventTypes, now.Add(-digestWindow))
+		u.id, digestEventTypes, since, now)
 	if err != nil {
 		return err
 	}
@@ -220,10 +279,11 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	if u.schedule.Frequency == DigestFrequencyWeekly {
 		freqWord = "weekly"
 	}
+	window := digestWindowPhrase(u.schedule.Frequency)
 	if err := mail.Enqueue(ctx, tx, "email.digest", mail.Message{
 		To:      u.email,
-		Subject: fmt.Sprintf("Your %s glance digest (%d update%s)", freqWord, len(events), pluralS(len(events))),
-		Body:    buildDigestBody(u.name, events),
+		Subject: fmt.Sprintf("Your %s digest — %s", freqWord, window),
+		Body:    buildDigestBody(u.name, window, events),
 	}); err != nil {
 		return err
 	}
@@ -287,10 +347,11 @@ func claimDigestDay(ctx context.Context, tx pgx.Tx, userID string, now time.Time
 
 // buildDigestBody renders the digest email: one section per event type,
 // one bullet per event. Event titles are the human-readable titles
-// written by notifyTx at event time.
-func buildDigestBody(name string, events []digestEvent) string {
+// written by notifyTx at event time. window is the honest aggregation
+// window label ("past 7 days" / "past 24 hours").
+func buildDigestBody(name, window string, events []digestEvent) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Hi %s,\n\nHere's what happened in the last 24 hours:\n", name)
+	fmt.Fprintf(&b, "Hi %s,\n\nHere's what happened in the %s:\n", name, window)
 	for _, et := range digestEventTypes {
 		var titles []string
 		for _, e := range events {
@@ -308,11 +369,4 @@ func buildDigestBody(name string, events []digestEvent) string {
 	}
 	b.WriteString("\n—\nYou're receiving this because you enabled the digest email in Notifications.\n")
 	return b.String()
-}
-
-func pluralS(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }
