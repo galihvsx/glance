@@ -48,6 +48,7 @@ func RegisterAdminRoutes(e *echo.Echo, h *AdminHandler) {
 	g.POST("/users/:id/reactivate", h.reactivateUser)
 	g.GET("/workspaces", h.listWorkspaces)
 	g.DELETE("/workspaces/:id", h.deleteWorkspace)
+	g.GET("/audit-log", h.getAuditLog)
 }
 
 // adminError maps service sentinel errors to HTTP statuses. Unknown
@@ -150,7 +151,7 @@ func (h *AdminHandler) patchUser(c *echo.Context) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "is_admin is required", nil)
 	}
 	if err := service.SetUserAdmin(c.Request().Context(), h.Pool,
-		CurrentUser(c).ID, id, *body.IsAdmin); err != nil {
+		CurrentUser(c).ID, id, *body.IsAdmin, c.RealIP()); err != nil {
 		return adminError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -163,7 +164,8 @@ func (h *AdminHandler) deactivateUser(c *echo.Context) error {
 	if !validUUID(id) {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user id", nil)
 	}
-	if err := service.DeactivateUser(c.Request().Context(), h.Pool, CurrentUser(c).ID, id); err != nil {
+	if err := service.DeactivateUser(c.Request().Context(), h.Pool,
+		CurrentUser(c).ID, id, c.RealIP()); err != nil {
 		return adminError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -177,7 +179,8 @@ func (h *AdminHandler) reactivateUser(c *echo.Context) error {
 	if !validUUID(id) {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user id", nil)
 	}
-	if err := service.ReactivateUser(c.Request().Context(), h.Pool, id); err != nil {
+	if err := service.ReactivateUser(c.Request().Context(), h.Pool,
+		CurrentUser(c).ID, id, c.RealIP()); err != nil {
 		return adminError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"ok": true})
@@ -210,8 +213,34 @@ func (h *AdminHandler) deleteWorkspace(c *echo.Context) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "confirm query param is required: pass the workspace name", nil)
 	}
 	if err := service.DeleteWorkspaceAsAdmin(c.Request().Context(), h.Pool,
-		c.Param("id"), confirm); err != nil {
+		CurrentUser(c).ID, c.Param("id"), confirm, c.RealIP()); err != nil {
 		return adminError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// getAuditLog implements GET /api/v1/admin/audit-log: the append-only
+// admin audit log, newest first, paginated like every other admin list
+// endpoint. Exact-match filters: action, actor_id (must be a uuid), and
+// entity_type. The read path never mutates audit_log — there is no
+// update/delete for it anywhere.
+func (h *AdminHandler) getAuditLog(c *echo.Context) error {
+	page, perPage, err := pageParams(c)
+	if err != nil {
+		return err
+	}
+	filter := service.AuditLogFilter{
+		Action:     c.QueryParam("action"),
+		ActorID:    c.QueryParam("actor_id"),
+		EntityType: c.QueryParam("entity_type"),
+	}
+	if filter.ActorID != "" && !validUUID(filter.ActorID) {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid actor_id: want uuid", nil)
+	}
+	entries, total, err := service.ListAuditLog(c.Request().Context(), h.Pool,
+		perPage, (page-1)*perPage, filter)
+	if err != nil {
+		return adminError(c, err)
+	}
+	return c.JSON(http.StatusOK, pageEnvelope(entries, total, page, perPage))
 }

@@ -1713,6 +1713,21 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/admin/audit-log": {
+      "get": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List the admin audit log",
+        "description": "Requires the server admin role. Append-only record of admin mutations (user deactivate/reactivate/role change, workspace delete), newest first. Exact-match filters: action (e.g. user.deactivated), actor_id (uuid), entity_type (user or workspace).",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 25 } },
+          { "name": "action", "in": "query", "schema": { "type": "string" } },
+          { "name": "actor_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "entity_type", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Paginated audit entries", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
     "/api/v1/public/s/{token}": {
       "get": {
         "tags": ["issues"], "security": [],

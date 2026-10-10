@@ -111,7 +111,9 @@ func ListAdminUsers(ctx context.Context, pool *pgxpool.Pool, limit, offset int) 
 // refused (ErrLastAdmin — an instance with zero admins can only recover
 // via GLANCE_ADMIN_EMAILS re-seeding, so the API refuses to create that
 // state). Promotion is unrestricted. Unknown user → ErrUserNotFound.
-func SetUserAdmin(ctx context.Context, pool *pgxpool.Pool, actorID, targetID string, isAdmin bool) error {
+// On success one audit row (user.role_changed) is recorded inside the
+// same transaction as the flag flip.
+func SetUserAdmin(ctx context.Context, pool *pgxpool.Pool, actorID, targetID string, isAdmin bool, ip string) error {
 	if targetID == actorID && !isAdmin {
 		return ErrAdminSelfDemote
 	}
@@ -145,6 +147,11 @@ func SetUserAdmin(ctx context.Context, pool *pgxpool.Pool, actorID, targetID str
 		targetID, isAdmin); err != nil {
 		return err
 	}
+	if err := recordAuditTx(ctx, tx, AuditInfo{ActorID: actorID, IP: ip},
+		AuditActionUserRoleChanged, "user", targetID, "",
+		map[string]any{"is_admin": isAdmin}); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -153,8 +160,9 @@ func SetUserAdmin(ctx context.Context, pool *pgxpool.Pool, actorID, targetID str
 // and token auth reject it too) and every live session is revoked here,
 // so deactivation takes effect immediately — no waiting for expiry.
 // Self-deactivation is refused (ErrAdminSelfDeactivate): see
-// ErrAdminSelfDemote for the rationale.
-func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, actorID, targetID string) error {
+// ErrAdminSelfDemote for the rationale. On success one audit row
+// (user.deactivated) is recorded inside the same transaction.
+func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, actorID, targetID string, ip string) error {
 	if targetID == actorID {
 		return ErrAdminSelfDeactivate
 	}
@@ -191,15 +199,26 @@ func DeactivateUser(ctx context.Context, pool *pgxpool.Pool, actorID, targetID s
 		targetID); err != nil {
 		return err
 	}
+	if err := recordAuditTx(ctx, tx, AuditInfo{ActorID: actorID, IP: ip},
+		AuditActionUserDeactivated, "user", targetID, "", nil); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
 // ReactivateUser re-enables a deactivated account. Idempotent: reactivating
 // an active account is a no-op. Unknown user → ErrUserNotFound. (Sessions
 // revoked at deactivation stay revoked — reactivation does not resurrect
-// old tokens; the user logs in fresh.)
-func ReactivateUser(ctx context.Context, pool *pgxpool.Pool, targetID string) error {
-	tag, err := pool.Exec(ctx,
+// old tokens; the user logs in fresh.) One audit row (user.reactivated)
+// is recorded inside the same transaction as the flip.
+func ReactivateUser(ctx context.Context, pool *pgxpool.Pool, actorID, targetID string, ip string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE users SET is_active = true, updated_at = now()
 		 WHERE id = $1::uuid`,
 		targetID)
@@ -209,7 +228,11 @@ func ReactivateUser(ctx context.Context, pool *pgxpool.Pool, targetID string) er
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound
 	}
-	return nil
+	if err := recordAuditTx(ctx, tx, AuditInfo{ActorID: actorID, IP: ip},
+		AuditActionUserReactivated, "user", targetID, "", nil); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // AdminWorkspace is the instance-level workspace usage view for
@@ -275,8 +298,11 @@ func ListAdminWorkspaces(ctx context.Context, pool *pgxpool.Pool, limit, offset 
 // tenancy. The typed confirmation (confirmName must exactly equal the
 // workspace's name) is enforced here, not just client-side: DELETE is
 // destructive and cascades (projects, issues, members, attachments and
-// everything under them via the FK graph).
-func DeleteWorkspaceAsAdmin(ctx context.Context, pool *pgxpool.Pool, idOrSlug, confirmName string) error {
+// everything under them via the FK graph). One audit row
+// (workspace.deleted) is recorded inside the same transaction, before
+// the DELETE — the audit row's workspace_id FK goes NULL on the delete
+// (ON DELETE SET NULL) while entity_id keeps the workspace id as text.
+func DeleteWorkspaceAsAdmin(ctx context.Context, pool *pgxpool.Pool, actorID, idOrSlug, confirmName string, ip string) error {
 	// Resolve by id or slug without casting the input to uuid first —
 	// a slug is never a valid uuid, and $1::uuid would error on it.
 	var wsID, name string
@@ -295,8 +321,19 @@ func DeleteWorkspaceAsAdmin(ctx context.Context, pool *pgxpool.Pool, idOrSlug, c
 	if confirmName != name {
 		return ErrAdminConfirmMismatch
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM workspaces WHERE id = $1::uuid`, wsID); err != nil {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer tx.Rollback(ctx)
+
+	if err := recordAuditTx(ctx, tx, AuditInfo{ActorID: actorID, IP: ip},
+		AuditActionWorkspaceDeleted, "workspace", wsID, wsID,
+		map[string]any{"name": name, "slug": idOrSlug}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = $1::uuid`, wsID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

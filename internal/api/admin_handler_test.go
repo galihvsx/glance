@@ -57,6 +57,7 @@ func adminPaths() []struct{ method, path string } {
 		{http.MethodPost, "/api/v1/admin/users/00000000-0000-0000-0000-000000000000/reactivate"},
 		{http.MethodGet, "/api/v1/admin/workspaces"},
 		{http.MethodDelete, "/api/v1/admin/workspaces/00000000-0000-0000-0000-000000000000?confirm=x"},
+		{http.MethodGet, "/api/v1/admin/audit-log"},
 	}
 }
 
@@ -411,4 +412,92 @@ func TestAdminListWorkspacesEnvelope(t *testing.T) {
 	if !found {
 		t.Errorf("seeded workspace %q missing from listing", slug)
 	}
+}
+
+// TestAdminAuditLogEnvelope (C15T1): GET /api/v1/admin/audit-log returns
+// the page envelope; admin mutations performed over HTTP show up as
+// rows, and the action/actor_id/entity_type filters plus validation
+// behave like the other admin list endpoints.
+func TestAdminAuditLogEnvelope(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testAdminServer(t, pool)
+
+	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("audit-h-admin"))
+	victimCookie := loginTestUser(t, e, pool, uniqueEmail("audit-h-victim"), "test-agent", uniqueIP())
+	victimID := authedUserID(t, e, victimCookie)
+	adminID := authedUserID(t, e, adminCookie)
+
+	// Deactivate the victim over HTTP — the handler path records the row.
+	rec := postAuthedJSON(t, e, http.MethodPost,
+		"/api/v1/admin/users/"+victimID+"/deactivate", adminCookie, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deactivate: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var env struct {
+		Items []struct {
+			ID         string  `json:"id"`
+			At         string  `json:"at"`
+			ActorID    *string `json:"actor_id"`
+			ActorEmail *string `json:"actor_email"`
+			Action     string  `json:"action"`
+			EntityType string  `json:"entity_type"`
+			EntityID   string  `json:"entity_id"`
+			IP         *string `json:"ip"`
+		} `json:"items"`
+		Total   int64 `json:"total"`
+		Page    int   `json:"page"`
+		PerPage int   `json:"per_page"`
+	}
+	decode := func(path string, wantCode int) {
+		t.Helper()
+		rec := getAuthed(t, e, http.MethodGet, path, adminCookie)
+		if rec.Code != wantCode {
+			t.Fatalf("GET %s: status = %d, want %d (body: %s)", path, rec.Code, wantCode, rec.Body.String())
+		}
+		if wantCode != http.StatusOK {
+			return
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+	}
+
+	// Filter to exactly this actor + action: one row.
+	decode("/api/v1/admin/audit-log?action=user.deactivated&actor_id="+adminID+"&entity_type=user", http.StatusOK)
+	if env.Total != 1 || len(env.Items) != 1 {
+		t.Fatalf("filtered audit log: total=%d items=%d, want 1/1", env.Total, len(env.Items))
+	}
+	row := env.Items[0]
+	if row.Action != "user.deactivated" || row.EntityType != "user" || row.EntityID != victimID {
+		t.Errorf("row = %+v, want the deactivate mutation", row)
+	}
+	if row.ActorID == nil || *row.ActorID != adminID {
+		t.Errorf("actor_id = %v, want %s", row.ActorID, adminID)
+	}
+	if row.ActorEmail == nil || *row.ActorEmail == "" {
+		t.Error("actor_email not resolved")
+	}
+	if row.IP == nil || *row.IP == "" {
+		t.Error("ip not recorded")
+	}
+	if row.At == "" {
+		t.Error("at missing")
+	}
+	if env.Page != 1 || env.PerPage != 25 {
+		t.Errorf("envelope page=%d per_page=%d, want 1/25", env.Page, env.PerPage)
+	}
+
+	// A non-matching action filter: empty items, total 0.
+	decode("/api/v1/admin/audit-log?action=user.deactivated&actor_id="+victimID, http.StatusOK)
+	if env.Total != 0 || len(env.Items) != 0 {
+		t.Errorf("non-matching filter: total=%d items=%d, want 0/0", env.Total, len(env.Items))
+	}
+
+	// Malformed actor_id → 400, not a 500 from the ::uuid cast.
+	decode("/api/v1/admin/audit-log?actor_id=not-a-uuid", http.StatusBadRequest)
+
+	// Bad page → 400 like every other list endpoint.
+	decode("/api/v1/admin/audit-log?page=0", http.StatusBadRequest)
 }

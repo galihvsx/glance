@@ -172,7 +172,7 @@ func TestSetUserAdminPromoteDemote(t *testing.T) {
 	plain := adminTestUser(t, pool, uniqueTestEmail("prom-plain"), false)
 
 	// Promote: plain user becomes admin.
-	if err := SetUserAdmin(ctx, pool, adminA, plain, true); err != nil {
+	if err := SetUserAdmin(ctx, pool, adminA, plain, true, "127.0.0.1"); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 	var isAdmin bool
@@ -184,16 +184,16 @@ func TestSetUserAdminPromoteDemote(t *testing.T) {
 	}
 
 	// Demote by another admin: allowed while a second admin remains.
-	if err := SetUserAdmin(ctx, pool, adminA, adminB, false); err != nil {
+	if err := SetUserAdmin(ctx, pool, adminA, adminB, false, "127.0.0.1"); err != nil {
 		t.Fatalf("demote by peer: %v", err)
 	}
 
 	// Unknown user → ErrUserNotFound.
-	if err := SetUserAdmin(ctx, pool, adminA, "00000000-0000-0000-0000-000000000000", true); !errors.Is(err, ErrUserNotFound) {
+	if err := SetUserAdmin(ctx, pool, adminA, "00000000-0000-0000-0000-000000000000", true, "127.0.0.1"); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("unknown user: err = %v, want ErrUserNotFound", err)
 	}
 	// Malformed UUID → error (not a panic, not a 500-class surprise).
-	if err := SetUserAdmin(ctx, pool, adminA, "not-a-uuid", true); err == nil {
+	if err := SetUserAdmin(ctx, pool, adminA, "not-a-uuid", true, "127.0.0.1"); err == nil {
 		t.Error("malformed uuid: want error, got nil")
 	}
 }
@@ -204,7 +204,7 @@ func TestSetUserAdminSelfDemote409(t *testing.T) {
 	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("selfdemote"), true)
-	if err := SetUserAdmin(ctx, pool, admin, admin, false); !errors.Is(err, ErrAdminSelfDemote) {
+	if err := SetUserAdmin(ctx, pool, admin, admin, false, "127.0.0.1"); !errors.Is(err, ErrAdminSelfDemote) {
 		t.Errorf("self-demote: err = %v, want ErrAdminSelfDemote", err)
 	}
 	// The flag must be untouched.
@@ -216,7 +216,7 @@ func TestSetUserAdminSelfDemote409(t *testing.T) {
 		t.Error("self-demote attempt flipped the flag")
 	}
 	// Self-promote (already admin) is a harmless no-op.
-	if err := SetUserAdmin(ctx, pool, admin, admin, true); err != nil {
+	if err := SetUserAdmin(ctx, pool, admin, admin, true, "127.0.0.1"); err != nil {
 		t.Errorf("self-promote no-op: %v", err)
 	}
 }
@@ -234,7 +234,7 @@ func TestSetUserAdminLastAdminGuard(t *testing.T) {
 	peer := adminTestUser(t, pool, "peer@example.com", false)
 
 	// keeper is the only admin in this database: demoting them is refused.
-	if err := SetUserAdmin(ctx, pool, peer, keeper, false); !errors.Is(err, ErrLastAdmin) {
+	if err := SetUserAdmin(ctx, pool, peer, keeper, false, "127.0.0.1"); !errors.Is(err, ErrLastAdmin) {
 		t.Fatalf("demote last admin: err = %v, want ErrLastAdmin", err)
 	}
 	var stillAdmin bool
@@ -247,7 +247,7 @@ func TestSetUserAdminLastAdminGuard(t *testing.T) {
 
 	// With a second admin present, the same demote is allowed.
 	second := adminTestUser(t, pool, "second@example.com", true)
-	if err := SetUserAdmin(ctx, pool, second, keeper, false); err != nil {
+	if err := SetUserAdmin(ctx, pool, second, keeper, false, "127.0.0.1"); err != nil {
 		t.Fatalf("demote with peer admin present: %v", err)
 	}
 }
@@ -311,7 +311,7 @@ func TestDeactivateUser(t *testing.T) {
 	victim := adminTestUser(t, pool, uniqueTestEmail("deact-victim"), false)
 	token := insertTestSession(t, pool, victim)
 
-	if err := DeactivateUser(ctx, pool, admin, victim); err != nil {
+	if err := DeactivateUser(ctx, pool, admin, victim, "127.0.0.1"); err != nil {
 		t.Fatalf("DeactivateUser: %v", err)
 	}
 
@@ -331,11 +331,11 @@ func TestDeactivateUser(t *testing.T) {
 	}
 
 	// Unknown user → ErrUserNotFound.
-	if err := DeactivateUser(ctx, pool, admin, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrUserNotFound) {
+	if err := DeactivateUser(ctx, pool, admin, "00000000-0000-0000-0000-000000000000", "127.0.0.1"); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("unknown user: err = %v, want ErrUserNotFound", err)
 	}
 	// Deactivating an already-deactivated user is idempotent, not an error.
-	if err := DeactivateUser(ctx, pool, admin, victim); err != nil {
+	if err := DeactivateUser(ctx, pool, admin, victim, "127.0.0.1"); err != nil {
 		t.Errorf("second deactivate: %v, want nil (idempotent)", err)
 	}
 }
@@ -346,7 +346,7 @@ func TestDeactivateUserSelfRefused(t *testing.T) {
 	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("selfdeact"), true)
-	if err := DeactivateUser(ctx, pool, admin, admin); !errors.Is(err, ErrAdminSelfDeactivate) {
+	if err := DeactivateUser(ctx, pool, admin, admin, "127.0.0.1"); !errors.Is(err, ErrAdminSelfDeactivate) {
 		t.Errorf("self-deactivate: err = %v, want ErrAdminSelfDeactivate", err)
 	}
 }
@@ -358,10 +358,10 @@ func TestReactivateUser(t *testing.T) {
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("react-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("react-victim"), false)
-	if err := DeactivateUser(ctx, pool, admin, victim); err != nil {
+	if err := DeactivateUser(ctx, pool, admin, victim, "127.0.0.1"); err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}
-	if err := ReactivateUser(ctx, pool, victim); err != nil {
+	if err := ReactivateUser(ctx, pool, admin, victim, "127.0.0.1"); err != nil {
 		t.Fatalf("ReactivateUser: %v", err)
 	}
 	var isActive bool
@@ -376,11 +376,11 @@ func TestReactivateUser(t *testing.T) {
 		t.Error("reactivation resurrected revoked sessions")
 	}
 	// Idempotent on an active account.
-	if err := ReactivateUser(ctx, pool, victim); err != nil {
+	if err := ReactivateUser(ctx, pool, admin, victim, "127.0.0.1"); err != nil {
 		t.Errorf("second reactivate: %v, want nil", err)
 	}
 	// Unknown user → ErrUserNotFound.
-	if err := ReactivateUser(ctx, pool, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrUserNotFound) {
+	if err := ReactivateUser(ctx, pool, admin, "00000000-0000-0000-0000-000000000000", "127.0.0.1"); !errors.Is(err, ErrUserNotFound) {
 		t.Errorf("unknown user: err = %v, want ErrUserNotFound", err)
 	}
 }
@@ -455,11 +455,11 @@ func TestDeleteWorkspaceAsAdmin(t *testing.T) {
 	iss := createTestIssue(t, pool, ws.Slug, proj.Identifier, admin, "doomed issue")
 
 	// Wrong confirmation → ErrAdminConfirmMismatch, workspace survives.
-	if err := DeleteWorkspaceAsAdmin(ctx, pool, ws.Slug, "Wrong Name"); !errors.Is(err, ErrAdminConfirmMismatch) {
+	if err := DeleteWorkspaceAsAdmin(ctx, pool, admin, ws.Slug, "Wrong Name", "127.0.0.1"); !errors.Is(err, ErrAdminConfirmMismatch) {
 		t.Fatalf("wrong confirm: err = %v, want ErrAdminConfirmMismatch", err)
 	}
 	// Missing confirmation (empty) never matches a real name.
-	if err := DeleteWorkspaceAsAdmin(ctx, pool, ws.Slug, ""); !errors.Is(err, ErrAdminConfirmMismatch) {
+	if err := DeleteWorkspaceAsAdmin(ctx, pool, admin, ws.Slug, "", "127.0.0.1"); !errors.Is(err, ErrAdminConfirmMismatch) {
 		t.Fatalf("empty confirm: err = %v, want ErrAdminConfirmMismatch", err)
 	}
 	var n int
@@ -468,12 +468,12 @@ func TestDeleteWorkspaceAsAdmin(t *testing.T) {
 	}
 
 	// Unknown workspace → ErrNotFound.
-	if err := DeleteWorkspaceAsAdmin(ctx, pool, uniqueTestSlug("nope"), "nope"); !errors.Is(err, ErrNotFound) {
+	if err := DeleteWorkspaceAsAdmin(ctx, pool, admin, uniqueTestSlug("nope"), "nope", "127.0.0.1"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown workspace: err = %v, want ErrNotFound", err)
 	}
 
 	// Correct confirmation by slug: deletes, and the FK graph cascades.
-	if err := DeleteWorkspaceAsAdmin(ctx, pool, ws.Slug, "Delete Me WS"); err != nil {
+	if err := DeleteWorkspaceAsAdmin(ctx, pool, admin, ws.Slug, "Delete Me WS", "127.0.0.1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	for _, tc := range []struct {
@@ -496,7 +496,7 @@ func TestDeleteWorkspaceAsAdmin(t *testing.T) {
 
 	// Resolution by id works too.
 	ws2 := createTestWorkspace(t, pool, "Delete Me Too", uniqueTestSlug("delws2"), admin)
-	if err := DeleteWorkspaceAsAdmin(ctx, pool, ws2.ID, "Delete Me Too"); err != nil {
+	if err := DeleteWorkspaceAsAdmin(ctx, pool, admin, ws2.ID, "Delete Me Too", "127.0.0.1"); err != nil {
 		t.Fatalf("delete by id: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM workspaces WHERE id = $1::uuid`, ws2.ID).Scan(&n); err != nil || n != 0 {

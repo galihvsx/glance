@@ -15,6 +15,7 @@ import {
   adminRouteDecision,
   deactivateAdminUser,
   deleteAdminWorkspace,
+  fetchAdminAuditLog,
   fetchAdminStats,
   fetchAdminUsers,
   fetchAdminWorkspaces,
@@ -197,6 +198,50 @@ describe("deleteAdminWorkspace", () => {
     );
     await expect(deleteAdminWorkspace("ws-uuid-1", "wrong")).rejects.toThrow(
       "workspace name confirmation does not match",
+    );
+  });
+});
+
+describe("fetchAdminAuditLog", () => {
+  it("GETs the paginated envelope with page/per_page and exact-match filters", async () => {
+    const body = {
+      items: [
+        {
+          id: "a1",
+          at: "2026-10-11T00:00:00Z",
+          actor_id: "admin-uuid-1",
+          actor_email: "root@example.com",
+          action: "user.deactivated",
+          entity_type: "user",
+          entity_id: "victim-uuid-1",
+          workspace_id: null,
+          ip: "203.0.113.7",
+          meta: {},
+        },
+      ],
+      total: 1,
+      page: 1,
+      per_page: 25,
+    };
+    const fetchMock = stubFetch(200, body);
+    await expect(
+      fetchAdminAuditLog(1, {
+        action: "user.deactivated",
+        actorId: "admin-uuid-1",
+        entityType: "user",
+      }),
+    ).resolves.toEqual(body);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/admin/audit-log?page=1&per_page=25&action=user.deactivated&actor_id=admin-uuid-1&entity_type=user",
+    );
+  });
+
+  it("omits empty filters from the query string", async () => {
+    const body = { items: [], total: 0, page: 2, per_page: 25 };
+    const fetchMock = stubFetch(200, body);
+    await fetchAdminAuditLog(2, {});
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/admin/audit-log?page=2&per_page=25",
     );
   });
 });
