@@ -82,14 +82,21 @@ type automationRulePatchBody struct {
 }
 
 // listAutomations implements GET .../automations: the project's rules,
-// oldest first. Member (15)+.
+// oldest first, alongside the project's automation run retention window
+// (C13T0 — "read alongside rules": the effective window in days, 90 when
+// unset, 0 = keep forever). Member (15)+.
 func (h *AutomationHandler) listAutomations(c *echo.Context) error {
-	rules, err := service.ListAutomationRules(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID)
+	ctx := c.Request().Context()
+	slug, ident, actor := c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID
+	rules, err := service.ListAutomationRules(ctx, h.Pool, slug, ident, actor)
 	if err != nil {
 		return automationError(c, err)
 	}
-	return c.JSON(http.StatusOK, map[string]any{"automations": rules})
+	retention, err := service.GetAutomationRunRetentionDays(ctx, h.Pool, slug, ident, actor)
+	if err != nil {
+		return automationError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"automations": rules, "retention_days": retention})
 }
 
 // listAutomationRuns implements GET .../automations/runs: the

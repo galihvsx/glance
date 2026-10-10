@@ -294,9 +294,9 @@
       "patch": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a project",
-        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog.",
+        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "close_in_days": { "type": "integer", "minimum": 0 } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
@@ -1303,9 +1303,9 @@
       "get": {
         "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List automation rules",
-        "description": "Per-project workflow automation rules (C11T1): when an issue's state changes, matching rules run their actions automatically. Member (15)+; free in glance (Plane paywalls this class of feature).",
+        "description": "Per-project workflow automation rules (C11T1): when an issue's state changes, matching rules run their actions automatically. Member (15)+; free in glance (Plane paywalls this class of feature). The response also carries the project's automation run retention window (retention_days: effective days, 90 when unset, 0 = keep forever).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "responses": { "200": { "description": "Automation rules, oldest first", "content": { "application/json": { "schema": { "type": "object", "properties": { "automations": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationRule" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Automation rules, oldest first, plus the retention window", "content": { "application/json": { "schema": { "type": "object", "properties": { "automations": { "type": "array", "items": { "$ref": "#/components/schemas/AutomationRule" } }, "retention_days": { "type": "integer", "description": "Effective automation run retention window in days (90 when unset); 0 = keep forever" } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "post": {
         "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1832,6 +1832,7 @@
           "identifier": { "type": "string" },
           "description": { "type": "string", "nullable": true },
           "close_in_days": { "type": "integer", "description": "Cycle-rollover grace in days" },
+          "automation_run_retention_days": { "type": "integer", "nullable": true, "description": "Automation run retention window in days; null = 90-day default, 0 = keep forever" },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },

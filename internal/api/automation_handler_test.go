@@ -418,3 +418,91 @@ func TestAutomationRunsHTTP(t *testing.T) {
 		t.Fatalf("404 envelope: body=%s", rec.Body.String())
 	}
 }
+
+func TestAutomationRetentionHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
+	RegisterAutomationRoutes(e, &AutomationHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("auto-rt"), "test-agent", uniqueIP())
+	slug := uniqueSlug("auto-rt")
+	createWorkspaceHTTP(t, e, cookie, "Auto Co", slug)
+	ident := uniqueProjectIdentifier("AR")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	autoBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/automations"
+	projPath := "/api/v1/workspaces/" + slug + "/projects/" + ident
+
+	listRetention := func(c *http.Cookie) int {
+		t.Helper()
+		rec := getAuthed(t, e, http.MethodGet, autoBase, c)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+		}
+		var listed struct {
+			RetentionDays int `json:"retention_days"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return listed.RetentionDays
+	}
+
+	// Default: 90, read alongside rules.
+	if got := listRetention(cookie); got != 90 {
+		t.Fatalf("retention_days = %d, want default 90", got)
+	}
+
+	// Member sets 30 via PATCH project; the PATCH response echoes it.
+	rec := postAuthedJSON(t, e, http.MethodPatch, projPath, cookie, `{"automation_run_retention_days":30}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var patched struct {
+		AutomationRunRetentionDays *int `json:"automation_run_retention_days"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &patched); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if patched.AutomationRunRetentionDays == nil || *patched.AutomationRunRetentionDays != 30 {
+		t.Fatalf("patched retention = %v, want 30", patched.AutomationRunRetentionDays)
+	}
+	if got := listRetention(cookie); got != 30 {
+		t.Fatalf("retention_days = %d, want 30 after update", got)
+	}
+
+	// Negative → 400.
+	rec = postAuthedJSON(t, e, http.MethodPatch, projPath, cookie, `{"automation_run_retention_days":-1}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Guest: PATCH → 403, list → 403.
+	guestEmail := uniqueEmail("auto-rt-guest")
+	guestCookie := loginTestUser(t, e, pool, guestEmail, "test-agent", uniqueIP())
+	ctx := context.Background()
+	var adminID, guestID string
+	if err := pool.QueryRow(ctx,
+		`SELECT m.user_id::text FROM workspace_members m
+		 JOIN workspaces w ON w.id = m.workspace_id
+		 WHERE w.slug = $1 AND m.role = 20`, slug).Scan(&adminID); err != nil {
+		t.Fatalf("admin id: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM users WHERE email = $1`, guestEmail).Scan(&guestID); err != nil {
+		t.Fatalf("guest id: %v", err)
+	}
+	if err := service.UpsertMember(ctx, pool, slug, adminID, guestID, service.RoleGuest); err != nil {
+		t.Fatalf("UpsertMember guest: %v", err)
+	}
+	rec = postAuthedJSON(t, e, http.MethodPatch, projPath, guestCookie, `{"automation_run_retention_days":7}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest patch: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, autoBase, guestCookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest list: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
