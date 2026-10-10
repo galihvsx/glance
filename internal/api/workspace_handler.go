@@ -34,6 +34,8 @@ func RegisterWorkspaceRoutes(e *echo.Echo, h *WorkspaceHandler) {
 	g.POST("/:slug/slack/test", h.testSlack)
 	// C10T3: stream the full workspace data archive (admin only).
 	g.GET("/:slug/export", h.exportWorkspace)
+	// C11T0: restore a glance-export/1 archive into the workspace (admin only).
+	g.POST("/:slug/import", h.importWorkspaceArchive)
 }
 
 // workspaceError maps service sentinel errors to HTTP statuses. Unknown

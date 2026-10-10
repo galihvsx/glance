@@ -343,3 +343,33 @@ export function validateJiraForm(
   }
   return null;
 }
+
+// ---------- Workspace archive import (C11T0 backend) ----------
+//
+// Restores a glance-export/1 archive (as produced by the workspace Data
+// section's export) into a workspace. Single shot: no preview — the
+// server streams the upload and returns an honest report. Re-import is
+// safe: rows whose UUID already exists are skipped, never duplicated.
+
+export interface ArchiveImportReport {
+  format: string;
+  source_workspace: string;
+  target_workspace: string;
+  imported: Record<string, number>;
+  skipped: {
+    count: number;
+    reasons: string[];
+  };
+}
+
+export function runArchiveImport(
+  slug: string,
+  file: File,
+): Promise<ArchiveImportReport> {
+  const form = new FormData();
+  form.append("file", file);
+  return api.postForm<ArchiveImportReport>(
+    `/api/v1/workspaces/${encodeURIComponent(slug)}/import`,
+    form,
+  );
+}
