@@ -155,8 +155,8 @@ func ListAutomationRuns(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 // recordAutomationRunTx inserts one run row in the caller's tx. It
 // never returns an error: a run-row write must not block the state
 // change it records. Marshal/insert failures are logged via slog and
-// skipped. (No retention pruning in v1 — documented in migration
-// 000038.)
+// skipped. (Retention pruning is a separate daily sweep —
+// service.PruneAutomationRuns, C13T0 — never in this tx.)
 func recordAutomationRunTx(ctx context.Context, tx pgx.Tx, ruleID, issueID, triggerType string, results []AutomationActionResult) {
 	payload, err := json.Marshal(results)
 	if err != nil {

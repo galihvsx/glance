@@ -180,6 +180,15 @@ func main() {
 	digestTicker := &ticker.DigestTicker{Pool: pool}
 	digestTicker.Start(ctx)
 
+	// Automation run retention (C13T0): once a day, prune automation_runs
+	// rows older than each project's retention window (default 90 days,
+	// 0 = keep forever, configurable per project via PATCH project).
+	// Same in-process, one-instance design as the other tickers; the
+	// sweep never shares a transaction with the firing path, so prune
+	// failures are logged, never fatal.
+	retentionTicker := &ticker.RetentionTicker{Pool: pool}
+	retentionTicker.Start(ctx)
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via

@@ -43,8 +43,13 @@ type Project struct {
 	ViewFlags     json.RawMessage `json:"view_flags,omitempty"`
 	ArchiveInDays *int            `json:"archive_in_days,omitempty"`
 	CloseInDays   *int            `json:"close_in_days,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	// AutomationRunRetentionDays is the automation run retention window
+	// in days (C13T0, migration 000039): NULL = unset = the 90-day
+	// default (service.DefaultAutomationRunRetentionDays), 0 = keep
+	// forever. Negative is rejected at write.
+	AutomationRunRetentionDays *int      `json:"automation_run_retention_days,omitempty"`
+	CreatedAt                  time.Time `json:"created_at"`
+	UpdatedAt                  time.Time `json:"updated_at"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -94,7 +99,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.CreatedAt, &p.UpdatedAt,
+		&viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -109,10 +114,10 @@ func scanProject(row pgx.Row) (*Project, error) {
 // (no table alias exists there); projectColumnsP is the same list with
 // the p. alias for SELECT ... FROM projects p.
 const projectColumns = `id::text, workspace_id::text, identifier, name, description,
-	view_flags, archive_in_days, close_in_days, created_at, updated_at`
+	view_flags, archive_in_days, close_in_days, automation_run_retention_days, created_at, updated_at`
 
 const projectColumnsP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.view_flags, p.archive_in_days, p.close_in_days, p.created_at, p.updated_at`
+	p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.created_at, p.updated_at`
 
 // CreateProject inserts the project and seeds its default states in one
 // transaction. The caller must be a workspace member (15) or admin (20);
@@ -270,6 +275,11 @@ type ProjectPatch struct {
 	// when no next cycle exists. Nil = untouched; explicit 0 (or a NULL
 	// column) detaches at completion. Negative is rejected.
 	CloseInDays *int
+	// AutomationRunRetentionDays is the automation run retention window
+	// in days (C13T0): nil = untouched; explicit 0 keeps runs forever
+	// (or a NULL column = the 90-day default). Negative is rejected
+	// with ErrInvalidAutomationRunRetentionDays.
+	AutomationRunRetentionDays *int
 }
 
 // UpdateProject applies a partial project update. Member (15) or admin
@@ -308,6 +318,13 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 		args = append(args, *patch.CloseInDays)
 		sets = append(sets, fmt.Sprintf("close_in_days = $%d", len(args)+2))
+	}
+	if patch.AutomationRunRetentionDays != nil {
+		if *patch.AutomationRunRetentionDays < 0 {
+			return nil, ErrInvalidAutomationRunRetentionDays
+		}
+		args = append(args, *patch.AutomationRunRetentionDays)
+		sets = append(sets, fmt.Sprintf("automation_run_retention_days = $%d", len(args)+2))
 	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate

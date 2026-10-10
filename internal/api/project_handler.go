@@ -104,6 +104,10 @@ type updateProjectBody struct {
 	// when no next cycle exists. Nil = untouched; 0 detaches at
 	// completion; negative is a 400.
 	CloseInDays *int `json:"close_in_days"`
+	// AutomationRunRetentionDays is the automation run retention window
+	// in days (C13T0): nil = untouched; 0 = keep runs forever; unset
+	// (NULL) = the 90-day default. Negative is a 400.
+	AutomationRunRetentionDays *int `json:"automation_run_retention_days"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -114,7 +118,8 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
-		service.ProjectPatch{Name: body.Name, Description: body.Description, CloseInDays: body.CloseInDays})
+		service.ProjectPatch{Name: body.Name, Description: body.Description, CloseInDays: body.CloseInDays,
+			AutomationRunRetentionDays: body.AutomationRunRetentionDays})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
@@ -124,6 +129,9 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 		}
 		if errors.Is(err, service.ErrInvalidCloseInDays) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "close_in_days must be >= 0", nil)
+		}
+		if errors.Is(err, service.ErrInvalidAutomationRunRetentionDays) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "automation_run_retention_days must be >= 0", nil)
 		}
 		return projectError(c, err)
 	}
