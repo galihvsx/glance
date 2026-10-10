@@ -56,6 +56,35 @@ export interface AdminAuditFilters {
   entityType?: string;
 }
 
+export interface AdminBackupConfig {
+  enabled: boolean;
+  interval: string;
+  dir: string;
+  retention: number;
+}
+
+export interface AdminBackupRun {
+  id: string;
+  workspace_id: string | null;
+  workspace_slug: string;
+  at: string;
+  file_name: string;
+  file_path: string | null;
+  byte_size: number;
+  sha256: string;
+  format_version: string;
+  migration_version: string;
+  status: "ok" | "failed" | "pruned";
+  verify_ok: boolean | null;
+  verify_error: string | null;
+  verified_at: string | null;
+  triggered_by: string;
+}
+
+export interface AdminBackupsResponse extends AdminPage<AdminBackupRun> {
+  config: AdminBackupConfig;
+}
+
 export interface AdminPage<T> {
   items: T[];
   total: number;
@@ -69,6 +98,8 @@ export const ADMIN_KEYS = {
   workspaces: (page: number) => ["admin", "workspaces", page] as const,
   auditLog: (page: number, filters: AdminAuditFilters) =>
     ["admin", "audit-log", page, filters] as const,
+  backups: (page: number, workspaceSlug?: string) =>
+    ["admin", "backups", page, workspaceSlug ?? ""] as const,
 };
 
 export const ADMIN_PER_PAGE = 25;
@@ -144,6 +175,36 @@ export function fetchAdminAuditLog(
   if (filters.entityType) params.set("entity_type", filters.entityType);
   return api.get<AdminPage<AdminAuditEntry>>(
     `/api/v1/admin/audit-log?${params.toString()}`,
+  );
+}
+
+/** Reads the backup run history (newest first) plus the
+ *  schedule/retention config. An optional workspace slug scopes the
+ *  history to one workspace. */
+export function fetchAdminBackups(
+  page = 1,
+  workspaceSlug?: string,
+  perPage = ADMIN_PER_PAGE,
+): Promise<AdminBackupsResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    per_page: String(perPage),
+  });
+  if (workspaceSlug) params.set("workspace_slug", workspaceSlug);
+  return api.get<AdminBackupsResponse>(
+    `/api/v1/admin/backups?${params.toString()}`,
+  );
+}
+
+/** Triggers a backup now. An empty slug backs up every workspace; a
+ *  207 response means partial failure (some workspaces failed) — the
+ *  successful runs are still returned. */
+export function runAdminBackupNow(
+  workspaceSlug?: string,
+): Promise<{ backups: AdminBackupRun[]; error?: string }> {
+  return api.post<{ backups: AdminBackupRun[]; error?: string }>(
+    "/api/v1/admin/backups/run",
+    workspaceSlug ? { workspace_slug: workspaceSlug } : {},
   );
 }
 

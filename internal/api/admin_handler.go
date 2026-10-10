@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
 
+	"glance/internal/config"
 	"glance/internal/service"
 )
 
@@ -18,6 +19,13 @@ import (
 // tenancy here.
 type AdminHandler struct {
 	Pool *pgxpool.Pool
+	// BackupCfg carries the scheduled-backup settings (C15T2) so the
+	// backup endpoints can report the schedule/retention config and
+	// the manual trigger uses the configured dir/retention. Zero value
+	// = schedule disabled, defaults for dir/retention unset (the
+	// service applies its own zero-value behavior); main.go always
+	// sets it from config.
+	BackupCfg config.BackupConfig
 }
 
 // RequireAdmin is the instance-admin middleware: it layers on top of
@@ -49,6 +57,8 @@ func RegisterAdminRoutes(e *echo.Echo, h *AdminHandler) {
 	g.GET("/workspaces", h.listWorkspaces)
 	g.DELETE("/workspaces/:id", h.deleteWorkspace)
 	g.GET("/audit-log", h.getAuditLog)
+	g.GET("/backups", h.listBackups)
+	g.POST("/backups/run", h.runBackupNow)
 }
 
 // adminError maps service sentinel errors to HTTP statuses. Unknown

@@ -10,12 +10,16 @@
 //                mismatch on ?confirm=<name>)
 //   Audit log  — append-only admin audit trail: filters (action /
 //                actor_id / entity_type), newest first, relative times
+//   Backups    — scheduled backup config (interval / dir / retention),
+//                "Run now" trigger, and the verified run history
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft,
   ChevronRight,
+  DatabaseBackup,
+  Play,
   ShieldAlert,
   Trash2,
   Users,
@@ -28,14 +32,17 @@ import {
   deactivateAdminUser,
   deleteAdminWorkspace,
   fetchAdminAuditLog,
+  fetchAdminBackups,
   fetchAdminStats,
   fetchAdminUsers,
   fetchAdminWorkspaces,
   reactivateAdminUser,
+  runAdminBackupNow,
   setAdminUser,
   totalPages,
   type AdminAuditEntry,
   type AdminAuditFilters,
+  type AdminBackupRun,
   type AdminUser,
   type AdminWorkspace,
 } from "../lib/admin";
@@ -707,6 +714,251 @@ function AuditTab() {
   );
 }
 
+function BackupsTab() {
+  const [page, setPage] = useState(1);
+  // Run-now target: empty = all workspaces.
+  const [runSlug, setRunSlug] = useState("");
+  // History filter: draft = input value, applied = what the query uses.
+  const [filterDraft, setFilterDraft] = useState("");
+  const [filter, setFilter] = useState<string | undefined>(undefined);
+  const queryClient = useQueryClient();
+
+  const backupsQuery = useQuery({
+    queryKey: ADMIN_KEYS.backups(page, filter),
+    queryFn: () => fetchAdminBackups(page, filter),
+  });
+
+  const runNow = useMutation({
+    mutationFn: (workspaceSlug: string | undefined) =>
+      runAdminBackupNow(workspaceSlug),
+    onSuccess: (data) => {
+      const n = data.backups.length;
+      if (data.error) {
+        toast.add({
+          title: "Backup partially failed",
+          description: data.error,
+          type: "warning",
+        });
+      } else {
+        toast.add({
+          title: "Backup complete",
+          description: `${n} workspace${n === 1 ? "" : "s"} backed up and verified`,
+          type: "success",
+        });
+      }
+    },
+    onError: (e) => {
+      toast.add({
+        title: "Backup failed",
+        description: e instanceof ApiError ? e.message : undefined,
+        type: "error",
+      });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "backups"] });
+    },
+  });
+
+  const config = backupsQuery.data?.config;
+  const rows = backupsQuery.data?.items ?? [];
+  const shortHash = (h: string) => (h.length > 12 ? `${h.slice(0, 12)}…` : h);
+
+  const statusBadge = (s: AdminBackupRun["status"]) => {
+    switch (s) {
+      case "ok":
+        return <Badge variant="secondary">ok</Badge>;
+      case "failed":
+        return <Badge variant="destructive">failed</Badge>;
+      case "pruned":
+        return <Badge variant="outline">pruned</Badge>;
+    }
+  };
+
+  const verifyBadge = (r: AdminBackupRun) => {
+    if (r.verify_ok == null)
+      return <span className="text-muted-foreground">—</span>;
+    return r.verify_ok ? (
+      <Badge variant="secondary" title={r.verified_at ?? undefined}>
+        verified
+      </Badge>
+    ) : (
+      <Badge variant="destructive" title={r.verify_error ?? undefined}>
+        failed
+      </Badge>
+    );
+  };
+
+  return (
+    <div>
+      {backupsQuery.isError && <AdminError error={backupsQuery.error} />}
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <DatabaseBackup className="h-4 w-4" />
+            Schedule
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {backupsQuery.isLoading ? (
+            <Skeleton className="h-5 w-full" />
+          ) : (
+            <dl className="grid gap-2 text-sm sm:grid-cols-[160px_1fr]">
+              <dt className="text-muted-foreground">Status</dt>
+              <dd>
+                {config?.enabled ? (
+                  <Badge>enabled · every {config.interval}</Badge>
+                ) : (
+                  <Badge variant="outline">disabled</Badge>
+                )}
+              </dd>
+              <dt className="text-muted-foreground">Target directory</dt>
+              <dd className="font-mono text-xs">{config?.dir ?? "—"}</dd>
+              <dt className="text-muted-foreground">Retention</dt>
+              <dd>
+                {config == null
+                  ? "—"
+                  : config.retention === 0
+                    ? "Keep forever"
+                    : `Newest ${config.retention} per workspace`}
+              </dd>
+            </dl>
+          )}
+          <p className="mt-3 text-xs text-muted-foreground">
+            Configured via GLANCE_BACKUP_INTERVAL (empty = disabled),
+            GLANCE_BACKUP_DIR and GLANCE_BACKUP_RETENTION. Backups are
+            gzipped glance-export/1 archives, checksummed and verified
+            after every run; older runs are pruned per the retention
+            policy.
+          </p>
+          <div className="mt-4 flex flex-wrap items-end gap-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="backup-run-slug">
+                Workspace slug (optional)
+              </Label>
+              <Input
+                id="backup-run-slug"
+                placeholder="All workspaces when empty"
+                value={runSlug}
+                onChange={(e) => setRunSlug(e.target.value)}
+                autoComplete="off"
+                className="w-64"
+              />
+            </div>
+            <Button
+              onClick={() => runNow.mutate(runSlug.trim() || undefined)}
+              disabled={runNow.isPending}
+            >
+              <Play className="h-4 w-4" />
+              {runNow.isPending ? "Backing up…" : "Run now"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <CardTitle className="text-base">History</CardTitle>
+            <div className="flex items-end gap-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="backup-filter-slug" className="sr-only">
+                  Filter by workspace slug
+                </Label>
+                <Input
+                  id="backup-filter-slug"
+                  placeholder="Filter by workspace slug"
+                  value={filterDraft}
+                  onChange={(e) => setFilterDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setFilter(filterDraft.trim() || undefined);
+                      setPage(1);
+                    }
+                  }}
+                  autoComplete="off"
+                  className="w-56"
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setFilter(filterDraft.trim() || undefined);
+                  setPage(1);
+                }}
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Time</TableHead>
+              <TableHead>Workspace</TableHead>
+              <TableHead className="text-right">Size</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Verified</TableHead>
+              <TableHead>SHA-256</TableHead>
+              <TableHead>Triggered by</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {backupsQuery.isLoading &&
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell colSpan={7}>
+                    <Skeleton className="h-5 w-full" />
+                  </TableCell>
+                </TableRow>
+              ))}
+            {!backupsQuery.isLoading &&
+              rows.map((r: AdminBackupRun) => (
+                <TableRow key={r.id}>
+                  <TableCell
+                    className="whitespace-nowrap text-sm text-muted-foreground"
+                    title={r.at}
+                  >
+                    {relativeTime(r.at)}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {r.workspace_slug}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.status === "pruned" ? "—" : formatBytes(r.byte_size)}
+                  </TableCell>
+                  <TableCell>{statusBadge(r.status)}</TableCell>
+                  <TableCell>{verifyBadge(r)}</TableCell>
+                  <TableCell
+                    className="font-mono text-xs text-muted-foreground"
+                    title={r.sha256 || undefined}
+                  >
+                    {r.sha256 ? shortHash(r.sha256) : "—"}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {r.triggered_by}
+                  </TableCell>
+                </TableRow>
+              ))}
+          </TableBody>
+        </Table>
+      </Card>
+      {!backupsQuery.isLoading && rows.length === 0 && (
+        <div className="mt-4 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+          No backups yet. Run one now, or set GLANCE_BACKUP_INTERVAL to
+          schedule them.
+        </div>
+      )}
+      <PageControls
+        page={page}
+        total={backupsQuery.data?.total ?? 0}
+        perPage={ADMIN_PER_PAGE}
+        onPage={setPage}
+      />
+    </div>
+  );
+}
+
 export default function Admin() {
   const { user } = useAuth();
 
@@ -726,6 +978,7 @@ export default function Admin() {
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
           <TabsTrigger value="audit-log">Audit log</TabsTrigger>
+          <TabsTrigger value="backups">Backups</TabsTrigger>
         </TabsList>
         <TabsContent value="overview">
           <OverviewTab />
@@ -738,6 +991,9 @@ export default function Admin() {
         </TabsContent>
         <TabsContent value="audit-log">
           <AuditTab />
+        </TabsContent>
+        <TabsContent value="backups">
+          <BackupsTab />
         </TabsContent>
       </Tabs>
     </div>

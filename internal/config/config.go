@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the runtime configuration for the glance server.
@@ -76,6 +77,44 @@ type Config struct {
 	// list; the first registered user still auto-becomes admin (see
 	// internal/auth seeding comments).
 	AdminEmails []string
+	// Backup holds the scheduled-backup job settings (C15T2): the
+	// backup cadence, the local-disk target directory, and how many
+	// recent runs per workspace to keep.
+	Backup BackupConfig
+}
+
+// BackupConfig holds the scheduled workspace backup settings (C15T2),
+// from GLANCE_BACKUP_INTERVAL, GLANCE_BACKUP_DIR and
+// GLANCE_BACKUP_RETENTION.
+type BackupConfig struct {
+	// Interval is the cadence between full backup passes. Zero means the
+	// scheduled job is DISABLED (the default); backups then only happen
+	// on explicit POST /api/v1/admin/backups/run calls. From
+	// GLANCE_BACKUP_INTERVAL (Go duration syntax, e.g. "24h"); an
+	// invalid value fails boot — a misconfigured interval must not
+	// silently become "every second" or "never".
+	Interval time.Duration
+	// Dir is the local-disk target directory for backup archives. From
+	// GLANCE_BACKUP_DIR; defaults to "./backups". Created on first use.
+	Dir string
+	// Retention is how many of the newest backup runs per workspace are
+	// kept on disk; older runs are pruned (files deleted, history row
+	// kept with status 'pruned'). From GLANCE_BACKUP_RETENTION;
+	// defaults to 7; 0 means keep forever. Negative fails boot.
+	Retention int
+}
+
+// BackupEnabled reports whether the scheduled backup pass runs: an
+// interval is configured.
+func (b BackupConfig) BackupEnabled() bool { return b.Interval > 0 }
+
+// backupInterval describes the configured cadence for log lines:
+// "disabled" or the duration string.
+func (b BackupConfig) backupInterval() string {
+	if b.Interval <= 0 {
+		return "disabled"
+	}
+	return b.Interval.String()
 }
 
 // AIConfig holds the AI assist settings from GLANCE_AI_BASE_URL,
@@ -189,6 +228,31 @@ func Load() (*Config, error) {
 	// syntactically acceptable email candidate) — matching is against
 	// the users.email CITEXT column, so case-insensitive by construction.
 	cfg.AdminEmails = parseEmailList(os.Getenv("GLANCE_ADMIN_EMAILS"))
+	// Scheduled backups (C15T2): GLANCE_BACKUP_INTERVAL (empty =
+	// disabled, the default), GLANCE_BACKUP_DIR (default ./backups),
+	// GLANCE_BACKUP_RETENTION (default 7, 0 = keep forever). Invalid
+	// values fail boot — a misconfigured backup job must never silently
+	// run wild or silently never run.
+	if raw := strings.TrimSpace(os.Getenv("GLANCE_BACKUP_INTERVAL")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, errors.New("config: GLANCE_BACKUP_INTERVAL is not a valid duration: " + strconv.Quote(raw))
+		}
+		if d < time.Minute {
+			return nil, errors.New("config: GLANCE_BACKUP_INTERVAL must be at least 1m (a full workspace export per tick is expensive)")
+		}
+		cfg.Backup.Interval = d
+	}
+	cfg.Backup.Dir = getenv("GLANCE_BACKUP_DIR", "./backups")
+	if raw := strings.TrimSpace(os.Getenv("GLANCE_BACKUP_RETENTION")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return nil, errors.New("config: GLANCE_BACKUP_RETENTION must be a non-negative integer (0 = keep forever)")
+		}
+		cfg.Backup.Retention = n
+	} else {
+		cfg.Backup.Retention = 7
+	}
 	return cfg, nil
 }
 

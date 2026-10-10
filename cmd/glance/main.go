@@ -189,6 +189,25 @@ func main() {
 	retentionTicker := &ticker.RetentionTicker{Pool: pool}
 	retentionTicker.Start(ctx)
 
+	// Scheduled workspace backups (C15T2): on GLANCE_BACKUP_INTERVAL,
+	// back up every workspace (gzipped glance-export/1 archives into
+	// GLANCE_BACKUP_DIR, GLANCE_BACKUP_RETENTION newest runs kept per
+	// workspace, integrity-verified). An empty interval (the default)
+	// disables the schedule — backups then only run via
+	// POST /api/v1/admin/backups/run. Same in-process, one-instance
+	// design as the other tickers.
+	if cfg.Backup.BackupEnabled() {
+		backupTicker := &ticker.BackupTicker{
+			Pool:      pool,
+			Interval:  cfg.Backup.Interval,
+			Dir:       cfg.Backup.Dir,
+			Retention: cfg.Backup.Retention,
+		}
+		backupTicker.Start(ctx)
+	} else {
+		log.Printf("glance: scheduled backups disabled (GLANCE_BACKUP_INTERVAL empty)")
+	}
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via
@@ -238,7 +257,7 @@ func main() {
 	api.RegisterWorkItemRoutes(e, issueHandler)
 	api.RegisterTokenRoutes(e, &api.TokenHandler{Pool: pool})
 	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
-	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool})
+	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool, BackupCfg: cfg.Backup})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterStateRoutes(e, &api.StateHandler{Pool: pool})
 	api.RegisterSatelliteRoutes(e, issueHandler)
