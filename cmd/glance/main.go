@@ -256,6 +256,9 @@ func main() {
 	api.RegisterIssueRoutes(e, issueHandler)
 	api.RegisterWorkItemRoutes(e, issueHandler)
 	api.RegisterTokenRoutes(e, &api.TokenHandler{Pool: pool})
+	// C15T3: iCal subscription feeds — token-authed feed endpoints plus
+	// session-only feed-token management.
+	api.RegisterCalendarFeedRoutes(e, &api.CalendarFeedHandler{Pool: pool, Config: cfg})
 	api.RegisterNotifyRoutes(e, &api.NotifyHandler{Pool: pool})
 	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool, BackupCfg: cfg.Backup})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
