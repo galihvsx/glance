@@ -581,9 +581,13 @@ func TestExecutePlaneImportRelationsDropped(t *testing.T) {
 	if rep.Created != 2 {
 		t.Fatalf("created = %d, want 2", rep.Created)
 	}
-	// Nothing inserted into issue_relations.
+	// Nothing inserted into issue_relations for this project's issues.
+	// (Scoped to the test project: other packages' tests share the test
+	// DB and may leave their own rows — a global COUNT would flake.)
 	var n int
-	pool.QueryRow(ctx, `SELECT COUNT(*) FROM issue_relations`).Scan(&n)
+	pool.QueryRow(ctx, `SELECT COUNT(*) FROM issue_relations r
+		 JOIN issues i ON i.id = r.issue_id
+		WHERE i.project_id = $1::uuid`, projectID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("issue_relations = %d, want 0 (relations are gaps, never rows)", n)
 	}
