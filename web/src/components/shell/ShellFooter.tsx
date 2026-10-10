@@ -5,9 +5,10 @@
 
 import { useNavigate } from "react-router-dom";
 import type { ReactElement } from "react";
-import { KeyRound, LogOut, ShieldCheck, User } from "lucide-react";
+import { Download, KeyRound, LogOut, ShieldCheck, User, X } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { initials } from "../../lib/profile";
+import { useInstallPrompt } from "../../hooks/use-install-prompt";
 import ThemeToggle from "../ThemeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import {
@@ -57,8 +58,41 @@ function AccountMenu({ trigger }: { trigger: ReactElement }) {
   );
 }
 
-export default function ShellFooter({
-  collapsed = false,
+// Subtle PWA install affordance (C15T4): appears only while the
+// beforeinstallprompt event is available; dismissal persists.
+function InstallButton() {
+  const { canInstall, install, dismiss } = useInstallPrompt();
+  if (!canInstall) return null;
+  return (
+    <span className="flex items-center">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              onClick={() => void install()}
+              aria-label="Install glance app"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <Download className="h-4 w-4" />
+            </button>
+          }
+        />
+        <TooltipContent side="top">Install app</TooltipContent>
+      </Tooltip>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Dismiss install prompt"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-accent-foreground"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
+  );
+}
+
+export default function ShellFooter({  collapsed = false,
 }: {
   /** Rail mode: avatar-only trigger with tooltip. */
   collapsed?: boolean;
@@ -131,6 +165,7 @@ export default function ShellFooter({
         />
       )}
       <ThemeToggle />
+      <InstallButton />
     </div>
   );
 }
