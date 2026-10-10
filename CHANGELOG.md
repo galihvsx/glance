@@ -294,6 +294,35 @@ queued onboarding follow-up (invites endpoint).
   webhooks/Slack in v1 (documented scope cut); rule builder gains the new
   trigger/action selects with honest copy; openapi schemas updated.
 
+**Honest operations (cycle 13)**
+- Automation run retention pruning (C13T0): closes the documented C12T1
+  follow-up — `automation_runs` no longer grows unboundedly. Migration
+  `000039_automation_run_retention` adds a per-project
+  `automation_run_retention_days` column (NULL = 90-day default, 0 = keep
+  forever, negative rejected at write); a daily ticker deletes runs older
+  than each project's window, never in the firing tx (failures logged,
+  never fatal); `GET .../projects/{id}/automations` now also returns the
+  effective `retention_days`. No SPA UI for retention in v1 (flagged);
+  workspace export/import does not carry the new column (flagged).
+- Digest per-user timezone (C13T1): closes the documented C11T2 follow-up
+  — the digest hour is now evaluated in the user's own IANA timezone
+  (`digest.tz` in `notification_prefs`, no migration; absent = exact
+  pre-C13T1 server-local behavior); hour gate, claim window, and watermark
+  day are all user-local, so no double-send or starvation across tz
+  midnight (DST handled by `time.LoadLocation`); invalid TZ → 400 at
+  write, malformed rows ignored on read; `GET/PUT /digest-schedule` carry
+  `tz`, and the Notifications page gains a timezone input (shortlist +
+  free IANA, server-400 rollback).
+- Plane-native import research (C13T2, no code — research-first): studied
+  Plane's real OSS export (`POST /api/workspaces/<slug>/export-issues/`,
+  JSON provider is the only lossless format); delivered the format spec,
+  a Plane→glance mapping (biggest gaps: descriptions are never exported,
+  people are name-strings only, relations/attachments/custom properties
+  lost), a faithful export fixture, and a cycle-14 importer build plan in
+  the cycle dir. Note: upstream Plane is now AGPL-3.0, and its JSON
+  export is a bare array with no version envelope — the importer must
+  validate by shape.
+
 ### Fixed
 
 - Slack webhook clear path (C9T3 follow-up): PATCH
