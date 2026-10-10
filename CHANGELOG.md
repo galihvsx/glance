@@ -255,13 +255,44 @@ queued onboarding follow-up (invites endpoint).
   timezone, daily = no watermark today, weekly = last watermark ≥ 7 days
   old); `GET/PUT /api/v1/digest-schedule` (GET also returns `server_tz`);
   notification prefs gain frequency + hour selects with honest copy
-  (per-user time zones not supported yet). Known limitation: weekly digests
-  still aggregate the trailing 24h, not 7 days.
+  (per-user time zones not supported yet). Fixed in cycle 12 (C12T0) —
+  weekly digests now aggregate the full 7-day window since the last
+  successfully-sent digest.
 - Trello checklist import (C11T3): closes the C10T0 skip-documented item —
   per-card checklists (name + checked/unchecked items) are appended to the
   imported issue's description as markdown (`## <name>` sections,
   `- [x]/[ ]` items); fetch failure is a per-card error, the batch
   continues; SSRF guard covers the new fetch path.
+
+**Automations & notifications, done right (cycle 12)**
+- Weekly digest 7-day window (C12T0): closes the documented C11T2 honesty
+  gap — digests now aggregate the window since the last successfully-sent
+  digest (`(last_watermark, now]`), capped at 7 days for weekly users; the
+  email subject/body honestly states the window ("past 7 days" /
+  "past 24 hours"); empty window → no email, no watermark claim; strict
+  lower bound prevents double-includes. No migration.
+- Automation run history (C12T1, beyond parity — Plane paywalls this
+  class): migration `000038_automation_runs` (idempotent up/down, no slot
+  waste); one run row per rule firing, written in the same tx as the
+  firing (a run-row insert failure is logged, never blocks the state
+  change); per-action ok/error results recorded; `GET .../projects/{id}/
+  automations/runs` (member(15)+, `rule_id?`/`issue_id?` filters, limit
+  default 20 / clamped to 100); rule delete cascades its runs; the
+  Automations section gains a "Recent runs" card with per-action
+  ok/failed chips and honest loading/error/empty states.
+- Automation trigger/action expansion (C12T2, beyond parity): new
+  `issue.created` trigger — fires on issue creation inside the same tx
+  (no filters in v1; filters on a created trigger are rejected at write
+  time, not silently ignored); new `set_priority` (pinned 0–4) and
+  `set_state` (state in the same project, write-time validated) actions;
+  triggers are event-scoped (a created rule can never fire on a state
+  change and vice versa); automation-driven changes never re-trigger
+  automations (depth-1 loop guard, tested — no cascade); same-value
+  `set_priority`/`set_state` is a no-op (no activity row, and an all-no-op
+  firing writes no run row); `set_state` mirrors the manual move's in-app
+  fan-out (activity row + watcher notification) but enqueues no
+  webhooks/Slack in v1 (documented scope cut); rule builder gains the new
+  trigger/action selects with honest copy; openapi schemas updated.
 
 ### Fixed
 
