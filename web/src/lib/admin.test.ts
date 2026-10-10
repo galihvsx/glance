@@ -16,10 +16,12 @@ import {
   deactivateAdminUser,
   deleteAdminWorkspace,
   fetchAdminAuditLog,
+  fetchAdminBackups,
   fetchAdminStats,
   fetchAdminUsers,
   fetchAdminWorkspaces,
   reactivateAdminUser,
+  runAdminBackupNow,
   setAdminUser,
   totalPages,
 } from "./admin";
@@ -242,6 +244,69 @@ describe("fetchAdminAuditLog", () => {
     await fetchAdminAuditLog(2, {});
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/v1/admin/audit-log?page=2&per_page=25",
+    );
+  });
+});
+
+describe("fetchAdminBackups", () => {
+  const config = {
+    enabled: true,
+    interval: "24h0m0s",
+    dir: "./backups",
+    retention: 7,
+  };
+  const run = {
+    id: "b1",
+    workspace_id: "w1",
+    workspace_slug: "acme",
+    at: "2026-10-11T00:00:00Z",
+    file_name: "glance-acme-backup-20261011T000000-a1b2c3.json.gz",
+    file_path: "/backups/glance-acme-backup-20261011T000000-a1b2c3.json.gz",
+    byte_size: 1234,
+    sha256: "ab".repeat(32),
+    format_version: "glance-export/1",
+    migration_version: "000041",
+    status: "ok",
+    verify_ok: true,
+    verify_error: null,
+    verified_at: "2026-10-11T00:00:01Z",
+    triggered_by: "schedule",
+  };
+
+  it("GETs the paginated envelope plus the schedule config", async () => {
+    const body = { items: [run], total: 1, page: 1, per_page: 25, config };
+    const fetchMock = stubFetch(200, body);
+    await expect(fetchAdminBackups(1)).resolves.toEqual(body);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/admin/backups?page=1&per_page=25",
+    );
+  });
+
+  it("scopes the history to one workspace slug when given", async () => {
+    const body = { items: [run], total: 1, page: 2, per_page: 25, config };
+    const fetchMock = stubFetch(200, body);
+    await fetchAdminBackups(2, "acme");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/admin/backups?page=2&per_page=25&workspace_slug=acme",
+    );
+  });
+});
+
+describe("runAdminBackupNow", () => {
+  it("POSTs an empty body for the all-workspaces trigger", async () => {
+    const body = { backups: [] };
+    const fetchMock = stubFetch(200, body);
+    await expect(runAdminBackupNow()).resolves.toEqual(body);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/admin/backups/run");
+    expect(fetchMock.mock.calls[0][1]?.body).toBe("{}");
+  });
+
+  it("POSTs the workspace slug for a single-workspace trigger", async () => {
+    const body = { backups: [] };
+    const fetchMock = stubFetch(200, body);
+    await runAdminBackupNow("acme");
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+      JSON.stringify({ workspace_slug: "acme" }),
     );
   });
 });

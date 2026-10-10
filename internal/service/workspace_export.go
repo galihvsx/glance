@@ -376,6 +376,37 @@ func StreamWorkspaceExport(ctx context.Context, pool *pgxpool.Pool, slug, actorI
 		return ErrForbidden
 	}
 
+	if err := exportWorkspaceArchive(ctx, tx, wsID, w); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// streamWorkspaceBackup streams the same glance-export/1 archive for
+// the workspace id WITHOUT a per-workspace actor check (C15T2). The
+// backup job (scheduled or admin-triggered) runs as the instance
+// operator, so there is no membership to resolve; the snapshot
+// isolation, the streaming behavior and the archive format are
+// identical to the interactive export. External callers go through
+// service.RunBackup, which records the run and verifies the archive.
+func streamWorkspaceBackup(ctx context.Context, pool *pgxpool.Pool, wsID string, w io.Writer) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := exportWorkspaceArchive(ctx, tx, wsID, w); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// exportWorkspaceArchive writes the full glance-export/1 archive for
+// wsID into the already-open REPEATABLE READ snapshot transaction tx.
+// Shared by the interactive export (after its actor check) and the
+// actor-less backup job — one streaming implementation, no format
+// drift between manual exports and scheduled backups.
+func exportWorkspaceArchive(ctx context.Context, tx pgx.Tx, wsID string, w io.Writer) error {
 	ew := newExportStreamWriter(w)
 
 	if err := ew.raw(`{"format":`); err != nil {
@@ -553,7 +584,7 @@ func StreamWorkspaceExport(ctx context.Context, pool *pgxpool.Pool, slug, actorI
 	if err := ew.raw("}"); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // streamEstimates streams estimates with their nested points. The base

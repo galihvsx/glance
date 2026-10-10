@@ -1728,6 +1728,28 @@
         "responses": { "200": { "description": "Paginated audit entries", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
+    "/api/v1/admin/backups": {
+      "get": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List scheduled backup runs",
+        "description": "Requires the server admin role. Backup run history, newest first, paginated. Optional workspace_slug filter. The response also carries the schedule/retention config (enabled, interval, dir, retention).",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 25 } },
+          { "name": "workspace_slug", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Paginated backup runs plus schedule config", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/admin/backups/run": {
+      "post": {
+        "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Trigger a backup now",
+        "description": "Requires the server admin role. Streams a gzipped glance-export/1 archive per workspace to the backup dir, records the run, verifies integrity, and prunes retention. Optional JSON body {workspace_slug} backs up one workspace; an empty body backs up every workspace. Works even when the scheduled backup is disabled.",
+        "requestBody": { "required": false, "content": { "application/json": { "schema": { "type": "object", "properties": { "workspace_slug": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Recorded backup runs", "content": { "application/json": { "schema": { "type": "object" } } } }, "207": { "description": "Partial failure: some workspaces backed up, some failed (error detail in body)", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/public/s/{token}": {
       "get": {
         "tags": ["issues"], "security": [],
