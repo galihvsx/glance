@@ -95,6 +95,10 @@ func enableDigestEmail(t *testing.T, f *digestFixture, email bool) {
 func TestRunDigestAggregatesEvents(t *testing.T) {
 	f := setupDigestFixture(t)
 	enableDigestEmail(t, f, true)
+	// C11T2: the pass is hour-gated (default send-after hour is 8, the
+	// fixture clock is 06:00), so pin an explicit schedule — this test is
+	// about aggregation, not due-ness.
+	setDigestSchedule(t, f, DigestFrequencyDaily, 0)
 
 	digestNotify(t, f, NotifyIssueAssigned, "Alice assigned you to GA-3", 2*time.Hour)
 	digestNotify(t, f, NotifyMention, "Bob mentioned you in GA-7", 5*time.Hour)
@@ -173,6 +177,10 @@ func TestRunDigestPrefAbsentSilent(t *testing.T) {
 func TestRunDigestSecondRunSameDayNoDuplicate(t *testing.T) {
 	f := setupDigestFixture(t)
 	enableDigestEmail(t, f, true)
+	// C11T2: pin an explicit schedule — the fixture clock (06:00) is
+	// before the default send-after hour (8); this test is about
+	// idempotency, not due-ness.
+	setDigestSchedule(t, f, DigestFrequencyDaily, 0)
 	digestNotify(t, f, NotifyMention, "Bob mentioned you in GA-7", time.Hour)
 
 	if err := RunDigest(f.ctx, f.pool, f.now); err != nil {

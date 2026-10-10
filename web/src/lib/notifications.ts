@@ -51,6 +51,17 @@ export interface NotificationPrefItem {
   email: boolean;
 }
 
+/**
+ * Digest schedule (C11T2) from GET /api/v1/digest-schedule.
+ * frequency: "daily" | "weekly"; hour: 0-23 in the glance server's local
+ * time zone (server_tz names it — per-user time zones are future work).
+ */
+export interface DigestSchedule {
+  frequency: "daily" | "weekly";
+  hour: number;
+  server_tz: string;
+}
+
 /** Known event types (service.AllNotifyEvents). Unknown types render raw. */
 export const NOTIFY_EVENT_LABELS: Record<string, string> = {
   "issue.assigned": "Issue assigned",
@@ -59,8 +70,9 @@ export const NOTIFY_EVENT_LABELS: Record<string, string> = {
   "issue.state_changed": "Issue state changed",
   "intake.triaged": "Intake triaged",
   "mention": "Mentioned in comment",
-  // C10T2: the daily email digest (email-only; no in-app toggle).
-  "digest.daily": "Daily digest",
+  // C10T2: the digest email (email-only; no in-app toggle). C11T2 added
+  // per-user scheduling (frequency + send-after hour).
+  "digest.daily": "Email digest",
 };
 
 export function eventLabel(event: string): string {
@@ -74,6 +86,7 @@ export const NOTIFICATION_KEYS = {
   list: ["notifications", "list"] as const,
   unread: ["notifications", "unread"] as const,
   prefs: ["notifications", "prefs"] as const,
+  schedule: ["notifications", "digest-schedule"] as const,
 };
 
 export async function fetchNotifications(
@@ -117,6 +130,27 @@ export async function setNotificationPref(
     `/api/v1/notification-prefs/${encodeURIComponent(event)}`,
     { in_app: inApp, email },
   );
+}
+
+// C11T2: digest schedule endpoints. Contract mirrors
+// internal/api/notify_handler.go:
+//
+//   GET  /api/v1/digest-schedule            → DigestSchedule
+//   PUT  /api/v1/digest-schedule            → DigestSchedule
+//        body {frequency: "daily"|"weekly", hour: 0-23}
+//
+export async function fetchDigestSchedule(): Promise<DigestSchedule> {
+  return api.get<DigestSchedule>("/api/v1/digest-schedule");
+}
+
+export async function setDigestSchedule(
+  frequency: string,
+  hour: number,
+): Promise<DigestSchedule> {
+  return api.put<DigestSchedule>("/api/v1/digest-schedule", {
+    frequency,
+    hour,
+  });
 }
 
 /**

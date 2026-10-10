@@ -1542,6 +1542,20 @@
         "responses": { "200": { "description": "Preference saved", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationPref" } } } } }
       }
     },
+    "/api/v1/digest-schedule": {
+      "get": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get my digest schedule",
+        "description": "Digest cadence (C11T2): frequency daily|weekly and the server-local send-after hour (0-23). server_tz names the server zone the hour is interpreted in — per-user timezones are future work.",
+        "responses": { "200": { "description": "Schedule", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 }, "server_tz": { "type": "string" } } } } } } }
+      },
+      "put": {
+        "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set my digest schedule",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["frequency", "hour"], "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 } } } } } },
+        "responses": { "200": { "description": "Schedule saved", "content": { "application/json": { "schema": { "type": "object", "properties": { "frequency": { "type": "string", "enum": ["daily", "weekly"] }, "hour": { "type": "integer", "minimum": 0, "maximum": 23 } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
     "/api/v1/favorites": {
       "get": {
         "tags": ["favorites"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

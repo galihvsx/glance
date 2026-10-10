@@ -31,6 +31,22 @@ package service
 //
 // In-process by design (same known limitation as the cycle, reminder, and
 // stale tickers, spec §3): one instance only in v1.
+//
+// Scheduling granularity (C11T2): each opted-in user has a digest schedule
+// (frequency daily|weekly, send-after hour 0-23 server-local — see
+// digest_schedule.go). The pass gates every user on due-ness BEFORE the
+// tx: the server-local hour gate (current hour >= pref hour) plus the
+// frequency gate (daily: no watermark for today; weekly: last watermark
+// at least 7 days old). A skipped pass claims nothing, so a later pass
+// can still send. The pass runs hourly (ticker.DigestTicker) because the
+// hour pref only makes sense with sub-daily passes — a 24h ticker firing
+// at a fixed wall-clock time would starve users whose pref hour is later
+// than the pass time. Watermark claiming stays the race guard: two
+// concurrent passes may both see "due", exactly one wins the INSERT.
+//
+// Known limitation (documented, not forgotten): the aggregation window
+// stays 24h for weekly digests too — a weekly digest covers the trailing
+// 24h, not the trailing 7 days. Extending the window is future work.
 
 import (
 	"context"
@@ -83,14 +99,16 @@ func RunDigest(ctx context.Context, pool *pgxpool.Pool, now time.Time) error {
 }
 
 type digestRecipient struct {
-	id    string
-	email string
-	name  string
+	id       string
+	email    string
+	name     string
+	schedule DigestSchedule
 }
 
 // digestRecipients returns active users with the digest.daily email pref
 // on. Absent pref row = email off (opt-in convention), so those users
-// never appear here.
+// never appear here. Each recipient's digest schedule is loaded in one
+// batched query (C11T2); users with no schedule rows get the defaults.
 func digestRecipients(ctx context.Context, pool *pgxpool.Pool) ([]digestRecipient, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT u.id::text, u.email::text, COALESCE(NULLIF(u.name, ''), u.email::text)
@@ -110,7 +128,25 @@ func digestRecipients(ctx context.Context, pool *pgxpool.Pool) ([]digestRecipien
 		}
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(out))
+	for _, u := range out {
+		ids = append(ids, u.id)
+	}
+	schedules, err := loadDigestSchedules(ctx, pool, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if s, ok := schedules[out[i].id]; ok {
+			out[i].schedule = s
+		} else {
+			out[i].schedule = defaultDigestSchedule()
+		}
+	}
+	return out, nil
 }
 
 // digestEvent is one digest-worthy notification row.
@@ -153,6 +189,18 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 		return nil
 	}
 
+	// C11T2 due-ness: a not-due pass sends nothing and claims nothing, so
+	// a later pass (same day for daily, later week for weekly) can still
+	// send. The watermark claim inside the tx stays the race guard for
+	// concurrent passes.
+	due, err := digestDue(ctx, pool, u.id, u.schedule, now)
+	if err != nil {
+		return err
+	}
+	if !due {
+		return nil
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -168,14 +216,51 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 		return nil
 	}
 
+	freqWord := "daily"
+	if u.schedule.Frequency == DigestFrequencyWeekly {
+		freqWord = "weekly"
+	}
 	if err := mail.Enqueue(ctx, tx, "email.digest", mail.Message{
 		To:      u.email,
-		Subject: fmt.Sprintf("Your daily glance digest (%d update%s)", len(events), pluralS(len(events))),
+		Subject: fmt.Sprintf("Your %s glance digest (%d update%s)", freqWord, len(events), pluralS(len(events))),
 		Body:    buildDigestBody(u.name, events),
 	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// digestDue reports whether the user's digest is due at now (C11T2). The
+// hour gate compares against the server's local timezone (documented
+// caveat — not the user's timezone). Daily users are due when no
+// watermark exists for today; weekly users when the last watermark is at
+// least 7 days old (inclusive boundary: last_sent <= today-7d). A user
+// with no watermark at all is due on the first pass.
+func digestDue(ctx context.Context, pool *pgxpool.Pool, userID string, sched DigestSchedule, now time.Time) (bool, error) {
+	if now.In(time.Local).Hour() < sched.Hour {
+		return false, nil
+	}
+	today := now.UTC().Truncate(24 * time.Hour)
+	if sched.Frequency == DigestFrequencyWeekly {
+		var last *time.Time
+		if err := pool.QueryRow(ctx,
+			`SELECT MAX(digest_date) FROM digest_watermarks WHERE user_id = $1::uuid`,
+			userID).Scan(&last); err != nil {
+			return false, err
+		}
+		if last == nil {
+			return true, nil
+		}
+		return !last.After(today.AddDate(0, 0, -7)), nil
+	}
+	var sentToday bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM digest_watermarks
+		                WHERE user_id = $1::uuid AND digest_date = $2::date)`,
+		userID, today).Scan(&sentToday); err != nil {
+		return false, err
+	}
+	return !sentToday, nil
 }
 
 // claimDigestDay inserts the per-user-per-day watermark row. Returns false
@@ -221,7 +306,7 @@ func buildDigestBody(name string, events []digestEvent) string {
 			fmt.Fprintf(&b, "- %s\n", t)
 		}
 	}
-	b.WriteString("\n—\nYou're receiving this because you enabled the daily digest email in Notifications.\n")
+	b.WriteString("\n—\nYou're receiving this because you enabled the digest email in Notifications.\n")
 	return b.String()
 }
 
