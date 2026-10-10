@@ -350,8 +350,26 @@ queued onboarding follow-up (invites endpoint).
   clean up triage, drafts, and archived issues in Plane before
   exporting — otherwise they come across as-is and you'll map
   throwaway states in the analyze step.
+- HTTP surface (C14T4): `POST
+  /api/v1/workspaces/{slug}/projects/{identifier}/imports/plane-import/analyze`
+  (multipart `file`, member+) and `.../execute` (multipart `file` +
+  JSON `resolutions` + optional `options`, member(15)+), both documented
+  in `docs/openapi.yaml` (new `PlaneImportAnalysis`/`PlaneImportReport`/
+  `PlaneImportRowError`/`PlaneImportGap` schemas).
+- SPA UI (C14T5): the Import tab in project settings gains a Plane panel —
+  upload → analyze → inline mapping UI (people→members, states→existing
+  or create-in-backlog, labels/cycles/modules→existing or create, plus a
+  `strict_states` option) → execute with confirm → report card with
+  per-issue errors and gaps. The honest-loss list is shown up front,
+  before upload.
 
 ### Fixed
+
+- `TestExecutePlaneImportRelationsDropped` asserted a global
+  `issue_relations` row count, which flakes whenever another test (the
+  api package's issue-link tests share the test DB) leaves its own rows.
+  The assertion is now scoped to the test project via
+  `JOIN issues … WHERE i.project_id = $1`.
 
 - Slack webhook clear path (C9T3 follow-up): PATCH
   `{"slack_webhook_url":null}` never cleared the column — encoding/json
