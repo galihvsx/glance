@@ -51,12 +51,21 @@ package service
 //     archived card is hidden from the board; importing it would
 //     surprise. Cards are fetched with filter=all so the client does the
 //     filtering honestly and reports the count
-//   - checklists  ← SKIPPED and counted (checklists_skipped). Documented
-//     why: glance has no checklist/subtask item model — importing them
-//     would require a new table and a UI surface (a schema migration,
-//     which this task forbids). The count comes from the card badges so
-//     the caller sees exactly what was left behind. Checklist import is
-//     future work alongside the data model for it.
+//   - checklists  ← FETCHED per card (GET /1/cards/{id}/checklists)
+//     and APPENDED to the imported issue's description as Markdown
+//     (C11T3). glance has no checklist/subtask item model, so the
+//     documented mapping choice is: one "## <checklist name>" section
+//     per checklist, items as "- [x] <name>"/"- [ ] <name>" from the
+//     checkItem state, AFTER the card's own description and BEFORE the
+//     dedupe footer. Empty checklists (no items) render no section;
+//     unnamed checklists fall back to "Checklist". Cards without
+//     checklists keep their description unchanged. The fetch is gated
+//     on the card's checklists badge count (same pattern as comments);
+//     a failed fetch is per-card enrichment failure — the card still
+//     imports and the failure is recorded in Errors, never aborting
+//     the batch. The checklists_skipped result field is retained at 0
+//     for API compatibility (the frontend renders the stat) — nothing
+//     is skipped anymore.
 //
 // Dedupe / idempotency (no migration — deliberate, consistent with the
 // GitHub/Jira importers' contract-first choice): every imported card
@@ -482,6 +491,21 @@ type trelloAction struct {
 	MemberCreator trelloActionMember `json:"memberCreator"`
 }
 
+// trelloCheckItem is one item of a card checklist. State is "complete"
+// or "incomplete" (anything else renders unchecked — defensive).
+type trelloCheckItem struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// trelloChecklist is one card checklist (GET /1/cards/{id}/checklists).
+type trelloChecklist struct {
+	ID    string            `json:"id"`
+	Name  string            `json:"name"`
+	Items []trelloCheckItem `json:"checkItems"`
+}
+
 // ---------- fetch ----------
 
 // trelloCardFields is the explicit field list for the board cards call:
@@ -629,6 +653,25 @@ func fetchTrelloComments(ctx context.Context, c *trelloClient, cardID string) ([
 	}
 }
 
+// fetchTrelloChecklists fetches a card's checklists in ONE call. Trello
+// exposes no pagination on this nested resource — the endpoint returns
+// the full array — so there is no before-cursor loop; the 8MB response
+// cap bounds a pathological board. checkItems=all is sent explicitly
+// (it is also the default). The path goes through urlFor, so the same
+// SSRF guard covers this call.
+func fetchTrelloChecklists(ctx context.Context, c *trelloClient, cardID string) ([]trelloChecklist, error) {
+	body, err := c.get(ctx, "/1/cards/"+url.PathEscape(cardID)+"/checklists",
+		url.Values{"checkItems": {"all"}, "fields": {"id,name,checkItems"}})
+	if err != nil {
+		return nil, err
+	}
+	var lists []trelloChecklist
+	if err := json.Unmarshal(body, &lists); err != nil {
+		return nil, fmt.Errorf("%w: decode checklists: %v", ErrTrelloUpstream, err)
+	}
+	return lists, nil
+}
+
 // parseTrelloTime parses Trello's ISO-8601 timestamps
 // ("2026-02-01T12:00:00.000Z").
 func parseTrelloTime(s string) time.Time {
@@ -768,17 +811,23 @@ func normalizeTrelloStateName(name string) string {
 // insert (state resolved at insert time — unmatched lists create states
 // inside the import transaction).
 type trelloMappedCard struct {
-	card         trelloCard
-	listName     string
-	name         string
-	description  string // desc + footer marker (ALWAYS present)
+	card        trelloCard
+	listName    string
+	name        string
+	descText    string // card desc, trimmed (checklist sections + footer appended in finalizeDescription)
+	checklistMD string // rendered checklist markdown ("" when none); starts with "\n\n" when non-empty
+	// description is the final stored text: descText + checklistMD +
+	// footer marker (ALWAYS present). Built by finalizeDescription.
+	description  string
 	targetDate   *time.Time
 	labelNames   []string
 	labelIDs     []string
 	assigneeID   *string
 	comments     []trelloAction
 	commentCount int
-	checklists   int
+	// checklists is the badge count: it gates the checklist fetch (same
+	// pattern as comments) and feeds the preview row.
+	checklists int
 }
 
 // trelloImportRun carries per-run state: the client, lookups, and the
@@ -813,9 +862,6 @@ type trelloImportRun struct {
 	// assigneeMisses counts (card, member) pairs with no member match —
 	// surfaced in the result, documented, never fatal.
 	assigneeMisses int
-	// checklistsSkipped accumulates the badge checklist counts of all
-	// imported cards (documented skip, see package doc).
-	checklistsSkipped int
 }
 
 // mapTrelloCard maps one fetched card to glance fields. Assignees are
@@ -826,12 +872,11 @@ func (r *trelloImportRun) mapTrelloCard(card trelloCard) *trelloMappedCard {
 	if name == "" {
 		name = strings.TrimSpace(card.ShortLink)
 	}
-	shortURL := trelloShortURL(card)
 	m := &trelloMappedCard{
 		card:         card,
 		listName:     r.listNames[card.IDList],
 		name:         name,
-		description:  strings.TrimSpace(card.Desc) + trelloCardFooter(name, shortURL),
+		descText:     strings.TrimSpace(card.Desc),
 		commentCount: card.Badges.Comments,
 		checklists:   card.Badges.Checklists,
 	}
@@ -874,6 +919,54 @@ func (r *trelloImportRun) mapTrelloCard(card trelloCard) *trelloMappedCard {
 		}
 	}
 	return m
+}
+
+// trelloChecklistMarkdown renders checklists as Markdown for appending
+// to the imported issue's description (C11T3 — glance has no checklist
+// model). Order choice (documented): the card's own description text
+// comes first, checklist sections follow, the dedupe footer stays last.
+// One "## <name>" section per checklist in Trello's order; items as
+// "- [x] <name>" when the checkItem state is "complete", "- [ ] <name>"
+// otherwise. Empty checklists (no items) are SKIPPED — an empty "##"
+// section is noise, not information. An unnamed checklist falls back to
+// "Checklist". Returns "" when there is nothing to render, so a card
+// without checklists keeps its description unchanged.
+func trelloChecklistMarkdown(lists []trelloChecklist) string {
+	var b strings.Builder
+	for _, cl := range lists {
+		if len(cl.Items) == 0 {
+			continue
+		}
+		name := strings.TrimSpace(cl.Name)
+		if name == "" {
+			name = "Checklist"
+		}
+		b.WriteString("\n\n## ")
+		b.WriteString(name)
+		for _, it := range cl.Items {
+			b.WriteString("\n- [")
+			if it.State == "complete" {
+				b.WriteString("x")
+			} else {
+				b.WriteString(" ")
+			}
+			b.WriteString("] ")
+			b.WriteString(strings.TrimSpace(it.Name))
+		}
+	}
+	return b.String()
+}
+
+// finalizeDescription assembles the stored description from its parts:
+// card desc first, then the rendered checklist markdown (if any), then
+// the dedupe footer marker last. Called once per mapped card after the
+// checklist fetch (phase 1, before the import transaction).
+func (m *trelloMappedCard) finalizeDescription() {
+	var b strings.Builder
+	b.WriteString(m.descText)
+	b.WriteString(m.checklistMD)
+	b.WriteString(trelloCardFooter(m.name, trelloShortURL(m.card)))
+	m.description = b.String()
 }
 
 // trelloLabelEntry is the resolved board label (name + hex).
@@ -993,15 +1086,18 @@ type TrelloImportPreview struct {
 // (documented — there are no CSV rows here), so the frontend renders
 // all importers identically.
 type TrelloImportResult struct {
-	Source            string           `json:"source"`
-	BoardID           string           `json:"board_id"`
-	Created           int              `json:"created"`
-	Skipped           int              `json:"skipped"`
-	ArchivedSkipped   int              `json:"archived_skipped"`
-	Failed            int              `json:"failed"`
-	LabelsCreated     []string         `json:"labels_created"`
-	StatesCreated     []string         `json:"states_created"`
-	AssigneeMisses    int              `json:"assignee_misses"`
+	Source          string   `json:"source"`
+	BoardID         string   `json:"board_id"`
+	Created         int      `json:"created"`
+	Skipped         int      `json:"skipped"`
+	ArchivedSkipped int      `json:"archived_skipped"`
+	Failed          int      `json:"failed"`
+	LabelsCreated   []string `json:"labels_created"`
+	StatesCreated   []string `json:"states_created"`
+	AssigneeMisses  int      `json:"assignee_misses"`
+	// ChecklistsSkipped is retained for API compatibility (the frontend
+	// renders the stat) and is always 0 since C11T3: checklists are no
+	// longer skipped — they are appended to the description as Markdown.
 	ChecklistsSkipped int              `json:"checklists_skipped"`
 	Errors            []ImportRowError `json:"errors"`
 }
@@ -1247,13 +1343,26 @@ func ImportTrelloCardsWithClient(ctx context.Context, pool *pgxpool.Pool, client
 				m.comments = comments
 			}
 		}
-		r.checklistsSkipped += m.checklists
+		if m.checklists > 0 {
+			lists, err := fetchTrelloChecklists(ctx, r.client, card.ID)
+			if err != nil {
+				// Checklists are enrichment, not the card itself:
+				// record and continue with what we have (same
+				// per-card philosophy as comments).
+				res.Errors = append(res.Errors, ImportRowError{
+					Row:     ord + 1,
+					Message: fmt.Sprintf("checklists not imported: %v", err),
+				})
+			} else {
+				m.checklistMD = trelloChecklistMarkdown(lists)
+			}
+		}
+		m.finalizeDescription()
 		valid = append(valid, m)
 	}
 
 	if len(valid) == 0 {
 		res.AssigneeMisses = r.assigneeMisses
-		res.ChecklistsSkipped = r.checklistsSkipped
 		return res, nil
 	}
 
@@ -1408,7 +1517,6 @@ func ImportTrelloCardsWithClient(ctx context.Context, pool *pgxpool.Pool, client
 		return nil, err
 	}
 	res.AssigneeMisses = r.assigneeMisses
-	res.ChecklistsSkipped = r.checklistsSkipped
 	res.LabelsCreated = r.labelsCreated
 	res.StatesCreated = r.statesCreated
 	return res, nil
