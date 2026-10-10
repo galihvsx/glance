@@ -14,8 +14,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v5"
+
 	"glance/internal/service"
 )
+
+// startedStateIDHTTP returns a started-group state ID for the project
+// via the real states list route (C12T2 helper).
+func startedStateIDHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie, slug, ident string) string {
+	t.Helper()
+	rec := getAuthed(t, e, http.MethodGet,
+		"/api/v1/workspaces/"+slug+"/projects/"+ident+"/states", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list states: status = %d, want 200", rec.Code)
+	}
+	var listed struct {
+		States []struct {
+			ID    string `json:"id"`
+			Group string `json:"group"`
+		} `json:"states"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode states: %v", err)
+	}
+	for _, s := range listed.States {
+		if s.Group == "started" {
+			return s.ID
+		}
+	}
+	t.Fatal("no started-group state")
+	return ""
+}
 
 func TestAutomationHTTP(t *testing.T) {
 	pool := newTestPool(t)
@@ -69,12 +98,32 @@ func TestAutomationHTTP(t *testing.T) {
 
 	// Bad trigger type → 400 envelope.
 	rec = postAuthedJSON(t, e, http.MethodPost, autoBase, cookie,
-		`{"name":"bad","trigger":{"type":"issue.created"},"actions":[{"type":"add_comment","body":"x"}]}`)
+		`{"name":"bad","trigger":{"type":"issue.deleted"},"actions":[{"type":"add_comment","body":"x"}]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad trigger: status = %d, want 400", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"bad_request"`) {
 		t.Fatalf("400 envelope: body=%s", rec.Body.String())
+	}
+
+	// C12T2: issue.created trigger + set_priority/set_state actions
+	// round-trip through the API.
+	rec = postAuthedJSON(t, e, http.MethodPost, autoBase, cookie,
+		`{"name":"on create","trigger":{"type":"issue.created"},"actions":[{"type":"set_priority","priority":3},{"type":"set_state","state_id":"`+startedStateIDHTTP(t, e, cookie, slug, ident)+`"}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("created trigger: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// C12T2: out-of-range priority and unknown state → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, autoBase, cookie,
+		`{"name":"bad","trigger":{"type":"issue.created"},"actions":[{"type":"set_priority","priority":9}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad priority: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, autoBase, cookie,
+		`{"name":"bad","trigger":{"type":"issue.created"},"actions":[{"type":"set_state","state_id":"00000000-0000-0000-0000-000000000000"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad state: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
 	}
 
 	// Unknown action type → 400.

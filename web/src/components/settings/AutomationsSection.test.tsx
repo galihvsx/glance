@@ -10,6 +10,8 @@ import {
   updateAutomationRule,
   deleteAutomationRule,
   fetchAutomationRuns,
+  describeTrigger,
+  describeAction,
 } from "../../lib/automations";
 import { fetchStates, fetchLabels } from "../../lib/taxonomy";
 import { api } from "../../lib/api";
@@ -158,6 +160,92 @@ describe("AutomationsSection", () => {
       to_states: ["state-started"],
     });
     expect(input.actions).toEqual([{ type: "add_comment", body: "done!" }]);
+  });
+
+  it("creates an issue.created rule with a set_priority action", async () => {
+    setup();
+    mockCreate.mockResolvedValueOnce({ ...rule, id: "rule-3", name: "Triage new" });
+    fireEvent.click(await screen.findByRole("button", { name: /New rule/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Triage new" },
+    });
+    fireEvent.change(await screen.findByLabelText("When"), {
+      target: { value: "issue.created" },
+    });
+    // No filters on the created trigger: the state selects are hidden.
+    expect(screen.queryByLabelText("From state")).toBeNull();
+    expect(screen.queryByLabelText("To state")).toBeNull();
+    fireEvent.change(await screen.findByLabelText("Action 1 type"), {
+      target: { value: "set_priority" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 priority"), {
+      target: { value: "4" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const input = mockCreate.mock.calls[0][2];
+    expect(input.name).toBe("Triage new");
+    expect(input.trigger).toEqual({
+      type: "issue.created",
+      from_states: null,
+      to_states: null,
+    });
+    expect(input.actions).toEqual([{ type: "set_priority", priority: 4 }]);
+  });
+
+  it("creates a set_state action with the target state", async () => {
+    setup();
+    mockCreate.mockResolvedValueOnce({ ...rule, id: "rule-4", name: "Start triaged" });
+    fireEvent.click(await screen.findByRole("button", { name: /New rule/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Start triaged" },
+    });
+    fireEvent.change(await screen.findByLabelText("To state"), {
+      target: { value: "state-started" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 type"), {
+      target: { value: "set_state" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 state"), {
+      target: { value: "state-started" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    const input = mockCreate.mock.calls[0][2];
+    expect(input.trigger).toEqual({
+      type: "issue.state_changed",
+      from_states: null,
+      to_states: ["state-started"],
+    });
+    expect(input.actions).toEqual([
+      { type: "set_state", state_id: "state-started" },
+    ]);
+  });
+
+  it("describes the new trigger and actions honestly", () => {
+    expect(
+      describeTrigger(
+        { type: "issue.created", from_states: null, to_states: null },
+        [],
+      ),
+    ).toBe("When an issue is created");
+    expect(
+      describeTrigger(
+        { type: "issue.state_changed", from_states: null, to_states: ["s1"] },
+        [{ id: "s1", name: "In progress" }],
+      ),
+    ).toBe("When issue moves from any state → In progress");
+    expect(describeAction({ type: "set_priority", priority: 4 }, [], [])).toBe(
+      "Set priority to Urgent",
+    );
+    expect(
+      describeAction(
+        { type: "set_state", state_id: "s1" },
+        [],
+        [],
+        [{ id: "s1", name: "In progress" }],
+      ),
+    ).toBe("Move to In progress");
   });
 
   it("hides mutation controls for guests (read-only view)", async () => {
