@@ -147,28 +147,18 @@ func loadPlaneAnalysisLookups(ctx context.Context, pool *pgxpool.Pool, wsID, pro
 	}
 	// Estimate points across ALL of the project's scales: glance has no
 	// single "active" scale, so a value is fine when any scale covers it.
-	erows, err := pool.Query(ctx,
-		`SELECT ep.key, ep.value FROM estimate_points ep
-		  JOIN estimates e ON e.id = ep.estimate_id
-		 WHERE e.project_id = $1::uuid`, projectID)
+	// Shared with the execute phase (loadPlaneEstimateScale).
+	scale, err := loadPlaneEstimateScale(ctx, pool, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("service: analyze plane import (estimates): %w", err)
 	}
-	for erows.Next() {
-		var key string
-		var value int
-		if err := erows.Scan(&key, &value); err != nil {
-			erows.Close()
-			return nil, fmt.Errorf("service: analyze plane import (estimates): %w", err)
-		}
-		lu.estimateKeys[key] = true
-		lu.estimateValues[value] = true
-		lu.hasEstimateScale = true
+	for k := range scale.idsByKey {
+		lu.estimateKeys[k] = true
 	}
-	erows.Close()
-	if err := erows.Err(); err != nil {
-		return nil, fmt.Errorf("service: analyze plane import (estimates): %w", err)
+	for v := range scale.idsByValue {
+		lu.estimateValues[v] = true
 	}
+	lu.hasEstimateScale = scale.hasScale
 	return lu, nil
 }
 
