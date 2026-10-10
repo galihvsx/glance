@@ -34,16 +34,26 @@ package service
 // stale tickers, spec §3): one instance only in v1.
 //
 // Scheduling granularity (C11T2): each opted-in user has a digest schedule
-// (frequency daily|weekly, send-after hour 0-23 server-local — see
-// digest_schedule.go). The pass gates every user on due-ness BEFORE the
-// tx: the server-local hour gate (current hour >= pref hour) plus the
-// frequency gate (daily: no watermark for today; weekly: last watermark
-// at least 7 days old). A skipped pass claims nothing, so a later pass
-// can still send. The pass runs hourly (ticker.DigestTicker) because the
-// hour pref only makes sense with sub-daily passes — a 24h ticker firing
-// at a fixed wall-clock time would starve users whose pref hour is later
-// than the pass time. Watermark claiming stays the race guard: two
-// concurrent passes may both see "due", exactly one wins the INSERT.
+// (frequency daily|weekly, send-after hour 0-23 — see digest_schedule.go).
+// The pass gates every user on due-ness BEFORE the tx: the hour gate
+// (current hour IN THE USER'S TIMEZONE >= pref hour) plus the frequency
+// gate (daily: no watermark for today in the user's zone; weekly: last
+// watermark at least 7 days old). A skipped pass claims nothing, so a
+// later pass can still send. The pass runs hourly (ticker.DigestTicker)
+// because the hour pref only makes sense with sub-daily passes — a 24h
+// ticker firing at a fixed wall-clock time would starve users whose pref
+// hour is later than the pass time. Watermark claiming stays the race
+// guard: two concurrent passes may both see "due", exactly one wins the
+// INSERT.
+//
+// Timezone handling (C13T1): every wall-clock comparison — the hour gate,
+// the "today" used by the frequency gate, and the digest_date claimed —
+// is evaluated in the user's zone (their digest.tz pref, defaulting to
+// the server's local zone), so a user crossing midnight in their own zone
+// neither double-sends nor starves. digest_date is therefore a
+// user-local date; watermarks for different users are not comparable
+// across zones, which is fine because every read is per-user and always
+// pairs with that same user's current zone.
 //
 // Aggregation window (C12T0): notifications in (last_watermark_date,
 // now], i.e. since the last successfully-sent digest — capped at 7 days
@@ -213,6 +223,7 @@ func digestWindowStart(ctx context.Context, pool *pgxpool.Pool, userID, frequenc
 // (last_watermark_date, now] window and, when there is at least one,
 // claims the day's watermark and enqueues a single "email.digest"
 // outbox row in one tx. Empty digests send nothing and claim nothing.
+// The watermark day is the user's local day (C13T1).
 func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, now time.Time) error {
 	since, err := digestWindowStart(ctx, pool, u.id, u.schedule.Frequency, now)
 	if err != nil {
@@ -266,7 +277,7 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	}
 	defer tx.Rollback(ctx)
 
-	claimed, err := claimDigestDay(ctx, tx, u.id, now)
+	claimed, err := claimDigestDay(ctx, tx, u.id, scheduleLocation(u.schedule), now)
 	if err != nil {
 		return err
 	}
@@ -290,17 +301,20 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	return tx.Commit(ctx)
 }
 
-// digestDue reports whether the user's digest is due at now (C11T2). The
-// hour gate compares against the server's local timezone (documented
-// caveat — not the user's timezone). Daily users are due when no
-// watermark exists for today; weekly users when the last watermark is at
-// least 7 days old (inclusive boundary: last_sent <= today-7d). A user
-// with no watermark at all is due on the first pass.
+// digestDue reports whether the user's digest is due at now (C11T2,
+// C13T1). The hour gate compares against the user's timezone (their
+// digest.tz pref, defaulting to the server's local zone — the C11T2
+// server-local behavior is exactly what the default produces). Daily
+// users are due when no watermark exists for today in their zone;
+// weekly users when the last watermark is at least 7 days old (inclusive
+// boundary: last_sent <= today-7d). A user with no watermark at all is
+// due on the first pass.
 func digestDue(ctx context.Context, pool *pgxpool.Pool, userID string, sched DigestSchedule, now time.Time) (bool, error) {
-	if now.In(time.Local).Hour() < sched.Hour {
+	loc := scheduleLocation(sched)
+	if now.In(loc).Hour() < sched.Hour {
 		return false, nil
 	}
-	today := now.UTC().Truncate(24 * time.Hour)
+	today := now.In(loc).Truncate(24 * time.Hour)
 	if sched.Frequency == DigestFrequencyWeekly {
 		var last *time.Time
 		if err := pool.QueryRow(ctx,
@@ -323,10 +337,13 @@ func digestDue(ctx context.Context, pool *pgxpool.Pool, userID string, sched Dig
 	return !sentToday, nil
 }
 
-// claimDigestDay inserts the per-user-per-day watermark row. Returns false
-// when the row already exists (another pass sent today's digest).
-func claimDigestDay(ctx context.Context, tx pgx.Tx, userID string, now time.Time) (bool, error) {
-	day := now.UTC().Truncate(24 * time.Hour)
+// claimDigestDay inserts the per-user-per-day watermark row, where "day"
+// is the user's local day (C13T1): a pass evaluates the same zone when
+// claiming and when checking, so concurrent passes share one claim and a
+// user crossing midnight gets exactly one digest per local day. Returns
+// false when the row already exists (another pass sent today's digest).
+func claimDigestDay(ctx context.Context, tx pgx.Tx, userID string, loc *time.Location, now time.Time) (bool, error) {
+	day := now.In(loc).Truncate(24 * time.Hour)
 	var claimed string
 	err := tx.QueryRow(ctx,
 		`INSERT INTO digest_watermarks (user_id, digest_date, sent_at)

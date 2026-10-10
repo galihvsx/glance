@@ -6,11 +6,13 @@
 // against the real GET/PUT /notification-prefs endpoints.
 
 import { Link, useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, CheckCheck } from "lucide-react";
 import { ApiError } from "../lib/api";
 import {
   NOTIFICATION_KEYS,
+  DIGEST_TZ_SHORTLIST,
   eventLabel,
   fetchDigestSchedule,
   fetchNotificationPrefs,
@@ -40,6 +42,7 @@ import {
   NativeSelect,
   NativeSelectOption,
 } from "../components/ui/native-select";
+import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -125,21 +128,34 @@ function NotificationRow({
   );
 }
 
-// C11T2: digest schedule controls (frequency + send-after hour), rendered
-// inside the digest pref row next to the email toggle. Disabled while the
-// digest email itself is off. The timezone caveat is stated honestly: the
-// hour is interpreted in the glance server's local zone (shown verbatim
-// from the API) — per-user time zones are future work.
-function DigestScheduleControls({ enabled }: { enabled: boolean }) {
+// C11T2/C13T1: digest schedule controls (frequency + send-after hour +
+// timezone), rendered inside the digest pref row next to the email
+// toggle. Disabled while the digest email itself is off. The hour is
+// evaluated in the selected timezone (C13T1) and the copy states that.
+// The timezone field is a shortlist datalist plus free-text IANA entry —
+// the server validates the name and rejects unknowns (400), which rolls
+// back with the server's message. Exported for the vitest below.
+export function DigestScheduleControls({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient();
   const scheduleQuery = useQuery({
     queryKey: NOTIFICATION_KEYS.schedule,
     queryFn: fetchDigestSchedule,
   });
 
+  // Local draft of the tz field while the user is editing; null means
+  // "show the server value". Reset on rollback and on successful save.
+  const [tzDraft, setTzDraft] = useState<string | null>(null);
+
   const setSchedule = useMutation({
-    mutationFn: ({ frequency, hour }: { frequency: string; hour: number }) =>
-      setDigestSchedule(frequency, hour),
+    mutationFn: ({
+      frequency,
+      hour,
+      tz,
+    }: {
+      frequency: string;
+      hour: number;
+      tz: string;
+    }) => setDigestSchedule(frequency, hour, tz),
     // Optimistic update: apply locally, roll back on failure.
     onMutate: async (vars) => {
       await queryClient.cancelQueries({
@@ -156,6 +172,7 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
                 ...old,
                 frequency: vars.frequency as DigestSchedule["frequency"],
                 hour: vars.hour,
+                tz: vars.tz,
               }
             : old,
       );
@@ -168,6 +185,11 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
           context.previous,
         );
       }
+      // Drop the rejected draft so the input shows the rolled-back value.
+      setTzDraft(null);
+    },
+    onSuccess: () => {
+      setTzDraft(null);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({
@@ -179,8 +201,19 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
   const sched = scheduleQuery.data;
   const frequency = sched?.frequency ?? "daily";
   const hour = sched?.hour ?? 8;
+  // GET always reports the effective zone, so tz is never blank.
+  const tz = sched?.tz ?? "";
+  const shownTz = tzDraft ?? tz;
   const disabled =
     !enabled || setSchedule.isPending || scheduleQuery.isLoading;
+
+  // Commit the draft on blur/Enter. An emptied field resets to the
+  // server-local default (the API treats "" as the default).
+  const commitTz = () => {
+    const next = (tzDraft ?? "").trim();
+    if (tzDraft === null || next === tz || setSchedule.isPending) return;
+    setSchedule.mutate({ frequency, hour, tz: next });
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -191,7 +224,7 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
           value={frequency}
           disabled={disabled}
           onChange={(e) =>
-            setSchedule.mutate({ frequency: e.target.value, hour })
+            setSchedule.mutate({ frequency: e.target.value, hour, tz })
           }
           aria-label="Digest frequency"
         >
@@ -206,7 +239,7 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
           value={String(hour)}
           disabled={disabled}
           onChange={(e) =>
-            setSchedule.mutate({ frequency, hour: Number(e.target.value) })
+            setSchedule.mutate({ frequency, hour: Number(e.target.value), tz })
           }
           aria-label="Digest send-after hour"
         >
@@ -217,13 +250,38 @@ function DigestScheduleControls({ enabled }: { enabled: boolean }) {
           ))}
         </NativeSelect>
       </label>
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Time zone
+        <Input
+          list="digest-tz-list"
+          value={shownTz}
+          disabled={disabled}
+          onChange={(e) => setTzDraft(e.target.value)}
+          onBlur={commitTz}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              commitTz();
+              e.currentTarget.blur();
+            }
+          }}
+          aria-label="Digest timezone"
+          placeholder="Asia/Jakarta"
+          className="h-7 w-36 rounded-[min(var(--radius-md),10px)] text-xs"
+        />
+        <datalist id="digest-tz-list">
+          {DIGEST_TZ_SHORTLIST.map((z) => (
+            <option key={z} value={z} />
+          ))}
+        </datalist>
+      </label>
       <span className="text-xs text-muted-foreground">
-        Server time{sched ? ` (${sched.server_tz})` : ""} — per-user time
-        zones not supported yet.
+        Digest sends after {String(hour).padStart(2, "0")}:00 in {shownTz}.
       </span>
       {setSchedule.isError && (
         <span className="text-xs text-destructive">
-          Failed to save schedule
+          {setSchedule.error instanceof Error
+            ? setSchedule.error.message
+            : "Failed to save schedule"}
         </span>
       )}
     </div>
