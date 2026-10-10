@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,9 @@ type trelloStub struct {
 	membersHandler func(w http.ResponseWriter, r *http.Request)
 	cardsHandler   func(w http.ResponseWriter, r *http.Request)
 	actionsHandler func(w http.ResponseWriter, r *http.Request)
+	// checklistsHandler overrides the default /1/cards/{id}/checklists
+	// handler (used for failure-injection cases).
+	checklistsHandler func(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *trelloStub) record(r *http.Request) {
@@ -165,6 +169,43 @@ func trelloStubActionsHandler(s *trelloStub, byCard map[string][]map[string]any)
 	}
 }
 
+// trelloStubChecklistsHandler serves a card's checklists: the real
+// /1/cards/{id}/checklists endpoint returns the full array (no
+// before-cursor pagination), so the stub does the same. It expects
+// checkItems=all like the production client sends.
+func trelloStubChecklistsHandler(s *trelloStub, byCard map[string][]map[string]any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.record(r)
+		if got := r.URL.Query().Get("checkItems"); got != "all" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, `{"error":"expected checkItems=all, got %s"}`, got)
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		var cardID string
+		for i, p := range parts {
+			if p == "cards" && i+1 < len(parts) {
+				cardID = parts[i+1]
+			}
+		}
+		lists := byCard[cardID]
+		if lists == nil {
+			lists = []map[string]any{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lists)
+	}
+}
+
+// trelloChecklistJSON builds one canned checklist payload.
+func trelloChecklistJSON(id, name string, items [][2]string) map[string]any {
+	its := []map[string]any{}
+	for _, it := range items {
+		its = append(its, map[string]any{"id": "ci-" + it[0], "name": it[0], "state": it[1]})
+	}
+	return map[string]any{"id": id, "name": name, "checkItems": its}
+}
+
 func trelloCommentAction(id, who, text, date string) map[string]any {
 	return map[string]any{
 		"id":   id,
@@ -197,6 +238,23 @@ func newTrelloStub(t *testing.T, memberEmail string) (*trelloStub, *httptest.Ser
 		},
 		"card3": {
 			trelloCommentAction("act3", "cara", "docs note", "2026-01-05T10:00:00.000Z"),
+		},
+	}
+	// Checklist fixtures (C11T3): card1 carries one mixed checklist;
+	// card3 carries two — one with items and one empty (the empty one
+	// must not produce a "##" section). Badges say card1=1, card3=2.
+	checklists := map[string][]map[string]any{
+		"card1": {
+			trelloChecklistJSON("cl1", "Launch tasks", [][2]string{
+				{"Write the announcement", "complete"},
+				{"Ship the binary", "incomplete"},
+			}),
+		},
+		"card3": {
+			trelloChecklistJSON("cl2", "Review pass", [][2]string{
+				{"Spellcheck", "incomplete"},
+			}),
+			trelloChecklistJSON("cl3", "Nothing yet", nil),
 		},
 	}
 	mux := http.NewServeMux()
@@ -255,6 +313,14 @@ func newTrelloStub(t *testing.T, memberEmail string) (*trelloStub, *httptest.Ser
 		trelloStubCardsHandler(s, cards)(w, r)
 	})
 	mux.HandleFunc("/1/cards/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/checklists") {
+			if s.checklistsHandler != nil {
+				s.checklistsHandler(w, r)
+				return
+			}
+			trelloStubChecklistsHandler(s, checklists)(w, r)
+			return
+		}
 		if s.actionsHandler != nil {
 			s.actionsHandler(w, r)
 			return
@@ -389,6 +455,59 @@ func TestTrelloSSRFGuard(t *testing.T) {
 	if _, err := plainHTTP.urlFor("/1/boards/abc123"); !errors.Is(err, errTrelloSSRF) {
 		t.Errorf("http urlFor err = %v, want errTrelloSSRF", err)
 	}
+	// The checklist fetch path goes through the same urlFor guard: a
+	// hostile base must reject it too (C11T3 — the new per-card HTTP
+	// call is covered by the same fixed-host rule).
+	for _, hostileClient := range []*trelloClient{hostile, lookalike, plainHTTP} {
+		if _, err := hostileClient.urlFor("/1/cards/card1/checklists"); !errors.Is(err, errTrelloSSRF) {
+			t.Errorf("checklist path on hostile base: err = %v, want errTrelloSSRF", err)
+		}
+	}
+}
+
+// ---------- checklist → markdown (C11T3) ----------
+
+// TestTrelloChecklistMarkdown pins the checklist rendering contract:
+// one "## <name>" section per checklist (in Trello order), items as
+// "- [x]"/"- [ ]" from the checkItem state, empty checklists skipped
+// (documented choice — an empty "##" section is noise), unnamed
+// checklists falling back to "Checklist", and no output for no lists.
+func TestTrelloChecklistMarkdown(t *testing.T) {
+	mk := func(name string, items ...trelloCheckItem) trelloChecklist {
+		return trelloChecklist{ID: "cl", Name: name, Items: items}
+	}
+	got := trelloChecklistMarkdown([]trelloChecklist{
+		mk("Launch tasks",
+			trelloCheckItem{ID: "i1", Name: "Write the announcement", State: "complete"},
+			trelloCheckItem{ID: "i2", Name: "Ship the binary", State: "incomplete"},
+		),
+		mk("Review pass",
+			trelloCheckItem{ID: "i3", Name: "Spellcheck", State: "incomplete"},
+		),
+	})
+	want := "\n\n## Launch tasks\n" +
+		"- [x] Write the announcement\n" +
+		"- [ ] Ship the binary\n" +
+		"\n## Review pass\n" +
+		"- [ ] Spellcheck"
+	if got != want {
+		t.Errorf("markdown =\n%q\nwant\n%q", got, want)
+	}
+	// Empty checklist: skipped entirely (no "##" section).
+	if got := trelloChecklistMarkdown([]trelloChecklist{mk("Nothing yet")}); got != "" {
+		t.Errorf("empty checklist → %q, want no section", got)
+	}
+	// Unnamed checklist: falls back to "Checklist".
+	got = trelloChecklistMarkdown([]trelloChecklist{
+		mk("", trelloCheckItem{ID: "i1", Name: "a task", State: "complete"}),
+	})
+	if got != "\n\n## Checklist\n- [x] a task" {
+		t.Errorf("unnamed checklist → %q", got)
+	}
+	// No lists at all: no output.
+	if got := trelloChecklistMarkdown(nil); got != "" {
+		t.Errorf("nil lists → %q, want empty", got)
+	}
 }
 
 // ---------- preview ----------
@@ -485,7 +604,7 @@ func TestPreviewTrelloImport(t *testing.T) {
 // (attributed, original timestamps), label creation with Trello hex
 // colors, due→target_date, assignee match + miss, unmatched-list state
 // creation in the unstarted group, archived-card exclusion, checklist
-// skip-counting, and rerun dedupe.
+// import as markdown sections (C11T3), and rerun dedupe.
 func TestImportTrelloCardsEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
 	migrateTestDB(t, pool)
@@ -521,8 +640,11 @@ func TestImportTrelloCardsEndToEnd(t *testing.T) {
 	if res.AssigneeMisses != 1 { // ghost has no email
 		t.Errorf("assignee_misses = %d, want 1", res.AssigneeMisses)
 	}
-	if res.ChecklistsSkipped != 3 { // 1 on card1 + 2 on card3
-		t.Errorf("checklists_skipped = %d, want 3", res.ChecklistsSkipped)
+	if res.ChecklistsSkipped != 0 {
+		// C11T3: checklists are no longer skipped — they are appended
+		// to the description as markdown. The field is retained for
+		// API compatibility with the frontend import-result stat.
+		t.Errorf("checklists_skipped = %d, want 0", res.ChecklistsSkipped)
 	}
 
 	// The new state lands in the unstarted group (glance has no "Default"
@@ -569,6 +691,62 @@ func TestImportTrelloCardsEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(desc, "*Imported from [Ship v2](https://trello.com/c/abc12345)*") {
 		t.Errorf("card1 missing footer marker: %q", desc)
+	}
+	// C11T3: card1's checklist is appended as markdown AFTER the card's
+	// own description and BEFORE the dedupe footer (documented order).
+	// The description is stored as a JSON string (strconv.Quote), so
+	// unquote before asserting on the real markdown.
+	unq, err := strconv.Unquote(desc)
+	if err != nil {
+		t.Fatalf("unquote card1 description: %v", err)
+	}
+	bodyIdx := strings.Index(unq, "the body")
+	sectionIdx := strings.Index(unq, "\n\n## Launch tasks\n- [x] Write the announcement\n- [ ] Ship the binary")
+	footerIdx := strings.Index(unq, "\n\n---\n*Imported from")
+	if bodyIdx < 0 || sectionIdx < 0 || footerIdx < 0 {
+		t.Fatalf("card1 description missing an expected section: %q", unq)
+	}
+	if !(bodyIdx < sectionIdx && sectionIdx < footerIdx) {
+		t.Errorf("card1 section order wrong: body=%d checklist=%d footer=%d", bodyIdx, sectionIdx, footerIdx)
+	}
+	// card3: the non-empty checklist renders; the empty one is skipped
+	// (no "## Nothing yet" section).
+	var desc3 string
+	if err := pool.QueryRow(ctx,
+		`SELECT description::text FROM issues WHERE project_id = $1::uuid AND name = 'Docs'`, projectID).Scan(&desc3); err != nil {
+		t.Fatalf("card3 row: %v", err)
+	}
+	unq3, err := strconv.Unquote(desc3)
+	if err != nil {
+		t.Fatalf("unquote card3 description: %v", err)
+	}
+	if !strings.Contains(unq3, "\n\n## Review pass\n- [ ] Spellcheck") {
+		t.Errorf("card3 missing checklist section: %q", unq3)
+	}
+	if strings.Contains(unq3, "Nothing yet") {
+		t.Errorf("card3 rendered an empty checklist section: %q", unq3)
+	}
+	// Cards without checklists: description unchanged — no "##" section
+	// (card2 has an empty desc, card5 has a plain-text desc).
+	for _, tc := range []struct{ name, desc string }{
+		{"Refactor", ""},
+		{"Fifth", "trailing"},
+	} {
+		var d string
+		if err := pool.QueryRow(ctx,
+			`SELECT description::text FROM issues WHERE project_id = $1::uuid AND name = $2`, projectID, tc.name).Scan(&d); err != nil {
+			t.Fatalf("%s row: %v", tc.name, err)
+		}
+		unqd, err := strconv.Unquote(d)
+		if err != nil {
+			t.Fatalf("unquote %s description: %v", tc.name, err)
+		}
+		if strings.Contains(unqd, "##") {
+			t.Errorf("%s gained a checklist section without checklists: %q", tc.name, unqd)
+		}
+		if tc.desc != "" && !strings.HasPrefix(unqd, tc.desc) {
+			t.Errorf("%s description no longer starts with the card desc: %q", tc.name, unqd)
+		}
 	}
 	if stateName != "Todo" {
 		t.Errorf("card1 state = %q, want Todo", stateName)
@@ -624,6 +802,53 @@ func TestImportTrelloCardsEndToEnd(t *testing.T) {
 		t.Errorf("rerun created states=%v labels=%v, want none", res2.StatesCreated, res2.LabelsCreated)
 	}
 
+	stub.authOK(t, in.APIKey, in.Token)
+}
+
+// TestImportTrelloChecklistFetchFailure: a failing checklist fetch is
+// enrichment-only (like comments) — the card still imports and the
+// failure is recorded as a per-card error, never aborting the batch.
+func TestImportTrelloChecklistFetchFailure(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	ctx := context.Background()
+	actorID, memberEmail, wsSlug, ident, projectID := trelloImportFixture(t, pool)
+
+	stub, srv := newTrelloStub(t, memberEmail)
+	stub.checklistsHandler = func(w http.ResponseWriter, r *http.Request) {
+		stub.record(r)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `boom`)
+	}
+	in := trelloTestInput()
+	client := trelloTestClient(t, stub, srv, in)
+
+	res, err := ImportTrelloCardsWithClient(ctx, pool, client, wsSlug, ident, actorID, in)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if res.Created != 4 {
+		t.Errorf("created = %d, want 4 (checklist failure must not abort cards)", res.Created)
+	}
+	found := false
+	for _, e := range res.Errors {
+		if strings.Contains(e.Message, "checklists not imported") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %v, want a per-card 'checklists not imported' entry", res.Errors)
+	}
+	// The card with the failed fetch still has a clean description: card
+	// desc + footer only, no half-rendered checklist.
+	var desc string
+	if err := pool.QueryRow(ctx,
+		`SELECT description::text FROM issues WHERE project_id = $1::uuid AND name = 'Ship v2'`, projectID).Scan(&desc); err != nil {
+		t.Fatalf("card1 row: %v", err)
+	}
+	if strings.Contains(desc, "##") {
+		t.Errorf("card1 gained a checklist section from a failed fetch: %q", desc)
+	}
 	stub.authOK(t, in.APIKey, in.Token)
 }
 
