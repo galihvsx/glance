@@ -51,6 +51,8 @@ func RegisterImportRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.POST("/jira", h.importJiraIssues)
 	g.POST("/trello/preview", h.previewTrelloImport)
 	g.POST("/trello", h.importTrelloCards)
+	g.POST("/plane-import/analyze", h.analyzePlaneImport)
+	g.POST("/plane-import/execute", h.executePlaneImport)
 }
 
 // importMultipart extracts the CSV file and the JSON mapping from a
