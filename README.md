@@ -143,7 +143,7 @@ cd web && npm ci && npx tsc --noEmit && npm run build
 ### Visual QA harness
 
 ```bash
-cd qa && npm ci
+cd qa && npm ci && cd ..
 ./qa/visual.sh /path/to/glance/checkout board detail
 ```
 
