@@ -4,7 +4,7 @@ package service
 // guest 403 / outsider 404), payload validation, template application in
 // the project-creation transaction, 400 on unknown template id, and
 // label reuse. Runs against the real test database — no skips. Reuses the
-// harness from workspace_test.go (newTestPool, migrateTestDB,
+// harness from workspace_test.go (newTestPool,
 // createTestUser, createTestWorkspace, uniqueTestEmail, uniqueTestSlug,
 // UpsertMember).
 
@@ -55,7 +55,6 @@ func createTestProjectTemplate(t *testing.T, pool *pgxpool.Pool, wsSlug, actorID
 
 func TestProjectTemplateCRUD(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-admin"))
@@ -125,7 +124,6 @@ func TestProjectTemplateCRUD(t *testing.T) {
 
 func TestProjectTemplateAuthz(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-az-admin"))
@@ -186,7 +184,6 @@ func TestProjectTemplateAuthz(t *testing.T) {
 
 func TestProjectTemplatePayloadValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-val-admin"))
@@ -240,7 +237,6 @@ func TestProjectTemplatePayloadValidation(t *testing.T) {
 
 func TestCreateProjectWithTemplate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-apply-admin"))
@@ -306,7 +302,6 @@ func TestCreateProjectWithTemplate(t *testing.T) {
 
 func TestCreateProjectWithTemplateUnknownID(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-unk-admin"))
@@ -337,7 +332,6 @@ func TestCreateProjectWithTemplateUnknownID(t *testing.T) {
 
 func TestCreateProjectWithTemplateReusesExistingLabels(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-reuse-admin"))
@@ -387,7 +381,6 @@ func TestCreateProjectWithTemplateReusesExistingLabels(t *testing.T) {
 
 func TestCreateProjectWithoutTemplateUnchanged(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-plain-admin"))
@@ -416,7 +409,6 @@ func TestCreateProjectWithoutTemplateUnchanged(t *testing.T) {
 
 func TestCreateProjectWithLabelsOnlyTemplate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("pt-lo-admin"))

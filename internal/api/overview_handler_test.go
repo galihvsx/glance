@@ -21,7 +21,6 @@ import (
 func setupOverviewHTTP(t *testing.T) (*echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -221,7 +220,6 @@ func TestOverviewHTTPNoCycles(t *testing.T) {
 
 func TestOverviewHTTPGuestForbidden(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

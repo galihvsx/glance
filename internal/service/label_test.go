@@ -32,7 +32,6 @@ func createTestLabel(t *testing.T, pool *pgxpool.Pool, wsSlug, ident, actorID, n
 // fine, but B's parent := A must fail; a label may not parent itself).
 func TestLabelHierarchy(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("label-hier"))
@@ -122,7 +121,6 @@ func isErr(err, target error) bool {
 // label must belong to the workspace.
 func TestLabelAssignUnassignIdempotent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("label-assign"))
@@ -176,7 +174,6 @@ func TestLabelAssignUnassignIdempotent(t *testing.T) {
 // members; assign/unassign are idempotent.
 func TestAssigneeAssignUnassignIdempotent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("assignee"))
@@ -222,7 +219,6 @@ func TestAssigneeAssignUnassignIdempotent(t *testing.T) {
 // row), and reject a point from another project's scale.
 func TestEstimateScaleCRUD(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("estimate"))

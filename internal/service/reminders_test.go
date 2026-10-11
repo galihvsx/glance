@@ -34,7 +34,6 @@ type reminderFixture struct {
 func setupReminderFixture(t *testing.T) *reminderFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("rem-creator"))

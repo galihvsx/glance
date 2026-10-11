@@ -32,7 +32,6 @@ type digestFixture struct {
 func setupDigestFixture(t *testing.T) *digestFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	email := uniqueTestEmail("dig")
 	user := createTestUser(t, pool, email)

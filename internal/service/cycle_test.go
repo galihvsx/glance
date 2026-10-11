@@ -28,7 +28,6 @@ func stateIDByGroup(t *testing.T, pool *pgxpool.Pool, projectID, group string) s
 func TestCycleCRUD(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle"))
 	slug := uniqueTestSlug("cycle-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
@@ -92,7 +91,6 @@ func TestCycleCRUD(t *testing.T) {
 func TestCycleAddIssues(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle-issues"))
 	slug := uniqueTestSlug("cycle-iss-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
@@ -148,7 +146,6 @@ func TestCycleAddIssues(t *testing.T) {
 func TestCycleProgressSnapshot(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle-snap"))
 	slug := uniqueTestSlug("cycle-snap-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
@@ -227,7 +224,6 @@ func TestCycleProgressSnapshot(t *testing.T) {
 func TestCycleFrozenSnapshotKeepsTriage(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle-frozen"))
 	slug := uniqueTestSlug("cycle-frozen-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
@@ -311,7 +307,6 @@ func TestCycleFrozenSnapshotKeepsTriage(t *testing.T) {
 func TestCycleMalformedUUID(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle-badid"))
 	slug := uniqueTestSlug("cycle-badid-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
@@ -351,7 +346,6 @@ func TestCycleMalformedUUID(t *testing.T) {
 func TestListCycleFilter(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("cycle-filter"))
 	slug := uniqueTestSlug("cycle-filter-ws")
 	createTestWorkspace(t, pool, "Cycle Co", slug, actor)

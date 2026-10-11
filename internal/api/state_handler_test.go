@@ -16,7 +16,6 @@ import (
 
 func TestStateHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -148,7 +147,6 @@ func TestStateHTTP(t *testing.T) {
 
 func TestStateGuestForbiddenHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -188,7 +186,6 @@ func TestStateGuestForbiddenHTTP(t *testing.T) {
 
 func TestEstimateMutationsHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

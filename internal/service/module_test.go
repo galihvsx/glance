@@ -15,7 +15,6 @@ func setupModuleTest(t *testing.T) (context.Context, *pgxpool.Pool, string, stri
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("module"))
 	slug := uniqueTestSlug("module-ws")
 	createTestWorkspace(t, pool, "Module Co", slug, actor)

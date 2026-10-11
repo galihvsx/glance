@@ -4,7 +4,7 @@ package service
 // list carry a computed subtask_progress {total, done} — direct children
 // only, done = state group 'completed', one aggregate subquery (no N+1).
 // Real test database, no skips. Reuses the harness from workspace_test.go
-// and issue_test.go (newTestPool, migrateTestDB, createTestUser,
+// and issue_test.go (newTestPool, createTestUser,
 // createTestWorkspace, uniqueTestEmail/Slug/Identifier, createTestProject,
 // createTestIssue) and cycle_test.go (stateIDByGroup).
 
@@ -26,7 +26,6 @@ type rollupFixture struct {
 func setupRollupTest(t *testing.T, tag string) rollupFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	actor := createTestUser(t, pool, uniqueTestEmail("rollup-"+tag))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-rollup-"+tag), actor)

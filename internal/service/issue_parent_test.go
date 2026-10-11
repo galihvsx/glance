@@ -4,7 +4,7 @@ package service
 // self-parent / cross-project / unknown-parent / cycle 409s, parent
 // clearing, delete-detaches-children, and ListIssueChildren summaries.
 // Real test database, no skips. Reuses the harness from
-// workspace_test.go (newTestPool, migrateTestDB, createTestUser,
+// workspace_test.go (newTestPool, createTestUser,
 // createTestWorkspace, uniqueTestEmail, uniqueTestSlug,
 // createTestProject, uniqueTestIdentifier, addTestMember) and the
 // issue helpers (createTestIssue).
@@ -27,7 +27,6 @@ type parentFixture struct {
 func setupParentTest(t *testing.T, tag string) parentFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	actor := createTestUser(t, pool, uniqueTestEmail("subissue-"+tag))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-sub-"+tag), actor)

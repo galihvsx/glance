@@ -25,7 +25,6 @@ func setupAnalyticsHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie) (slug, 
 
 func TestAnalyticsHTTPSummary(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -60,7 +59,6 @@ func TestAnalyticsHTTPSummary(t *testing.T) {
 
 func TestAnalyticsHTTPTrends(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -126,7 +124,6 @@ func TestAnalyticsHTTPTrends(t *testing.T) {
 
 func TestAnalyticsHTTPCycleBurndown(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -182,7 +179,6 @@ func TestAnalyticsHTTPCycleBurndown(t *testing.T) {
 
 func TestAnalyticsHTTPAuth(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

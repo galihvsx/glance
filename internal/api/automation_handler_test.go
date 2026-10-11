@@ -48,7 +48,6 @@ func startedStateIDHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie, slug, i
 
 func TestAutomationHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -176,7 +175,6 @@ func TestAutomationHTTP(t *testing.T) {
 
 func TestAutomationHTTPGuestForbidden(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -235,7 +233,6 @@ func TestAutomationHTTPGuestForbidden(t *testing.T) {
 // non-members, and the spec §5 error envelope.
 func TestAutomationRunsHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -421,7 +418,6 @@ func TestAutomationRunsHTTP(t *testing.T) {
 
 func TestAutomationRetentionHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

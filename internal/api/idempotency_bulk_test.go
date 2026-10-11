@@ -46,7 +46,6 @@ func postAuthedJSONHeaders(t *testing.T, e *echo.Echo, method, path string, cook
 func setupBulkProject(t *testing.T, prefix string) (*pgxpool.Pool, *echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail(prefix), "test-agent", uniqueIP())

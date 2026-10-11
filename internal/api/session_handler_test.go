@@ -67,7 +67,6 @@ func getAuthed(t *testing.T, e *echo.Echo, method, path string, cookie *http.Coo
 
 func TestMeUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
@@ -88,7 +87,6 @@ func TestMeUnauthenticated401(t *testing.T) {
 
 func TestMeGarbageToken401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
@@ -103,7 +101,6 @@ func TestMeGarbageToken401(t *testing.T) {
 
 func TestMeAuthenticated200(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-me-ok")
@@ -131,7 +128,6 @@ func TestMeAuthenticated200(t *testing.T) {
 func TestMeExpiredSession401(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-me-exp")
@@ -150,7 +146,6 @@ func TestMeExpiredSession401(t *testing.T) {
 func TestMeRevokedSession401(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-me-rev")
@@ -169,7 +164,6 @@ func TestMeRevokedSession401(t *testing.T) {
 func TestLogoutRevokesAndClearsCookie(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-logout")
@@ -217,7 +211,6 @@ func TestLogoutRevokesAndClearsCookie(t *testing.T) {
 
 func TestLogoutUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
@@ -230,7 +223,6 @@ func TestLogoutUnauthenticated401(t *testing.T) {
 
 func TestListSessions(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-list")
@@ -269,7 +261,6 @@ func TestListSessions(t *testing.T) {
 
 func TestListSessionsUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/sessions", nil)
@@ -296,7 +287,6 @@ func sessionIDForToken(t *testing.T, pool *pgxpool.Pool, token string) string {
 func TestDeleteSessionRevokes(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-del")
@@ -329,7 +319,6 @@ func TestDeleteSessionRevokes(t *testing.T) {
 func TestDeleteSessionNotOwned404(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	emailA := uniqueEmail("h-sess-del-a")
@@ -358,7 +347,6 @@ func TestDeleteSessionNotOwned404(t *testing.T) {
 
 func TestDeleteSessionMalformedID404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-del-bad")
@@ -371,7 +359,6 @@ func TestDeleteSessionMalformedID404(t *testing.T) {
 
 func TestDeleteCurrentSessionClearsCookie(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-del-self")
@@ -398,7 +385,6 @@ func TestDeleteCurrentSessionClearsCookie(t *testing.T) {
 
 func TestDeleteSessionUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/sessions/00000000-0000-0000-0000-000000000000", nil)
@@ -412,7 +398,6 @@ func TestDeleteSessionUnauthenticated401(t *testing.T) {
 func TestLastSeenAtRefreshesWhenStale(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-touch")
@@ -441,7 +426,6 @@ func TestLastSeenAtRefreshesWhenStale(t *testing.T) {
 func TestLastSeenAtUntouchedWhenFresh(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-sess-notouch")

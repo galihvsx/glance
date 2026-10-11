@@ -16,7 +16,6 @@ func setupTimeTest(t *testing.T) (context.Context, *pgxpool.Pool, string, string
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("time"))
 	slug := uniqueTestSlug("time-ws")
 	createTestWorkspace(t, pool, "Time Co", slug, actor)

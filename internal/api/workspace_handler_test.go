@@ -76,7 +76,6 @@ func createWorkspaceHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie, name, 
 
 func TestWorkspaceUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	for _, tc := range []struct{ method, path string }{
@@ -98,7 +97,6 @@ func TestWorkspaceUnauthenticated401(t *testing.T) {
 
 func TestCreateWorkspaceSlugConflict409(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws"), "test-agent/1.0", uniqueIP())
 	slug := uniqueSlug("acme-http")
@@ -121,7 +119,6 @@ func TestCreateWorkspaceSlugConflict409(t *testing.T) {
 
 func TestCreateWorkspaceInvalidSlug400(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-bad"), "test-agent/1.0", uniqueIP())
 
@@ -133,7 +130,6 @@ func TestCreateWorkspaceInvalidSlug400(t *testing.T) {
 
 func TestGuestCannotAddMember403(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-admin"), "test-agent/1.0", uniqueIP())
@@ -169,7 +165,6 @@ func TestGuestCannotAddMember403(t *testing.T) {
 
 func TestWorkspaceListAndPatch(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lp"), "test-agent/1.0", uniqueIP())
@@ -212,7 +207,6 @@ func TestWorkspaceListAndPatch(t *testing.T) {
 
 func TestAdminCannotRemoveLastAdminHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lock"), "test-agent/1.0", uniqueIP())
@@ -274,7 +268,6 @@ func assertErrorMessage(t *testing.T, body []byte, wantCode, wantMessage string)
 
 func TestUpsertMemberUnknownUser404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nouser"), "test-agent/1.0", uniqueIP())
 	slug := uniqueSlug("nouser-http")
@@ -293,7 +286,6 @@ func TestUpsertMemberUnknownUser404(t *testing.T) {
 
 func TestRemoveNonMember404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nomem"), "test-agent/1.0", uniqueIP())
 	outsiderCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nomem-out"), "test-agent/1.0", uniqueIP())
@@ -320,7 +312,6 @@ func TestRemoveNonMember404(t *testing.T) {
 
 func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-nfmsg"), "test-agent/1.0", uniqueIP())
 
@@ -335,7 +326,6 @@ func TestWorkspaceNotFoundMessageUnchanged(t *testing.T) {
 
 func TestListMembersHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-lm-admin"), "test-agent/1.0", uniqueIP())
@@ -396,7 +386,6 @@ func TestListMembersHTTP(t *testing.T) {
 
 func TestWorkspacePatchSlugAndDeleteHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slugdel"), "test-agent/1.0", uniqueIP())
@@ -445,7 +434,6 @@ func TestWorkspacePatchSlugAndDeleteHTTP(t *testing.T) {
 }
 func TestInviteMembersEndpoint(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	adminEmail := uniqueEmail("h-ws-inv-admin")
@@ -540,7 +528,6 @@ func TestInviteMembersEndpoint(t *testing.T) {
 // response — only the slack_configured flag.
 func TestSlackWebhookURLHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slack-admin"), "test-agent/1.0", uniqueIP())
@@ -626,7 +613,6 @@ func TestSlackWebhookURLHTTP(t *testing.T) {
 // is admin-only, 400s without a configured URL, and 202s with one.
 func TestSlackTestEndpointHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkspaceServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("h-ws-slackt-admin"), "test-agent/1.0", uniqueIP())

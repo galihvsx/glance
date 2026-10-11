@@ -42,7 +42,6 @@ func subscribeUser(t *testing.T, pool *pgxpool.Pool, issueID, userID string) {
 
 func TestListMyWorkFilters(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, alice, bob := setupMyWork(t, pool)
 
@@ -112,7 +111,6 @@ func TestListMyWorkFilters(t *testing.T) {
 // non-member gets 404.
 func TestListMyWorkIsolation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, alice, bob := setupMyWork(t, pool)
 

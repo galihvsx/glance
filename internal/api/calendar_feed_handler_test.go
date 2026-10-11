@@ -49,7 +49,6 @@ func testFeedServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 func setupFeedProject(t *testing.T, prefix string) (*pgxpool.Pool, *echo.Echo, *http.Cookie, string, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testFeedServer(t, pool)
 
 	email := uniqueEmail(prefix + "-feed-user")

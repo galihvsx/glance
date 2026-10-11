@@ -56,7 +56,6 @@ func countNotifications(t *testing.T, pool *pgxpool.Pool, userID string) int {
 // assignment.
 func TestAssignNotifiesAssignee(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, assigneeID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -89,7 +88,6 @@ func TestAssignNotifiesAssignee(t *testing.T) {
 // is a no-op and must not create a second notification row.
 func TestAssignIdempotentNoDuplicateNotification(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, assigneeID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -108,7 +106,6 @@ func TestAssignIdempotentNoDuplicateNotification(t *testing.T) {
 // subscribers (not the commenter).
 func TestCommentNotifiesSubscribers(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, assigneeID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -133,7 +130,6 @@ func TestCommentNotifiesSubscribers(t *testing.T) {
 // later 200 marks it done. The request carries the HMAC signature header.
 func TestWebhookDeliveryRetried(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -259,7 +255,6 @@ func workspaceIDForTest(t *testing.T, pool *pgxpool.Pool, slug string) string {
 // rejected at validation.
 func TestWebhookCRUDAdminOnly(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, assigneeID, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -350,7 +345,6 @@ func TestWebhookCRUDAdminOnly(t *testing.T) {
 // nobody.
 func TestStateChangeNotifiesWatchers(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, watcherID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -401,7 +395,6 @@ func TestStateChangeNotifiesWatchers(t *testing.T) {
 // enqueues an email.notification outbox row; with defaults it does not.
 func TestNotificationPrefEmailGatesOutbox(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, assigneeID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -478,7 +471,6 @@ func TestWebhookRetryBackoff(t *testing.T) {
 // contain a "secret" key (no leakage into logs, devtools, or caches).
 func TestWebhookSecretHiddenInListGetUpdate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -544,7 +536,6 @@ func TestWebhookSecretHiddenInListGetUpdate(t *testing.T) {
 // noticing).
 func TestUpdateWebhookEmptySecretRegenerates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -572,7 +563,6 @@ func TestUpdateWebhookEmptySecretRegenerates(t *testing.T) {
 // distinguishable from rows still being retried.
 func TestWebhookMarkFailedSetsProcessedAt(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -655,7 +645,6 @@ func enqueueOneWebhookRow(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 // succeeds) and the row must already be marked 'delivering'.
 func TestWebhookDispatchReleasesClaimTxDuringDelivery(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -737,7 +726,6 @@ func TestWebhookDispatchReleasesClaimTxDuringDelivery(t *testing.T) {
 // and block on the slow endpoint too.
 func TestWebhookDispatchSingleFlight(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 

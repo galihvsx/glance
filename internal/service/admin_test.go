@@ -71,7 +71,6 @@ func allSessionsRevoked(t *testing.T, pool *pgxpool.Pool, userID string) bool {
 func TestGetAdminStats(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("stats-admin"), true)
 	ws := createTestWorkspace(t, pool, "Stats WS", uniqueTestSlug("stats-ws"), admin)
@@ -94,7 +93,6 @@ func TestGetAdminStats(t *testing.T) {
 func TestListAdminUsersPagination(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	prefix := uniqueTestEmail("listu")
 	var ids []string
@@ -165,7 +163,6 @@ func TestListAdminUsersPagination(t *testing.T) {
 func TestSetUserAdminPromoteDemote(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	adminA := adminTestUser(t, pool, uniqueTestEmail("prom-a"), true)
 	adminB := adminTestUser(t, pool, uniqueTestEmail("prom-b"), true)
@@ -201,7 +198,6 @@ func TestSetUserAdminPromoteDemote(t *testing.T) {
 func TestSetUserAdminSelfDemote409(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("selfdemote"), true)
 	if err := SetUserAdmin(ctx, pool, admin, admin, false, "127.0.0.1"); !errors.Is(err, ErrAdminSelfDemote) {
@@ -305,7 +301,6 @@ func newIsolatedTestPool(t *testing.T) *pgxpool.Pool {
 func TestDeactivateUser(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("deact-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("deact-victim"), false)
@@ -343,7 +338,6 @@ func TestDeactivateUser(t *testing.T) {
 func TestDeactivateUserSelfRefused(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("selfdeact"), true)
 	if err := DeactivateUser(ctx, pool, admin, admin, "127.0.0.1"); !errors.Is(err, ErrAdminSelfDeactivate) {
@@ -354,7 +348,6 @@ func TestDeactivateUserSelfRefused(t *testing.T) {
 func TestReactivateUser(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("react-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("react-victim"), false)
@@ -388,7 +381,6 @@ func TestReactivateUser(t *testing.T) {
 func TestListAdminWorkspaces(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("wso-admin"), true)
 	member := adminTestUser(t, pool, uniqueTestEmail("wso-member"), false)
@@ -447,7 +439,6 @@ func TestListAdminWorkspaces(t *testing.T) {
 func TestDeleteWorkspaceAsAdmin(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("delws-admin"), true)
 	ws := createTestWorkspace(t, pool, "Delete Me WS", uniqueTestSlug("delws"), admin)

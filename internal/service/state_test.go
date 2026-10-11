@@ -24,7 +24,6 @@ func setupStateProject(t *testing.T, pool *pgxpool.Pool) (wsSlug, identifier, cr
 // TestCreateState: happy path, sequence auto-append, and validation.
 func TestCreateState(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -61,7 +60,6 @@ func TestCreateState(t *testing.T) {
 // TestUpdateState: rename / regroup / recolor / resequence + conflicts.
 func TestUpdateState(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -108,7 +106,6 @@ func TestUpdateState(t *testing.T) {
 // with reassign_to (live AND soft-deleted refs move), unknown 404s.
 func TestDeleteState(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -177,7 +174,6 @@ func TestDeleteState(t *testing.T) {
 // TestDeleteLastState: a project must keep at least one state.
 func TestDeleteLastState(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -200,7 +196,6 @@ func TestDeleteLastState(t *testing.T) {
 // mutate.
 func TestStateMutationsForbiddenForGuests(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 

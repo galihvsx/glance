@@ -34,7 +34,6 @@ func TestShareTokenEntropy(t *testing.T) {
 
 func TestCreateAndListShareLinks(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("sh-admin"))
@@ -63,7 +62,6 @@ func TestCreateAndListShareLinks(t *testing.T) {
 
 func TestShareLinkMemberScoping(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("shs-admin"))
@@ -90,7 +88,6 @@ func TestShareLinkMemberScoping(t *testing.T) {
 
 func TestPublicShareIssue(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("shp-admin"))
@@ -124,7 +121,6 @@ func TestPublicShareIssue(t *testing.T) {
 
 func TestPublicShareNotFoundCases(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("shn-admin"))
@@ -171,7 +167,6 @@ func TestPublicShareNotFoundCases(t *testing.T) {
 
 func TestPublicSharePage(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("shpg-admin"))

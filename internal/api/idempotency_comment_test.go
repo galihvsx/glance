@@ -39,7 +39,6 @@ func countComments(t *testing.T, e *echo.Echo, cookie *http.Cookie, commentsPath
 func setupCommentProject(t *testing.T, prefix string) (*echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := echo.New()
 	RegisterAuthRoutes(e, &AuthHandler{Pool: pool, Config: &config.Config{OTPPepper: "test-pepper-do-not-use-in-prod"}})
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})

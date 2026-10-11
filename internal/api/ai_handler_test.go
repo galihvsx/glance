@@ -87,7 +87,6 @@ func setupAIHTTP(t *testing.T, e *echo.Echo, pool *pgxpool.Pool) (cookie *http.C
 
 func TestAIDraftHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	stub.content = "## Summary\n\nDrafted description."
 	e := testAIServer(t, pool, stub.aiCfg())
@@ -114,7 +113,6 @@ func TestAIDraftHTTP(t *testing.T) {
 
 func TestAITriageHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	stub.content = `{"priority": "high", "label_names": ["does-not-exist"], "state_name": "Todo"}`
 	e := testAIServer(t, pool, stub.aiCfg())
@@ -149,7 +147,6 @@ func TestAITriageHTTP(t *testing.T) {
 // code "ai_not_configured" — never a fake error, never a 500.
 func TestAIUnconfigured503(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAIServer(t, pool, config.AIConfig{})
 	cookie, slug, ident := setupAIHTTP(t, e, pool)
 
@@ -176,7 +173,6 @@ func TestAIUnconfigured503(t *testing.T) {
 // TestAIProviderFailure502: a failing provider surfaces as 502, not 500.
 func TestAIProviderFailure502(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	stub.status = http.StatusInternalServerError
 	e := testAIServer(t, pool, stub.aiCfg())
@@ -202,7 +198,6 @@ func TestAIProviderFailure502(t *testing.T) {
 
 func TestAIDraftValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	e := testAIServer(t, pool, stub.aiCfg())
 	cookie, slug, ident := setupAIHTTP(t, e, pool)
@@ -229,7 +224,6 @@ func TestAIDraftValidation(t *testing.T) {
 // (the tenancy boundary), and the provider is never called.
 func TestAINonMember404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	stub.content = "x"
 	e := testAIServer(t, pool, stub.aiCfg())
@@ -251,7 +245,6 @@ func TestAINonMember404(t *testing.T) {
 // key into logs or responses.
 func TestAIKeyNeverLoggedHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	stub.status = http.StatusInternalServerError
 	e := testAIServer(t, pool, stub.aiCfg())
@@ -283,7 +276,6 @@ func TestAIKeyNeverLoggedHTTP(t *testing.T) {
 // input first and then call the provider on a valid title).
 func TestAIStatus(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	e := testAIServer(t, pool, stub.aiCfg())
 	cookie, _, _ := setupAIHTTP(t, e, pool)
@@ -309,7 +301,6 @@ func TestAIStatus(t *testing.T) {
 // TestAIStatusUnconfigured: without an API key the probe reports false.
 func TestAIStatusUnconfigured(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAIServer(t, pool, config.AIConfig{})
 	cookie, _, _ := setupAIHTTP(t, e, pool)
 
@@ -331,7 +322,6 @@ func TestAIStatusUnconfigured(t *testing.T) {
 // TestAIStatusRequiresAuth: the probe is auth-only, not public.
 func TestAIStatusRequiresAuth(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	stub := newAIProviderStub(t)
 	e := testAIServer(t, pool, stub.aiCfg())
 

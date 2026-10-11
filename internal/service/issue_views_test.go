@@ -27,7 +27,6 @@ func setupViewTest(t *testing.T) *viewFixture {
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actorA := createTestUser(t, pool, uniqueTestEmail("views"))
 	actorB := createTestUser(t, pool, uniqueTestEmail("views"))
 	slug := uniqueTestSlug("views-ws")

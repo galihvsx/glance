@@ -28,7 +28,6 @@ type bulkSetFixture struct {
 func newBulkSetFixture(t *testing.T) *bulkSetFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	actor := createTestUser(t, pool, uniqueTestEmail("bulk-set"))
 	ws := createTestWorkspace(t, pool, "Bulk Co", uniqueTestSlug("bulk-set"), actor)

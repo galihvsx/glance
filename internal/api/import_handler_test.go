@@ -38,7 +38,6 @@ func importMultipartBody(t *testing.T, csvData, mapping string) (*bytes.Buffer, 
 func setupImportHTTP(t *testing.T) (*echo.Echo, *http.Cookie, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

@@ -25,7 +25,6 @@ func testAuthHandler(pool *pgxpool.Pool) *AuthHandler {
 
 func TestUpdateMe(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterAuthRoutes(e, testAuthHandler(pool))
 
@@ -76,7 +75,6 @@ func TestUpdateMe(t *testing.T) {
 // current=true; a second session does not.
 func TestListSessionsMarksCurrent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterAuthRoutes(e, testAuthHandler(pool))
 

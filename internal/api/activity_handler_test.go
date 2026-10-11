@@ -19,7 +19,6 @@ import (
 func setupActivityHTTP(t *testing.T) (*echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -115,7 +114,6 @@ func TestActivityHTTPLimit(t *testing.T) {
 
 func TestActivityHTTPGuestForbidden(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -178,7 +176,6 @@ type workspaceActivityBody struct {
 func setupWorkspaceActivityHTTP(t *testing.T) (*echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
@@ -298,7 +295,6 @@ func TestWorkspaceActivityHTTPPagination(t *testing.T) {
 
 func TestWorkspaceActivityHTTPTenancy(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

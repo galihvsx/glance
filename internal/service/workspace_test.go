@@ -19,7 +19,6 @@ import (
 
 	"glance/internal/config"
 	"glance/internal/store"
-	"glance/migrations"
 )
 
 // testSeq hands out process-unique numbers: the test database persists
@@ -49,13 +48,6 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	if err := store.Migrate(context.Background(), pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-}
-
 // createTestUser inserts a user row directly and returns its id.
 func createTestUser(t *testing.T, pool *pgxpool.Pool, email string) string {
 	t.Helper()
@@ -80,7 +72,6 @@ func createTestWorkspace(t *testing.T, pool *pgxpool.Pool, name, slug, creatorID
 
 func TestCreateWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("ws-creator"))
@@ -103,7 +94,6 @@ func TestCreateWorkspace(t *testing.T) {
 
 func TestCreateWorkspaceSlugConflict(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("ws-conflict"))
@@ -118,7 +108,6 @@ func TestCreateWorkspaceSlugConflict(t *testing.T) {
 
 func TestCreateWorkspaceSlugConflictCaseInsensitive(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	// Bypass slug validation with raw SQL: CITEXT uniqueness must catch
@@ -138,7 +127,6 @@ func TestCreateWorkspaceSlugConflictCaseInsensitive(t *testing.T) {
 
 func TestCreateWorkspaceInvalidSlug(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	creator := createTestUser(t, pool, uniqueTestEmail("ws-badslug"))
 
@@ -152,7 +140,6 @@ func TestCreateWorkspaceInvalidSlug(t *testing.T) {
 
 func TestListWorkspacesOnlyOwn(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	u1 := createTestUser(t, pool, uniqueTestEmail("ws-list1"))
@@ -179,7 +166,6 @@ func TestListWorkspacesOnlyOwn(t *testing.T) {
 
 func TestGetWorkspaceNotMember(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	u1 := createTestUser(t, pool, uniqueTestEmail("ws-get1"))
@@ -198,7 +184,6 @@ func TestGetWorkspaceNotMember(t *testing.T) {
 
 func TestUpdateWorkspaceAdminOnly(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-upd-admin"))
@@ -246,7 +231,6 @@ func TestUpdateWorkspaceAdminOnly(t *testing.T) {
 
 func TestGuestCannotManageMembers(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-mem-admin"))
@@ -277,7 +261,6 @@ func TestGuestCannotManageMembers(t *testing.T) {
 
 func TestCannotRemoveLastAdmin(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-lock-admin"))
@@ -308,7 +291,6 @@ func TestCannotRemoveLastAdmin(t *testing.T) {
 
 func TestUpsertMemberInvalidRole(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-role-admin"))
@@ -336,7 +318,6 @@ func randomAbsentUserID(t *testing.T, pool *pgxpool.Pool) string {
 
 func TestUpsertMemberUnknownUser(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-nouser-admin"))
@@ -358,7 +339,6 @@ func TestUpsertMemberUnknownUser(t *testing.T) {
 
 func TestRemoveMemberNonMember(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-nomem-admin"))
@@ -385,7 +365,6 @@ func TestRemoveMemberNonMember(t *testing.T) {
 
 func TestDeleteWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-del-admin"))
@@ -420,7 +399,6 @@ func TestDeleteWorkspace(t *testing.T) {
 // observe 2 admins and remove both.
 func TestRemoveMemberConcurrentLastAdmin(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	adminA := createTestUser(t, pool, uniqueTestEmail("c3t8-raceA"))
@@ -480,7 +458,6 @@ func inviteResultsByEmail(results []InviteResult) map[string]string {
 
 func TestInviteMembersHappyPath(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	adminEmail := uniqueTestEmail("ws-inv-admin")
@@ -515,7 +492,6 @@ func TestInviteMembersHappyPath(t *testing.T) {
 
 func TestInviteMembersNotRegistered(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-invnr-admin"))
@@ -549,7 +525,6 @@ func TestInviteMembersNotRegistered(t *testing.T) {
 
 func TestInviteMembersIdempotent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-invid-admin"))
@@ -589,7 +564,6 @@ func TestInviteMembersIdempotent(t *testing.T) {
 
 func TestInviteMembersRoleChecks(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-invrc-admin"))
@@ -624,7 +598,6 @@ func TestInviteMembersRoleChecks(t *testing.T) {
 
 func TestInviteMembersNormalization(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("ws-invnm-admin"))

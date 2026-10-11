@@ -41,7 +41,6 @@ func testBackupServer(t *testing.T, pool *pgxpool.Pool, dir string) *echo.Echo {
 
 func TestBackupRoutesUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testBackupServer(t, pool, t.TempDir())
 
 	for _, tc := range []struct{ method, path string }{
@@ -60,7 +59,6 @@ func TestBackupRoutesUnauthenticated401(t *testing.T) {
 
 func TestBackupRoutesForbiddenForNonAdmin(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testBackupServer(t, pool, t.TempDir())
 	cookie := loginTestUser(t, e, pool, uniqueEmail("backup-nonadmin"), "test-agent", uniqueIP())
 
@@ -81,7 +79,6 @@ func TestBackupRoutesForbiddenForNonAdmin(t *testing.T) {
 
 func TestListBackupsEnvelopeAndConfig(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	dir := t.TempDir()
 	e := testBackupServer(t, pool, dir)
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("backup-admin"))
@@ -164,7 +161,6 @@ func TestListBackupsEnvelopeAndConfig(t *testing.T) {
 
 func TestRunBackupNowSingleWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	dir := t.TempDir()
 	e := testBackupServer(t, pool, dir)
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("backup-admin-run"))
@@ -227,7 +223,6 @@ func TestRunBackupNowSingleWorkspace(t *testing.T) {
 
 func TestRunBackupNowUnknownWorkspace404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testBackupServer(t, pool, t.TempDir())
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("backup-admin-404"))
 
@@ -244,7 +239,6 @@ func TestRunBackupNowUnknownWorkspace404(t *testing.T) {
 
 func TestRunBackupNowAllWorkspaces(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	dir := t.TempDir()
 	e := testBackupServer(t, pool, dir)
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("backup-admin-all"))

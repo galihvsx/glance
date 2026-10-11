@@ -28,7 +28,6 @@ func testIntakeServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 
 func TestIntakeHTTPTriage(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIntakeServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("intake-http"), "test-agent", uniqueIP())
@@ -106,7 +105,6 @@ func TestIntakeHTTPTriage(t *testing.T) {
 
 func TestIntakeHTTPSnoozeValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIntakeServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("intake-snooze"), "test-agent", uniqueIP())

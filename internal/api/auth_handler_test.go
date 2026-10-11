@@ -18,7 +18,6 @@ import (
 
 	"glance/internal/config"
 	"glance/internal/store"
-	"glance/migrations"
 )
 
 // testSeq hands out process-unique sequence numbers so parallel test
@@ -52,18 +51,6 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// migrateTestDB applies the real migrations. It deliberately does NOT
-// truncate any table: test packages run in parallel against one shared
-// database, so each test uses unique keys and filters its assertions to
-// its own rows instead of assuming a clean slate.
-func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-}
-
 func testServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 	t.Helper()
 	e := echo.New()
@@ -91,7 +78,6 @@ func postOTP(t *testing.T, e *echo.Echo, email string) *httptest.ResponseRecorde
 
 func TestRequestOTPAlwaysOK(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	// Unknown email: must still be 200 {"ok":true} — no enumeration.
@@ -117,7 +103,6 @@ func TestRequestOTPAlwaysOK(t *testing.T) {
 
 func TestRequestOTPRateLimited(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	// Same email AND same IP for all six: the 6th must hit the 5/hr/email
@@ -181,7 +166,6 @@ func insertVerifyCode(t *testing.T, pool *pgxpool.Pool, email, code string) {
 
 func TestVerifyEndpointWrongCode401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-verify-wrong")
@@ -216,7 +200,6 @@ func TestVerifyEndpointWrongCode401(t *testing.T) {
 // test isolates the IP budget.
 func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	ip := uniqueIP()
@@ -251,7 +234,6 @@ func TestVerifyEndpointRateLimitedPerIP(t *testing.T) {
 // intent is unchanged: 5 live-row guesses spend the budget, the 6th 429s.
 func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-verify-rl-email")
@@ -274,7 +256,6 @@ func TestVerifyEndpointRateLimitedPerEmail(t *testing.T) {
 func TestVerifyEndpointSuccessSetsCookie(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	email := uniqueEmail("h-verify-ok")

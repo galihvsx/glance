@@ -15,7 +15,6 @@ func setupReleaseTest(t *testing.T) (context.Context, *pgxpool.Pool, string, str
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("release"))
 	slug := uniqueTestSlug("release-ws")
 	createTestWorkspace(t, pool, "Release Co", slug, actor)

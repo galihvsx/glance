@@ -31,7 +31,6 @@ type viewHTTPFixture struct {
 func setupViewHTTPFixture(t *testing.T) *viewHTTPFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

@@ -407,7 +407,6 @@ func TestJiraSSRFGuard(t *testing.T) {
 	client := newJiraTestClient("bot@example.com", "tok", srv.URL)
 	in := jiraTestInput()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := jiraImportFixture(t, pool)
 	if _, err := ImportJiraIssuesWithClient(ctx, pool, client, wsSlug, ident, actorID, in); err == nil {
@@ -433,7 +432,6 @@ func TestJiraSSRFGuard(t *testing.T) {
 // fetching comment bodies.
 func TestPreviewJiraImport(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, projectID := jiraImportFixture(t, pool)
 
@@ -512,7 +510,6 @@ func TestPreviewJiraImport(t *testing.T) {
 // dedupe via the footer marker.
 func TestImportJiraIssuesEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, projectID := jiraImportFixture(t, pool)
 
@@ -628,7 +625,6 @@ func TestImportJiraIssuesEndToEnd(t *testing.T) {
 // wire, never in the database, never in error messages.
 func TestJiraTokenNeverPersisted(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, _ := jiraImportFixture(t, pool)
 
@@ -670,7 +666,6 @@ func TestJiraTokenNeverPersisted(t *testing.T) {
 // error.
 func TestJiraImportErrorMapping(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := jiraImportFixture(t, pool)
 	in := jiraTestInput()

@@ -116,7 +116,6 @@ func itoa(n int) string { return strconv.Itoa(n) }
 func setupWSProject(t *testing.T) (*pgxpool.Pool, *echo.Echo, *http.Cookie, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testWSServer(t, pool)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("wsx"), "ws-test", uniqueIP())
 	slug := uniqueSlug("wsrt")
@@ -139,7 +138,6 @@ func TestUnauthenticatedSubscribeRejected(t *testing.T) {
 	// 3. Channel-level auth: a valid session for workspace A must not
 	// receive workspace B's events.
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e2, _ := testWSServer(t, pool)
 	cookieA := loginTestUser(t, e2, pool, uniqueEmail("wsa"), "ws-test", uniqueIP())
 	slugA := uniqueSlug("wsa")
@@ -256,7 +254,6 @@ func TestProjectChannelIsWorkspaceQualified(t *testing.T) {
 	// Two workspaces, the SAME project identifier ENG in each. U is a
 	// member of ws-a only.
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testWSServer(t, pool)
 
 	cookieU := loginTestUser(t, e, pool, uniqueEmail("pqa"), "ws-test", uniqueIP())

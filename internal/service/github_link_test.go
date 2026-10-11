@@ -38,7 +38,6 @@ func linkTestSetup(t *testing.T, pool *pgxpool.Pool, prefix string) (wsSlug, ide
 
 func TestCreateExternalRef(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, adminID, _ := linkTestSetup(t, pool, "ghl")
 
@@ -76,7 +75,6 @@ func TestCreateExternalRef(t *testing.T) {
 
 func TestCreateExternalRefDuplicate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, adminID, _ := linkTestSetup(t, pool, "ghdup")
 
@@ -96,7 +94,6 @@ func TestCreateExternalRefDuplicate(t *testing.T) {
 
 func TestCreateExternalRefValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, adminID, _ := linkTestSetup(t, pool, "ghval")
 
@@ -135,7 +132,6 @@ func TestCreateExternalRefValidation(t *testing.T) {
 
 func TestExternalRefRBAC(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, adminID, _ := linkTestSetup(t, pool, "ghrbac")
 
@@ -165,7 +161,6 @@ func TestExternalRefRBAC(t *testing.T) {
 
 func TestDeleteExternalRef(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, adminID, _ := linkTestSetup(t, pool, "ghdel")
 
@@ -198,7 +193,6 @@ func TestDeleteExternalRef(t *testing.T) {
 
 func TestSetWorkspaceGitHubSecret(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	admin := createTestUser(t, pool, uniqueTestEmail("ghsec-admin"))
 	wsSlug := uniqueTestSlug("ghsec-ws")
@@ -322,7 +316,6 @@ func webhookTestSetup(t *testing.T, pool *pgxpool.Pool, prefix string) (wsSlug, 
 
 func TestGitHubWebhookOpenedAutoLinks(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, displayID, secret := webhookTestSetup(t, pool, "ghook1")
 
@@ -348,7 +341,6 @@ func TestGitHubWebhookOpenedAutoLinks(t *testing.T) {
 
 func TestGitHubWebhookRedeliveryIdempotent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, displayID, secret := webhookTestSetup(t, pool, "ghook2")
 
@@ -369,7 +361,6 @@ func TestGitHubWebhookRedeliveryIdempotent(t *testing.T) {
 
 func TestGitHubWebhookClosedMerged(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, displayID, secret := webhookTestSetup(t, pool, "ghook3")
 
@@ -397,7 +388,6 @@ func TestGitHubWebhookClosedMerged(t *testing.T) {
 
 func TestGitHubWebhookClosedUpdatesManualRef(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, _, secret := webhookTestSetup(t, pool, "ghook4")
 
@@ -427,7 +417,6 @@ func TestGitHubWebhookClosedUpdatesManualRef(t *testing.T) {
 
 func TestGitHubWebhookBadSignature(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, displayID, _ := webhookTestSetup(t, pool, "ghook5")
 
@@ -449,7 +438,6 @@ func TestGitHubWebhookBadSignature(t *testing.T) {
 
 func TestGitHubWebhookIgnoresOtherEvents(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, displayID, secret := webhookTestSetup(t, pool, "ghook6")
 
@@ -468,7 +456,6 @@ func TestGitHubWebhookIgnoresOtherEvents(t *testing.T) {
 
 func TestGitHubWebhookUnknownIdentifier(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, issueID, _, secret := webhookTestSetup(t, pool, "ghook7")
 
@@ -485,7 +472,6 @@ func TestGitHubWebhookUnknownIdentifier(t *testing.T) {
 
 func TestGitHubWebhookBadPayload(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_, _, _, _, secret := webhookTestSetup(t, pool, "ghook8")
 

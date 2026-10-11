@@ -46,7 +46,6 @@ func TestValidUUID(t *testing.T) {
 // value never reaches a ::uuid cast.
 func TestMalformedUUIDPathParams400(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

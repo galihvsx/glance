@@ -12,7 +12,6 @@ import (
 func TestAnalyticsSummary(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("analytics"))
 	slug := uniqueTestSlug("analytics-ws")
 	createTestWorkspace(t, pool, "Analytics Co", slug, actor)
@@ -111,7 +110,6 @@ func TestAnalyticsSummary(t *testing.T) {
 func TestAnalyticsSummaryAccess(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("analytics-acc"))
 	slug := uniqueTestSlug("analytics-acc-ws")
 	createTestWorkspace(t, pool, "Analytics Acc", slug, actor)
@@ -138,7 +136,6 @@ func isErrNotFound(err error) bool {
 func TestAnalyticsCycleBurndown(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("analytics-bd"))
 	slug := uniqueTestSlug("analytics-bd-ws")
 	createTestWorkspace(t, pool, "Analytics BD", slug, actor)
@@ -266,7 +263,6 @@ func TestAnalyticsCycleBurndown(t *testing.T) {
 func TestAnalyticsTrends(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("analytics-tr"))
 	slug := uniqueTestSlug("analytics-tr-ws")
 	createTestWorkspace(t, pool, "Analytics TR", slug, actor)

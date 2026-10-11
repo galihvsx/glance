@@ -21,7 +21,6 @@ func setupAttachmentTest(t *testing.T) (context.Context, *pgxpool.Pool, *store.F
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	st, err := store.NewFileAttachmentStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewFileAttachmentStore: %v", err)

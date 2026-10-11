@@ -13,7 +13,6 @@ import (
 // TestDeleteEstimate: unused scale deletes; in-use scale 409s; unknown 404s.
 func TestDeleteEstimate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -54,7 +53,6 @@ func TestDeleteEstimate(t *testing.T) {
 // TestAddEstimatePoints: appends points; duplicates rejected.
 func TestAddEstimatePoints(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 
@@ -98,7 +96,6 @@ func TestAddEstimatePoints(t *testing.T) {
 // TestEstimateMutationsForbiddenForGuests: guests cannot mutate scales.
 func TestEstimateMutationsForbiddenForGuests(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	slug, ident, creator := setupStateProject(t, pool)
 

@@ -15,7 +15,6 @@ import (
 // → 400; the static /similar segment does not shadow GET /:uuid.
 func TestIssueHTTPSimilar(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-sim-http"), "test-agent", uniqueIP())

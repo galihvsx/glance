@@ -15,7 +15,6 @@ func setupPageTest(t *testing.T) (context.Context, *pgxpool.Pool, string, string
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("page"))
 	slug := uniqueTestSlug("page-ws")
 	createTestWorkspace(t, pool, "Page Co", slug, actor)

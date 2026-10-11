@@ -3,7 +3,7 @@ package service
 // RebalanceSortOrder tests (Task 23): re-spacing of sort_order values
 // within one state (the kanban board's density escape hatch). All tests
 // run against the real test database — no skips. Reuses the harness from
-// workspace_test.go (newTestPool, migrateTestDB, createTestUser,
+// workspace_test.go (newTestPool, createTestUser,
 // createTestWorkspace, uniqueTestEmail, uniqueTestSlug, createTestProject,
 // uniqueTestIdentifier, addTestMember) and issue_test.go (createTestIssue).
 
@@ -50,7 +50,6 @@ func issueSortOrders(t *testing.T, pool *pgxpool.Pool, stateID string) []float64
 
 func TestRebalanceRespaces(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator := createTestUser(t, pool, uniqueTestEmail("rebalance"))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-reb"), creator)
@@ -87,7 +86,6 @@ func TestRebalanceRespaces(t *testing.T) {
 
 func TestRebalanceRoleGates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator := createTestUser(t, pool, uniqueTestEmail("rebalance-g"))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-rebg"), creator)
@@ -116,7 +114,6 @@ func TestRebalanceRoleGates(t *testing.T) {
 
 func TestRebalanceEmptyState(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator := createTestUser(t, pool, uniqueTestEmail("rebalance-e"))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-rebe"), creator)

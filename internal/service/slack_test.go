@@ -155,7 +155,6 @@ func TestValidateSlackWebhookURL(t *testing.T) {
 // get ErrForbidden, non-members ErrNotFound (no existence leak).
 func TestSetSlackWebhookURLAdminOnly(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberID, wsSlug, _, _ := createNotifyFixture(t, pool)
 	// createNotifyFixture already added memberID as a member (role 15).
@@ -202,7 +201,6 @@ func TestSetSlackWebhookURLAdminOnly(t *testing.T) {
 // GET or PATCH responses — only the boolean flag.
 func TestSlackWebhookURLNeverSerialized(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -239,7 +237,6 @@ func TestSlackWebhookURLNeverSerialized(t *testing.T) {
 // (in-tx, never inline), and the dispatcher POSTs a compact message.
 func TestSlackIssueCreatedDelivers(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := createNotifyFixture(t, pool)
 
@@ -275,7 +272,6 @@ func TestSlackIssueCreatedDelivers(t *testing.T) {
 // dispatcher records the failure with backoff and Run itself returns nil.
 func TestSlackFailureDoesNotBlockMutation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := createNotifyFixture(t, pool)
 
@@ -311,7 +307,6 @@ func TestSlackFailureDoesNotBlockMutation(t *testing.T) {
 // compact state-change message.
 func TestSlackStateChangeDelivers(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -352,7 +347,6 @@ func TestSlackStateChangeDelivers(t *testing.T) {
 // comment with an @-mention posts two (commented + mentioned).
 func TestSlackCommentAndMentionDeliver(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, mentionedID, wsSlug, ident, issueID := createNotifyFixture(t, pool)
 
@@ -403,7 +397,6 @@ func TestSlackCommentAndMentionDeliver(t *testing.T) {
 // nothing — Slack stays silent and costs nothing.
 func TestSlackNoURLNoDelivery(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := createNotifyFixture(t, pool)
 
@@ -430,7 +423,6 @@ func TestSlackNoURLNoDelivery(t *testing.T) {
 // message; without a URL it fails fast with ErrSlackNotConfigured.
 func TestSendSlackTest(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 

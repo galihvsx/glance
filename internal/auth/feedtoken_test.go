@@ -26,7 +26,6 @@ func feedTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string 
 
 func TestCreateFeedTokenRoundTrip(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 
@@ -63,7 +62,6 @@ func TestCreateFeedTokenRoundTrip(t *testing.T) {
 
 func TestAuthenticateFeedTokenRejects(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 
@@ -91,7 +89,6 @@ func TestAuthenticateFeedTokenRejects(t *testing.T) {
 
 func TestRevokeFeedToken(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 
@@ -121,7 +118,6 @@ func TestRevokeFeedToken(t *testing.T) {
 
 func TestCreateFeedTokenRotates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 
@@ -158,7 +154,6 @@ func TestCreateFeedTokenRotates(t *testing.T) {
 
 func TestGetFeedTokenStatus(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 
@@ -200,7 +195,6 @@ func TestGetFeedTokenStatus(t *testing.T) {
 
 func TestAuthenticateFeedTokenInactiveOwner(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := feedTestUser(t, ctx, pool)
 

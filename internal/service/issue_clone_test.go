@@ -37,7 +37,6 @@ func mustClone(t *testing.T, pool *pgxpool.Pool, wsSlug, ident, actorID, issueID
 
 func TestCloneIssueCopiesFields(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, owner := cloneTestSetup(t, pool, "fields")
 
@@ -178,7 +177,6 @@ func TestCloneIssueCopiesFields(t *testing.T) {
 
 func TestCloneIssueDoesNotCopy(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, owner := cloneTestSetup(t, pool, "nocopy")
 
@@ -236,7 +234,6 @@ func TestCloneIssueDoesNotCopy(t *testing.T) {
 
 func TestCloneIssueDraftStaysDraft(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, owner := cloneTestSetup(t, pool, "draft")
 
@@ -254,7 +251,6 @@ func TestCloneIssueDraftStaysDraft(t *testing.T) {
 
 func TestCloneIssueRoleGates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, owner := cloneTestSetup(t, pool, "gates")
 

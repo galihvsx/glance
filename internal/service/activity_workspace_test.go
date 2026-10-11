@@ -82,7 +82,6 @@ func setupWorkspaceActivity(t *testing.T, pool *pgxpool.Pool) (ws1, p1, p2, acto
 func TestGetWorkspaceActivityAggregates(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ws1, p1, p2, actor, a, b, _, _, _ := setupWorkspaceActivity(t, pool)
 
 	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil)
@@ -134,7 +133,6 @@ func TestGetWorkspaceActivityAggregates(t *testing.T) {
 func TestGetWorkspaceActivityVisibility(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ws1, _, _, actor, _, _, ws2, _, _ := setupWorkspaceActivity(t, pool)
 
 	// The caller is not a member of ws2: 404, and ws2's rows never leak
@@ -185,7 +183,6 @@ func TestGetWorkspaceActivityVisibility(t *testing.T) {
 func TestGetWorkspaceActivityPagination(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ws1, _, _, actor, _, _, _, _, _ := setupWorkspaceActivity(t, pool)
 
 	// Full feed in one page for the reference order.
@@ -249,7 +246,6 @@ func TestGetWorkspaceActivityPagination(t *testing.T) {
 func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ws1, _, _, actor, a, b, _, _, _ := setupWorkspaceActivity(t, pool)
 
 	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{"state_id", "priority"})

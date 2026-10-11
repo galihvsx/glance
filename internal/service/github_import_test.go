@@ -263,7 +263,6 @@ func assertTokenAbsentFromDB(t *testing.T, pool *pgxpool.Pool, token string) {
 // and rerun dedupe.
 func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberID, memberEmail, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -392,7 +391,6 @@ func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 // and that preview writes nothing.
 func TestPreviewGitHubImport(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, memberEmail, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -462,7 +460,6 @@ func TestPreviewGitHubImport(t *testing.T) {
 // must not pull the closed issue.
 func TestGitHubStateFilter(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -489,7 +486,6 @@ func TestGitHubStateFilter(t *testing.T) {
 // never a GitHub request.
 func TestGitHubInputValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -535,7 +531,6 @@ func TestGitHubInputValidation(t *testing.T) {
 // (tenancy boundary), guests get ErrForbidden — same as the CSV importer.
 func TestGitHubMemberGate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -588,7 +583,6 @@ func TestGitHubSSRFGuard(t *testing.T) {
 	// A Link header pointing off-host aborts the fetch before any
 	// follow-up request carries the token there.
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -617,7 +611,6 @@ func TestGitHubSSRFGuard(t *testing.T) {
 // typed 429 error, and the token never appears in any error string.
 func TestGitHubErrorMapping(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -728,7 +721,6 @@ func TestGitHubErrorMapping(t *testing.T) {
 // database and in no error string.
 func TestGitHubTokenNeverPersisted(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, memberEmail, wsSlug, ident := githubImportFixture(t, pool)
 
@@ -765,7 +757,6 @@ func TestGitHubTokenNeverPersisted(t *testing.T) {
 // run-level deadline on top of the per-request timeout).
 func TestGitHubImportRespectsContextCancellation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 
 	_, srv := newGitHubStub(t)
@@ -827,7 +818,6 @@ func TestGitHubLabelColor(t *testing.T) {
 // reports the real total. (Covers the preview/display split.)
 func TestGitHubPreviewRowCap(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
 

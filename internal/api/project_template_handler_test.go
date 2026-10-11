@@ -28,7 +28,6 @@ func testProjectTemplateServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 
 func TestProjectTemplateAPI(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testProjectTemplateServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("ptapi-admin"), "test-agent/1.0", uniqueIP())
@@ -172,7 +171,6 @@ func TestProjectTemplateAPI(t *testing.T) {
 
 func TestProjectTemplateAPIApplyOnCreate(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testProjectTemplateServer(t, pool)
 
 	adminCookie := loginTestUser(t, e, pool, uniqueEmail("ptapc-admin"), "test-agent/1.0", uniqueIP())

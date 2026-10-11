@@ -14,7 +14,6 @@ import (
 func importTestSetup(t *testing.T) (*pgxpool.Pool, string, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	_ = ctx
 

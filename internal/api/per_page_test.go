@@ -19,7 +19,6 @@ import (
 func setupPerPageProject(t *testing.T, prefix string) (*echo.Echo, *http.Cookie, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := echo.New()
 	RegisterAuthRoutes(e, &AuthHandler{Pool: pool, Config: &config.Config{OTPPepper: "test-pepper-do-not-use-in-prod"}})
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
@@ -70,7 +69,6 @@ func TestPerPageOutOfRangeRejected(t *testing.T) {
 // global search endpoint (C2T8 bug #6 consistency).
 func TestSearchPerPageOutOfRangeRejected(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := echo.New()
 	RegisterAuthRoutes(e, &AuthHandler{Pool: pool, Config: &config.Config{OTPPepper: "test-pepper-do-not-use-in-prod"}})
 	RegisterWorkItemRoutes(e, &IssueHandler{Pool: pool})
