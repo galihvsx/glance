@@ -67,7 +67,6 @@ func setupActivityFeed(t *testing.T, pool *pgxpool.Pool) (slug, ident, actor str
 func TestGetProjectActivityFeedRows(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	slug, ident, actor, a, b := setupActivityFeed(t, pool)
 
 	entries, err := GetProjectActivity(ctx, pool, slug, ident, actor, ActivityDefaultLimit)
@@ -125,7 +124,6 @@ func TestGetProjectActivityFeedRows(t *testing.T) {
 func TestGetProjectActivityLimit(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	slug, ident, actor, _, _ := setupActivityFeed(t, pool)
 
 	entries, err := GetProjectActivity(ctx, pool, slug, ident, actor, 2)
@@ -149,7 +147,6 @@ func TestGetProjectActivityLimit(t *testing.T) {
 func TestGetProjectActivityGuestForbidden(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	slug, ident, actor, _, _ := setupActivityFeed(t, pool)
 
 	// Add a guest (role 5) to the workspace directly.
@@ -180,7 +177,6 @@ func TestGetProjectActivityGuestForbidden(t *testing.T) {
 func TestGetProjectActivityExcludesDeletedIssues(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	slug, ident, actor, _, b := setupActivityFeed(t, pool)
 
 	if err := DeleteIssue(ctx, pool, slug, ident, b.ID, actor); err != nil {

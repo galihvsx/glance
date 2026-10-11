@@ -29,7 +29,6 @@ func testNotifyServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 
 func TestNotifyHTTPEndpoints(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testNotifyServer(t, pool)
 
 	cookieA := loginTestUser(t, e, pool, uniqueEmail("notify-a"), "ua", "10.9.0.1")
@@ -150,7 +149,6 @@ func TestNotifyHTTPEndpoints(t *testing.T) {
 
 func TestWebhookHTTPCRUD(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testNotifyServer(t, pool)
 
 	cookieA := loginTestUser(t, e, pool, uniqueEmail("wh-a"), "ua", "10.9.1.1")
@@ -257,7 +255,6 @@ func TestWebhookHTTPCRUD(t *testing.T) {
 // unauthenticated → 401. Real test database, no skips.
 func TestDigestScheduleHTTPEndpoints(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testNotifyServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("digest-sched"), "ua", "10.9.0.3")
@@ -330,7 +327,6 @@ func TestDigestScheduleHTTPEndpoints(t *testing.T) {
 // resets to the server-local default.
 func TestDigestScheduleTZHTTPEndpoints(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testNotifyServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("digest-sched-tz"), "ua", "10.9.0.4")

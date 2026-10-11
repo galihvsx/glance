@@ -60,7 +60,6 @@ func getProjectHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie, wsSlug, ide
 
 func TestProjectPatchPartialSemantics(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testProjectServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-proj-patch"), "test-agent/1.0", uniqueIP())
@@ -131,7 +130,6 @@ func decodeProjectIcon(t *testing.T, recBody []byte) *string {
 // (invalid → 400).
 func TestProjectIconHTTP(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testProjectServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("proj-icon-http"), "test-agent/1.0", uniqueIP())

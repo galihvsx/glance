@@ -12,7 +12,6 @@ import (
 
 func TestUpdateUserName(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	email := uniqueEmail("profile-name")

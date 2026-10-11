@@ -66,7 +66,6 @@ func planeImportMultipartBody(t *testing.T, fileName string, content []byte, fie
 func setupPlaneImportHTTP(t *testing.T) (*echo.Echo, *pgxpool.Pool, *http.Cookie, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

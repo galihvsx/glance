@@ -5,7 +5,7 @@ package service
 // the same tx as project creation, role gates (guest 5 cannot
 // create/update), membership scoping. All tests run against the real test
 // database — no skips. Reuses the harness from workspace_test.go
-// (newTestPool, migrateTestDB, createTestUser, createTestWorkspace,
+// (newTestPool, createTestUser, createTestWorkspace,
 // uniqueTestEmail, uniqueTestSlug, UpsertMember).
 
 import (
@@ -55,7 +55,6 @@ var wantDefaultStates = []struct{ name, group string }{
 
 func TestCreateProject(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-creator"))
@@ -94,7 +93,6 @@ func TestCreateProject(t *testing.T) {
 
 func TestCreateProjectDuplicateIdentifier(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-dup"))
@@ -125,7 +123,6 @@ func TestCreateProjectDuplicateIdentifier(t *testing.T) {
 
 func TestCreateProjectIdentifierUniquePerWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-ws"))
@@ -142,7 +139,6 @@ func TestCreateProjectIdentifierUniquePerWorkspace(t *testing.T) {
 
 func TestCreateProjectGuestForbidden(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("proj-admin"))
@@ -158,7 +154,6 @@ func TestCreateProjectGuestForbidden(t *testing.T) {
 
 func TestCreateProjectMemberAllowed(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("proj-admin2"))
@@ -173,7 +168,6 @@ func TestCreateProjectMemberAllowed(t *testing.T) {
 
 func TestCreateProjectNonMemberNotFound(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-out1"))
@@ -188,7 +182,6 @@ func TestCreateProjectNonMemberNotFound(t *testing.T) {
 
 func TestCreateProjectInvalidIdentifier(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-badid"))
@@ -203,7 +196,6 @@ func TestCreateProjectInvalidIdentifier(t *testing.T) {
 
 func TestCreateProjectNameRequired(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-noname"))
@@ -216,7 +208,6 @@ func TestCreateProjectNameRequired(t *testing.T) {
 
 func TestGetProject(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-get"))
@@ -244,7 +235,6 @@ func TestGetProject(t *testing.T) {
 
 func TestListProjects(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-list"))
@@ -268,7 +258,6 @@ func TestListProjects(t *testing.T) {
 
 func TestUpdateProject(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("proj-upd-admin"))
@@ -335,7 +324,6 @@ func TestUpdateProject(t *testing.T) {
 
 func TestListStatesNonMemberNotFound(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-st"))

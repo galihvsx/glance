@@ -51,7 +51,6 @@ type archiveFixture struct {
 func newArchiveFixture(t *testing.T, prefix string) *archiveFixture {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := archiveTestServer(t, pool)
 
 	admin := loginTestUser(t, e, pool, uniqueEmail(prefix+"-admin"), "test-agent/1.0", uniqueIP())

@@ -131,7 +131,6 @@ func TestGitHubImportBodyValidation(t *testing.T) {
 // routes: no session cookie → 401 without touching GitHub.
 func TestGitHubImportRoutesRequireAuth(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterImportRoutes(e, &ProjectHandler{Pool: pool})
 

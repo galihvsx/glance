@@ -26,7 +26,6 @@ import (
 func setupExportProject(t *testing.T, prefix string) (*pgxpool.Pool, *echo.Echo, *http.Cookie, string, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail(prefix), "test-agent", uniqueIP())

@@ -29,7 +29,6 @@ func testSatelliteFixture(t *testing.T, pool *pgxpool.Pool, tag string) (wsSlug,
 
 func TestCommentThreading(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "thread")
 
@@ -81,7 +80,6 @@ func TestCommentThreading(t *testing.T) {
 
 func TestCommentEditDelete(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "cedit")
 	other := createTestUser(t, pool, uniqueTestEmail("sat-cedit-other"))
@@ -127,7 +125,6 @@ func TestCommentEditDelete(t *testing.T) {
 
 func TestRelationReverseDerivation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, _, actor := testSatelliteFixture(t, pool, "rel")
 	a := createTestIssue(t, pool, wsSlug, ident, actor, "A")
@@ -188,7 +185,6 @@ func TestRelationReverseDerivation(t *testing.T) {
 
 func TestVersionSnapshotsAndRestore(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "ver")
 
@@ -266,7 +262,6 @@ func TestVersionSnapshotsAndRestore(t *testing.T) {
 
 func TestToggleIdempotency(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "toggle")
 
@@ -347,7 +342,6 @@ func TestToggleIdempotency(t *testing.T) {
 
 func TestIssueHistory(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "hist")
 
@@ -374,7 +368,6 @@ func TestIssueHistory(t *testing.T) {
 
 func TestSatellitesOfDeletedIssue404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "del404")
 
@@ -401,7 +394,6 @@ func TestSatellitesOfDeletedIssue404(t *testing.T) {
 
 func TestSatelliteGuestReadOnly(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "guest")
 	guest := createTestUser(t, pool, uniqueTestEmail("sat-guest-ro"))
@@ -429,7 +421,6 @@ func TestSatelliteGuestReadOnly(t *testing.T) {
 
 func TestConcurrentPatchVersionsSequential(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, issueID, actor := testSatelliteFixture(t, pool, "verconc")
 
@@ -474,7 +465,6 @@ func TestConcurrentPatchVersionsSequential(t *testing.T) {
 // normalization, or delete resolution.
 func TestRelationUUIDCaseNormalization(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, _, actor := testSatelliteFixture(t, pool, "case")
 	a := createTestIssue(t, pool, wsSlug, ident, actor, "A")
@@ -568,7 +558,6 @@ func TestRelationUUIDCaseNormalization(t *testing.T) {
 // cyclic restores instead of weakening the guards.
 func TestRestoreVersionUUIDCaseCycleGuards(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	wsSlug, ident, _, actor := testSatelliteFixture(t, pool, "casever")
 	p := createTestIssue(t, pool, wsSlug, ident, actor, "Parent")

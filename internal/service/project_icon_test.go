@@ -3,7 +3,7 @@ package service
 // C18T4 project icon tests: the single-emoji validation table
 // (normalizeProjectIcon), empty→NULL normalization, and the icon
 // round-trip through create/get/list/update. Real test database, no skips.
-// Reuses the harness from workspace_test.go (newTestPool, migrateTestDB,
+// Reuses the harness from workspace_test.go (newTestPool,
 // createTestUser, createTestWorkspace, uniqueTestEmail, uniqueTestSlug).
 
 import (
@@ -74,7 +74,6 @@ func TestNormalizeProjectIconTable(t *testing.T) {
 
 func TestProjectIconRoundTrip(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("proj-icon"))

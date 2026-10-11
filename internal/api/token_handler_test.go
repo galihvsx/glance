@@ -17,7 +17,6 @@ import (
 
 func TestTokenBearerAuthEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	email := uniqueEmail("tok-e2e")
@@ -56,7 +55,6 @@ func TestTokenBearerAuthEndToEnd(t *testing.T) {
 
 func TestTokenRevokedGives401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-rev"), "test-agent/1.0", uniqueIP())
@@ -84,7 +82,6 @@ func TestTokenRevokedGives401(t *testing.T) {
 
 func TestTokenWrongScopeGives403(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-scope"), "test-agent/1.0", uniqueIP())
@@ -114,7 +111,6 @@ func TestTokenWrongScopeGives403(t *testing.T) {
 
 func TestTokenCannotManageTokens(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-mgmt"), "test-agent/1.0", uniqueIP())
@@ -141,7 +137,6 @@ func TestTokenCannotManageTokens(t *testing.T) {
 
 func TestTokenListOmitsSecrets(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-list"), "test-agent/1.0", uniqueIP())
@@ -177,7 +172,6 @@ func TestTokenListOmitsSecrets(t *testing.T) {
 
 func TestUnknownBearerTokenGives401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces", nil)
@@ -192,7 +186,6 @@ func TestUnknownBearerTokenGives401(t *testing.T) {
 
 func TestCreateTokenValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-val"), "test-agent/1.0", uniqueIP())
@@ -221,7 +214,6 @@ func TestCreateTokenValidation(t *testing.T) {
 
 func TestExpiredBearerTokenGives401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-exp"), "test-agent/1.0", uniqueIP())
@@ -245,7 +237,6 @@ func TestExpiredBearerTokenGives401(t *testing.T) {
 
 func TestRevokeTokenMalformedIDGives400(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := tokenTestServerFull(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("tok-badid"), "test-agent/1.0", uniqueIP())

@@ -35,7 +35,6 @@ func auditRowsFor(t *testing.T, pool *pgxpool.Pool, entityID string) []AuditEntr
 func TestAuditLogRecordsUserMutations(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("audit-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("audit-victim"), false)
@@ -108,7 +107,6 @@ func TestAuditLogRecordsUserMutations(t *testing.T) {
 func TestAuditLogRecordsWorkspaceDelete(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("audit-del-admin"), true)
 	ws := createTestWorkspace(t, pool, "Audit Delete WS", uniqueTestSlug("audit-del-ws"), admin)
@@ -152,7 +150,6 @@ func TestAuditLogRecordsWorkspaceDelete(t *testing.T) {
 func TestAuditLogRefusedMutationsRecordNothing(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("audit-refuse-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("audit-refuse-victim"), false)
@@ -176,7 +173,6 @@ func TestAuditLogRefusedMutationsRecordNothing(t *testing.T) {
 func TestListAuditLogFilters(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	adminA := adminTestUser(t, pool, uniqueTestEmail("audit-f-a"), true)
 	adminB := adminTestUser(t, pool, uniqueTestEmail("audit-f-b"), true)
@@ -256,7 +252,6 @@ func TestListAuditLogFilters(t *testing.T) {
 func TestListAuditLogPagination(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("audit-pg-admin"), true)
 	victims := make([]string, 0, 4)
@@ -308,7 +303,6 @@ func TestListAuditLogPagination(t *testing.T) {
 func TestListAuditLogNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	admin := adminTestUser(t, pool, uniqueTestEmail("audit-ord-admin"), true)
 	victim := adminTestUser(t, pool, uniqueTestEmail("audit-ord-victim"), false)

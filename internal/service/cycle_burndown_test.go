@@ -14,7 +14,6 @@ import (
 func TestCycleBurndown(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("burndown"))
 	slug := uniqueTestSlug("burndown-ws")
 	createTestWorkspace(t, pool, "Burndown Co", slug, actor)
@@ -134,7 +133,6 @@ func TestCycleBurndown(t *testing.T) {
 func TestCycleBurndownEmpty(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("burndown-empty"))
 	slug := uniqueTestSlug("burndown-empty-ws")
 	createTestWorkspace(t, pool, "Burndown Co", slug, actor)
@@ -177,7 +175,6 @@ func TestCycleBurndownEmpty(t *testing.T) {
 func TestCycleBurndownAccess(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("burndown-acc"))
 	slug := uniqueTestSlug("burndown-acc-ws")
 	createTestWorkspace(t, pool, "Burndown Co", slug, actor)

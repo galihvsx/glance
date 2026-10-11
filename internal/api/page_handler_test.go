@@ -17,7 +17,6 @@ import (
 func setupPageHTTP(t *testing.T, prefix string) (*echo.Echo, *http.Cookie, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

@@ -19,7 +19,6 @@ import (
 
 func TestViewerRoleGates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("viewer-gate-admin"))

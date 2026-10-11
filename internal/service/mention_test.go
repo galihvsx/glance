@@ -215,7 +215,6 @@ func notificationTypes(t *testing.T, pool *pgxpool.Pool, userID string) []string
 // gets nothing.
 func TestCreateCommentMentionNotifies(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, watcherID, mentioneeID, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -248,7 +247,6 @@ func TestCreateCommentMentionNotifies(t *testing.T) {
 // pref gets no notification.
 func TestCreateCommentMentionPrefRespected(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, mentioneeID, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -269,7 +267,6 @@ func TestCreateCommentMentionPrefRespected(t *testing.T) {
 // pref list with defaults (in_app on, email off).
 func TestCreateCommentMentionPrefListed(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	userID := createTestUser(t, pool, uniqueTestEmail("mention-preflist"))
 	prefs, err := ListNotificationPrefs(ctx, pool, userID)
@@ -292,7 +289,6 @@ func TestCreateCommentMentionPrefListed(t *testing.T) {
 // comment.created and mention.
 func TestCreateCommentMentionedWatcherSinglePing(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, watcherID, _, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -310,7 +306,6 @@ func TestCreateCommentMentionedWatcherSinglePing(t *testing.T) {
 // produces comment.created for the watcher — no mention rows.
 func TestCreateCommentNoMentionNoExtraNoise(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, watcherID, _, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -328,7 +323,6 @@ func TestCreateCommentNoMentionNoExtraNoise(t *testing.T) {
 // notifies the mentioned member.
 func TestUpdateCommentMentionNotifies(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, mentioneeID, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -350,7 +344,6 @@ func TestUpdateCommentMentionNotifies(t *testing.T) {
 // produces no notification.
 func TestUpdateCommentSelfMentionSkipped(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, _, wsSlug, ident, issueID := createMentionFixture(t, pool)
 
@@ -372,7 +365,6 @@ func TestUpdateCommentSelfMentionSkipped(t *testing.T) {
 // the workspace creates no notification and does not fail the comment.
 func TestCreateCommentMentionNonMemberSkipped(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, watcherID, mentioneeID, wsSlug, ident, issueID := createMentionFixture(t, pool)
 

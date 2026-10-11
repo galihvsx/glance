@@ -16,7 +16,6 @@ func setupTemplateTest(t *testing.T) (context.Context, *pgxpool.Pool, string, st
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("template"))
 	slug := uniqueTestSlug("template-ws")
 	createTestWorkspace(t, pool, "Template Co", slug, actor)

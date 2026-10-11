@@ -18,7 +18,6 @@ func setupCustomFieldTest(t *testing.T) (context.Context, *pgxpool.Pool, string,
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("customfield"))
 	slug := uniqueTestSlug("cf-ws")
 	createTestWorkspace(t, pool, "Custom Field Co", slug, actor)

@@ -122,7 +122,6 @@ func TestGuardTarget(t *testing.T) {
 // dialed. The httptest server must see ZERO requests.
 func TestDeliverRowBlocksPrivateTarget(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -168,7 +167,6 @@ func TestDeliverRowBlocksPrivateTarget(t *testing.T) {
 // target goes back to pending with backoff (attempts bumped), not failed.
 func TestDeliverRowDNSFailureRetries(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 
@@ -232,7 +230,6 @@ func TestDoPinnedDelivers(t *testing.T) {
 // (recordFailure → backoff → failed), never "done".
 func TestWebhookRedirectNotFollowed(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, _, _ := createNotifyFixture(t, pool)
 

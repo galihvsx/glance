@@ -3,7 +3,7 @@ package service
 // Duplicate detection on issue create (C8T7): FindSimilarIssues —
 // pg_trgm similarity lookup over issue titles. Real test database,
 // no skips. Reuses the harness from workspace_test.go (newTestPool,
-// migrateTestDB, createTestUser, createTestWorkspace, createTestProject,
+// createTestUser, createTestWorkspace, createTestProject,
 // createTestIssue, backlogStateID).
 
 import (
@@ -21,7 +21,6 @@ import (
 func setupSimilarProject(t *testing.T, prefix string) (*pgxpool.Pool, string, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	userID := createTestUser(t, pool, uniqueTestEmail(prefix))
 	wsSlug := uniqueTestSlug(prefix)
 	createTestWorkspace(t, pool, prefix+" Co", wsSlug, userID)

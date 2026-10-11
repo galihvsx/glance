@@ -7,7 +7,7 @@ package service
 // idempotency, role gates, and the inbox surfacing rule (snoozed items
 // resurface once snoozed_till passes). All tests run against the real
 // test database — no skips. Reuses the harness from workspace_test.go
-// (newTestPool, migrateTestDB, createTestUser, createTestWorkspace,
+// (newTestPool, createTestUser, createTestWorkspace,
 // uniqueTestEmail, uniqueTestSlug, createTestProject,
 // uniqueTestIdentifier, addTestMember) and issue_test.go
 // (backlogStateID, countActivities).
@@ -54,7 +54,6 @@ func intakeStatusOf(t *testing.T, pool *pgxpool.Pool, issueID string) int16 {
 
 func TestIntakeAutoCreatedWithProject(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-auto")
 
@@ -72,7 +71,6 @@ func TestIntakeAutoCreatedWithProject(t *testing.T) {
 
 func TestCreateIssueWithIntakeTrueLandsPending(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-land")
 
@@ -99,7 +97,6 @@ func TestCreateIssueWithIntakeTrueLandsPending(t *testing.T) {
 
 func TestAcceptIntakeIssueMovesToBacklog(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-accept")
@@ -146,7 +143,6 @@ func TestAcceptIntakeIssueMovesToBacklog(t *testing.T) {
 
 func TestAcceptIntakeIssueIdempotent(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-accept2")
@@ -170,7 +166,6 @@ func TestAcceptIntakeIssueIdempotent(t *testing.T) {
 
 func TestRejectIntakeIssueSoftDeletes(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-reject")
@@ -194,7 +189,6 @@ func TestRejectIntakeIssueSoftDeletes(t *testing.T) {
 
 func TestSnoozeIntakeIssue(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-snooze")
@@ -224,7 +218,6 @@ func TestSnoozeIntakeIssue(t *testing.T) {
 
 func TestDuplicateIntakeIssue(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-dupe")
@@ -271,7 +264,6 @@ func TestDuplicateIntakeIssue(t *testing.T) {
 
 func TestIntakeInboxSurfacing(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-inbox")
@@ -323,7 +315,6 @@ func TestIntakeInboxSurfacing(t *testing.T) {
 
 func TestTriageRequiresMember(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-roles")
@@ -345,7 +336,6 @@ func TestTriageRequiresMember(t *testing.T) {
 
 func TestTriageConflictOnTerminal(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-term")
@@ -367,7 +357,6 @@ func TestTriageConflictOnTerminal(t *testing.T) {
 
 func TestTriageUnknownIssue(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-404")
@@ -387,7 +376,6 @@ func TestTriageUnknownIssue(t *testing.T) {
 
 func TestIntakeBackfillForExistingProjects(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "intake-backfill")
@@ -415,7 +403,6 @@ func TestIntakeBackfillForExistingProjects(t *testing.T) {
 // expired snoozes (resurfaced to the main inbox) are excluded.
 func TestListSnoozedIntakeIssues(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator, wsSlug, identifier := intakeFixture(t, pool, "snooz-part")

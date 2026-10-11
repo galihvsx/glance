@@ -28,7 +28,6 @@ type bulkSetTestCtx struct {
 func setupBulkSetHTTP(t *testing.T) *bulkSetTestCtx {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("bulk-set-http"), "test-agent", uniqueIP())

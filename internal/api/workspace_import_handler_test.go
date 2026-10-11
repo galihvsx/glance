@@ -108,7 +108,6 @@ type archiveSource struct {
 func seedArchiveSource(t *testing.T, prefix string) archiveSource {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 	ctx := context.Background()
 

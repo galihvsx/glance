@@ -518,7 +518,6 @@ func TestTrelloChecklistMarkdown(t *testing.T) {
 // counts without fetching comment bodies, and no writes anywhere.
 func TestPreviewTrelloImport(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, projectID := trelloImportFixture(t, pool)
 
@@ -607,7 +606,6 @@ func TestPreviewTrelloImport(t *testing.T) {
 // import as markdown sections (C11T3), and rerun dedupe.
 func TestImportTrelloCardsEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, projectID := trelloImportFixture(t, pool)
 
@@ -810,7 +808,6 @@ func TestImportTrelloCardsEndToEnd(t *testing.T) {
 // failure is recorded as a per-card error, never aborting the batch.
 func TestImportTrelloChecklistFetchFailure(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, projectID := trelloImportFixture(t, pool)
 
@@ -857,7 +854,6 @@ func TestImportTrelloChecklistFetchFailure(t *testing.T) {
 // messages.
 func TestTrelloTokenNeverPersisted(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, memberEmail, wsSlug, ident, _ := trelloImportFixture(t, pool)
 
@@ -899,7 +895,6 @@ func TestTrelloTokenNeverPersisted(t *testing.T) {
 // generic upstream error.
 func TestTrelloImportErrorMapping(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 	actorID, _, wsSlug, ident, _ := trelloImportFixture(t, pool)
 	in := trelloTestInput()

@@ -47,7 +47,6 @@ func TestGenerateTokenFormat(t *testing.T) {
 
 func TestCreateAndAuthenticateToken(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -82,7 +81,6 @@ func TestCreateAndAuthenticateToken(t *testing.T) {
 
 func TestTokenPlaintextNeverStored(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -102,7 +100,6 @@ func TestTokenPlaintextNeverStored(t *testing.T) {
 
 func TestCreateTokenRejectsPastExpiry(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -119,7 +116,6 @@ func TestCreateTokenRejectsPastExpiry(t *testing.T) {
 
 func TestExpiredTokenRejected(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -144,7 +140,6 @@ func TestExpiredTokenRejected(t *testing.T) {
 
 func TestRevokeToken(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -175,7 +170,6 @@ func TestRevokeToken(t *testing.T) {
 
 func TestCreateTokenValidatesScopes(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -194,7 +188,6 @@ func TestCreateTokenValidatesScopes(t *testing.T) {
 // once — ["read","read"] becomes ["read"], not a doubled row.
 func TestCreateTokenDedupesScopes(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	userID := createUserRow(t, pool)
@@ -224,7 +217,6 @@ func TestScopeImplication(t *testing.T) {
 
 func TestTokenRateLimit(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	// Unique key: the rate_limits table persists across runs.

@@ -28,7 +28,6 @@ func testIssueServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 
 func TestIssueHTTPCRUD(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-http"), "test-agent", uniqueIP())
@@ -178,7 +177,6 @@ func TestIssueHTTPCRUD(t *testing.T) {
 // pagination through HTTP, and 400 envelopes for bad params.
 func TestIssueHTTPList(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-list-http"), "test-agent", uniqueIP())
@@ -276,7 +274,6 @@ func TestIssueHTTPList(t *testing.T) {
 // envelope.
 func TestListIssuesFilterParams(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-filter-http"), "test-agent", uniqueIP())
@@ -350,7 +347,6 @@ func TestListIssuesFilterParams(t *testing.T) {
 // segment does not shadow PATCH /:uuid.
 func TestIssueHTTPClone(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("issue-clone-http"), "test-agent", uniqueIP())

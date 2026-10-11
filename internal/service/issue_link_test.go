@@ -19,7 +19,6 @@ func setupIssueLinkTest(t *testing.T) (context.Context, *pgxpool.Pool, string, s
 	t.Helper()
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("link"))
 	slug := uniqueTestSlug("link-ws")
 	createTestWorkspace(t, pool, "Link Co", slug, actor)

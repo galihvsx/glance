@@ -63,7 +63,6 @@ func adminPaths() []struct{ method, path string } {
 
 func TestAdminUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	for _, tc := range adminPaths() {
@@ -80,7 +79,6 @@ func TestAdminUnauthenticated401(t *testing.T) {
 
 func TestAdminNonAdmin403(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("nonadmin"), "test-agent", uniqueIP())
@@ -98,7 +96,6 @@ func TestAdminNonAdmin403(t *testing.T) {
 
 func TestAdminMeExposesIsAdmin(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("me-admin"))
@@ -129,7 +126,6 @@ func TestAdminMeExposesIsAdmin(t *testing.T) {
 
 func TestAdminStats200(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("stats-admin"))
@@ -155,7 +151,6 @@ func TestAdminStats200(t *testing.T) {
 
 func TestAdminListUsersEnvelope(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	cookie := loginAdminUser(t, e, pool, uniqueEmail("list-admin"))
@@ -203,7 +198,6 @@ func TestAdminListUsersEnvelope(t *testing.T) {
 
 func TestAdminPatchUserSelfDemote409(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	email := uniqueEmail("selfdemote-admin")
@@ -258,7 +252,6 @@ func TestAdminPatchUserSelfDemote409(t *testing.T) {
 
 func TestAdminDeactivateReactivateFlow(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("deact-admin"))
@@ -308,7 +301,6 @@ func TestAdminDeactivateReactivateFlow(t *testing.T) {
 
 func TestAdminDeleteWorkspaceConfirm(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("delws-admin"))
@@ -348,7 +340,6 @@ func TestAdminDeleteWorkspaceConfirm(t *testing.T) {
 
 func TestAdminListWorkspacesEnvelope(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("wslist-admin"))
@@ -420,7 +411,6 @@ func TestAdminListWorkspacesEnvelope(t *testing.T) {
 // behave like the other admin list endpoints.
 func TestAdminAuditLogEnvelope(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testAdminServer(t, pool)
 
 	adminCookie := loginAdminUser(t, e, pool, uniqueEmail("audit-h-admin"))

@@ -21,7 +21,6 @@ import (
 func setupPageCommentHTTP(t *testing.T) (e *echo.Echo, pool *pgxpool.Pool, adminCookie *http.Cookie, pageBase, slug string) {
 	t.Helper()
 	pool = newTestPool(t)
-	migrateTestDB(t, pool)
 	e = testServer(t, pool)
 	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
 	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})

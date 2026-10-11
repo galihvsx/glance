@@ -44,7 +44,6 @@ func createWorkItemHTTP(t *testing.T, e *echo.Echo, cookie *http.Cookie, base, b
 
 func TestWorkItemByDisplayID(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkItemServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("workitem"), "test-agent", uniqueIP())
@@ -103,7 +102,6 @@ func TestWorkItemByDisplayID(t *testing.T) {
 
 func TestWorkItemByDisplayIDTenancy(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkItemServer(t, pool)
 
 	cookie1 := loginTestUser(t, e, pool, uniqueEmail("wi-ten1"), "test-agent", uniqueIP())
@@ -149,7 +147,6 @@ func TestWorkItemByDisplayIDTenancy(t *testing.T) {
 
 func TestGlobalSearch(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkItemServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("gsearch"), "test-agent", uniqueIP())
@@ -228,7 +225,6 @@ func TestGlobalSearch(t *testing.T) {
 
 func TestGlobalSearchCursorPagination(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testWorkItemServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("gspage"), "test-agent", uniqueIP())

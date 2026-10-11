@@ -60,7 +60,6 @@ func TestIsBootstrapAdminEmail(t *testing.T) {
 func TestSeedAdminEmails(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	plain := uniqueEmail("seed-plain")
 	listed := uniqueEmail("seed-listed")
@@ -130,7 +129,6 @@ func TestSeedAdminEmails(t *testing.T) {
 func TestFirstUserProvisionedIsAdmin(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := adminTestConfig()
 
 	tx, err := pool.Begin(ctx)
@@ -164,7 +162,6 @@ func TestFirstUserProvisionedIsAdmin(t *testing.T) {
 func TestBootstrapEmailProvisionedIsAdmin(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	listed := uniqueEmail("listed-user")
 	cfg := adminTestConfig(strings.ToLower(listed))
 
@@ -193,7 +190,6 @@ func TestBootstrapEmailProvisionedIsAdmin(t *testing.T) {
 func TestLaterUserNotAdmin(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := adminTestConfig()
 
 	if _, err := pool.Exec(ctx, `INSERT INTO users (email, is_admin) VALUES ($1, true)`, uniqueEmail("first-admin")); err != nil {
@@ -220,7 +216,6 @@ func TestLaterUserNotAdmin(t *testing.T) {
 func TestProvisionNeverChangesExistingAdminFlag(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	nonAdmin := uniqueEmail("stay-plain")
 	admin := uniqueEmail("stay-admin")
@@ -271,7 +266,6 @@ func TestProvisionNeverChangesExistingAdminFlag(t *testing.T) {
 func TestProvisionUserTxMergesProfile(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := adminTestConfig()
 
 	if _, err := pool.Exec(ctx, `INSERT INTO users (email, is_admin) VALUES ($1, true)`, uniqueEmail("seed")); err != nil {

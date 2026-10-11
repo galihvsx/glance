@@ -74,7 +74,6 @@ func getWorkspaceExport(t *testing.T, e *echo.Echo, slug string, cookie *http.Co
 func seedExportWorkspace(t *testing.T, prefix string) (*pgxpool.Pool, *echo.Echo, *http.Cookie, string, string, string, string) {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 	ctx := context.Background()
 
@@ -188,7 +187,6 @@ func decodeExportArchive(t *testing.T, rec *httptest.ResponseRecorder) exportArc
 
 func TestWorkspaceExportUnauthenticated401(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	rec := getWorkspaceExport(t, e, "nope", nil)
@@ -407,7 +405,6 @@ func TestWorkspaceExportContents(t *testing.T) {
 
 func TestWorkspaceExportEmptyWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testIssueServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("wxempty"), "test-agent", uniqueIP())

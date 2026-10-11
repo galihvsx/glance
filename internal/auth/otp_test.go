@@ -17,7 +17,6 @@ import (
 
 	"glance/internal/config"
 	"glance/internal/store"
-	"glance/migrations"
 )
 
 // testSeq hands out process-unique sequence numbers so parallel test
@@ -57,18 +56,6 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// migrateTestDB applies the real migrations. It deliberately does NOT
-// truncate any table: test packages run in parallel against one shared
-// database, so each test uses unique keys and filters its assertions to
-// its own rows instead of assuming a clean slate.
-func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-}
-
 func testConfig() *config.Config {
 	return &config.Config{OTPPepper: "test-pepper-do-not-use-in-prod"}
 }
@@ -76,7 +63,6 @@ func testConfig() *config.Config {
 func TestRequestOTPStoresHashedCode(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("otp-hash")
@@ -146,7 +132,6 @@ func TestRequestOTPStoresHashedCode(t *testing.T) {
 func TestRequestOTPRateLimitEmail(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("otp-rl")
@@ -164,7 +149,6 @@ func TestRequestOTPRateLimitEmail(t *testing.T) {
 func TestRequestOTPRateLimitIP(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	// 20 requests from the same IP with distinct emails: the 21st must trip
@@ -183,7 +167,6 @@ func TestRequestOTPRateLimitIP(t *testing.T) {
 func TestRequestOTPNoUserRowCreated(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("otp-nouser")
@@ -217,7 +200,6 @@ func insertTestCode(t *testing.T, pool *pgxpool.Pool, email, code string, create
 func TestVerifyWrongCode401(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-wrong")
@@ -254,7 +236,6 @@ func TestVerifyWrongCode401(t *testing.T) {
 func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-burn")
@@ -318,7 +299,6 @@ func TestVerifyBurnsAfter5Attempts(t *testing.T) {
 func TestVerifyBudgetExhaustionDoesNotBurnFreshCode(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-budget")
@@ -368,7 +348,6 @@ func TestVerifyBudgetExhaustionDoesNotBurnFreshCode(t *testing.T) {
 func TestVerifySquatGuessesDoNotConsumeEmailBudget(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-squat")
@@ -413,7 +392,6 @@ func TestVerifySquatGuessesDoNotConsumeEmailBudget(t *testing.T) {
 func TestRequestOTPPerEmailIPBucketIsolation(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("otp-squat")
@@ -441,7 +419,6 @@ func TestRequestOTPPerEmailIPBucketIsolation(t *testing.T) {
 func TestVerifySuccessSetsCookie(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-ok")
@@ -516,7 +493,6 @@ func TestVerifySuccessSetsCookie(t *testing.T) {
 func TestVerifyNewestCodeSupersedes(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-supersede")
@@ -566,7 +542,6 @@ func TestVerifyNewestCodeSupersedes(t *testing.T) {
 // not exceed the 5-attempt budget (no lost updates).
 func TestVerifyConcurrentAttemptsAtomic(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("verify-conc")

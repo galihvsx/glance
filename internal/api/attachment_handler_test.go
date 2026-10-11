@@ -109,7 +109,6 @@ func decodeAttachment(t *testing.T, rec *httptest.ResponseRecorder) map[string]a
 
 func TestAttachmentHTTPUploadDownloadDelete(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testAttachmentServer(t, pool, 25<<20)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("att-http"), "test-agent", uniqueIP())
 	_, attBase := setupAttachmentHTTP(t, e, cookie)
@@ -198,7 +197,6 @@ func TestAttachmentHTTPUploadDownloadDelete(t *testing.T) {
 
 func TestAttachmentHTTPInlinePolicy(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testAttachmentServer(t, pool, 25<<20)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("att-http"), "test-agent", uniqueIP())
 	_, attBase := setupAttachmentHTTP(t, e, cookie)
@@ -260,7 +258,6 @@ func TestAttachmentHTTPInlinePolicy(t *testing.T) {
 
 func TestAttachmentHTTPSizeLimit(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testAttachmentServer(t, pool, 64) // 64-byte cap
 	cookie := loginTestUser(t, e, pool, uniqueEmail("att-http"), "test-agent", uniqueIP())
 	_, attBase := setupAttachmentHTTP(t, e, cookie)
@@ -281,7 +278,6 @@ func TestAttachmentHTTPSizeLimit(t *testing.T) {
 
 func TestAttachmentHTTPValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e, _ := testAttachmentServer(t, pool, 25<<20)
 	cookie := loginTestUser(t, e, pool, uniqueEmail("att-http"), "test-agent", uniqueIP())
 	_, attBase := setupAttachmentHTTP(t, e, cookie)

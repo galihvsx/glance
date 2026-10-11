@@ -5,7 +5,7 @@ package service
 // gaps/dupes — Review Focus #2), per-field activity rows on PATCH,
 // default backlog state, role gates, soft delete, state validation.
 // All tests run against the real test database — no skips. Reuses the
-// harness from workspace_test.go (newTestPool, migrateTestDB,
+// harness from workspace_test.go (newTestPool,
 // createTestUser, createTestWorkspace, uniqueTestEmail, uniqueTestSlug,
 // createTestProject, uniqueTestIdentifier, strPtr, addTestMember).
 
@@ -70,7 +70,6 @@ func countActivities(t *testing.T, pool *pgxpool.Pool, issueID, field string) in
 
 func TestCreateAssignsSequence(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-seq"))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-seq"), creator)
@@ -108,7 +107,6 @@ func TestCreateAssignsSequence(t *testing.T) {
 
 func TestConcurrentCreateNoDuplicateSequence(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-conc"))
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-conc"), creator)
@@ -154,7 +152,6 @@ func TestConcurrentCreateNoDuplicateSequence(t *testing.T) {
 
 func TestPatchWritesActivityRows(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-patch"))
@@ -216,7 +213,6 @@ func TestPatchWritesActivityRows(t *testing.T) {
 
 func TestIssueRoleGates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	admin := createTestUser(t, pool, uniqueTestEmail("issue-gate-admin"))
@@ -251,7 +247,6 @@ func TestIssueRoleGates(t *testing.T) {
 
 func TestDeleteIssueSoft(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-del"))
@@ -276,7 +271,6 @@ func TestDeleteIssueSoft(t *testing.T) {
 
 func TestCreateIssueStateValidation(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-state"))
@@ -306,7 +300,6 @@ func TestCreateIssueStateValidation(t *testing.T) {
 
 func TestGetIssueNotFoundDistinct(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-404"))
@@ -326,7 +319,6 @@ func TestGetIssueNotFoundDistinct(t *testing.T) {
 
 func TestPatchTriStateClear(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-clear"))
@@ -414,7 +406,6 @@ func TestPatchTriStateClear(t *testing.T) {
 
 func TestCreateIssueSelfHealsMissingSequenceRow(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("issue-heal"))
@@ -449,7 +440,6 @@ type listTestSetup struct {
 func setupListTest(t *testing.T) listTestSetup {
 	t.Helper()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	actor := createTestUser(t, pool, uniqueTestEmail("issue-list"))
 	slug := uniqueTestSlug("list-ws")
 	createTestWorkspace(t, pool, "List Co", slug, actor)
@@ -998,7 +988,6 @@ func TestListFiltersMulti(t *testing.T) {
 // would.)
 func TestListIssuesArchivedFilter(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("arch-filt"))
@@ -1055,7 +1044,6 @@ func TestListIssuesArchivedFilter(t *testing.T) {
 // start date. Feeds the calendar view (due-dated, start-dated, unscheduled).
 func TestListIssuesStartDateAndUndated(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("cal-filt"))
@@ -1117,7 +1105,6 @@ func TestListIssuesStartDateAndUndated(t *testing.T) {
 // (nil) excludes drafts from the working set; true shows drafts only.
 func TestListIssuesDraftFilter(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("draft-filt"))
@@ -1178,7 +1165,6 @@ func TestListIssuesDraftFilter(t *testing.T) {
 // the draft filter (the caller named the exact issue).
 func TestListIssuesSequenceIDLookup(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("seq-lookup"))

@@ -17,7 +17,6 @@ import (
 // real provider is ever contacted.
 func TestOAuthCallbackLinksAccount(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	// Swap the network-touching seams for mocks; restore afterwards.
@@ -124,7 +123,6 @@ func TestOAuthCallbackLinksAccount(t *testing.T) {
 // link key (spec §7, task brief rule 6).
 func TestOAuthUnverifiedEmailRejected(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	oldExchange, oldFetch := exchangeCode, fetchUserInfo
@@ -151,7 +149,6 @@ func TestOAuthUnverifiedEmailRejected(t *testing.T) {
 // ErrOAuthNotConfigured (the handler maps this to 404, never 500).
 func TestOAuthUnconfiguredProvider(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	_, err := CompleteOAuthLogin(context.Background(), pool, testConfig(),
 		ProviderGoogle, "code", "https://app.example/callback", "ua", "10.0.0.11")
@@ -201,7 +198,6 @@ func TestOAuthStateRoundTrip(t *testing.T) {
 // moves, and the (unclaimed) new email is synced onto the user row.
 func TestOAuthProviderEmailChangeLogsInAsOriginalUser(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	oldExchange, oldFetch := exchangeCode, fetchUserInfo
@@ -299,7 +295,6 @@ func TestOAuthProviderEmailChangeLogsInAsOriginalUser(t *testing.T) {
 // overwritten (that would merge two accounts).
 func TestOAuthEmailChangeToClaimedEmailKeepsOldEmail(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	oldExchange, oldFetch := exchangeCode, fetchUserInfo

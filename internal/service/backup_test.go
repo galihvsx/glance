@@ -19,7 +19,6 @@ import (
 
 func TestRunBackupRoundTrip(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("backup"))
@@ -131,7 +130,6 @@ func TestRunBackupRoundTrip(t *testing.T) {
 
 func TestRunBackupUnknownWorkspace(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	_, err := RunBackup(ctx, pool, t.TempDir(), 7, "no-such-workspace-xyz", "schedule")
@@ -142,7 +140,6 @@ func TestRunBackupUnknownWorkspace(t *testing.T) {
 
 func TestVerifyBackupDetectsTamper(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("backuptamper"))
@@ -182,7 +179,6 @@ func TestVerifyBackupDetectsTamper(t *testing.T) {
 
 func TestPruneBackupsRetention(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("backupprune"))
@@ -241,7 +237,6 @@ func TestPruneBackupsRetention(t *testing.T) {
 
 func TestRunAllBackups(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	var slugs []string
@@ -277,7 +272,6 @@ func TestRunAllBackups(t *testing.T) {
 
 func TestRunBackupFailureRecorded(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("backupfail"))
@@ -311,7 +305,6 @@ func TestRunBackupFailureRecorded(t *testing.T) {
 
 func TestListBackupsPagination(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	ctx := context.Background()
 
 	creator := createTestUser(t, pool, uniqueTestEmail("backuplist"))

@@ -24,7 +24,6 @@ func testSatelliteServer(t *testing.T, pool *pgxpool.Pool) *echo.Echo {
 
 func TestSatelliteHTTPEndpoints(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testSatelliteServer(t, pool)
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("sat-http"), "test-agent", uniqueIP())

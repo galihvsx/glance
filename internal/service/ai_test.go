@@ -110,7 +110,6 @@ func setupAIProject(t *testing.T, pool *pgxpool.Pool) (wsSlug, ident, actorID st
 
 func TestDraftDescription_Parses(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -143,7 +142,6 @@ func TestDraftDescription_Parses(t *testing.T) {
 
 func TestDraftDescription_StripsCodeFence(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -161,7 +159,6 @@ func TestDraftDescription_StripsCodeFence(t *testing.T) {
 
 func TestDraftDescription_NotConfigured(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	_, err := DraftIssueDescription(context.Background(), pool, config.AIConfig{}, wsSlug, ident, actorID, "title", "")
@@ -172,7 +169,6 @@ func TestDraftDescription_NotConfigured(t *testing.T) {
 
 func TestDraftDescription_NonMemberNotFound(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, _ := setupAIProject(t, pool)
 	outsider := createTestUser(t, pool, uniqueTestEmail("ai-outsider"))
 
@@ -190,7 +186,6 @@ func TestDraftDescription_NonMemberNotFound(t *testing.T) {
 
 func TestTriage_MapsToRealLabelsAndStates(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -228,7 +223,6 @@ func TestTriage_MapsToRealLabelsAndStates(t *testing.T) {
 
 func TestTriage_PriorityNameString(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -252,7 +246,6 @@ func TestTriage_PriorityNameString(t *testing.T) {
 
 func TestTriage_UnknownStateDropped(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -270,7 +263,6 @@ func TestTriage_UnknownStateDropped(t *testing.T) {
 
 func TestTriage_NotConfigured(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	_, err := TriageIssue(context.Background(), pool, config.AIConfig{}, wsSlug, ident, actorID, "title", "")
@@ -281,7 +273,6 @@ func TestTriage_NotConfigured(t *testing.T) {
 
 func TestAIProvider500(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	stub := newAIStub(t)
@@ -303,7 +294,6 @@ func TestAIProvider500(t *testing.T) {
 // error, or unparseable provider JSON.
 func TestAIKeyNeverLogged(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	wsSlug, ident, actorID := setupAIProject(t, pool)
 
 	var buf strings.Builder

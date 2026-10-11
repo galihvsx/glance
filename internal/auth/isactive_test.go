@@ -13,7 +13,6 @@ import (
 func TestDeactivatedUserSessionRejected(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	email := uniqueEmail("deact-session")
 	var userID string
@@ -43,7 +42,6 @@ func TestDeactivatedUserSessionRejected(t *testing.T) {
 func TestDeactivatedUserCannotVerifyOTP(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	cfg := testConfig()
 
 	email := uniqueEmail("deact-otp")

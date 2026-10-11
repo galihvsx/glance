@@ -14,7 +14,6 @@ import (
 
 func TestOAuthLoginUnconfiguredProvider404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool) // config has no OAuth credentials at all
 
 	for _, path := range []string{
@@ -33,7 +32,6 @@ func TestOAuthLoginUnconfiguredProvider404(t *testing.T) {
 
 func TestOAuthLoginUnknownProvider404(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := testServer(t, pool)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/twitter/login", nil)
@@ -49,7 +47,6 @@ func TestOAuthLoginUnknownProvider404(t *testing.T) {
 // single-use HttpOnly cookie.
 func TestOAuthLoginRedirectSetsStateCookie(t *testing.T) {
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 	e := echo.New()
 	h := &AuthHandler{Pool: pool, Config: &config.Config{
 		OTPPepper:          "test-pepper",
