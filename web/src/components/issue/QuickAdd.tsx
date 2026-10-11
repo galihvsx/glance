@@ -14,11 +14,15 @@ export default function QuickAdd({
   onExpand,
   disabled,
   className,
+  startSignal,
 }: {
   onCreate: (name: string) => Promise<void>;
   onExpand?: (name: string) => void;
   disabled?: boolean;
   className?: string;
+  /** Increment to open the inline editor from outside (e.g. a column
+   *  header "+" tool button). */
+  startSignal?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
@@ -29,6 +33,19 @@ export default function QuickAdd({
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing ]);
+
+  // External trigger (board column header "+"): open the editor.
+  const lastSignal = useRef(startSignal);
+  useEffect(() => {
+    if (
+      startSignal !== undefined &&
+      startSignal !== lastSignal.current &&
+      !disabled
+    ) {
+      lastSignal.current = startSignal;
+      setEditing(true);
+    }
+  }, [startSignal, disabled]);
 
   function cancel() {
     setEditing(false);
@@ -62,10 +79,10 @@ export default function QuickAdd({
         type="button"
         disabled={disabled}
         onClick={() => setEditing(true)}
-        className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ""}`}
+        className={`flex h-8 w-full items-center gap-1.5 rounded-[5px] bg-transparent px-2 text-left text-[10px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ""}`}
         aria-label="Add new work item inline"
       >
-        <Plus className="h-3.5 w-3.5" aria-hidden />
+        <Plus className="h-3 w-3 shrink-0" aria-hidden />
         New work item
       </button>
     );

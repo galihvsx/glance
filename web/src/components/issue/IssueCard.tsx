@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import StateBadge from "./StateBadge";
+import PriorityBars from "./PriorityBars";
 import SubtaskProgressBar from "./SubtaskProgressBar";
 import { useCloneIssue } from "./useCloneIssue";
 import {
@@ -97,7 +98,8 @@ export default function IssueCard({
           </Badge>
           {fields.state && state && <StateBadge state={state} />}
           {fields.priority && (
-            <span className="text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <PriorityBars priority={issue.priority} />
               {priorityLabel(issue.priority)}
             </span>
           )}
