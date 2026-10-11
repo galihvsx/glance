@@ -43,6 +43,14 @@ func timePtr(d time.Duration) *time.Time {
 	return &ts
 }
 
+// timePtrAt builds a *time.Time offset from an explicit base clock —
+// the time-of-day sweep below drives the scheduler clock, not the wall
+// clock, so the window bound is exercised deterministically.
+func timePtrAt(base time.Time, d time.Duration) *time.Time {
+	ts := base.Add(d)
+	return &ts
+}
+
 // backdateIssueUpdated moves an issue's updated_at into the past — the
 // service never ages issues by hand, so staleness is simulated with a
 // direct UPDATE.
@@ -175,7 +183,14 @@ func TestScheduledDueSoonCustomWindow(t *testing.T) {
 	}
 
 	inWindow := createTargetIssue(t, fx, "due in 12h", timePtr(12*time.Hour))
-	outWindow := createTargetIssue(t, fx, "due in 36h", timePtr(36*time.Hour))
+	// NOTE (C20T0): the out-of-window fixture must land on a date that
+	// is deterministically outside the window. target_date is a DATE,
+	// so a 36h offset lands on the window-end date itself on morning
+	// runs — at date granularity no bound (strict or inclusive) can
+	// classify "12h ahead" vs "36h ahead" deterministically at all
+	// times of day. 72h always lands on today+2 or later, which the
+	// [today, date(now+24h)] window never covers.
+	outWindow := createTargetIssue(t, fx, "due in 72h", timePtr(72*time.Hour))
 
 	if err := RunScheduledAutomationPass(ctx, fx.pool, time.Now()); err != nil {
 		t.Fatalf("RunScheduledAutomationPass: %v", err)
@@ -188,6 +203,61 @@ func TestScheduledDueSoonCustomWindow(t *testing.T) {
 	}
 	if n := scheduledRunCountForRule(t, fx, rule.ID); n != 1 {
 		t.Errorf("run rows = %d, want 1", n)
+	}
+}
+
+func TestScheduledDueSoonWindowAcrossTimesOfDay(t *testing.T) {
+	// Regression test for the C20T0 flake: the due_soon upper bound used
+	// to be a strict `<` on the date-truncated window end, so an issue
+	// due 12h out of a 24h window was silently excluded whenever
+	// date(now+12h) == date(now+24h) — i.e. whenever the DB session clock
+	// was past noon. The bound is now inclusive (`<=`), which classifies
+	// both fixtures deterministically at DATE granularity no matter the
+	// time of day: date(now+12h) is always within [today, today+1] and
+	// date(now+72h) is always today+2 or later. This sweep pins that by
+	// driving the scheduler clock across the day, plus one non-UTC zone
+	// to prove the classification does not depend on the passer's
+	// timezone (truncation happens once, in the DB session, for both the
+	// target dates and the bound).
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	wita := time.FixedZone("WITA", 8*3600)
+	clocks := []time.Time{
+		day.Add(5 * time.Minute),
+		day.Add(6 * time.Hour),
+		day.Add(12 * time.Hour),
+		day.Add(18 * time.Hour),
+		day.Add(23*time.Hour + 55*time.Minute),
+		day.In(wita).Add(2 * time.Hour), // 10:00 WITA == 02:00 UTC
+	}
+	for _, now := range clocks {
+		now := now
+		t.Run(now.Format("15:04Z07:00"), func(t *testing.T) {
+			fx := setupAutomationFixture(t)
+			ctx := context.Background()
+
+			in := schedRuleInput("narrow window", AutomationTrigger{Type: "issue.due_soon", WindowHours: autoIntPtr(24)})
+			rule, err := CreateAutomationRule(ctx, fx.pool, fx.slug, fx.ident, fx.admin, in)
+			if err != nil {
+				t.Fatalf("CreateAutomationRule: %v", err)
+			}
+
+			inWindow := createTargetIssue(t, fx, "due in 12h", timePtrAt(now, 12*time.Hour))
+			outWindow := createTargetIssue(t, fx, "due in 72h", timePtrAt(now, 72*time.Hour))
+
+			if err := RunScheduledAutomationPass(ctx, fx.pool, now); err != nil {
+				t.Fatalf("RunScheduledAutomationPass: %v", err)
+			}
+			label := now.Format("15:04Z07:00")
+			if n := commentCount(t, fx, inWindow.ID); n != 1 {
+				t.Errorf("now=%s: in-window issue comments = %d, want 1", label, n)
+			}
+			if n := commentCount(t, fx, outWindow.ID); n != 0 {
+				t.Errorf("now=%s: out-of-window issue comments = %d, want 0", label, n)
+			}
+			if n := scheduledRunCountForRule(t, fx, rule.ID); n != 1 {
+				t.Errorf("now=%s: run rows = %d, want 1", label, n)
+			}
+		})
 	}
 }
 

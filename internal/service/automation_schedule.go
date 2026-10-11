@@ -3,8 +3,13 @@ package service
 // Scheduled automation triggers (C16T1): time-based rules evaluated by
 // a ticker instead of by issue events. Four new trigger types:
 //
-//   - issue.due_soon: an open issue whose target_date falls within
-//     window_hours from now (default DefaultDueSoonWindowHours = 48).
+//   - issue.due_soon: an open issue whose target_date falls on a
+//     calendar day within window_hours from now (default
+//     DefaultDueSoonWindowHours = 48). Day-granularity, bounds
+//     inclusive: [today, date(now + window_hours)] — target_date is
+//     a DATE, so an issue due on the window-end date counts as
+//     due_soon (its exact hour is unknowable; the trigger errs
+//     toward reminding).
 //   - issue.overdue: an open issue whose target_date has passed.
 //   - issue.stale: an open issue with no update in stale_days
 //     (default DefaultStaleDays = 7).
@@ -152,17 +157,30 @@ func matchScheduledIssues(ctx context.Context, pool *pgxpool.Pool, projectID str
 		}
 		// Due within the window, starting today: already-overdue
 		// issues belong to issue.overdue, not here. Both bounds are
-		// calendar dates: the upper bound is strict (<), so an issue
-		// due on the date the window ends is NOT due_soon (a 24h
-		// window at 00:57 does not cover an issue due tomorrow) —
-		// date-granularity keeps the window honest against
-		// target_date being a DATE column.
+		// calendar dates (target_date is a DATE column, so hour
+		// precision is unknowable) and both are INCLUSIVE: an issue
+		// due on the date the window ends may still fall inside the
+		// window's final hours, and due_soon errs on the side of
+		// reminding rather than silently missing a deadline. This
+		// matches cycle.ending_soon below, whose window end is
+		// inclusive too.
+		//
+		// (History: this bound used to be a strict `<`. That excluded
+		// an issue due 12h out of a 24h window whenever
+		// date(now+12h) == date(now+24h) — i.e. whenever the session
+		// clock was past noon — a genuine time-of-day flake, fixed
+		// in C20T0. The strict bound could not be kept: no
+		// date-granularity predicate classifies the test's 12h/36h
+		// fixtures deterministically, so the inclusive bound won and
+		// the test's out-of-window fixture moved to a
+		// deterministically-outside offset. See
+		// TestScheduledDueSoonWindowAcrossTimesOfDay.)
 		q = `SELECT i.id::text FROM issues i
 			 JOIN states s ON s.id = i.state_id
 			 WHERE i.project_id = $1::uuid AND ` + openScheduledIssueSQL + `
 			   AND i.target_date IS NOT NULL
 			   AND i.target_date >= $2::date
-			   AND i.target_date < ($2::timestamptz + make_interval(hours => $3))::date
+			   AND i.target_date <= ($2::timestamptz + make_interval(hours => $3))::date
 			 ORDER BY i.id`
 		args = []any{projectID, now, window}
 	case "issue.overdue":
