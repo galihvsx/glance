@@ -576,6 +576,32 @@ queued onboarding follow-up (invites endpoint).
   package startup — retires the manual-TRUNCATE-before-every-run
   workaround for the environmental 429 flake (C6T6).
 
+### Changed
+
+**Cycle 19 — UI polish: Plane layout parity (UI-first, prototype-approved)**
+- App shell: 52px icon rail + 280px sidebar + 44px top bar; sidebar
+  collapses leaving only the rail; new `Rail.tsx`, old shadcn sidebar
+  deleted; Geist → Inter.
+- Shared 49px `PageHeader` (breadcrumb + view segments + actions) on all
+  17 project pages.
+- Board: 325px columns / 28px gap, card anatomy (ID above title + chip
+  metadata row), state dots, amber priority bars (`PriorityBars.tsx`).
+- Issue detail: right-docked slide-over peek panel
+  (`min(1050px, 100% − 112px)`), 46px toolbar + votes, property strip,
+  Properties sections (Details + Project structure), tabs, composer.
+- List: dense 47px rows (`IssueRow.tsx`), 4-col grid.
+- Spreadsheet: 13px density, state dots, amber bars.
+- Calendar/Gantt/Roadmap: token-density pass.
+- Cycles/Modules/Releases/Intake: status chips, stat bands, 47px queue
+  rows, compact triage buttons.
+- Personal views (My Work/Home/Inbox/Drafts/Archived/Projects/
+  Workspaces): stat bands, dense rows, token empty states.
+- Admin views (Analytics/Overview/Activity/Settings/Profile/Admin/
+  ApiTokens/Login/Onboarding): hairline cards, 12px/600 headers, dark
+  input ramp; WorkspaceSettings moved to shared PageHeader.
+- Backend micro-gaps filled: `?include_project_structure=1` on issue
+  detail (backward-compatible), tri-state `release_id` PATCH.
+
 ## [v0.2.0] - unreleased
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
