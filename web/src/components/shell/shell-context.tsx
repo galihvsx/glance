@@ -1,7 +1,9 @@
 // Shell context (T1): app-wide UI state owned by the app shell.
 //
 // - sidebarCollapsed: expanded/rail preference, persisted to localStorage.
-// - isMobile: live matchMedia for (max-width: 1023px).
+// - isMobile: live matchMedia for (max-width: 900px) — the prototype's
+//   responsive breakpoint: the sidebar column collapses to 0 and opens
+//   as an overlay drawer instead.
 // - mobileOpen: drawer state; auto-closes on route change.
 // - notificationsOpen: T2's notifications sheet reads this.
 // - lastWorkspaceSlug: last-visited workspace, persisted for deep-linking
@@ -20,7 +22,7 @@ import { useLocation } from "react-router-dom";
 
 export const SIDEBAR_COLLAPSED_KEY = "glance:sidebar-collapsed";
 export const LAST_WORKSPACE_KEY = "glance:last-workspace";
-const MOBILE_QUERY = "(max-width: 1023px)";
+const MOBILE_QUERY = "(max-width: 900px)";
 
 function readBool(key: string): boolean {
   try {
