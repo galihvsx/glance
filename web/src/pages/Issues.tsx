@@ -31,7 +31,7 @@ import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
-import IssueCard from "../components/issue/IssueCard";
+import IssueRow from "../components/issue/IssueRow";
 import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
@@ -89,6 +89,8 @@ import {
 } from "../lib/customFields";
 import { toast } from "../components/ui/toast";
 import { priorityLabel } from "../lib/types";
+import { stateDotClass } from "../lib/stateDot";
+import PriorityBars from "../components/issue/PriorityBars";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
 
 const PER_PAGE = 25;
@@ -587,6 +589,8 @@ export default function Issues() {
     key: string;
     title: string;
     color?: string;
+    /** Workflow group for the header state-dot (state grouping). */
+    stateGroup?: string;
     issues: Issue[];
     stateId?: string;
     priority?: number;
@@ -599,6 +603,7 @@ export default function Issues() {
         key: s.id,
         title: s.name,
         color: s.color,
+        stateGroup: s.group,
         issues: issues.filter((i) => i.state_id === s.id),
         stateId: s.id,
       }));
@@ -704,7 +709,9 @@ export default function Issues() {
           },
         ]}
       />
-      <div className="mx-auto w-full max-w-4xl p-6">
+      {/* C19T5: prototype shell content — max-width 1060px centered,
+          padding 24px 28px. */}
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
         <Dialog
           open={dialogOpen}
           onOpenChange={(open) => {
@@ -916,16 +923,16 @@ export default function Issues() {
         </DialogContent>
         </Dialog>
 
-        {/* Filter toolbar */}
+        {/* Filter toolbar — 30px controls on the token ramp. */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <form onSubmit={onSearchSubmit} className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-2 top-[8px] h-3.5 w-3.5 text-ink-muted" />
             <Input
               ref={searchRef}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search issues…  ( / )"
-              className="w-56 pl-8"
+              className="h-[30px] w-56 pl-8 text-[11px]"
             />
           </form>
           {hasActiveFilters && (
@@ -946,7 +953,10 @@ export default function Issues() {
               value={exportFormat}
               onValueChange={(v) => setExportFormat(v as ExportFormat)}
             >
-              <SelectTrigger className="h-8 w-24" aria-label="Export format">
+              <SelectTrigger
+              className="h-[30px] w-24 text-[11px]"
+              aria-label="Export format"
+            >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -956,11 +966,11 @@ export default function Issues() {
             </Select>
             <Button
               variant="outline"
-              size="sm"
               onClick={onExport}
               disabled={exporting}
+              className="h-[30px] text-[10px]"
             >
-              <Download className="mr-1 h-4 w-4" />
+              <Download className="mr-1 h-3.5 w-3.5" />
               {exporting ? "Exporting…" : "Export"}
             </Button>
           </div>
@@ -996,10 +1006,13 @@ export default function Issues() {
       )}
 
       {issuesQuery.isPending ? (
-        <div className="space-y-3">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-full" />
+        <div aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <Skeleton
+              key={i}
+              className="h-[47px] w-full rounded-none border-b border-border-hairline"
+            />
+          ))}
         </div>
       ) : issues.length === 0 && !groupingActive ? (
         <Card>
@@ -1017,41 +1030,45 @@ export default function Issues() {
       ) : (
         <>
           {groupingActive ? (
-            <div className="space-y-6">
-              {groups.map((g) => (
-                <section key={g.key} aria-label={g.title}>
-                  <div className="mb-2 flex items-center gap-2">
-                    {g.color && (
+            <div>
+              {groups.map((g, gi) => (
+                <section
+                  key={g.key}
+                  aria-label={g.title}
+                  className={gi > 0 ? "mt-6" : undefined}
+                >
+                  {/* C19T5: group header — 35px, 12px/600, bottom hairline,
+                      state-dot (state groups) or priority bars (priority
+                      groups) + mono count. */}
+                  <div className="flex h-[35px] items-center gap-2 border-b border-border-hairline">
+                    {g.stateGroup ? (
                       <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: g.color }}
+                        className={`state-dot ${stateDotClass(g.stateGroup)}`}
                         aria-hidden
                       />
-                    )}
-                    <h2 className="text-sm font-medium">{g.title}</h2>
-                    <span className="text-xs text-muted-foreground">
+                    ) : g.priority !== undefined ? (
+                      <PriorityBars priority={g.priority} />
+                    ) : null}
+                    <h2 className="text-[12px] font-semibold text-ink">
+                      {g.title}
+                    </h2>
+                    <span className="font-mono text-[10px] text-ink-muted">
                       {g.issues.length}
                     </span>
                   </div>
-                  <div className="space-y-3">
+                  <div>
                     {g.issues.map((issue) => (
-                      <div
+                      <IssueRow
                         key={issue.id}
-                        className={
-                          indexById.get(issue.id) === selected
-                            ? "rounded-lg ring-2 ring-ring"
-                            : undefined
-                        }
-                      >
-                        <IssueCard
-                          issue={issue}
-                          state={stateById.get(issue.state_id)}
-                          fields={settings.fields}
-                          onOpen={(it) => openPeek(it.id)}
-                          selected={bulk.isSelected(issue.id)}
-                          onToggleSelect={() => bulk.toggle(issue.id)}
-                        />
-                      </div>
+                        issue={issue}
+                        state={stateById.get(issue.state_id)}
+                        fields={settings.fields}
+                        onOpen={(it) => openPeek(it.id)}
+                        kbdSelected={indexById.get(issue.id) === selected}
+                        bulkSelected={bulk.isSelected(issue.id)}
+                        bulkActive={bulk.count > 0}
+                        onToggleSelect={() => bulk.toggle(issue.id)}
+                      />
                     ))}
                   </div>
                   <QuickAdd
@@ -1067,23 +1084,19 @@ export default function Issues() {
               ))}
             </div>
           ) : (
-            <div className="space-y-3">
+            <div>
               {issues.map((issue, i) => (
-                <div
+                <IssueRow
                   key={issue.id}
-                  className={
-                    i === selected ? "rounded-lg ring-2 ring-ring" : undefined
-                  }
-                >
-                  <IssueCard
-                    issue={issue}
-                    state={stateById.get(issue.state_id)}
-                    fields={settings.fields}
-                    onOpen={(it) => openPeek(it.id)}
-                    selected={bulk.isSelected(issue.id)}
-                    onToggleSelect={() => bulk.toggle(issue.id)}
-                  />
-                </div>
+                  issue={issue}
+                  state={stateById.get(issue.state_id)}
+                  fields={settings.fields}
+                  onOpen={(it) => openPeek(it.id)}
+                  kbdSelected={i === selected}
+                  bulkSelected={bulk.isSelected(issue.id)}
+                  bulkActive={bulk.count > 0}
+                  onToggleSelect={() => bulk.toggle(issue.id)}
+                />
               ))}
               {filters.state && (
                 <QuickAdd
