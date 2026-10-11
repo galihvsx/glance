@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { Markdown } from "../components/Markdown";
+import PageComments from "../components/page/PageComments";
 import type { Page, PageRevision, Project } from "../lib/types";
 import { cn } from "../lib/utils";
 import ProjectNav from "../components/project/ProjectNav";
@@ -449,7 +450,8 @@ export default function Pages() {
         {/* Page view */}
         <main className="min-w-0 flex-1">
           {selected ? (
-            <Card>
+            <>
+              <Card>
               <CardHeader>
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
@@ -533,6 +535,15 @@ export default function Pages() {
                 )}
               </CardContent>
             </Card>
+            {/* C18T2: page comments thread + count badge. */}
+            <div className="mt-4">
+              <PageComments
+                slug={slug}
+                identifier={identifier}
+                pageId={selected.id}
+              />
+            </div>
+          </>
           ) : (
             <Card>
               <CardContent className="p-12 text-center text-sm text-muted-foreground">

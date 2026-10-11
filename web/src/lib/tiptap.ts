@@ -45,3 +45,18 @@ export function tiptapText(doc: unknown): string {
   walk(doc);
   return blocks.join("\n");
 }
+
+/** Wraps plain text as a minimal TipTap doc (one paragraph per line).
+ *  Returns null for blank input. Shared by the issue and page comment
+ *  composers. */
+export function textToTipTapDoc(text: string): unknown {
+  const t = text.trim();
+  if (!t) return null;
+  return {
+    type: "doc",
+    content: t.split(/\n+/).map((line) => ({
+      type: "paragraph",
+      content: [{ type: "text", text: line }],
+    })),
+  };
+}
