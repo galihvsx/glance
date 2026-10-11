@@ -20,6 +20,9 @@ export interface Project {
   identifier: string;
   name: string;
   description: string;
+  /** Emoji icon (C18T4). Optional until the backend serves it — the
+   *  palette and sidebar fall back to initials when absent. */
+  icon?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -136,6 +139,19 @@ export interface IssueChild {
 /** List envelope: {"results": [...], "next_cursor"?: "..."}. */
 export interface IssueListResult {
   results: Issue[];
+  next_cursor?: string;
+}
+
+/** One hit from GET /api/v1/search?q=: the issue plus the workspace and
+ *  project context needed to link to it from anywhere (C18T0). */
+export interface SearchIssueItem extends Issue {
+  workspace_slug: string;
+  project_identifier: string;
+}
+
+/** Search envelope: {"results": [...], "next_cursor"?: "..."}. */
+export interface SearchIssuesResult {
+  results: SearchIssueItem[];
   next_cursor?: string;
 }
 
