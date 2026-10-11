@@ -24,7 +24,7 @@ import type {
   Member,
   Subscriber,
 } from "../../lib/types";
-import { tiptapText } from "../../lib/tiptap";
+import { textToTipTapDoc, tiptapText } from "../../lib/tiptap";
 import {
   applyMention,
   filterMentionMembers,
@@ -68,19 +68,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-
-/** Wraps plain text as a minimal TipTap doc. */
-function textToTipTapDoc(text: string): unknown {
-  const t = text.trim();
-  if (!t) return null;
-  return {
-    type: "doc",
-    content: t.split(/\n+/).map((line) => ({
-      type: "paragraph",
-      content: [{ type: "text", text: line }],
-    })),
-  };
-}
 
 function actorName(a: { name?: string | null; email: string }): string {
   return a.name ?? a.email;

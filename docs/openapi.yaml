@@ -1281,6 +1281,40 @@
         "responses": { "204": { "description": "Share revoked" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/comments": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List page comments",
+        "description": "Flat list, oldest first. Viewer (10)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Comments", "content": { "application/json": { "schema": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/PageComment" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a page comment",
+        "description": "Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["body"], "properties": { "body": { "description": "Rich-text JSON document" } } } } } },
+        "responses": { "201": { "description": "Created comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PageComment" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/comments/{commentID}": {
+      "patch": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Edit a page comment",
+        "description": "Author or admin.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["body"], "properties": { "body": { "description": "Rich-text JSON document" } } } } } },
+        "responses": { "200": { "description": "Updated comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PageComment" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a page comment",
+        "description": "Hard delete; author or admin.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/releases": {
       "get": {
         "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2185,6 +2219,17 @@
           "content": { "type": "string", "nullable": true },
           "created_by": { "type": "string", "format": "uuid" },
           "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PageComment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "page_id": { "type": "string", "format": "uuid" },
+          "body": { "description": "Rich-text JSON document" },
+          "author": { "$ref": "#/components/schemas/User", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "Release": {

@@ -37,6 +37,11 @@ func RegisterPageRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/:pageID/share", h.createPageShare)
 	g.GET("/:pageID/share", h.listPageShares)
 	g.DELETE("/:pageID/share/:token", h.revokePageShare)
+	// C18T2: page comments.
+	g.GET("/:pageID/comments", h.listPageComments)
+	g.POST("/:pageID/comments", h.createPageComment)
+	g.PATCH("/:pageID/comments/:commentID", h.updatePageComment)
+	g.DELETE("/:pageID/comments/:commentID", h.deletePageComment)
 }
 
 // pageError maps page sentinel errors to HTTP statuses, delegating the

@@ -190,6 +190,17 @@ export interface CommentNode {
   replies: CommentNode[];
 }
 
+/** One page comment (C18T2): flat thread, body is a TipTap doc. The
+ *  author is null when the author's user row was deleted. */
+export interface PageComment {
+  id: string;
+  page_id: string;
+  author: ActorRef | null;
+  body: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One issue_activities row. */
 export interface HistoryEntry {
   id: string;
