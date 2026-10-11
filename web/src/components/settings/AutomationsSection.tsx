@@ -1,9 +1,9 @@
-// Automations management (C11T1): per-project workflow automation rules
-// for project settings. When an issue's state changes, matching rules
-// run their actions automatically (assign user / add label / post
-// comment). Reads and mutations are member (15)+; the server is the
-// gate — guests get a read-only view and 403s. Failures surface as
-// honest toasts, never silent.
+// Automations management (C11T1, C16T4): per-project workflow automation
+// rules for project settings. When an issue event fires or a scheduled
+// trigger evaluates, matching rules run their actions automatically.
+// Reads and mutations are member (15)+; the server is the gate — guests
+// get a read-only view and 403s. Failures surface as honest toasts,
+// never silent.
 
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -19,22 +19,30 @@ import {
   fetchAutomationRules,
   fetchAutomationRuns,
   updateAutomationRule,
-  type AutomationAction,
   type AutomationActionResult,
   type AutomationRule,
   type AutomationRuleInput,
   type AutomationRun,
-  type AutomationTrigger,
 } from "../../lib/automations";
 import {
+  draftFromRule,
+  draftToInput,
+  emptyDraftAction,
+  emptyRuleDraft,
+  type DraftAction,
+  type RuleDraft,
+} from "../../lib/automationDraft";
+import {
+  fetchEstimates,
   fetchLabels,
   fetchStates,
   taxonomyKeys,
+  type Estimate,
   type TaxLabel,
   type TaxState,
 } from "../../lib/taxonomy";
 import { relativeTime } from "../../lib/relativeTime";
-import { PRIORITY_LABELS, type WorkspaceMember } from "../../lib/types";
+import { type Cycle, type Module, type WorkspaceMember } from "../../lib/types";
 import { toast } from "../ui/toast";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -50,7 +58,11 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
+import {
+  ActionFields,
+  ActionTypeSelect,
+  TriggerFields,
+} from "./AutomationPickers";
 
 function failToast(title: string, err: unknown, fallback: string) {
   toast.add({
@@ -60,75 +72,43 @@ function failToast(title: string, err: unknown, fallback: string) {
   });
 }
 
-const selectClass =
-  "rounded-md border border-input bg-background px-2 py-1.5 text-sm";
-
-interface DraftAction {
-  type: AutomationAction["type"];
-  user_id: string;
-  label_id: string;
-  body: string;
-  priority: number; // set_priority target (0-4)
-  state_id: string; // set_state target ("" = unset)
+function projectBase(slug: string, identifier: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
 }
-
-const emptyDraftAction = (): DraftAction => ({
-  type: "add_comment",
-  user_id: "",
-  label_id: "",
-  body: "",
-  priority: 2,
-  state_id: "",
-});
-
-interface RuleDraft {
-  name: string;
-  triggerType: AutomationTrigger["type"];
-  fromState: string; // "" = any
-  toState: string; // "" = any
-  actions: DraftAction[];
-}
-
-const emptyDraft = (): RuleDraft => ({
-  name: "",
-  triggerType: "issue.state_changed",
-  fromState: "",
-  toState: "",
-  actions: [emptyDraftAction()],
-});
-
-function draftFromRule(rule: AutomationRule): RuleDraft {
-  const t = rule.trigger;
-  return {
-    name: rule.name,
-    triggerType: t.type,
-    fromState: t.from_states?.[0] ?? "",
-    toState: t.to_states?.[0] ?? "",
-    actions: rule.actions.map((a) => ({
-      type: a.type,
-      user_id: a.user_id ?? "",
-      label_id: a.label_id ?? "",
-      body: a.body ?? "",
-      priority: a.priority ?? 2,
-      state_id: a.state_id ?? "",
-    })),
-  };
-}
-
-const ACTION_LABELS: Record<DraftAction["type"], string> = {
-  assign: "Assign user",
-  add_label: "Add label",
-  add_comment: "Post comment",
-  set_priority: "Set priority",
-  set_state: "Set state",
-};
 
 // describeRunTrigger renders the stored trigger_type honestly; anything
 // unknown falls back to the raw value.
 function describeRunTrigger(triggerType: string): string {
-  if (triggerType === "issue.state_changed") return "on state change";
-  if (triggerType === "issue.created") return "on issue creation";
-  return triggerType;
+  switch (triggerType) {
+    case "issue.state_changed":
+      return "on state change";
+    case "issue.created":
+      return "on issue creation";
+    case "issue.assigned":
+      return "on assignment";
+    case "issue.unassigned":
+      return "on unassignment";
+    case "issue.labels_changed":
+      return "on label change";
+    case "issue.priority_changed":
+      return "on priority change";
+    case "issue.due_date_changed":
+      return "on due date change";
+    case "issue.estimate_changed":
+      return "on estimate change";
+    case "issue.comment_added":
+      return "on new comment";
+    case "issue.due_soon":
+      return "scheduled: due soon";
+    case "issue.overdue":
+      return "scheduled: overdue";
+    case "issue.stale":
+      return "scheduled: stale";
+    case "cycle.ending_soon":
+      return "scheduled: cycle ending soon";
+    default:
+      return triggerType;
+  }
 }
 
 function RunActionChips({ actions }: { actions: AutomationActionResult[] }) {
@@ -155,10 +135,11 @@ export default function AutomationsSection({
   const queryClient = useQueryClient();
   const keys = automationKeys(slug, identifier);
   const taxKeys = taxonomyKeys(slug, identifier);
+  const base = projectBase(slug, identifier);
 
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editing, setEditing] = useState<AutomationRule | null>(null);
-  const [draft, setDraft] = useState<RuleDraft>(emptyDraft);
+  const [draft, setDraft] = useState<RuleDraft>(emptyRuleDraft);
 
   const rulesQuery = useQuery({
     queryKey: keys.rules,
@@ -185,12 +166,41 @@ export default function AutomationsSection({
         )
         .then((r) => r.members ?? []),
   });
+  // C16T4 lookups for the new action pickers: estimate scales (taxonomy
+  // keys, shared cache), cycles and modules (shared with their pages).
+  const estimatesQuery = useQuery({
+    queryKey: taxKeys.estimates,
+    queryFn: () => fetchEstimates(slug, identifier),
+  });
+  const cyclesQuery = useQuery({
+    queryKey: ["cycles", slug, identifier],
+    queryFn: () =>
+      api.get<{ cycles: Cycle[] }>(`${base}/cycles`).then((r) => r.cycles ?? []),
+  });
+  const modulesQuery = useQuery({
+    queryKey: ["modules", slug, identifier],
+    queryFn: () =>
+      api
+        .get<{ modules: Module[] }>(`${base}/modules`)
+        .then((r) => r.modules ?? []),
+  });
 
   const states: TaxState[] = statesQuery.data ?? [];
   const labels: TaxLabel[] = labelsQuery.data ?? [];
   const members: WorkspaceMember[] = membersQuery.data ?? [];
   const rules: AutomationRule[] = rulesQuery.data ?? [];
   const runs: AutomationRun[] = runsQuery.data ?? [];
+  const estimateScales: Estimate[] = estimatesQuery.data ?? [];
+  const cycles: Cycle[] = cyclesQuery.data ?? [];
+  const modules: Module[] = modulesQuery.data ?? [];
+
+  const actionLookups = {
+    cycles,
+    modules,
+    estimatePoints: estimateScales.flatMap((s) =>
+      s.points.map((p) => ({ id: p.id, key: p.key, scaleName: s.name })),
+    ),
+  };
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: keys.rules });
@@ -199,7 +209,7 @@ export default function AutomationsSection({
 
   function openCreate() {
     setEditing(null);
-    setDraft(emptyDraft());
+    setDraft(emptyRuleDraft());
     setBuilderOpen(true);
   }
 
@@ -209,39 +219,11 @@ export default function AutomationsSection({
     setBuilderOpen(true);
   }
 
-  function draftToInput(d: RuleDraft): AutomationRuleInput | null {
-    // issue.created takes no filters in v1 (server rejects them).
-    const trigger: AutomationTrigger =
-      d.triggerType === "issue.created"
-        ? { type: "issue.created", from_states: null, to_states: null }
-        : {
-            type: "issue.state_changed",
-            from_states: d.fromState ? [d.fromState] : null,
-            to_states: d.toState ? [d.toState] : null,
-          };
-    const actions: AutomationAction[] = [];
-    for (const a of d.actions) {
-      if (a.type === "assign" && a.user_id) {
-        actions.push({ type: "assign", user_id: a.user_id });
-      } else if (a.type === "add_label" && a.label_id) {
-        actions.push({ type: "add_label", label_id: a.label_id });
-      } else if (a.type === "add_comment" && a.body.trim()) {
-        actions.push({ type: "add_comment", body: a.body.trim() });
-      } else if (a.type === "set_priority") {
-        actions.push({ type: "set_priority", priority: a.priority });
-      } else if (a.type === "set_state" && a.state_id) {
-        actions.push({ type: "set_state", state_id: a.state_id });
-      } else {
-        return null; // incomplete action — honest block, not silent drop
-      }
-    }
-    return { name: d.name.trim(), trigger, actions };
-  }
-
   const saveMutation = useMutation({
     mutationFn: () => {
-      const input = draftToInput(draft);
-      if (!input) throw new Error("incomplete action");
+      const result = draftToInput(draft);
+      if (!result.ok) throw new Error(result.error);
+      const input: AutomationRuleInput = result.input;
       if (editing) {
         return updateAutomationRule(slug, identifier, editing.id, input);
       }
@@ -260,9 +242,7 @@ export default function AutomationsSection({
       failToast(
         editing ? "Could not update the rule" : "Could not create the rule",
         e,
-        e instanceof Error && e.message === "incomplete action"
-          ? "Every action needs its target filled in (user, label, or comment text)."
-          : "The rule was not saved.",
+        e instanceof Error ? e.message : "The rule was not saved.",
       ),
   });
 
@@ -294,6 +274,10 @@ export default function AutomationsSection({
     deleteMutation.mutate(rule.id);
   }
 
+  function updateTrigger(patch: Partial<RuleDraft["trigger"]>) {
+    setDraft((d) => ({ ...d, trigger: { ...d.trigger, ...patch } }));
+  }
+
   function updateDraftAction(i: number, patch: Partial<DraftAction>) {
     setDraft((d) => ({
       ...d,
@@ -308,10 +292,14 @@ export default function AutomationsSection({
         <div>
           <CardTitle>Automations</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            When an issue is created or changes state, do things
-            automatically — assign a user, add a label, post a comment,
-            set priority, or move it to another state. Automation-driven
-            changes never trigger other rules. Free in glance.
+            When an issue event happens — assignment, labels, priority,
+            due date, estimate, comments, state changes, creation — or
+            on a schedule (due soon, overdue, stale, cycle ending),
+            run actions automatically: assign or unassign users, add or
+            remove labels, post a comment, set priority, estimate or due
+            date, move to a cycle or module, or add a watcher.
+            Automation-driven changes never trigger other rules. Free in
+            glance.
           </p>
         </div>
         {canEdit && (
@@ -331,7 +319,7 @@ export default function AutomationsSection({
           <p className="text-sm text-muted-foreground">
             No automation rules yet.
             {canEdit
-              ? " Create one to react to state changes automatically."
+              ? " Create one to react to issue events automatically."
               : ""}
           </p>
         ) : (
@@ -349,12 +337,12 @@ export default function AutomationsSection({
                     )}
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {describeTrigger(rule.trigger, states)}
+                    {describeTrigger(rule.trigger, states, labels)}
                   </p>
                   <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
                     {rule.actions.map((a, i) => (
                       <li key={i}>
-                        → {describeAction(a, members, labels, states)}
+                        → {describeAction(a, members, labels, states, actionLookups)}
                       </li>
                     ))}
                   </ul>
@@ -417,72 +405,11 @@ export default function AutomationsSection({
                   maxLength={120}
                 />
               </div>
-              <div>
-                <Label htmlFor="auto-trigger">When</Label>
-                <select
-                  id="auto-trigger"
-                  className={`${selectClass} w-full`}
-                  value={draft.triggerType}
-                  onChange={(e) =>
-                    setDraft((d) => ({
-                      ...d,
-                      triggerType: e.target
-                        .value as RuleDraft["triggerType"],
-                    }))
-                  }
-                >
-                  <option value="issue.state_changed">
-                    Issue state changes
-                  </option>
-                  <option value="issue.created">Issue created</option>
-                </select>
-                {draft.triggerType === "issue.created" && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Fires on every issue creation. No filters in this
-                    version.
-                  </p>
-                )}
-              </div>
-              {draft.triggerType === "issue.state_changed" && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="auto-from">From state</Label>
-                    <select
-                      id="auto-from"
-                      className={`${selectClass} w-full`}
-                      value={draft.fromState}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, fromState: e.target.value }))
-                      }
-                    >
-                      <option value="">Any state</option>
-                      {states.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <Label htmlFor="auto-to">To state</Label>
-                    <select
-                      id="auto-to"
-                      className={`${selectClass} w-full`}
-                      value={draft.toState}
-                      onChange={(e) =>
-                        setDraft((d) => ({ ...d, toState: e.target.value }))
-                      }
-                    >
-                      <option value="">Any state</option>
-                      {states.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              )}
+              <TriggerFields
+                trigger={draft.trigger}
+                onChange={updateTrigger}
+                lookups={{ states, labels }}
+              />
               <div>
                 <Label>Actions (run in order)</Label>
                 <div className="mt-2 space-y-3">
@@ -491,116 +418,17 @@ export default function AutomationsSection({
                       key={i}
                       className="flex items-start gap-2 rounded-md border p-2"
                     >
-                      <select
-                        aria-label={`Action ${i + 1} type`}
-                        className={selectClass}
+                      <ActionTypeSelect
+                        index={i}
                         value={a.type}
-                        onChange={(e) =>
-                          updateDraftAction(i, {
-                            type: e.target
-                              .value as DraftAction["type"],
-                          })
-                        }
-                      >
-                        {(
-                          Object.keys(ACTION_LABELS) as DraftAction["type"][]
-                        ).map((t) => (
-                          <option key={t} value={t}>
-                            {ACTION_LABELS[t]}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="flex-1">
-                        {a.type === "assign" && (
-                          <select
-                            aria-label={`Action ${i + 1} user`}
-                            className={`${selectClass} w-full`}
-                            value={a.user_id}
-                            onChange={(e) =>
-                              updateDraftAction(i, {
-                                user_id: e.target.value,
-                              })
-                            }
-                          >
-                            <option value="">Select user…</option>
-                            {members
-                              .filter((m) => m.role >= 15)
-                              .map((m) => (
-                                <option key={m.id} value={m.id}>
-                                  {m.name || m.email}
-                                </option>
-                              ))}
-                          </select>
-                        )}
-                        {a.type === "add_label" && (
-                          <select
-                            aria-label={`Action ${i + 1} label`}
-                            className={`${selectClass} w-full`}
-                            value={a.label_id}
-                            onChange={(e) =>
-                              updateDraftAction(i, {
-                                label_id: e.target.value,
-                              })
-                            }
-                          >
-                            <option value="">Select label…</option>
-                            {labels.map((l) => (
-                              <option key={l.id} value={l.id}>
-                                {l.name}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                        {a.type === "add_comment" && (
-                          <Textarea
-                            aria-label={`Action ${i + 1} comment`}
-                            value={a.body}
-                            onChange={(e) =>
-                              updateDraftAction(i, { body: e.target.value })
-                            }
-                            placeholder="Comment text…"
-                            rows={2}
-                            maxLength={10000}
-                          />
-                        )}
-                        {a.type === "set_priority" && (
-                          <select
-                            aria-label={`Action ${i + 1} priority`}
-                            className={`${selectClass} w-full`}
-                            value={a.priority}
-                            onChange={(e) =>
-                              updateDraftAction(i, {
-                                priority: Number(e.target.value),
-                              })
-                            }
-                          >
-                            {PRIORITY_LABELS.map((label, p) => (
-                              <option key={p} value={p}>
-                                {label}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                        {a.type === "set_state" && (
-                          <select
-                            aria-label={`Action ${i + 1} state`}
-                            className={`${selectClass} w-full`}
-                            value={a.state_id}
-                            onChange={(e) =>
-                              updateDraftAction(i, {
-                                state_id: e.target.value,
-                              })
-                            }
-                          >
-                            <option value="">Select state…</option>
-                            {states.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
+                        onChange={(t) => updateDraftAction(i, { type: t })}
+                      />
+                      <ActionFields
+                        index={i}
+                        action={a}
+                        onChange={(patch) => updateDraftAction(i, patch)}
+                        lookups={{ members, labels, states, cycles, modules, estimateScales }}
+                      />
                       {draft.actions.length > 1 && (
                         <Button
                           variant="ghost"
@@ -677,7 +505,7 @@ export default function AutomationsSection({
         ) : runs.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No automation runs yet. A run appears here each time a rule
-            fires on a state change or issue creation.
+            fires.
           </p>
         ) : (
           <ul className="space-y-3">
