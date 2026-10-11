@@ -602,6 +602,23 @@ queued onboarding follow-up (invites endpoint).
 - Backend micro-gaps filled: `?include_project_structure=1` on issue
   detail (backward-compatible), tri-state `release_id` PATCH.
 
+**Cycle 20 — Data views, finished**
+- Fixed the genuinely time-of-day-flaky `TestScheduledDueSoonCustomWindow`
+  (C20T0): `matchScheduledIssues` used a strict `<` upper bound, missing
+  targets landing on the same calendar date as `now + window`; now
+  inclusive bound, proven deterministic with a time-of-day sweep test.
+- Calendar: week view alongside month (C20T1) — Month/Week segmented
+  switcher, 7 day-columns (Mon–Sun), all-day issue chips, today highlight,
+  prev/next-week navigation + Today jump.
+- Spreadsheet: Cycle / Module / Release columns (C20T2) — 13px density
+  chips, sortable, empty cells sort last; membership wired from existing
+  queries, no new backend surface.
+- Spreadsheet: inline cell editing (C20T3) — state/priority dropdowns,
+  start/target date pickers, assignees multi-select popover; commits via
+  existing `PATCH .../issues/{uuid}` + assignee relation endpoints
+  (zero new backend surface); optimistic update with error rollback;
+  Esc cancels, Enter/blur commits; row navigation suppressed while editing.
+
 ## [v0.2.0] - unreleased
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
