@@ -43,6 +43,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	projectHandler := &ProjectHandler{}
 	RegisterProjectRoutes(e, projectHandler)
 	RegisterImportRoutes(e, projectHandler)
+	// C17T1: keep in lockstep with cmd/glance/main.go.
+	RegisterProjectTemplateRoutes(e, &ProjectTemplateHandler{})
 	RegisterAutomationRoutes(e, &AutomationHandler{})
 
 	issueHandler := &IssueHandler{}

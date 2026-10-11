@@ -258,6 +258,8 @@ func main() {
 	projectHandler := &api.ProjectHandler{Pool: pool}
 	api.RegisterProjectRoutes(e, projectHandler)
 	api.RegisterImportRoutes(e, projectHandler)
+	// C17T1: workspace-scoped project templates.
+	api.RegisterProjectTemplateRoutes(e, &api.ProjectTemplateHandler{Pool: pool})
 	api.RegisterAutomationRoutes(e, &api.AutomationHandler{Pool: pool})
 
 	issueHandler := &api.IssueHandler{Pool: pool}

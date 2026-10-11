@@ -27,6 +27,7 @@ import {
 import WebhooksSection from "../components/settings/WebhooksSection";
 import SlackSection from "../components/settings/SlackSection";
 import DataSection from "../components/settings/DataSection";
+import ProjectTemplatesSection from "../components/settings/ProjectTemplatesSection";
 
 // Mirrors the backend contract (service.validSlug): lowercase alphanumeric
 // groups joined by single hyphens, 1–64 chars. Same rule as onboarding.
@@ -387,6 +388,9 @@ export default function WorkspaceSettings() {
 
       {/* ---------- Webhooks (admin only, matches danger-zone gating) ---------- */}
       {isAdmin && <WebhooksSection slug={ws.slug} />}
+
+      {/* ---------- Project templates (admin only) ---------- */}
+      {isAdmin && <ProjectTemplatesSection slug={ws.slug} />}
 
       {/* ---------- Slack (admin only, matches danger-zone gating) ---------- */}
       {isAdmin && (
