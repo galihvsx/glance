@@ -81,6 +81,13 @@ type Config struct {
 	// backup cadence, the local-disk target directory, and how many
 	// recent runs per workspace to keep.
 	Backup BackupConfig
+	// AutomationSchedule holds the scheduled-automation-trigger pass
+	// settings (C16T1): the cadence at which the scheduled triggers
+	// (issue.due_soon, issue.overdue, issue.stale, cycle.ending_soon)
+	// of every project's enabled rules are evaluated. Zero (the
+	// default) disables the pass — scheduled-trigger rules then never
+	// fire.
+	AutomationSchedule AutomationScheduleConfig
 }
 
 // BackupConfig holds the scheduled workspace backup settings (C15T2),
@@ -107,6 +114,23 @@ type BackupConfig struct {
 // BackupEnabled reports whether the scheduled backup pass runs: an
 // interval is configured.
 func (b BackupConfig) BackupEnabled() bool { return b.Interval > 0 }
+
+// AutomationScheduleConfig holds the scheduled-automation-trigger
+// pass settings (C16T1), from GLANCE_AUTOMATION_SCHEDULE_INTERVAL.
+type AutomationScheduleConfig struct {
+	// Interval is the cadence between scheduled-trigger passes. Zero
+	// means the scheduled pass is DISABLED (the default):
+	// scheduled-trigger automation rules then never fire. From
+	// GLANCE_AUTOMATION_SCHEDULE_INTERVAL (Go duration syntax, e.g.
+	// "15m"); an invalid value or a sub-minute interval fails boot —
+	// the same discipline as GLANCE_BACKUP_INTERVAL: a misconfigured
+	// schedule must never silently run wild or silently never run.
+	Interval time.Duration
+}
+
+// ScheduleEnabled reports whether the scheduled-trigger pass runs: an
+// interval is configured.
+func (c AutomationScheduleConfig) ScheduleEnabled() bool { return c.Interval > 0 }
 
 // backupInterval describes the configured cadence for log lines:
 // "disabled" or the duration string.
@@ -252,6 +276,21 @@ func Load() (*Config, error) {
 		cfg.Backup.Retention = n
 	} else {
 		cfg.Backup.Retention = 7
+	}
+	// Scheduled automation triggers (C16T1):
+	// GLANCE_AUTOMATION_SCHEDULE_INTERVAL (empty = disabled, the
+	// default). Invalid values and sub-minute intervals fail boot —
+	// same discipline as GLANCE_BACKUP_INTERVAL: a misconfigured
+	// schedule must never silently run wild or silently never run.
+	if raw := strings.TrimSpace(os.Getenv("GLANCE_AUTOMATION_SCHEDULE_INTERVAL")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, errors.New("config: GLANCE_AUTOMATION_SCHEDULE_INTERVAL is not a valid duration: " + strconv.Quote(raw))
+		}
+		if d < time.Minute {
+			return nil, errors.New("config: GLANCE_AUTOMATION_SCHEDULE_INTERVAL must be at least 1m")
+		}
+		cfg.AutomationSchedule.Interval = d
 	}
 	return cfg, nil
 }
