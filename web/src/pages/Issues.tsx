@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Download, Plus, Search } from "lucide-react";
+import { Download, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
   Issue,
@@ -28,8 +28,6 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Badge } from "../components/ui/badge";
-import { Kbd } from "../components/ui/kbd";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
@@ -63,12 +61,13 @@ import {
   type IssueTemplate,
 } from "../lib/templates";
 import { fetchEstimates, type Estimate } from "../lib/taxonomy";
-import ProjectNav from "../components/project/ProjectNav";
-import FavoriteStar from "../components/favorites/FavoriteStar";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
 import FilterPanel from "../components/issue/FilterPanel";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import PageHeader, {
+  pageHeaderControlClass,
+} from "../components/shell/PageHeader";
 import {
   activeFilterCount,
   toApiParams,
@@ -164,6 +163,19 @@ export default function Issues() {
     }
   };
   const [dialogOpen, setDialogOpen] = useState(false);
+  // C19T4: ?create=1 deep-link opens the create dialog — the shared
+  // PageHeader's "Add work item" button navigates here with that param from
+  // views that have no create dialog of their own.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get("create") === "1") {
+      setDialogOpen(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("create");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [selected, setSelected] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const { settings, update, updateFields, reset } = useDisplaySettings(
@@ -648,47 +660,54 @@ export default function Issues() {
   }, [selectedId, openPeek]);
 
   return (
-    <div className="mx-auto w-full max-w-4xl p-6">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <Link
-            to={`/w/${slug}`}
-            className="text-xs text-muted-foreground hover:underline"
-          >
-            ← Projects
-          </Link>
-          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold tracking-tight">
-            {projectQuery.data ? (
-              <>
-                <Badge>{projectQuery.data.identifier}</Badge>
-                {projectQuery.data.name}
-                {/* C7T4: star toggle for this project. */}
-                <FavoriteStar type="project" id={projectQuery.data.id} />
-              </>
-            ) : (
-              <Skeleton className="h-8 w-48" />
-            )}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Issues for this project.{" "}
-            <span className="hidden sm:inline">
-              Press <Kbd className="mx-0.5">/</Kbd> to search,{" "}
-              <Kbd className="mx-0.5">j</Kbd>/<Kbd className="mx-0.5">k</Kbd> to
-              move, <Kbd className="mx-0.5">c</Kbd> for new,{" "}
-              <Kbd className="mx-0.5">⌘K</Kbd> for commands.
-            </span>
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => navigate(`/w/${slug}/p/${identifier}/intake`)}
-          >
-            Intake inbox
-          </Button>
-          <Dialog
-            open={dialogOpen}
-            onOpenChange={(open) => {
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Work items"
+        count={issues.length}
+        showViews
+        filterPanel={
+          <FilterPanel
+            slug={slug}
+            identifier={identifier}
+            filters={filters}
+            onChange={setFilters}
+            onClear={clearFilters}
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        displayPanel={
+          <DisplayPanel
+            settings={settings}
+            onUpdate={update}
+            onUpdateFields={updateFields}
+            onReset={reset}
+            view="list"
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        extraControls={
+          <SavedViewsMenu
+            key={`${slug}:${identifier}`}
+            projectId={projectQuery.data?.id ?? ""}
+            filters={filters}
+            display={settings}
+            onApplyDisplay={update}
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        addButton={{ onClick: () => setDialogOpen(true) }}
+        menuItems={[
+          {
+            label: "Intake inbox",
+            onClick: () => navigate(`/w/${slug}/p/${identifier}/intake`),
+          },
+        ]}
+      />
+      <div className="mx-auto w-full max-w-4xl p-6">
+        <Dialog
+          open={dialogOpen}
+          onOpenChange={(open) => {
               setDialogOpen(open);
               // A picked parent or template must not leak into the next create.
               if (!open) {
@@ -698,10 +717,6 @@ export default function Issues() {
               }
             }}
           >
-          <Button onClick={() => setDialogOpen(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            New issue
-          </Button>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>New issue</DialogTitle>
@@ -898,92 +913,60 @@ export default function Issues() {
                 </div>
               </DialogFooter>
             </form>
-          </DialogContent>
-          </Dialog>
-        </div>
-      </div>
+        </DialogContent>
+        </Dialog>
 
-      {/* Filter toolbar */}
-      <div className="mt-4">
-        <ProjectNav
-          trailing={
-            <SavedViewsMenu
-              key={`${slug}:${identifier}`}
-              projectId={projectQuery.data?.id ?? ""}
-              filters={filters}
-              display={settings}
-              onApplyDisplay={update}
+        {/* Filter toolbar */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <form onSubmit={onSearchSubmit} className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              ref={searchRef}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search issues…  ( / )"
+              className="w-56 pl-8"
             />
-          }
-        />
-      </div>
-      <div className="mb-4 mt-4 flex flex-wrap items-center gap-2">
-        <form onSubmit={onSearchSubmit} className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            ref={searchRef}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search issues…  ( / )"
-            className="w-56 pl-8"
-          />
-        </form>
-        <FilterPanel
-          slug={slug}
-          identifier={identifier}
-          filters={filters}
-          onChange={setFilters}
-          onClear={() => {
-            clearFilters();
-            setSearchInput("");
-          }}
-        />
-        <DisplayPanel
-          settings={settings}
-          onUpdate={update}
-          onUpdateFields={updateFields}
-          onReset={reset}
-          view="list"
-        />
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              clearFilters();
-              setSearchInput("");
-            }}
-          >
-            Clear
-          </Button>
-        )}
-        {/* C8T3: export the current filtered set as CSV/JSON */}
-        <div className="ml-auto flex items-center gap-2">
-          <Select
-            value={exportFormat}
-            onValueChange={(v) => setExportFormat(v as ExportFormat)}
-          >
-            <SelectTrigger className="h-8 w-24" aria-label="Export format">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="csv">CSV</SelectItem>
-              <SelectItem value="json">JSON</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onExport}
-            disabled={exporting}
-          >
-            <Download className="mr-1 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export"}
-          </Button>
-        </div>
-        {exportError && (
-          <span className="w-full text-sm text-destructive">{exportError}</span>
-        )}
+          </form>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                clearFilters();
+                setSearchInput("");
+              }}
+            >
+              Clear
+            </Button>
+          )}
+          {/* C8T3: export the current filtered set as CSV/JSON */}
+          <div className="ml-auto flex items-center gap-2">
+            <Select
+              value={exportFormat}
+              onValueChange={(v) => setExportFormat(v as ExportFormat)}
+            >
+              <SelectTrigger className="h-8 w-24" aria-label="Export format">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="csv">CSV</SelectItem>
+                <SelectItem value="json">JSON</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onExport}
+              disabled={exporting}
+            >
+              <Download className="mr-1 h-4 w-4" />
+              {exporting ? "Exporting…" : "Export"}
+            </Button>
+          </div>
+          {exportError && (
+            <span className="w-full text-sm text-destructive">{exportError}</span>
+          )}
       </div>
 
       {issuesQuery.isError && (
@@ -1133,6 +1116,7 @@ export default function Issues() {
           onClose={closePeek}
         />
       )}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Badge } from "../components/ui/badge";
@@ -138,117 +138,120 @@ export default function Roadmap() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 p-4">
-      <ProjectNav />
-      <div className="flex flex-wrap items-center gap-2">
-        <div
-          className="inline-flex rounded-md border"
-          role="group"
-          aria-label="Range"
-        >
-          {RANGES.map((r) => (
-            <Button
-              key={r}
-              type="button"
-              variant={range === r ? "secondary" : "ghost"}
-              size="sm"
-              className={cn(
-                "rounded-none first:rounded-l-md last:rounded-r-md",
-                range === r && "font-medium",
-              )}
-              onClick={() => setRange(r)}
-            >
-              {r} mo
-            </Button>
-          ))}
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setAnchor(currentMonthStart())}
-        >
-          Today
-        </Button>
-        <span className="text-sm font-medium">{windowLabel}</span>
-      </div>
-
-      {loading && (
-        <div className="text-sm text-muted-foreground">Loading roadmap…</div>
-      )}
-      {error && (
-        <div className="text-sm text-destructive">
-          Failed to load issues.{" "}
-          <button
-            type="button"
-            className="underline"
-            onClick={() => {
-              void issuesQuery.refetch();
-              void statesQuery.refetch();
-            }}
+    <>
+      {/* C19T4: shared page header replaces the per-page ProjectNav. */}
+      <PageHeader viewName="Roadmap" />
+      <div className="flex h-full flex-col gap-4 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            className="inline-flex rounded-md border"
+            role="group"
+            aria-label="Range"
           >
-            Retry
-          </button>
+            {RANGES.map((r) => (
+              <Button
+                key={r}
+                type="button"
+                variant={range === r ? "secondary" : "ghost"}
+                size="sm"
+                className={cn(
+                  "rounded-none first:rounded-l-md last:rounded-r-md",
+                  range === r && "font-medium",
+                )}
+                onClick={() => setRange(r)}
+              >
+                {r} mo
+              </Button>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setAnchor(currentMonthStart())}
+          >
+            Today
+          </Button>
+          <span className="text-sm font-medium">{windowLabel}</span>
         </div>
-      )}
-      {!loading && !error && (
-        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
-          {columns.map(({ bucket, issues }) => (
-            <section
-              key={bucket.month}
-              aria-label={bucket.label}
-              className="flex w-72 shrink-0 flex-col rounded-md border bg-muted/30"
+
+        {loading && (
+          <div className="text-sm text-muted-foreground">Loading roadmap…</div>
+        )}
+        {error && (
+          <div className="text-sm text-destructive">
+            Failed to load issues.{" "}
+            <button
+              type="button"
+              className="underline"
+              onClick={() => {
+                void issuesQuery.refetch();
+                void statesQuery.refetch();
+              }}
             >
-              <header className="flex items-center justify-between border-b px-3 py-2">
-                <h3 className="text-sm font-medium">{bucket.label}</h3>
-                <Badge variant="secondary" className="text-[11px]">
-                  {issues.length}
+              Retry
+            </button>
+          </div>
+        )}
+        {!loading && !error && (
+          <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
+            {columns.map(({ bucket, issues }) => (
+              <section
+                key={bucket.month}
+                aria-label={bucket.label}
+                className="flex w-72 shrink-0 flex-col rounded-md border bg-muted/30"
+              >
+                <header className="flex items-center justify-between border-b px-3 py-2">
+                  <h3 className="text-sm font-medium">{bucket.label}</h3>
+                  <Badge variant="secondary" className="text-[11px]">
+                    {issues.length}
+                  </Badge>
+                </header>
+                <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+                  {issues.map(renderIssue)}
+                  {issues.length === 0 && (
+                    <p className="px-1 py-2 text-xs text-muted-foreground">
+                      No issues due this month.
+                    </p>
+                  )}
+                </div>
+              </section>
+            ))}
+            {/* Unscheduled lane: issues with no target_date (target_date is
+                the bucket key — start_date alone does not schedule an
+                issue; see roadmapBucket). */}
+            <section
+              aria-label="Unscheduled"
+              className="flex w-72 shrink-0 flex-col rounded-md border border-dashed bg-muted/10"
+            >
+              <header className="flex items-center justify-between border-b border-dashed px-3 py-2">
+                <h3 className="text-sm font-medium text-muted-foreground">
+                  Unscheduled
+                </h3>
+                <Badge variant="outline" className="text-[11px]">
+                  {unscheduled.length}
                 </Badge>
               </header>
               <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-                {issues.map(renderIssue)}
-                {issues.length === 0 && (
+                {unscheduled.map(renderIssue)}
+                {unscheduled.length === 0 && (
                   <p className="px-1 py-2 text-xs text-muted-foreground">
-                    No issues due this month.
+                    Every issue has a target date.
                   </p>
                 )}
               </div>
             </section>
-          ))}
-          {/* Unscheduled lane: issues with no target_date (target_date is
-              the bucket key — start_date alone does not schedule an
-              issue; see roadmapBucket). */}
-          <section
-            aria-label="Unscheduled"
-            className="flex w-72 shrink-0 flex-col rounded-md border border-dashed bg-muted/10"
-          >
-            <header className="flex items-center justify-between border-b border-dashed px-3 py-2">
-              <h3 className="text-sm font-medium text-muted-foreground">
-                Unscheduled
-              </h3>
-              <Badge variant="outline" className="text-[11px]">
-                {unscheduled.length}
-              </Badge>
-            </header>
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
-              {unscheduled.map(renderIssue)}
-              {unscheduled.length === 0 && (
-                <p className="px-1 py-2 text-xs text-muted-foreground">
-                  Every issue has a target date.
-                </p>
-              )}
-            </div>
-          </section>
-        </div>
-      )}
-      {peekUuid && (
-        <PeekDrawer
-          slug={slug}
-          identifier={identifier}
-          uuid={peekUuid}
-          onClose={closePeek}
-        />
-      )}
-    </div>
+          </div>
+        )}
+        {peekUuid && (
+          <PeekDrawer
+            slug={slug}
+            identifier={identifier}
+            uuid={peekUuid}
+            onClose={closePeek}
+          />
+        )}
+      </div>
+    </>
   );
 }

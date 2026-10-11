@@ -16,7 +16,7 @@ import {
   publishDraft,
 } from "../lib/drafts";
 import { relativeTime } from "../lib/relativeTime";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button, buttonVariants } from "../components/ui/button";
@@ -64,81 +64,86 @@ export default function Drafts() {
   const drafts = draftsQuery.data ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold">Drafts</h1>
-      <ProjectNav />
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Drafts"
+        count={drafts.length}
+      />
+      <div className="mx-auto w-full max-w-5xl space-y-4 p-4">
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {errMsg(error, "Something went wrong")}
-          </AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              {errMsg(error, "Something went wrong")}
+            </AlertDescription>
+          </Alert>
+        )}
 
-      {draftsQuery.isLoading ? (
-        <Skeleton className="h-32 w-full" />
-      ) : drafts.length === 0 ? (
-        <Card>
-          <CardContent className="p-6 text-sm text-muted-foreground">
-            No drafts. Start a new issue and choose “Save as draft” to park
-            an unfinished idea here.
-          </CardContent>
-        </Card>
-      ) : (
-        <ul className="divide-y rounded-md border">
-          {drafts.map((d) => (
-            <li key={d.id} className="flex items-center gap-3 px-3 py-2.5">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
+        {draftsQuery.isLoading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : drafts.length === 0 ? (
+          <Card>
+            <CardContent className="p-6 text-sm text-muted-foreground">
+              No drafts. Start a new issue and choose “Save as draft” to park
+              an unfinished idea here.
+            </CardContent>
+          </Card>
+        ) : (
+          <ul className="divide-y rounded-md border">
+            {drafts.map((d) => (
+              <li key={d.id} className="flex items-center gap-3 px-3 py-2.5">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <Link
+                      to={`/w/${slug}/p/${identifier}/i/${d.id}`}
+                      className="text-sm font-medium hover:underline"
+                    >
+                      {d.name}
+                    </Link>
+                    <Badge variant="secondary">Draft</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-mono">{d.display_id}</span> · updated{" "}
+                    {relativeTime(d.updated_at)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1">
                   <Link
                     to={`/w/${slug}/p/${identifier}/i/${d.id}`}
-                    className="text-sm font-medium hover:underline"
+                    className={buttonVariants({ variant: "ghost", size: "sm" })}
                   >
-                    {d.name}
+                    Resume
                   </Link>
-                  <Badge variant="secondary">Draft</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  <span className="font-mono">{d.display_id}</span> · updated{" "}
-                  {relativeTime(d.updated_at)}
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1">
-                <Link
-                  to={`/w/${slug}/p/${identifier}/i/${d.id}`}
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
-                >
-                  Resume
-                </Link>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={publishMutation.isPending}
-                  onClick={() => publishMutation.mutate(d.id)}
-                >
-                  Publish
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={discardMutation.isPending}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Discard draft "${d.name}"? This can't be undone.`,
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={publishMutation.isPending}
+                    onClick={() => publishMutation.mutate(d.id)}
+                  >
+                    Publish
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={discardMutation.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Discard draft "${d.name}"? This can't be undone.`,
+                        )
                       )
-                    )
-                      discardMutation.mutate(d.id);
-                  }}
-                >
-                  Discard
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                        discardMutation.mutate(d.id);
+                    }}
+                  >
+                    Discard
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

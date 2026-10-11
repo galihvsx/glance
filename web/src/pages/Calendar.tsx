@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { api, ApiError } from "../lib/api";
@@ -172,149 +172,152 @@ export default function Calendar() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 p-4">
-      <ProjectNav />
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => go(-1)}
-          className="rounded-md border p-1.5 hover:bg-accent"
-          aria-label="Previous month"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={goToday}
-          className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
-        >
-          Today
-        </button>
-        <button
-          type="button"
-          onClick={() => go(1)}
-          className="rounded-md border p-1.5 hover:bg-accent"
-          aria-label="Next month"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-        <h2 className="ml-2 text-base font-semibold">{monthLabel}</h2>
-        <button
-          type="button"
-          onClick={copyICalURL}
-          disabled={copying}
-          className="ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
-        >
-          <CalendarPlus className="h-3.5 w-3.5" />
-          {copying ? "Copying…" : "Copy iCal URL"}
-        </button>
-        <span className="text-xs text-muted-foreground">
-          Placed by due date, start date when there is no due date
-        </span>
-      </div>
+    <>
+      {/* C19T4: shared page header replaces the per-page ProjectNav. */}
+      <PageHeader viewName="Calendar" showViews />
+      <div className="flex h-full flex-col gap-4 p-4">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => go(-1)}
+            className="rounded-md border p-1.5 hover:bg-accent"
+            aria-label="Previous month"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={goToday}
+            className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => go(1)}
+            className="rounded-md border p-1.5 hover:bg-accent"
+            aria-label="Next month"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <h2 className="ml-2 text-base font-semibold">{monthLabel}</h2>
+          <button
+            type="button"
+            onClick={copyICalURL}
+            disabled={copying}
+            className="ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" />
+            {copying ? "Copying…" : "Copy iCal URL"}
+          </button>
+          <span className="text-xs text-muted-foreground">
+            Placed by due date, start date when there is no due date
+          </span>
+        </div>
 
-      {feedMsg && (
-        <p className="text-xs text-muted-foreground">
-          {feedMsg.includes("Profile") ? (
-            <>
-              A feed token is already active — regenerate it from{" "}
-              <Link to="/profile" className="underline">
-                Profile → Calendar feed
-              </Link>{" "}
-              to get a new subscription URL.
-            </>
-          ) : (
-            feedMsg
-          )}
-        </p>
-      )}
+        {feedMsg && (
+          <p className="text-xs text-muted-foreground">
+            {feedMsg.includes("Profile") ? (
+              <>
+                A feed token is already active — regenerate it from{" "}
+                <Link to="/profile" className="underline">
+                  Profile → Calendar feed
+                </Link>{" "}
+                to get a new subscription URL.
+              </>
+            ) : (
+              feedMsg
+            )}
+          </p>
+        )}
 
-      {loading ? (
-        <p className="text-sm text-muted-foreground">Loading calendar…</p>
-      ) : error ? (
-        <p className="text-sm text-destructive">
-          {error instanceof ApiError ? error.message : "Failed to load calendar"}
-        </p>
-      ) : (
-        <>
-          <div className="grid grid-cols-7 overflow-hidden rounded-md border">
-            {WEEKDAYS.map((d) => (
-              <div
-                key={d}
-                className="border-b bg-muted/50 px-2 py-1.5 text-xs font-medium text-muted-foreground [&:not(:last-child)]:border-r"
-              >
-                {d}
-              </div>
-            ))}
-            {cells.map((date) => {
-              const key = dayKey(date);
-              const issues = byDay.get(key) ?? [];
-              const isToday = key === todayKey;
-              const isOtherMonth = date.getMonth() !== month;
-              return (
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading calendar…</p>
+        ) : error ? (
+          <p className="text-sm text-destructive">
+            {error instanceof ApiError ? error.message : "Failed to load calendar"}
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-7 overflow-hidden rounded-md border">
+              {WEEKDAYS.map((d) => (
                 <div
-                  key={key}
-                  className={cn(
-                    "min-h-24 border-b p-1 [&:not(:nth-child(7n))]:border-r",
-                    isOtherMonth && "opacity-40",
-                  )}
+                  key={d}
+                  className="border-b bg-muted/50 px-2 py-1.5 text-xs font-medium text-muted-foreground [&:not(:last-child)]:border-r"
                 >
+                  {d}
+                </div>
+              ))}
+              {cells.map((date) => {
+                const key = dayKey(date);
+                const issues = byDay.get(key) ?? [];
+                const isToday = key === todayKey;
+                const isOtherMonth = date.getMonth() !== month;
+                return (
                   <div
+                    key={key}
                     className={cn(
-                      "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-xs",
-                      isToday
-                        ? "bg-primary font-semibold text-primary-foreground"
-                        : "text-muted-foreground",
+                      "min-h-24 border-b p-1 [&:not(:nth-child(7n))]:border-r",
+                      isOtherMonth && "opacity-40",
                     )}
                   >
-                    {date.getDate()}
+                    <div
+                      className={cn(
+                        "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-xs",
+                        isToday
+                          ? "bg-primary font-semibold text-primary-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {date.getDate()}
+                    </div>
+                    <div className="max-h-20 space-y-0.5 overflow-y-auto">
+                      {issues.map((issue) => (
+                        <IssueChip
+                          key={issue.id}
+                          issue={issue}
+                          onOpen={() => openPeek(issue.id)}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  <div className="max-h-20 space-y-0.5 overflow-y-auto">
-                    {issues.map((issue) => (
-                      <IssueChip
-                        key={issue.id}
-                        issue={issue}
-                        onOpen={() => openPeek(issue.id)}
-                      />
-                    ))}
-                  </div>
+                );
+              })}
+            </div>
+
+            {byDay.size === 0 && undated.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No issues scheduled for {monthLabel}. Issues appear here once they
+                get a due or start date.
+              </p>
+            )}
+
+            {undated.length > 0 && (
+              <section>
+                <h3 className="mb-2 text-sm font-medium text-muted-foreground">
+                  Unscheduled ({undated.length})
+                </h3>
+                <div className="flex flex-wrap gap-1 rounded-md border p-2">
+                  {undated.map((issue) => (
+                    <span key={issue.id} className="max-w-64">
+                      <IssueChip issue={issue} onOpen={() => openPeek(issue.id)} />
+                    </span>
+                  ))}
                 </div>
-              );
-            })}
-          </div>
+              </section>
+            )}
+          </>
+        )}
 
-          {byDay.size === 0 && undated.length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No issues scheduled for {monthLabel}. Issues appear here once they
-              get a due or start date.
-            </p>
-          )}
-
-          {undated.length > 0 && (
-            <section>
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground">
-                Unscheduled ({undated.length})
-              </h3>
-              <div className="flex flex-wrap gap-1 rounded-md border p-2">
-                {undated.map((issue) => (
-                  <span key={issue.id} className="max-w-64">
-                    <IssueChip issue={issue} onOpen={() => openPeek(issue.id)} />
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-        </>
-      )}
-
-      {peekUuid && (
-        <PeekDrawer
-          slug={slug}
-          identifier={identifier}
-          uuid={peekUuid}
-          onClose={closePeek}
-        />
-      )}
-    </div>
+        {peekUuid && (
+          <PeekDrawer
+            slug={slug}
+            identifier={identifier}
+            uuid={peekUuid}
+            onClose={closePeek}
+          />
+        )}
+      </div>
+    </>
   );
 }

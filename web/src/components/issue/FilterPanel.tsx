@@ -112,12 +112,15 @@ export default function FilterPanel({
   filters,
   onChange,
   onClear,
+  triggerClassName,
 }: {
   slug: string;
   identifier: string;
   filters: IssueFilters;
   onChange: (patch: Partial<IssueFilters>) => void;
   onClear: () => void;
+  /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
@@ -168,10 +171,11 @@ export default function FilterPanel({
         className={cn(
           buttonVariants({ variant: "outline", size: "sm" }),
           "gap-1.5",
+          triggerClassName,
         )}
       >
         <Filter className="h-3.5 w-3.5" />
-        Filters
+        Filter
         {count > 0 && (
           <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-medium text-primary-foreground">
             {count}

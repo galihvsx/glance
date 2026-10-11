@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
   useMutation,
@@ -7,7 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ArrowUpDown, Plus, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
   Issue,
@@ -29,14 +29,15 @@ import {
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
-import { Kbd } from "../components/ui/kbd";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import StatePicker from "../components/issue/StatePicker";
 import StateBadge from "../components/issue/StateBadge";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader, {
+  pageHeaderControlClass,
+} from "../components/shell/PageHeader";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import SpreadsheetDisplayPanel from "../components/issue/SpreadsheetDisplayPanel";
@@ -325,394 +326,371 @@ export default function Spreadsheet() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-7xl p-6">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <Link
-            to={`/w/${slug}`}
-            className="text-xs text-muted-foreground hover:underline"
-          >
-            ← Projects
-          </Link>
-          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold tracking-tight">
-            {projectQuery.data ? (
-              <>
-                <Badge>{projectQuery.data.identifier}</Badge>
-                {projectQuery.data.name}
-              </>
-            ) : (
-              <Skeleton className="h-8 w-48" />
-            )}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Spreadsheet view of issues. Click a column header to sort.{" "}
-            <span className="hidden sm:inline">
-              Press <Kbd className="mx-0.5">/</Kbd> to search,{" "}
-              <Kbd className="mx-0.5">c</Kbd> for new.
-            </span>
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <Button onClick={() => setDialogOpen(true)} className="gap-2">
-              <Plus className="h-4 w-4" />
-              New issue
-            </Button>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>New issue</DialogTitle>
-                <DialogDescription>
-                  It gets the next sequence number, e.g. {identifier}-1.
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={onCreate} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="s-name">Title</Label>
-                  <Input
-                    id="s-name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Fix the login redirect"
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="s-desc">Description</Label>
-                  <Textarea
-                    id="s-desc"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="What needs to happen…"
-                    rows={4}
-                  />
-                </div>
-                <div className="flex gap-4">
-                  <div className="space-y-2">
-                    <Label>Priority</Label>
-                    <PriorityPicker
-                      value={newPriority}
-                      onChange={setNewPriority}
-                    />
-                  </div>
-                  {(statesQuery.data ?? []).length > 0 && (
-                    <div className="space-y-2">
-                      <Label>State</Label>
-                      <StatePicker
-                        states={statesQuery.data ?? []}
-                        value={newStateId}
-                        onChange={setNewStateId}
-                      />
-                    </div>
-                  )}
-                </div>
-                {formError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{formError}</AlertDescription>
-                  </Alert>
-                )}
-                <DialogFooter>
-                  <Button
-                    type="submit"
-                    disabled={createMutation.isPending || !name.trim()}
-                  >
-                    {createMutation.isPending ? "Creating…" : "Create issue"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </div>
-
-      {/* View switcher */}
-      <div className="mt-4">
-        <ProjectNav
-          trailing={
-            <SavedViewsMenu
-              key={`${slug}:${identifier}`}
-              projectId={projectQuery.data?.id ?? ""}
-              filters={filters}
-              display={null}
-              onApplyDisplay={null}
-            />
-          }
-        />
-      </div>
-
-      {/* Filter toolbar — same query params as the list view */}
-      <div className="mb-4 mt-4 flex flex-wrap items-center gap-2">
-        <form onSubmit={onSearchSubmit} className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            ref={searchRef}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search issues…  ( / )"
-            className="w-56 pl-8"
-          />
-        </form>
-        <FilterPanel
-          slug={slug}
-          identifier={identifier}
-          filters={filters}
-          onChange={(patch) => {
-            setFilters(patch);
-            setSortKey(null);
-          }}
-          onClear={() => {
-            clearFilters();
-            setSearchInput("");
-            setSortKey(null);
-          }}
-        />
-        <SpreadsheetDisplayPanel
-          fields={customFieldsQuery.data ?? []}
-          isLoading={customFieldsQuery.isPending}
-          isError={customFieldsQuery.isError}
-          onRetry={() => void customFieldsQuery.refetch()}
-          visible={cfVisible}
-          onToggle={toggleCfColumn}
-          onReset={resetCfColumns}
-        />
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Table"
+        count={issues.length}
+        showViews
+        filterPanel={
+          <FilterPanel
+            slug={slug}
+            identifier={identifier}
+            filters={filters}
+            onChange={(patch) => {
+              setFilters(patch);
+              setSortKey(null);
+            }}
+            onClear={() => {
               clearFilters();
               setSearchInput("");
               setSortKey(null);
             }}
-          >
-            Clear
-          </Button>
-        )}
-      </div>
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        displayPanel={
+          <SpreadsheetDisplayPanel
+            fields={customFieldsQuery.data ?? []}
+            isLoading={customFieldsQuery.isPending}
+            isError={customFieldsQuery.isError}
+            onRetry={() => void customFieldsQuery.refetch()}
+            visible={cfVisible}
+            onToggle={toggleCfColumn}
+            onReset={resetCfColumns}
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        extraControls={
+          <SavedViewsMenu
+            key={`${slug}:${identifier}`}
+            projectId={projectQuery.data?.id ?? ""}
+            filters={filters}
+            display={null}
+            onApplyDisplay={null}
+            triggerClassName={pageHeaderControlClass}
+          />
+        }
+        addButton={{ onClick: () => setDialogOpen(true) }}
+      />
+      <div className="mx-auto w-full max-w-7xl p-6">
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>New issue</DialogTitle>
+              <DialogDescription>
+                It gets the next sequence number, e.g. {identifier}-1.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={onCreate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="s-name">Title</Label>
+                <Input
+                  id="s-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Fix the login redirect"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="s-desc">Description</Label>
+                <Textarea
+                  id="s-desc"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="What needs to happen…"
+                  rows={4}
+                />
+              </div>
+              <div className="flex gap-4">
+                <div className="space-y-2">
+                  <Label>Priority</Label>
+                  <PriorityPicker
+                    value={newPriority}
+                    onChange={setNewPriority}
+                  />
+                </div>
+                {(statesQuery.data ?? []).length > 0 && (
+                  <div className="space-y-2">
+                    <Label>State</Label>
+                    <StatePicker
+                      states={statesQuery.data ?? []}
+                      value={newStateId}
+                      onChange={setNewStateId}
+                    />
+                  </div>
+                )}
+              </div>
+              {formError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{formError}</AlertDescription>
+                </Alert>
+              )}
+              <DialogFooter>
+                <Button
+                  type="submit"
+                  disabled={createMutation.isPending || !name.trim()}
+                >
+                  {createMutation.isPending ? "Creating…" : "Create issue"}
+                </Button>
+              </DialogFooter>
+            </form>
+            </DialogContent>
+        </Dialog>
 
-      {issuesQuery.isError && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>
-            {issuesQuery.error instanceof ApiError
-              ? issuesQuery.error.message
-              : "Failed to load issues"}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {issuesQuery.isPending ? (
-        <div className="space-y-3">
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-64 w-full" />
+        {/* Filter toolbar — same query params as the list view */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <form onSubmit={onSearchSubmit} className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              ref={searchRef}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search issues…  ( / )"
+              className="w-56 pl-8"
+            />
+          </form>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                clearFilters();
+                setSearchInput("");
+                setSortKey(null);
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </div>
-      ) : sortedIssues.length === 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>
-              {hasActiveFilters ? "No issues match" : "No issues yet"}
-            </CardTitle>
-            <CardDescription>
-              {hasActiveFilters
-                ? "Try clearing the filters."
-                : "Create the first issue in this project."}
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      ) : (
-        <>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[1200px] border-collapse text-sm">
-              <thead className="sticky top-0 z-20">
-                <tr className="border-b bg-muted/80 backdrop-blur">
-                  {COLUMNS.map((col, ci) => {
-                    const active = sortKey === col.key;
-                    return (
-                      <th
-                        key={col.key}
-                        className={cn(
-                          "px-3 py-2.5 text-left align-middle",
-                          col.className,
-                          ci === 0 &&
-                            "sticky left-0 z-30 border-r bg-muted shadow-[1px_0_0_0_var(--border)]",
-                        )}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => toggleSort(col.key)}
+
+        {issuesQuery.isError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>
+              {issuesQuery.error instanceof ApiError
+                ? issuesQuery.error.message
+                : "Failed to load issues"}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {issuesQuery.isPending ? (
+          <div className="space-y-3">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-64 w-full" />
+          </div>
+        ) : sortedIssues.length === 0 ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                {hasActiveFilters ? "No issues match" : "No issues yet"}
+              </CardTitle>
+              <CardDescription>
+                {hasActiveFilters
+                  ? "Try clearing the filters."
+                  : "Create the first issue in this project."}
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        ) : (
+          <>
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[1200px] border-collapse text-sm">
+                <thead className="sticky top-0 z-20">
+                  <tr className="border-b bg-muted/80 backdrop-blur">
+                    {COLUMNS.map((col, ci) => {
+                      const active = sortKey === col.key;
+                      return (
+                        <th
+                          key={col.key}
                           className={cn(
-                            "inline-flex items-center gap-1.5 font-medium hover:text-foreground",
-                            active
-                              ? "text-foreground"
-                              : "text-muted-foreground",
+                            "px-3 py-2.5 text-left align-middle",
+                            col.className,
+                            ci === 0 &&
+                              "sticky left-0 z-30 border-r bg-muted shadow-[1px_0_0_0_var(--border)]",
                           )}
-                          aria-label={`Sort by ${col.label}`}
-                          aria-sort={
-                            active
-                              ? sortDir === "asc"
-                                ? "ascending"
-                                : "descending"
-                              : "none"
-                          }
                         >
-                          {col.label}
-                          {active ? (
-                            sortDir === "asc" ? (
-                              <ArrowUp className="h-3.5 w-3.5" aria-hidden />
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(col.key)}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 font-medium hover:text-foreground",
+                              active
+                                ? "text-foreground"
+                                : "text-muted-foreground",
+                            )}
+                            aria-label={`Sort by ${col.label}`}
+                            aria-sort={
+                              active
+                                ? sortDir === "asc"
+                                  ? "ascending"
+                                  : "descending"
+                                : "none"
+                            }
+                          >
+                            {col.label}
+                            {active ? (
+                              sortDir === "asc" ? (
+                                <ArrowUp className="h-3.5 w-3.5" aria-hidden />
+                              ) : (
+                                <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+                              )
                             ) : (
-                              <ArrowDown className="h-3.5 w-3.5" aria-hidden />
-                            )
-                          ) : (
-                            <ArrowUpDown
-                              className="h-3.5 w-3.5 opacity-40"
-                              aria-hidden
-                            />
-                          )}
-                        </button>
-                      </th>
-                    );
-                  })}
-                  {/* C9T4: optional custom-field columns. Plain headers — no
-                      client-side sort on these columns (kept minimal; the
-                      standard columns above keep their sorting). */}
-                  {visibleCfFields.map((f) => (
-                    <th
-                      key={`cf-${f.id}`}
-                      className="min-w-36 px-3 py-2.5 text-left align-middle"
-                    >
-                      <span
-                        className="inline-flex items-center gap-1.5 font-medium text-muted-foreground"
-                        title={`Custom field — read-only in the spreadsheet`}
+                              <ArrowUpDown
+                                className="h-3.5 w-3.5 opacity-40"
+                                aria-hidden
+                              />
+                            )}
+                          </button>
+                        </th>
+                      );
+                    })}
+                    {/* C9T4: optional custom-field columns. Plain headers — no
+                        client-side sort on these columns (kept minimal; the
+                        standard columns above keep their sorting). */}
+                    {visibleCfFields.map((f) => (
+                      <th
+                        key={`cf-${f.id}`}
+                        className="min-w-36 px-3 py-2.5 text-left align-middle"
                       >
-                        {f.name}
-                      </span>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedIssues.map((issue) => {
-                  const state = stateById.get(issue.state_id);
-                  return (
-                    <tr
-                      key={issue.id}
-                      role="link"
-                      tabIndex={0}
-                      aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
-                      onClick={() => openIssue(issue)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-                          openIssue(issue);
-                        }
-                      }}
-                      className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                    >
-                      <td className="sticky left-0 z-10 border-r bg-background px-3 py-2.5 align-middle">
-                        <Badge variant="outline" className="font-mono">
-                          {issue.display_id || issue.id.slice(0, 8)}
-                        </Badge>
-                      </td>
-                      <td className="max-w-64 truncate px-3 py-2.5 align-middle font-medium">
-                        {issue.name}
-                      </td>
-                      <td className="px-3 py-2.5 align-middle">
-                        {state ? (
-                          <StateBadge state={state} />
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 align-middle">
-                        {priorityLabel(issue.priority)}
-                      </td>
-                      <td className="px-3 py-2.5 align-middle">
-                        {issue.assignees.length > 0 ? (
-                          <span className="flex flex-wrap gap-1">
-                            {issue.assignees.map((a) => (
-                              <Badge
-                                key={a.id}
-                                variant="outline"
-                                className="text-xs font-normal"
-                              >
-                                {a.name}
-                              </Badge>
-                            ))}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 align-middle">
-                        {issue.labels.length > 0 ? (
-                          <span className="flex flex-wrap gap-1">
-                            {issue.labels.map((l) => (
-                              <Badge
-                                key={l.id}
-                                variant="secondary"
-                                className="gap-1 text-xs font-normal"
-                              >
-                                <span
-                                  className="h-2 w-2 rounded-full"
-                                  style={{ backgroundColor: l.color }}
-                                  aria-hidden
-                                />
-                                {l.name}
-                              </Badge>
-                            ))}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
-                        {dateOnly(issue.start_date)}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
-                        {dateOnly(issue.target_date)}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
-                        {dateOnly(issue.created_at)}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
-                        {dateOnly(issue.updated_at)}
-                      </td>
-                      {/*
-                        C9T4: custom-field columns are READ-ONLY by design.
-                        Cells render with the exact same formatting as the
-                        issue-detail custom-fields section
-                        (lib/customFields formatCustomValue); editing stays
-                        in the issue detail / peek drawer, where the
-                        per-type validation and write paths already live.
-                        Unset values render as "—".
-                      */}
-                      {visibleCfFields.map((f) => (
-                        <td
-                          key={`cf-${f.id}`}
-                          className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground"
+                        <span
+                          className="inline-flex items-center gap-1.5 font-medium text-muted-foreground"
+                          title={`Custom field — read-only in the spreadsheet`}
                         >
-                          {formatCustomValue(
-                            f,
-                            cfValuesByIssue.get(issue.id)?.[f.id],
+                          {f.name}
+                        </span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedIssues.map((issue) => {
+                    const state = stateById.get(issue.state_id);
+                    return (
+                      <tr
+                        key={issue.id}
+                        role="link"
+                        tabIndex={0}
+                        aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
+                        onClick={() => openIssue(issue)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+                            openIssue(issue);
+                          }
+                        }}
+                        className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                      >
+                        <td className="sticky left-0 z-10 border-r bg-background px-3 py-2.5 align-middle">
+                          <Badge variant="outline" className="font-mono">
+                            {issue.display_id || issue.id.slice(0, 8)}
+                          </Badge>
+                        </td>
+                        <td className="max-w-64 truncate px-3 py-2.5 align-middle font-medium">
+                          {issue.name}
+                        </td>
+                        <td className="px-3 py-2.5 align-middle">
+                          {state ? (
+                            <StateBadge state={state} />
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
                           )}
                         </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {issuesQuery.hasNextPage && (
-            <div className="mt-4 flex justify-center">
-              <Button
-                variant="outline"
-                onClick={() => void issuesQuery.fetchNextPage()}
-                disabled={issuesQuery.isFetchingNextPage}
-              >
-                {issuesQuery.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
+                        <td className="px-3 py-2.5 align-middle">
+                          {priorityLabel(issue.priority)}
+                        </td>
+                        <td className="px-3 py-2.5 align-middle">
+                          {issue.assignees.length > 0 ? (
+                            <span className="flex flex-wrap gap-1">
+                              {issue.assignees.map((a) => (
+                                <Badge
+                                  key={a.id}
+                                  variant="outline"
+                                  className="text-xs font-normal"
+                                >
+                                  {a.name}
+                                </Badge>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 align-middle">
+                          {issue.labels.length > 0 ? (
+                            <span className="flex flex-wrap gap-1">
+                              {issue.labels.map((l) => (
+                                <Badge
+                                  key={l.id}
+                                  variant="secondary"
+                                  className="gap-1 text-xs font-normal"
+                                >
+                                  <span
+                                    className="h-2 w-2 rounded-full"
+                                    style={{ backgroundColor: l.color }}
+                                    aria-hidden
+                                  />
+                                  {l.name}
+                                </Badge>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                          {dateOnly(issue.start_date)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                          {dateOnly(issue.target_date)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                          {dateOnly(issue.created_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                          {dateOnly(issue.updated_at)}
+                        </td>
+                        {/*
+                          C9T4: custom-field columns are READ-ONLY by design.
+                          Cells render with the exact same formatting as the
+                          issue-detail custom-fields section
+                          (lib/customFields formatCustomValue); editing stays
+                          in the issue detail / peek drawer, where the
+                          per-type validation and write paths already live.
+                          Unset values render as "—".
+                        */}
+                        {visibleCfFields.map((f) => (
+                          <td
+                            key={`cf-${f.id}`}
+                            className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground"
+                          >
+                            {formatCustomValue(
+                              f,
+                              cfValuesByIssue.get(issue.id)?.[f.id],
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          )}
-        </>
-      )}
+            {issuesQuery.hasNextPage && (
+              <div className="mt-4 flex justify-center">
+                <Button
+                  variant="outline"
+                  onClick={() => void issuesQuery.fetchNextPage()}
+                  disabled={issuesQuery.isFetchingNextPage}
+                >
+                  {issuesQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

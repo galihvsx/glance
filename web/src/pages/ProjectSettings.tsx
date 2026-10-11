@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Workspace } from "../lib/types";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import GeneralSection from "../components/settings/GeneralSection";
 import LabelsSection from "../components/settings/LabelsSection";
@@ -50,77 +50,81 @@ export default function ProjectSettings() {
   const isAdmin = role === 20;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold">Project settings</h1>
-      <ProjectNav />
-      {role === null ? (
-        <Skeleton className="h-64 w-full" />
-      ) : (
-        <Tabs defaultValue="general">
-          <TabsList>
-            <TabsTrigger value="general">General</TabsTrigger>
-            <TabsTrigger value="labels">Labels</TabsTrigger>
-            <TabsTrigger value="states">States</TabsTrigger>
-            <TabsTrigger value="estimates">Estimates</TabsTrigger>
-            <TabsTrigger value="templates">Templates</TabsTrigger>
-            <TabsTrigger value="custom-fields">Custom fields</TabsTrigger>
-            <TabsTrigger value="automations">Automations</TabsTrigger>
-            <TabsTrigger value="import">Import</TabsTrigger>
-            {isAdmin && (
-              <TabsTrigger value="danger">Danger zone</TabsTrigger>
-            )}
-          </TabsList>
-          <TabsContent value="general" className="mt-4">
-            <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
-          </TabsContent>
-          <TabsContent value="labels" className="mt-4">
-            <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
-          </TabsContent>
-          <TabsContent value="states" className="mt-4">
-            <StatesSection slug={slug} identifier={identifier} canEdit={canEdit} />
-          </TabsContent>
-          <TabsContent value="estimates" className="mt-4">
-            <EstimatesSection
-              slug={slug}
-              identifier={identifier}
-              canEdit={canEdit}
-            />
-          </TabsContent>
-          <TabsContent value="templates" className="mt-4">
-            <TemplatesSection
-              slug={slug}
-              identifier={identifier}
-              canEdit={canEdit}
-            />
-          </TabsContent>
-          <TabsContent value="custom-fields" className="mt-4">
-            <CustomFieldsSection
-              slug={slug}
-              identifier={identifier}
-              canEdit={canEdit}
-            />
-          </TabsContent>
-          <TabsContent value="automations" className="mt-4">
-            <AutomationsSection
-              slug={slug}
-              identifier={identifier}
-              canEdit={canEdit}
-            />
-          </TabsContent>
-          <TabsContent value="import" className="mt-4">
-            <ImportSection
-              slug={slug}
-              identifier={identifier}
-              canEdit={canEdit}
-            />
-          </TabsContent>
-          {isAdmin && (
-            <TabsContent value="danger" className="mt-4">
-              <DangerZoneSection slug={slug} identifier={identifier} />
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Settings"
+      />
+      <div className="mx-auto w-full max-w-5xl space-y-4 p-4">
+        {role === null ? (
+          <Skeleton className="h-64 w-full" />
+        ) : (
+          <Tabs defaultValue="general">
+            <TabsList>
+              <TabsTrigger value="general">General</TabsTrigger>
+              <TabsTrigger value="labels">Labels</TabsTrigger>
+              <TabsTrigger value="states">States</TabsTrigger>
+              <TabsTrigger value="estimates">Estimates</TabsTrigger>
+              <TabsTrigger value="templates">Templates</TabsTrigger>
+              <TabsTrigger value="custom-fields">Custom fields</TabsTrigger>
+              <TabsTrigger value="automations">Automations</TabsTrigger>
+              <TabsTrigger value="import">Import</TabsTrigger>
+              {isAdmin && (
+                <TabsTrigger value="danger">Danger zone</TabsTrigger>
+              )}
+            </TabsList>
+            <TabsContent value="general" className="mt-4">
+              <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
             </TabsContent>
-          )}
-        </Tabs>
-      )}
+            <TabsContent value="labels" className="mt-4">
+              <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
+            </TabsContent>
+            <TabsContent value="states" className="mt-4">
+              <StatesSection slug={slug} identifier={identifier} canEdit={canEdit} />
+            </TabsContent>
+            <TabsContent value="estimates" className="mt-4">
+              <EstimatesSection
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
+            </TabsContent>
+            <TabsContent value="templates" className="mt-4">
+              <TemplatesSection
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
+            </TabsContent>
+            <TabsContent value="custom-fields" className="mt-4">
+              <CustomFieldsSection
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
+            </TabsContent>
+            <TabsContent value="automations" className="mt-4">
+              <AutomationsSection
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
+            </TabsContent>
+            <TabsContent value="import" className="mt-4">
+              <ImportSection
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
+            </TabsContent>
+            {isAdmin && (
+              <TabsContent value="danger" className="mt-4">
+                <DangerZoneSection slug={slug} identifier={identifier} />
+              </TabsContent>
+            )}
+          </Tabs>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import TimeReport from "../components/analytics/TimeReport";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
@@ -491,143 +491,144 @@ export default function Analytics() {
       : 0;
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <ProjectNav />
-      <h1 className="text-lg font-semibold">Analytics</h1>
-
-      {/* Summary */}
-      <Section title="Issue summary">
-        {summaryQuery.isPending || statesQuery.isPending ? (
-          <Loading />
-        ) : summaryQuery.isError ? (
-          <ErrorBox message={(summaryQuery.error as Error).message} />
-        ) : (
-          <div className="flex flex-col gap-6">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard
-                label="Total issues"
-                value={stateRows.reduce((s, r) => s + r.value, 0)}
-              />
-              <StatCard label="Overdue" value={summary?.overdue_count ?? 0} />
-              <StatCard
-                label="Estimate points"
-                value={summary?.estimate_total ?? 0}
-              />
-              <StatCard
-                label="Estimate done"
-                value={`${summary?.estimate_done ?? 0} (${estimatePct}%)`}
-              />
-            </div>
-            <div className="grid gap-6 md:grid-cols-2">
-              <div>
-                <h3 className="mb-2 text-xs font-medium text-muted-foreground">
-                  BY STATE
-                </h3>
-                <StateDonut rows={stateRows} />
+    <>
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader viewName="Analytics" />
+      <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
+        {/* Summary */}
+        <Section title="Issue summary">
+          {summaryQuery.isPending || statesQuery.isPending ? (
+            <Loading />
+          ) : summaryQuery.isError ? (
+            <ErrorBox message={(summaryQuery.error as Error).message} />
+          ) : (
+            <div className="flex flex-col gap-6">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard
+                  label="Total issues"
+                  value={stateRows.reduce((s, r) => s + r.value, 0)}
+                />
+                <StatCard label="Overdue" value={summary?.overdue_count ?? 0} />
+                <StatCard
+                  label="Estimate points"
+                  value={summary?.estimate_total ?? 0}
+                />
+                <StatCard
+                  label="Estimate done"
+                  value={`${summary?.estimate_done ?? 0} (${estimatePct}%)`}
+                />
               </div>
-              <div>
-                <h3 className="mb-2 text-xs font-medium text-muted-foreground">
-                  BY PRIORITY
-                </h3>
-                <PriorityBars rows={priorityRows} />
-              </div>
-            </div>
-            {labelRows.length > 0 && (
-              <div>
-                <h3 className="mb-2 text-xs font-medium text-muted-foreground">
-                  BY LABEL
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {labelRows.map((r) => (
-                    <span
-                      key={r.id}
-                      className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
-                    >
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: r.color }}
-                      />
-                      {r.label}
-                      <span className="font-medium">{r.value}</span>
-                    </span>
-                  ))}
+              <div className="grid gap-6 md:grid-cols-2">
+                <div>
+                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                    BY STATE
+                  </h3>
+                  <StateDonut rows={stateRows} />
+                </div>
+                <div>
+                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                    BY PRIORITY
+                  </h3>
+                  <PriorityBars rows={priorityRows} />
                 </div>
               </div>
-            )}
-          </div>
-        )}
-      </Section>
+              {labelRows.length > 0 && (
+                <div>
+                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                    BY LABEL
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {labelRows.map((r) => (
+                      <span
+                        key={r.id}
+                        className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+                      >
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: r.color }}
+                        />
+                        {r.label}
+                        <span className="font-medium">{r.value}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
 
-      {/* Burndown */}
-      <Section
-        title="Cycle burndown"
-        right={
-          <select
-            className="rounded-md border bg-background px-2 py-1 text-xs"
-            value={effectiveCycleId}
-            onChange={(e) => setCycleId(e.target.value)}
-            aria-label="Select cycle"
-          >
-            {cycles.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.status})
-              </option>
-            ))}
-          </select>
-        }
-      >
-        {cyclesQuery.isPending ? (
-          <Loading />
-        ) : cycles.length === 0 ? (
-          <EmptyChart label="No cycles yet — create one to see burndown" />
-        ) : effectiveCycleId === "" ? (
-          <Loading />
-        ) : burndownQuery.isPending ? (
-          <Loading />
-        ) : burndownQuery.isError ? (
-          <ErrorBox message={(burndownQuery.error as Error).message} />
-        ) : (
-          <BurndownChart
-            key={effectiveCycleId}
-            data={burndownQuery.data as AnalyticsBurndown}
-          />
-        )}
-      </Section>
+        {/* Burndown */}
+        <Section
+          title="Cycle burndown"
+          right={
+            <select
+              className="rounded-md border bg-background px-2 py-1 text-xs"
+              value={effectiveCycleId}
+              onChange={(e) => setCycleId(e.target.value)}
+              aria-label="Select cycle"
+            >
+              {cycles.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.status})
+                </option>
+              ))}
+            </select>
+          }
+        >
+          {cyclesQuery.isPending ? (
+            <Loading />
+          ) : cycles.length === 0 ? (
+            <EmptyChart label="No cycles yet — create one to see burndown" />
+          ) : effectiveCycleId === "" ? (
+            <Loading />
+          ) : burndownQuery.isPending ? (
+            <Loading />
+          ) : burndownQuery.isError ? (
+            <ErrorBox message={(burndownQuery.error as Error).message} />
+          ) : (
+            <BurndownChart
+              key={effectiveCycleId}
+              data={burndownQuery.data as AnalyticsBurndown}
+            />
+          )}
+        </Section>
 
-      {/* Trends */}
-      <Section
-        title="Activity trends"
-        right={
-          <div className="flex rounded-md border text-xs">
-            {TREND_RANGES.map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setTrendDays(d)}
-                className={cn(
-                  "px-2 py-1",
-                  trendDays === d
-                    ? "bg-accent font-medium"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
-        }
-      >
-        {trendsQuery.isPending ? (
-          <Loading />
-        ) : trendsQuery.isError ? (
-          <ErrorBox message={(trendsQuery.error as Error).message} />
-        ) : (
-          <TrendsChart days={trendsQuery.data ?? []} />
-        )}
-      </Section>
+        {/* Trends */}
+        <Section
+          title="Activity trends"
+          right={
+            <div className="flex rounded-md border text-xs">
+              {TREND_RANGES.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setTrendDays(d)}
+                  className={cn(
+                    "px-2 py-1",
+                    trendDays === d
+                      ? "bg-accent font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
+          }
+        >
+          {trendsQuery.isPending ? (
+            <Loading />
+          ) : trendsQuery.isError ? (
+            <ErrorBox message={(trendsQuery.error as Error).message} />
+          ) : (
+            <TrendsChart days={trendsQuery.data ?? []} />
+          )}
+        </Section>
 
-      {/* Time report (C6T8) */}
-      <TimeReport />
-    </div>
+        {/* Time report (C6T8) */}
+        <TimeReport />
+      </div>
+    </>
   );
 }

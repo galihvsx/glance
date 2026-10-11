@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
+import PageHeader from "../components/shell/PageHeader";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { INTAKE_STATUS } from "../lib/types";
@@ -310,252 +311,239 @@ export default function Intake() {
   const nowLocal = toLocalInputValue(new Date(Date.now() + 60_000));
 
   return (
-    <div className="mx-auto w-full max-w-4xl p-6">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <Link
-            to={`/w/${slug}/p/${identifier}`}
-            className="text-xs text-muted-foreground hover:underline"
-          >
-            ← Issues
-          </Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
-            Intake inbox
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Triage new issues: accept them into the backlog, or reject, snooze,
-            or mark as duplicate.
-          </p>
-        </div>
-      </div>
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1. */}
+      <PageHeader viewName="Intake" count={pendingItems.length} />
+      <div className="mx-auto w-full max-w-4xl p-6">
 
-      {inboxQuery.isError && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>
-            {inboxQuery.error instanceof ApiError
-              ? inboxQuery.error.message
-              : "Failed to load the intake inbox."}
-          </AlertDescription>
-        </Alert>
-      )}
-      {actionError && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>{actionError}</AlertDescription>
-        </Alert>
-      )}
+        {inboxQuery.isError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>
+              {inboxQuery.error instanceof ApiError
+                ? inboxQuery.error.message
+                : "Failed to load the intake inbox."}
+            </AlertDescription>
+          </Alert>
+        )}
+        {actionError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{actionError}</AlertDescription>
+          </Alert>
+        )}
 
-      {inboxQuery.isLoading ? (
-        <div className="space-y-3">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-20 w-full" />
-          ))}
-        </div>
-      ) : data ? (
-        <>
-          <section>
-            <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-              Needs triage ({pendingItems.length})
-            </h2>
-            {pendingItems.length === 0 ? (
-              <Card>
-                <CardContent className="py-10 text-center">
-                  <p className="text-lg font-medium">Inbox zero</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Nothing waiting for triage. New issues created with intake
-                    enabled will show up here.
-                  </p>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-3">
-                {pendingItems.map((item) => (
-                  <IntakeRow
-                    key={item.id}
-                    item={item}
-                    busy={busy}
-                    onAccept={() => triage(item, "accept")}
-                    onReject={() => triage(item, "reject")}
-                    onSnooze={() => openSnooze(item)}
-                    onDuplicate={() => openDuplicate(item)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
-          {snoozedItems.length > 0 && (
-            <section className="mt-8">
+        {inboxQuery.isLoading ? (
+          <div className="space-y-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-20 w-full" />
+            ))}
+          </div>
+        ) : data ? (
+          <>
+            <section>
               <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-                Snoozed ({snoozedItems.length})
+                Needs triage ({pendingItems.length})
               </h2>
-              <div className="space-y-3">
-                {snoozedItems.map((item) => (
-                  <IntakeRow
-                    key={item.id}
-                    item={item}
-                    busy={busy}
-                    onAccept={() => triage(item, "accept")}
-                    onReject={() => triage(item, "reject")}
-                    onSnooze={() => openSnooze(item)}
-                    onDuplicate={() => openDuplicate(item)}
-                  />
-                ))}
-              </div>
+              {pendingItems.length === 0 ? (
+                <Card>
+                  <CardContent className="py-10 text-center">
+                    <p className="text-lg font-medium">Inbox zero</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Nothing waiting for triage. New issues created with intake
+                      enabled will show up here.
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="space-y-3">
+                  {pendingItems.map((item) => (
+                    <IntakeRow
+                      key={item.id}
+                      item={item}
+                      busy={busy}
+                      onAccept={() => triage(item, "accept")}
+                      onReject={() => triage(item, "reject")}
+                      onSnooze={() => openSnooze(item)}
+                      onDuplicate={() => openDuplicate(item)}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
-          )}
-        </>
-      ) : null}
 
-      {/* Snooze dialog */}
-      <Dialog
-        open={snoozeTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setSnoozeTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Snooze issue</DialogTitle>
-            <DialogDescription>
-              {snoozeTarget?.issue
-                ? `${snoozeTarget.issue.display_id} — ${snoozeTarget.issue.name}`
-                : "This issue"}{" "}
-              will resurface in the inbox after the chosen time.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={submitSnooze} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="snooze-at">Snooze until</Label>
-              <Input
-                id="snooze-at"
-                type="datetime-local"
-                min={nowLocal}
-                value={snoozeAt}
-                onChange={(e) => setSnoozeAt(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setSnoozeAt(
-                      toLocalInputValue(new Date(Date.now() + 86_400_000)),
-                    )
-                  }
-                >
-                  Tomorrow
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setSnoozeAt(
-                      toLocalInputValue(new Date(Date.now() + 7 * 86_400_000)),
-                    )
-                  }
-                >
-                  Next week
-                </Button>
-              </div>
-            </div>
-            {snoozeError && (
-              <Alert variant="destructive">
-                <AlertDescription>{snoozeError}</AlertDescription>
-              </Alert>
+            {snoozedItems.length > 0 && (
+              <section className="mt-8">
+                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                  Snoozed ({snoozedItems.length})
+                </h2>
+                <div className="space-y-3">
+                  {snoozedItems.map((item) => (
+                    <IntakeRow
+                      key={item.id}
+                      item={item}
+                      busy={busy}
+                      onAccept={() => triage(item, "accept")}
+                      onReject={() => triage(item, "reject")}
+                      onSnooze={() => openSnooze(item)}
+                      onDuplicate={() => openDuplicate(item)}
+                    />
+                  ))}
+                </div>
+              </section>
             )}
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setSnoozeTarget(null)}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={snoozeMutation.isPending}>
-                {snoozeMutation.isPending ? "Snoozing…" : "Snooze"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+          </>
+        ) : null}
 
-      {/* Duplicate dialog */}
-      <Dialog
-        open={dupTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) setDupTarget(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Mark as duplicate</DialogTitle>
-            <DialogDescription>
-              {dupTarget?.issue
-                ? `${dupTarget.issue.display_id} — ${dupTarget.issue.name}`
-                : "This issue"}{" "}
-              is a duplicate of…
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={submitDuplicate} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="dup-search">Search issues</Label>
-              <Input
-                id="dup-search"
-                placeholder="Type to search…"
-                value={dupQuery}
-                onChange={(e) => setDupQuery(e.target.value)}
-              />
-            </div>
-            <div className="max-h-56 space-y-1 overflow-y-auto">
-              {dupSearch.isLoading && <Skeleton className="h-10 w-full" />}
-              {dupSearch.data?.results
-                .filter((i) => i.id !== dupTarget?.issue_id)
-                .map((i) => (
-                  <button
-                    key={i.id}
+        {/* Snooze dialog */}
+        <Dialog
+          open={snoozeTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setSnoozeTarget(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Snooze issue</DialogTitle>
+              <DialogDescription>
+                {snoozeTarget?.issue
+                  ? `${snoozeTarget.issue.display_id} — ${snoozeTarget.issue.name}`
+                  : "This issue"}{" "}
+                will resurface in the inbox after the chosen time.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitSnooze} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="snooze-at">Snooze until</Label>
+                <Input
+                  id="snooze-at"
+                  type="datetime-local"
+                  min={nowLocal}
+                  value={snoozeAt}
+                  onChange={(e) => setSnoozeAt(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <Button
                     type="button"
-                    onClick={() => setDupTargetId(i.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent ${
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setSnoozeAt(
+                        toLocalInputValue(new Date(Date.now() + 86_400_000)),
+                      )
+                    }
+                  >
+                    Tomorrow
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setSnoozeAt(
+                        toLocalInputValue(new Date(Date.now() + 7 * 86_400_000)),
+                      )
+                    }
+                  >
+                    Next week
+                  </Button>
+                </div>
+              </div>
+              {snoozeError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{snoozeError}</AlertDescription>
+                </Alert>
+              )}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSnoozeTarget(null)}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={snoozeMutation.isPending}>
+                  {snoozeMutation.isPending ? "Snoozing…" : "Snooze"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Duplicate dialog */}
+        <Dialog
+          open={dupTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setDupTarget(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Mark as duplicate</DialogTitle>
+              <DialogDescription>
+                {dupTarget?.issue
+                  ? `${dupTarget.issue.display_id} — ${dupTarget.issue.name}`
+                  : "This issue"}{" "}
+                is a duplicate of…
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submitDuplicate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="dup-search">Search issues</Label>
+                <Input
+                  id="dup-search"
+                  placeholder="Type to search…"
+                  value={dupQuery}
+                  onChange={(e) => setDupQuery(e.target.value)}
+                />
+              </div>
+              <div className="max-h-56 space-y-1 overflow-y-auto">
+                {dupSearch.isLoading && <Skeleton className="h-10 w-full" />}
+                {dupSearch.data?.results
+                  .filter((i) => i.id !== dupTarget?.issue_id)
+                  .map((i) => (
+                    <button
+                      key={i.id}
+                      type="button"
+                      onClick={() => setDupTargetId(i.id)}
+                      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent ${
                       dupTargetId === i.id ? "bg-accent" : ""
                     }`}
-                  >
-                    <Badge variant="secondary">{i.display_id}</Badge>
-                    <span className="truncate">{i.name}</span>
-                  </button>
-                ))}
-              {dupSearch.data && dupSearch.data.results.length === 0 && (
-                <p className="py-2 text-center text-sm text-muted-foreground">
-                  No issues found.
-                </p>
+                    >
+                      <Badge variant="secondary">{i.display_id}</Badge>
+                      <span className="truncate">{i.name}</span>
+                    </button>
+                  ))}
+                {dupSearch.data && dupSearch.data.results.length === 0 && (
+                  <p className="py-2 text-center text-sm text-muted-foreground">
+                    No issues found.
+                  </p>
+                )}
+              </div>
+              {dupError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{dupError}</AlertDescription>
+                </Alert>
               )}
-            </div>
-            {dupError && (
-              <Alert variant="destructive">
-                <AlertDescription>{dupError}</AlertDescription>
-              </Alert>
-            )}
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setDupTarget(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={!dupTargetId || duplicateMutation.isPending}
-              >
-                {duplicateMutation.isPending
-                  ? "Marking…"
-                  : "Mark as duplicate"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDupTarget(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={!dupTargetId || duplicateMutation.isPending}
+                >
+                  {duplicateMutation.isPending
+                    ? "Marking…"
+                    : "Mark as duplicate"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   );
 }

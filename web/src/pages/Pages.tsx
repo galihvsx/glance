@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -18,9 +18,9 @@ import {
 import { api, ApiError } from "../lib/api";
 import { Markdown } from "../components/Markdown";
 import PageComments from "../components/page/PageComments";
-import type { Page, PageRevision, Project } from "../lib/types";
+import type { Page, PageRevision } from "../lib/types";
 import { cn } from "../lib/utils";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import ShareModal from "../components/ShareModal";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -147,10 +147,6 @@ export default function Pages() {
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const pagesKey = ["pages", slug, identifier] as const;
 
-  const projectQuery = useQuery({
-    queryKey: ["project", slug, identifier],
-    queryFn: () => api.get<Project>(base),
-  });
   const pagesQuery = useQuery({
     queryKey: pagesKey,
     queryFn: () =>
@@ -385,372 +381,356 @@ export default function Pages() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl p-6">
-      <div className="mb-4">
-        <Link
-          to={`/w/${slug}`}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← Projects
-        </Link>
-        <div className="mt-1 flex items-start justify-between gap-4">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {projectQuery.data ? projectQuery.data.name : <Skeleton className="h-8 w-48" />}
-          </h1>
-          <div className="flex items-center gap-2">
-            <Button onClick={() => openCreate(null)} className="gap-2">
-              <Plus className="h-4 w-4" /> New page
-            </Button>
-          </div>
-        </div>
-        <div className="mt-3">
-          <ProjectNav />
-        </div>
-      </div>
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Pages"
+        addButton={{ label: "New page", onClick: () => openCreate(null) }}
+      />
+      <div className="mx-auto w-full max-w-6xl p-6">
+        {formError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription>{formError}</AlertDescription>
+          </Alert>
+        )}
 
-      {formError && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="flex gap-4">
-        {/* Tree sidebar */}
-        <aside className="w-72 shrink-0">
-          <Card>
-            <CardHeader className="py-3">
-              <CardTitle className="text-sm font-medium">Pages</CardTitle>
-            </CardHeader>
-            <CardContent className="max-h-[60vh] overflow-y-auto px-2 pb-3">
-              {pagesQuery.isLoading ? (
-                <div className="space-y-2 p-2">
-                  <Skeleton className="h-6 w-full" />
-                  <Skeleton className="h-6 w-5/6" />
-                  <Skeleton className="h-6 w-4/6" />
-                </div>
-              ) : tree.length === 0 ? (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  No pages yet.
-                  <br />
-                  <button
-                    type="button"
-                    onClick={() => openCreate(null)}
-                    className="mt-2 text-primary hover:underline"
-                  >
-                    Create the first one
-                  </button>
-                </div>
-              ) : (
-                renderTree(tree)
-              )}
-            </CardContent>
-          </Card>
-        </aside>
-
-        {/* Page view */}
-        <main className="min-w-0 flex-1">
-          {selected ? (
-            <>
-              <Card>
-              <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <CardTitle className="text-xl">{selected.title}</CardTitle>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Updated {timeAgo(selected.updated_at)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openCreate(selected.id)}
-                      title="New sub-page"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEdit(selected)}
-                      title="Edit"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setPreviewRev(null);
-                        setRevisionsOpen(true);
-                      }}
-                      title="Revision history"
-                    >
-                      <History className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setMoveTarget(selected)}
-                      title="Move"
-                    >
-                      Move
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShareOpen(true)}
-                      title="Share publicly"
-                    >
-                      <Share2 className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setDeleteTarget(selected)}
-                      title="Delete"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+        <div className="flex gap-4">
+          {/* Tree sidebar */}
+          <aside className="w-72 shrink-0">
+            <Card>
+              <CardHeader className="py-3">
+                <CardTitle className="text-sm font-medium">Pages</CardTitle>
               </CardHeader>
-              <CardContent>
-                {selected.content ? (
-                  <Markdown
-                    markdown={selected.content}
-                    className="wiki-content"
-                  />
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    This page is empty.{" "}
+              <CardContent className="max-h-[60vh] overflow-y-auto px-2 pb-3">
+                {pagesQuery.isLoading ? (
+                  <div className="space-y-2 p-2">
+                    <Skeleton className="h-6 w-full" />
+                    <Skeleton className="h-6 w-5/6" />
+                    <Skeleton className="h-6 w-4/6" />
+                  </div>
+                ) : tree.length === 0 ? (
+                  <div className="p-4 text-center text-sm text-muted-foreground">
+                    No pages yet.
+                    <br />
                     <button
                       type="button"
-                      onClick={() => openEdit(selected)}
-                      className="text-primary hover:underline"
+                      onClick={() => openCreate(null)}
+                      className="mt-2 text-primary hover:underline"
                     >
-                      Add content
+                      Create the first one
                     </button>
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-            {/* C18T2: page comments thread + count badge. */}
-            <div className="mt-4">
-              <PageComments
-                slug={slug}
-                identifier={identifier}
-                pageId={selected.id}
-              />
-            </div>
-          </>
-          ) : (
-            <Card>
-              <CardContent className="p-12 text-center text-sm text-muted-foreground">
-                {pagesQuery.isLoading ? (
-                  <Skeleton className="mx-auto h-6 w-48" />
+                  </div>
                 ) : (
-                  "Select a page from the tree, or create one."
+                  renderTree(tree)
                 )}
               </CardContent>
             </Card>
-          )}
-        </main>
-      </div>
+          </aside>
 
-      {/* Create / edit dialog */}
-      <Dialog
-        open={formOpen}
-        onOpenChange={(open) => {
-          setFormOpen(open);
-          if (!open) {
-            setEditing(null);
-            setCreateParentId(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {editing
-                ? `Edit "${editing.title}"`
-                : createParentId
-                  ? "New sub-page"
-                  : "New page"}
-            </DialogTitle>
-            <DialogDescription>
-              {editing
-                ? "Saving records a revision of the previous content."
-                : "Pages support markdown."}
-            </DialogDescription>
-          </DialogHeader>
-          <PageForm
-            key={editing ? `edit-${editing.id}` : `new-${createParentId ?? "root"}`}
-            initialTitle={editing?.title ?? ""}
-            initialContent={editing?.content ?? ""}
-            pending={createMutation.isPending || updateMutation.isPending}
-            error={formError}
-            submitLabel={editing ? "Save" : "Create"}
-            onSubmit={(t, c) => submitForm(t, c)}
-            onCancel={() => {
-              setFormOpen(false);
-              setEditing(null);
-              setCreateParentId(null);
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-
-      {/* Move dialog */}
-      <Dialog
-        open={moveTarget !== null}
-        onOpenChange={(open) => !open && setMoveTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Move "{moveTarget?.title}"</DialogTitle>
-            <DialogDescription>
-              Choose a new parent (or root) and an optional position among its
-              children.
-            </DialogDescription>
-          </DialogHeader>
-          {moveTarget && (
-            <MoveForm
-              key={moveTarget.id}
-              target={moveTarget}
-              tree={tree}
-              pending={moveMutation.isPending}
-              error={formError}
-              onSubmit={(parentId, position) =>
-                moveMutation.mutate({
-                  id: moveTarget.id,
-                  parent_id: parentId,
-                  position,
-                })
-              }
-              onCancel={() => setMoveTarget(null)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete dialog */}
-      <Dialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete "{deleteTarget?.title}"?</DialogTitle>
-            <DialogDescription>
-              This deletes the page and its whole subtree. This cannot be
-              undone (restore from revisions is lost with the page).
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteMutation.isPending}
-              onClick={() =>
-                deleteTarget && deleteMutation.mutate(deleteTarget.id)
-              }
-            >
-              {deleteMutation.isPending ? "Deleting…" : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Revision history drawer */}
-      <Drawer
-        open={revisionsOpen}
-        onOpenChange={(open) => {
-          setRevisionsOpen(open);
-          if (!open) setPreviewRev(null);
-        }}
-      >
-        <DrawerContent className="max-h-[85vh]">
-          <DrawerHeader>
-            <DrawerTitle>History — {selected?.title}</DrawerTitle>
-            <DrawerDescription>
-              Restoring a revision snapshots the current content first, so
-              restore is undoable.
-            </DrawerDescription>
-          </DrawerHeader>
-          <div className="grid gap-4 overflow-y-auto px-4 pb-6 md:grid-cols-2">
-            <div className="space-y-2">
-              {revisionsQuery.isLoading ? (
-                <Skeleton className="h-10 w-full" />
-              ) : (revisionsQuery.data ?? []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No revisions yet — edit the page to create one.
-                </p>
-              ) : (
-                (revisionsQuery.data ?? []).map((r) => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => setPreviewRev(r)}
-                    className={cn(
-                      "w-full rounded-md border p-3 text-left text-sm",
-                      previewRev?.id === r.id
-                        ? "border-primary bg-accent"
-                        : "hover:bg-accent/50",
-                    )}
-                  >
-                    <div className="font-medium">{r.title}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {timeAgo(r.created_at)}
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-            <div>
-              {previewRev ? (
+          {/* Page view */}
+          <main className="min-w-0 flex-1">
+            {selected ? (
+              <>
                 <Card>
-                  <CardHeader className="py-3">
-                    <CardTitle className="text-sm">{previewRev.title}</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Markdown
-                      markdown={previewRev.content}
-                      className="wiki-content max-h-[40vh] overflow-y-auto"
-                    />
-                    <div className="mt-4">
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <CardTitle className="text-xl">{selected.title}</CardTitle>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Updated {timeAgo(selected.updated_at)}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
                       <Button
+                        variant="ghost"
                         size="sm"
-                        disabled={restoreMutation.isPending}
-                        onClick={() => restoreMutation.mutate(previewRev.id)}
+                        onClick={() => openCreate(selected.id)}
+                        title="New sub-page"
                       >
-                        {restoreMutation.isPending
-                          ? "Restoring…"
-                          : "Restore this revision"}
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEdit(selected)}
+                        title="Edit"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setPreviewRev(null);
+                          setRevisionsOpen(true);
+                        }}
+                        title="Revision history"
+                      >
+                        <History className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setMoveTarget(selected)}
+                        title="Move"
+                      >
+                        Move
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setShareOpen(true)}
+                        title="Share publicly"
+                      >
+                        <Share2 className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDeleteTarget(selected)}
+                        title="Delete"
+                      >
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Select a revision to preview it.
-                </p>
-              )}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {selected.content ? (
+                    <Markdown
+                      markdown={selected.content}
+                      className="wiki-content"
+                    />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      This page is empty.{" "}
+                      <button
+                        type="button"
+                        onClick={() => openEdit(selected)}
+                        className="text-primary hover:underline"
+                      >
+                        Add content
+                      </button>
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+              {/* C18T2: page comments thread + count badge. */}
+              <div className="mt-4">
+                <PageComments
+                  slug={slug}
+                  identifier={identifier}
+                  pageId={selected.id}
+                />
+              </div>
+            </>
+            ) : (
+              <Card>
+                <CardContent className="p-12 text-center text-sm text-muted-foreground">
+                  {pagesQuery.isLoading ? (
+                    <Skeleton className="mx-auto h-6 w-48" />
+                  ) : (
+                    "Select a page from the tree, or create one."
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </main>
+        </div>
+
+        {/* Create / edit dialog */}
+        <Dialog
+          open={formOpen}
+          onOpenChange={(open) => {
+            setFormOpen(open);
+            if (!open) {
+              setEditing(null);
+              setCreateParentId(null);
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {editing
+                  ? `Edit "${editing.title}"`
+                  : createParentId
+                    ? "New sub-page"
+                    : "New page"}
+              </DialogTitle>
+              <DialogDescription>
+                {editing
+                  ? "Saving records a revision of the previous content."
+                  : "Pages support markdown."}
+              </DialogDescription>
+            </DialogHeader>
+            <PageForm
+              key={editing ? `edit-${editing.id}` : `new-${createParentId ?? "root"}`}
+              initialTitle={editing?.title ?? ""}
+              initialContent={editing?.content ?? ""}
+              pending={createMutation.isPending || updateMutation.isPending}
+              error={formError}
+              submitLabel={editing ? "Save" : "Create"}
+              onSubmit={(t, c) => submitForm(t, c)}
+              onCancel={() => {
+                setFormOpen(false);
+                setEditing(null);
+                setCreateParentId(null);
+              }}
+            />
+          </DialogContent>
+        </Dialog>
+
+        {/* Move dialog */}
+        <Dialog
+          open={moveTarget !== null}
+          onOpenChange={(open) => !open && setMoveTarget(null)}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Move "{moveTarget?.title}"</DialogTitle>
+              <DialogDescription>
+                Choose a new parent (or root) and an optional position among its
+                children.
+              </DialogDescription>
+            </DialogHeader>
+            {moveTarget && (
+              <MoveForm
+                key={moveTarget.id}
+                target={moveTarget}
+                tree={tree}
+                pending={moveMutation.isPending}
+                error={formError}
+                onSubmit={(parentId, position) =>
+                  moveMutation.mutate({
+                    id: moveTarget.id,
+                    parent_id: parentId,
+                    position,
+                  })
+                }
+                onCancel={() => setMoveTarget(null)}
+              />
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete dialog */}
+        <Dialog
+          open={deleteTarget !== null}
+          onOpenChange={(open) => !open && setDeleteTarget(null)}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete "{deleteTarget?.title}"?</DialogTitle>
+              <DialogDescription>
+                This deletes the page and its whole subtree. This cannot be
+                undone (restore from revisions is lost with the page).
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={deleteMutation.isPending}
+                onClick={() =>
+                  deleteTarget && deleteMutation.mutate(deleteTarget.id)
+                }
+              >
+                {deleteMutation.isPending ? "Deleting…" : "Delete"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Revision history drawer */}
+        <Drawer
+          open={revisionsOpen}
+          onOpenChange={(open) => {
+            setRevisionsOpen(open);
+            if (!open) setPreviewRev(null);
+          }}
+        >
+          <DrawerContent className="max-h-[85vh]">
+            <DrawerHeader>
+              <DrawerTitle>History — {selected?.title}</DrawerTitle>
+              <DrawerDescription>
+                Restoring a revision snapshots the current content first, so
+                restore is undoable.
+              </DrawerDescription>
+            </DrawerHeader>
+            <div className="grid gap-4 overflow-y-auto px-4 pb-6 md:grid-cols-2">
+              <div className="space-y-2">
+                {revisionsQuery.isLoading ? (
+                  <Skeleton className="h-10 w-full" />
+                ) : (revisionsQuery.data ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No revisions yet — edit the page to create one.
+                  </p>
+                ) : (
+                  (revisionsQuery.data ?? []).map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => setPreviewRev(r)}
+                      className={cn(
+                        "w-full rounded-md border p-3 text-left text-sm",
+                        previewRev?.id === r.id
+                          ? "border-primary bg-accent"
+                          : "hover:bg-accent/50",
+                      )}
+                    >
+                      <div className="font-medium">{r.title}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {timeAgo(r.created_at)}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+              <div>
+                {previewRev ? (
+                  <Card>
+                    <CardHeader className="py-3">
+                      <CardTitle className="text-sm">{previewRev.title}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <Markdown
+                        markdown={previewRev.content}
+                        className="wiki-content max-h-[40vh] overflow-y-auto"
+                      />
+                      <div className="mt-4">
+                        <Button
+                          size="sm"
+                          disabled={restoreMutation.isPending}
+                          onClick={() => restoreMutation.mutate(previewRev.id)}
+                        >
+                          {restoreMutation.isPending
+                            ? "Restoring…"
+                            : "Restore this revision"}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Select a revision to preview it.
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
-        </DrawerContent>
-      </Drawer>
+          </DrawerContent>
+        </Drawer>
 
-      {shareOpen && selected && (
-        <ShareModal
-          resource={`${base}/pages/${encodeURIComponent(selected.id)}/share`}
-          onClose={() => setShareOpen(false)}
-        />
-      )}
+        {shareOpen && selected && (
+          <ShareModal
+            resource={`${base}/pages/${encodeURIComponent(selected.id)}/share`}
+            onClose={() => setShareOpen(false)}
+          />
+        )}
 
-      <style>{`
+        <style>{`
         .wiki-content { font-size: 0.925rem; line-height: 1.7; color: var(--foreground); }
         .wiki-content > *:first-child { margin-top: 0; }
         .wiki-content h1, .wiki-content h2, .wiki-content h3 { font-weight: 600; letter-spacing: -0.01em; margin: 1.25em 0 0.5em; }
@@ -766,6 +746,7 @@ export default function Pages() {
         .wiki-content a { color: var(--primary); text-decoration: underline; }
         .wiki-content hr { border: none; border-top: 1px solid var(--border); margin: 1.25em 0; }
       `}</style>
+      </div>
     </div>
   );
 }

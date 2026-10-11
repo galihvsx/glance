@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -45,7 +45,7 @@ import type {
   Workspace,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
 import QuickAdd from "../components/issue/QuickAdd";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import BlockerConfirmDialog from "../components/issue/BlockerConfirmDialog";
@@ -577,74 +577,67 @@ export default function Board() {
     projectQuery.error ?? statesQuery.error ?? boardQuery.error;
 
   return (
-    <div className="mx-auto flex h-screen w-full max-w-7xl flex-col p-6">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div>
-        <Link
-          to={`/w/${slug}`}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← Projects
-        </Link>
-        <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold tracking-tight">
-          {projectQuery.data ? (
-            <>
-              <Badge>{projectQuery.data.identifier}</Badge>
-              {projectQuery.data.name}
-            </>
-          ) : (
-            <Skeleton className="h-8 w-48" />
-          )}
-        </h1>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="flex w-full flex-col">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Board"
+        count={groups.reduce((n, g) => n + g.issues.length, 0)}
+        showViews
+        filterPanel={
           <FilterPanel
             slug={slug}
             identifier={identifier}
             filters={filters}
             onChange={setFilters}
             onClear={clearFilters}
+            triggerClassName={pageHeaderControlClass}
           />
+        }
+        displayPanel={
           <DisplayPanel
             settings={settings}
             onUpdate={update}
             onUpdateFields={updateFields}
             onReset={reset}
             view="board"
+            triggerClassName={pageHeaderControlClass}
           />
-        </div>
-      </div>
-      <ProjectNav
-        trailing={
+        }
+        extraControls={
           <SavedViewsMenu
             key={`${slug}:${identifier}`}
             projectId={projectQuery.data?.id ?? ""}
             filters={filters}
             display={settings}
             onApplyDisplay={update}
+            triggerClassName={pageHeaderControlClass}
           />
         }
       />
 
       {(boardError || loadError) && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>
-            {boardError ??
-              (loadError instanceof ApiError
-                ? loadError.message
-                : "Failed to load board")}
-          </AlertDescription>
-        </Alert>
+        <div className="px-[18px] pt-[14px]">
+          <Alert variant="destructive">
+            <AlertDescription>
+              {boardError ??
+                (loadError instanceof ApiError
+                  ? loadError.message
+                  : "Failed to load board")}
+            </AlertDescription>
+          </Alert>
+        </div>
       )}
       {!canEdit && !loading && (
-        <Alert className="mt-4">
-          <AlertDescription>
-            You have guest access to this workspace — cards are read-only.
-          </AlertDescription>
-        </Alert>
+        <div className="px-[18px] pt-[14px]">
+          <Alert>
+            <AlertDescription>
+              You have guest access to this workspace — cards are read-only.
+            </AlertDescription>
+          </Alert>
+        </div>
       )}
 
-      <div className="mt-4 min-h-0 flex-1 overflow-x-auto pb-4">
+      <div className="min-h-0 flex-1 overflow-x-auto px-[18px] pb-[18px] pt-[14px]">
         {loading ? (
           <div className="flex gap-3">
             {[0, 1, 2, 3].map((i) => (
