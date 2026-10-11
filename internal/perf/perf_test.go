@@ -25,7 +25,6 @@ import (
 	"glance/internal/config"
 	"glance/internal/service"
 	"glance/internal/store"
-	"glance/migrations"
 )
 
 const (
@@ -74,9 +73,8 @@ func seedPerfFixture(t *testing.T) perfFixture {
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}
-	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	// The database arrives freshly migrated from testdb.Main; no per-test
+	// migrate call needed.
 
 	// Keys must be unique across runs: the test DB is never truncated.
 	uniq := fmt.Sprintf("%d", os.Getpid())
