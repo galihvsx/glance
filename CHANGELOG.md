@@ -412,6 +412,43 @@ queued onboarding follow-up (invites endpoint).
   shapes. Deliberate omission: no user filter on assigned/unassigned —
   the backend rejects all filters there, and offering one would 400.
 
+**Developer gravity (cycle 17)**
+- GitHub two-way link (C17T0): issues ↔ PRs/commits — `issue_external_refs`
+  (migration 000043, unique `(issue_id, provider, ref_type, ref_id)`);
+  manual `POST/DELETE .../issues/:uuid/refs` (member+); repo-level
+  webhook `POST /api/v1/integrations/github/webhook` (HMAC-SHA256
+  signature verify) auto-links PRs whose title/body mentions `GLC-123`
+  and syncs open/merged/closed state on close; `github_webhook_secret`
+  set via `PATCH /workspaces/{slug}` (write-time validated, never
+  serialized); `external_refs[]` embedded on issue detail; idempotent
+  re-delivery.
+- Project templates (C17T1): `project_templates` (migration 000044,
+  workspace-scoped, payload JSONB strictly validated on write);
+  CRUD `/api/v1/workspaces/{slug}/templates` (admin writes, member+
+  reads); `POST /projects` accepts `template_id` — states/labels/modules/
+  estimate scale seeded in the same tx (unknown id → 400, no leaked
+  rows; existing same-named workspace labels reused). Template picker in
+  the New project dialog + management section in workspace settings.
+- Sub-issue progress rollup (C17T2): issue detail gains computed
+  `subtask_progress {total, done}` (done = completed-group state, direct
+  children only, single query); progress bar + "3/8" in the IssueDetail
+  header, compact bars on list/board cards when total > 0.
+- Dev quick actions (C17T3): issue detail header — "Copy branch name"
+  (`glance/glc-123-short-slug`, slugified, 40 chars), "Copy issue URL",
+  "Copy ID" with toast confirm; keyboard `c b` / `c u` / `c i`.
+- Workspace activity feed (C17T4): `GET /api/v1/workspaces/{slug}/activity`
+  — workspace-wide activity scoped to projects the caller can see
+  (member+), cursor pagination, type filter; "Recent activity" section on
+  Home under assigned issues with per-row project badges.
+- Viewer role (C17T5): `RoleViewer = 10` (read-only). Enforcement rides
+  the existing gates — every write path already checks
+  `role >= RoleMember (15)` while reads need only membership, so no
+  enforcement logic changed; migration 000045 widens the
+  `workspace_members` role CHECK to `(5, 10, 15, 20)`. Role select
+  (admin/member/viewer) in workspace member management; invite still
+  defaults to member. Tests pin viewer blocked on issue create/update/
+  delete + comment and reading everything a member can.
+
 **Finish the gaps (cycle 15)**
 - Gantt dependency editing (C15T0, frontend-only): create/delete issue
   links (`blocks`/`blocked-by`) directly on the Gantt timeline —
