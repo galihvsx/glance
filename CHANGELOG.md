@@ -412,6 +412,44 @@ queued onboarding follow-up (invites endpoint).
   shapes. Deliberate omission: no user filter on assigned/unassigned —
   the backend rejects all filters there, and offering one would 400.
 
+**Command & clarity (cycle 18)**
+- Project icons (C18T4): `projects.icon TEXT NULL` (migration 000046,
+  validated server-side: single emoji grapheme, no ZWJ sequences, empty
+  = NULL); `POST/PATCH /projects` accept optional `icon`
+  (`ErrInvalidIcon` → 400); emoji picker in project settings + new-project
+  dialog; sidebar project rows show the icon (fallback: initials).
+- Mermaid diagrams (C18T5): ```mermaid fenced blocks in markdown surfaces
+  (pages, revision preview, public share, project overview) render
+  client-side via a lazily-imported mermaid chunk
+  (securityLevel:"strict", idempotent hydration); render failures or
+  no-JS fall back to the plain code block — never a blank hole. Entry
+  chunk growth +1.0 kB. Beyond parity (Plane #9786 is an open feature
+  request).
+- Global command palette (C18T0): Cmd+K mounted at the app-shell level —
+  debounced `GET /api/v1/search` across all projects the caller can see
+  (archived projects excluded), grouped by project with icon +
+  identifier; `ENG-123` display-ID fast path now jumps across projects;
+  workspace-scoped recents; commands: create issue (project picker), go
+  to Home/My Work/Inbox/Analytics, toggle sidebar, shortcuts cheatsheet.
+- Required custom fields (C18T1): closes the documented stored-not-enforced
+  gap — issue create/update enforce every project-level `required` field
+  (`ErrCustomFieldRequired` → 400 listing missing fields; empty/null =
+  missing, checkbox false = present; drafts exempt; partial updates enforce
+  touched-and-previously-empty fields); required markers + inline server
+  errors in the issue detail/create editors.
+- Page comments (C18T2): `page_comments` (migration 000047 — page FK
+  CASCADE, author FK SET NULL, TipTap JSONB body); `GET/POST
+  .../pages/{id}/comments`, `PATCH/DELETE .../comments/{commentId}`
+  (viewer(10)+ read, member(15)+ write, author-or-admin edit/delete);
+  comment thread on the page view with count badge.
+- Project archive/delete (C18T3): `projects.archived_at` (migration 000048);
+  `POST /projects/{identifier}/archive|unarchive` (admin(20)) — archive
+  hides the project from sidebar, list, and global search, and archives
+  all its live issues in the same tx; `DELETE` (admin(20)) — hard delete
+  with verified FK cascade, requires `?confirm=<identifier>`, refuses
+  projects with non-archived issues unless `?force=true`; Danger zone
+  section in project settings with type-to-confirm.
+
 **Developer gravity (cycle 17)**
 - GitHub two-way link (C17T0): issues ↔ PRs/commits — `issue_external_refs`
   (migration 000043, unique `(issue_id, provider, ref_type, ref_id)`);
