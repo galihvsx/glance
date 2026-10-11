@@ -2,7 +2,7 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "../lib/api";
-import { renderMarkdown } from "../lib/markdown";
+import { Markdown } from "../components/Markdown";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 
@@ -161,10 +161,7 @@ function PageView({ page }: { page: PublicPage }) {
         <CardTitle className="text-xl">{page.title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <div
-          className="wiki-content"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(page.content) }}
-        />
+        <Markdown markdown={page.content} className="wiki-content" />
       </CardContent>
     </Card>
   );
