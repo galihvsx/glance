@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -6,14 +6,17 @@ import {
   useQueries,
   useQuery,
   useQueryClient,
+  type InfiniteData,
 } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
   Issue,
+  IssueAssignee,
   IssueListResult,
   IssueProjectStructure,
   IssueState,
+  Member,
   Project,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
@@ -35,6 +38,12 @@ import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import PriorityBars from "../components/issue/PriorityBars";
 import StatePicker from "../components/issue/StatePicker";
+import AssigneePicker from "../components/issue/AssigneePicker";
+import {
+  CellDateEditor,
+  CellPriorityEditor,
+  CellStateEditor,
+} from "../components/issue/SpreadsheetCellEditors";
 import PageHeader, {
   pageHeaderControlClass,
 } from "../components/shell/PageHeader";
@@ -252,6 +261,145 @@ export default function Spreadsheet() {
       );
     },
   });
+
+  // C20T3: inline cell editing. Members feed the assignees multi-select;
+  // the same query key the detail page uses, 60s stale.
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+    staleTime: 60_000,
+  });
+
+  type EditableColumn = "state" | "priority" | "start_date" | "target_date";
+  const [editing, setEditing] = useState<{
+    issueId: string;
+    column: EditableColumn;
+  } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const issuesKey = ["issues", slug, identifier, filters] as const;
+  type IssuesCache = InfiniteData<IssueListResult>;
+
+  /** Applies a PATCH body to one cached issue row (optimistic). */
+  function applyIssuePatch(issue: Issue, body: Record<string, unknown>): Issue {
+    return {
+      ...issue,
+      ...(body.state_id !== undefined
+        ? { state_id: body.state_id as string }
+        : {}),
+      ...(body.priority !== undefined
+        ? { priority: body.priority as number }
+        : {}),
+      ...(body.start_date !== undefined
+        ? { start_date: body.start_date as string | null }
+        : {}),
+      ...(body.target_date !== undefined
+        ? { target_date: body.target_date as string | null }
+        : {}),
+    };
+  }
+
+  function patchCachedIssue(
+    data: IssuesCache | undefined,
+    id: string,
+    f: (issue: Issue) => Issue,
+  ): IssuesCache | undefined {
+    if (!data) return data;
+    return {
+      ...data,
+      pages: data.pages.map((p) => ({
+        ...p,
+        results: p.results.map((issue) =>
+          issue.id === id ? f(issue) : issue,
+        ),
+      })),
+    };
+  }
+
+  // C20T3: commits via the existing PATCH .../issues/{uuid} endpoint —
+  // the same contract the detail page's patchMutation uses (state_id,
+  // priority, start_date, target_date all accepted; verified in
+  // IssueDetailContent). No new backend surface.
+  const patchMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
+      api.patch<Issue>(`${base}/issues/${encodeURIComponent(id)}`, body),
+    onMutate: async ({ id, body }) => {
+      await queryClient.cancelQueries({ queryKey: issuesKey });
+      const prev = queryClient.getQueryData<IssuesCache>(issuesKey);
+      queryClient.setQueryData<IssuesCache>(issuesKey, (data) =>
+        patchCachedIssue(data, id, (issue) => applyIssuePatch(issue, body)),
+      );
+      return { prev };
+    },
+    onError: (e, _vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(issuesKey, ctx.prev);
+      setEditError(e instanceof ApiError ? e.message : "Failed to update issue");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["issues", slug, identifier],
+      });
+    },
+  });
+
+  /** Assignee add/remove — relation endpoints, same as the detail page. */
+  function toggleAssignee(issue: Issue, userId: string, currently: boolean) {
+    const member = membersQuery.data?.find((m) => m.id === userId);
+    const apply = (iss: Issue): Issue => ({
+      ...iss,
+      assignees: currently
+        ? iss.assignees.filter((a) => a.id !== userId)
+        : [
+            ...iss.assignees,
+            {
+              id: userId,
+              name: member?.name ?? member?.email ?? userId,
+            } satisfies IssueAssignee,
+          ],
+    });
+    const prev = queryClient.getQueryData<IssuesCache>(issuesKey);
+    queryClient.setQueryData<IssuesCache>(issuesKey, (data) =>
+      patchCachedIssue(data, issue.id, apply),
+    );
+    const url = `${base}/issues/${encodeURIComponent(issue.id)}/assignees/${encodeURIComponent(userId)}`;
+    const req = currently ? api.del(url) : api.post(url);
+    req.then(
+      () => {
+        void queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+      },
+      (e: unknown) => {
+        if (prev) queryClient.setQueryData(issuesKey, prev);
+        setEditError(
+          e instanceof ApiError ? e.message : "Failed to update assignees",
+        );
+      },
+    );
+  }
+
+  function commitCellEdit(issueId: string, body: Record<string, unknown>) {
+    setEditing(null);
+    setEditError(null);
+    patchMutation.mutate({ id: issueId, body });
+  }
+
+  function isEditing(issueId: string, column: EditableColumn) {
+    return editing?.issueId === issueId && editing?.column === column;
+  }
+
+  /** Opens an inline editor instead of navigating to the issue. */
+  function openCellEditor(issueId: string, column: EditableColumn) {
+    return (e: MouseEvent) => {
+      e.stopPropagation();
+      setEditing({ issueId, column });
+    };
+  }
 
   function onSearchSubmit(e: FormEvent) {
     e.preventDefault();
@@ -536,6 +684,23 @@ export default function Spreadsheet() {
           </Alert>
         )}
 
+        {/* C20T3: inline-edit failures roll back optimistically and surface
+            here; dismiss on the next edit or via the close button. */}
+        {editError && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertDescription className="flex items-center justify-between gap-2">
+              <span>{editError}</span>
+              <button
+                type="button"
+                className="shrink-0 text-[12px] underline underline-offset-2"
+                onClick={() => setEditError(null)}
+              >
+                Dismiss
+              </button>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {issuesQuery.isPending ? (
           <div className="space-y-3">
             <Skeleton className="h-10 w-full" />
@@ -646,7 +811,7 @@ export default function Spreadsheet() {
                             openIssue(issue);
                           }
                         }}
-                        className="cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
+                        className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
                       >
                         <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
                           <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
@@ -656,8 +821,22 @@ export default function Spreadsheet() {
                         <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
                           {issue.name}
                         </td>
-                        <td className="px-3 py-2 align-middle">
-                          {state ? (
+                        <td
+                          className="cursor-cell px-3 py-2 align-middle"
+                          title="Click to edit state"
+                          onClick={openCellEditor(issue.id, "state")}
+                        >
+                          {isEditing(issue.id, "state") ? (
+                            <CellStateEditor
+                              states={statesQuery.data ?? []}
+                              value={issue.state_id}
+                              ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
+                              onCommit={(stateId) =>
+                                commitCellEdit(issue.id, { state_id: stateId })
+                              }
+                              onCancel={() => setEditing(null)}
+                            />
+                          ) : state ? (
                             <span className="inline-flex items-center gap-1.5">
                               <span
                                 className={`state-dot ${stateDotClass(state.group)}`}
@@ -671,30 +850,63 @@ export default function Spreadsheet() {
                             <span className="text-[13px] text-ink-muted">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 align-middle">
-                          <span className="inline-flex items-center gap-1.5">
-                            <PriorityBars priority={issue.priority} />
-                            <span className="text-[13px] text-ink-secondary">
-                              {priorityLabel(issue.priority)}
-                            </span>
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 align-middle">
-                          {issue.assignees.length > 0 ? (
-                            <span className="flex flex-wrap gap-1">
-                              {issue.assignees.map((a) => (
-                                <Badge
-                                  key={a.id}
-                                  variant="outline"
-                                  className="text-xs font-normal"
-                                >
-                                  {a.name}
-                                </Badge>
-                              ))}
-                            </span>
+                        <td
+                          className="cursor-cell px-3 py-2 align-middle"
+                          title="Click to edit priority"
+                          onClick={openCellEditor(issue.id, "priority")}
+                        >
+                          {isEditing(issue.id, "priority") ? (
+                            <CellPriorityEditor
+                              value={issue.priority}
+                              ariaLabel={`Edit priority for ${issue.display_id || issue.id.slice(0, 8)}`}
+                              onCommit={(priority) =>
+                                commitCellEdit(issue.id, { priority })
+                              }
+                              onCancel={() => setEditing(null)}
+                            />
                           ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
+                            <span className="inline-flex items-center gap-1.5">
+                              <PriorityBars priority={issue.priority} />
+                              <span className="text-[13px] text-ink-secondary">
+                                {priorityLabel(issue.priority)}
+                              </span>
+                            </span>
                           )}
+                        </td>
+                        {/* C20T3: assignees edit inline via the shared
+                            multi-select popover; each toggle commits
+                            immediately (POST/DELETE relation endpoints). */}
+                        <td className="px-3 py-2 align-middle">
+                          <span
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            <AssigneePicker
+                              members={membersQuery.data ?? null}
+                              assigned={issue.assignees}
+                              onToggle={(userId, currently) =>
+                                toggleAssignee(issue, userId, currently)
+                              }
+                              triggerClassName="h-8 gap-1.5 rounded-[4px] border border-transparent bg-transparent px-1.5 text-[13px] font-normal text-ink-secondary shadow-none hover:border-border hover:bg-wash-hover hover:text-ink"
+                              triggerContent={
+                                issue.assignees.length > 0 ? (
+                                  <span className="flex flex-wrap gap-1">
+                                    {issue.assignees.map((a) => (
+                                      <Badge
+                                        key={a.id}
+                                        variant="outline"
+                                        className="text-xs font-normal"
+                                      >
+                                        {a.name}
+                                      </Badge>
+                                    ))}
+                                  </span>
+                                ) : (
+                                  <span className="text-ink-muted">—</span>
+                                )
+                              }
+                            />
+                          </span>
                         </td>
                         <td className="px-3 py-2 align-middle">
                           {issue.labels.length > 0 ? (
@@ -718,11 +930,45 @@ export default function Spreadsheet() {
                             <span className="text-[13px] text-ink-muted">—</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-                          {dateOnly(issue.start_date)}
+                        <td
+                          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+                          title="Click to edit start date"
+                          onClick={openCellEditor(issue.id, "start_date")}
+                        >
+                          {isEditing(issue.id, "start_date") ? (
+                            <CellDateEditor
+                              value={issue.start_date}
+                              ariaLabel={`Edit start date for ${issue.display_id || issue.id.slice(0, 8)}`}
+                              onCommit={(v) =>
+                                commitCellEdit(issue.id, { start_date: v })
+                              }
+                              onCancel={() => setEditing(null)}
+                            />
+                          ) : (
+                            <span className="text-[13px] text-ink-secondary">
+                              {dateOnly(issue.start_date)}
+                            </span>
+                          )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-                          {dateOnly(issue.target_date)}
+                        <td
+                          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+                          title="Click to edit target date"
+                          onClick={openCellEditor(issue.id, "target_date")}
+                        >
+                          {isEditing(issue.id, "target_date") ? (
+                            <CellDateEditor
+                              value={issue.target_date}
+                              ariaLabel={`Edit target date for ${issue.display_id || issue.id.slice(0, 8)}`}
+                              onCommit={(v) =>
+                                commitCellEdit(issue.id, { target_date: v })
+                              }
+                              onCancel={() => setEditing(null)}
+                            />
+                          ) : (
+                            <span className="text-[13px] text-ink-secondary">
+                              {dateOnly(issue.target_date)}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.created_at)}
