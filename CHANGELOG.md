@@ -364,6 +364,34 @@ queued onboarding follow-up (invites endpoint).
   before upload.
 
 **Automation 2.0 — rules that see everything (cycle 16)**
+- Event triggers (C16T0): rules now fire on the mutations that used to
+  bypass them — `issue.assigned` / `issue.unassigned`,
+  `issue.labels_changed` (optional `label_ids` filter), `issue.priority_changed`
+  (optional `from/to_priorities` filters, 0-4), `issue.due_date_changed`,
+  `issue.estimate_changed`, and `issue.comment_added`. Events are emitted
+  in the service write paths; rules never fire for rolled-back writes,
+  and filters that don't belong to a trigger type are rejected rather
+  than silently ignored. No migration (trigger JSONB).
+- Scheduled triggers (C16T0→C16T1): time-based rules evaluated by a new
+  ticker — `issue.due_soon` (optional `window_hours`, default 48),
+  `issue.overdue`, `issue.stale` (optional `stale_days`, default 7), and
+  `cycle.ending_soon` (72h, fixed). Cadence from
+  `GLANCE_AUTOMATION_SCHEDULE_INTERVAL` (empty = disabled, the default);
+  invalid or sub-minute values fail boot loudly. Dedupe via
+  `automation_runs`: one scheduled fire per (rule, issue) per calendar
+  day. Scheduled firings run each (rule, issue) in its own tx; the rule's
+  author is the actor for honest attribution. No migration (reuses
+  `automation_rules` / `automation_runs`).
+- New actions (C16T2): `remove_label`, `unassign` (clears every assignee),
+  `set_estimate` (estimate-point UUID, validated against the project's
+  scales — honest 400 on mismatch), `set_due_date` (absolute
+  `YYYY-MM-DD` or relative `+Nd` days from the firing time),
+  `move_to_cycle` / `move_to_module` (in-project validated, issue leaves
+  its other cycles/modules), `add_watcher` (workspace member → issue
+  subscriber). All idempotent (already-there = no-op, no run row). A
+  failed action is recorded `ok:false` on the run row and now **aborts
+  the rule's remaining actions** (a half-applied rule is worse than a
+  stopped one); the firing event still commits.
 - Blocker guard on completion (C16T3): moving an issue into a
   completed-group state while it has open `blocks` blockers (blocking
   issues that are neither completed nor archived) is rejected with 409
@@ -374,6 +402,15 @@ queued onboarding follow-up (invites endpoint).
   automation `set_state` action (failure recorded `ok:false` on the run
   row, never a silent skip). Issue detail + board drag show a confirm
   dialog with "Complete anyway". No migration (reads `issue_links`).
+- Automation UI 2.0 (C16T4, frontend-only): the Automations builder now
+  exposes all 13 trigger types (grouped "on an event" / "on a schedule")
+  with their filters — label multi-select, priority from/to, due-soon
+  window hours, stale days — and all 12 actions with their inputs
+  (cycle/module selects, estimate points grouped by scale, due-date
+  absolute/relative toggle). Incomplete inputs surface honest inline
+  errors instead of silent drops; rule descriptions render the new
+  shapes. Deliberate omission: no user filter on assigned/unassigned —
+  the backend rejects all filters there, and offering one would 400.
 
 **Finish the gaps (cycle 15)**
 - Gantt dependency editing (C15T0, frontend-only): create/delete issue
