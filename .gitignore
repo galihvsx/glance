@@ -1,6 +1,7 @@
 # build artifacts
 web/dist/
 web/node_modules/
+qa/node_modules/
 
 # Go
 /glance
@@ -17,3 +18,6 @@ data/
 
 # local-only reference material (competitor screenshots etc.)
 docs/reference/
+
+# visual QA screenshots (never commit; local artifacts only)
+qa/shots/

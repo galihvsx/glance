@@ -139,6 +139,18 @@ go test ./...
 
 # frontend
 cd web && npm ci && npx tsc --noEmit && npm run build
+
+### Visual QA harness
+
+```bash
+cd qa && npm ci
+./qa/visual.sh /path/to/glance/checkout board detail
+```
+
+Builds web + the Go binary, boots a scratch Postgres DB, logs in via OTP, seeds a
+fixed fixture set, and screenshots the named screens to `qa/shots/`. DB creds come
+from `GLANCE_QA_DB_*` env vars (local-dev defaults in `qa/README.md`). See
+[`qa/README.md`](qa/README.md) for screens, adding new screens, and CI-safe runs.
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and [docs/perf.md](docs/perf.md) for the performance methodology.
