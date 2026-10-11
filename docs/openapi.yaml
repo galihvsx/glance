@@ -33,7 +33,8 @@
     { "name": "ai", "description": "AI-assisted drafting and triage (optional, provider-backed)" },
     { "name": "admin", "description": "Instance administration (server admin role)" },
     { "name": "import", "description": "CSV issue import" },
-    { "name": "meta", "description": "API metadata (this spec)" }
+    { "name": "meta", "description": "API metadata (this spec)" },
+    { "name": "integrations", "description": "Inbound third-party integrations (GitHub repo webhook)" }
   ],
   "paths": {
     "/api/v1/auth/otp/request": {
@@ -199,9 +200,9 @@
       "patch": {
         "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a workspace",
-        "description": "Admin only. Rename (name, optional slug change) and/or set/clear the Slack incoming-webhook URL. The stored URL is never returned — responses carry slack_configured instead.",
+        "description": "Admin only. Rename (name, optional slug change), set/clear the Slack incoming-webhook URL, and/or set/clear the GitHub repo-webhook secret. Secrets are write-only and never returned — responses carry slack_configured / github_webhook_configured instead.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "slug": { "type": "string" }, "slack_webhook_url": { "type": "string", "nullable": true, "description": "Slack incoming-webhook URL (must be https://hooks.slack.com/…). Null or empty clears. Omitted leaves it unchanged." } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "slug": { "type": "string" }, "slack_webhook_url": { "type": "string", "nullable": true, "description": "Slack incoming-webhook URL (must be https://hooks.slack.com/…). Null or empty clears. Omitted leaves it unchanged." }, "github_webhook_secret": { "type": "string", "nullable": true, "description": "GitHub repo-webhook secret used to verify X-Hub-Signature-256 on inbound deliveries (1-256 printable ASCII chars, no whitespace). Null or empty clears. Omitted leaves it unchanged." } } } } } },
         "responses": { "200": { "description": "Updated workspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -366,6 +367,14 @@
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["owner", "repo"], "properties": { "owner": { "type": "string" }, "repo": { "type": "string" }, "token": { "type": "string", "description": "GitHub personal access token; empty works for public repos within unauthenticated rate limits" }, "state_filter": { "type": "string", "enum": ["open", "closed", "all"], "default": "open" }, "max": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 100 } } } } } },
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GitHubImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/integrations/github/webhook": {
+      "post": {
+        "tags": ["integrations"],
+        "summary": "GitHub repo webhook delivery",
+        "description": "Public endpoint (no session): authenticated by the X-Hub-Signature-256 HMAC against the workspace's stored github_webhook_secret. Handles pull_request opened (auto-links the PR to issues whose display ID, e.g. GLC-123, is mentioned in the title/body) and pull_request closed (sets the ref state to merged or closed). All other events are acknowledged and ignored. 401 on a missing or non-verifying signature.",
+        "responses": { "200": { "description": "Delivery accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/imports/jira/preview": {
@@ -810,6 +819,25 @@
         "summary": "Remove an issue link",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "linkID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "204": { "description": "Link removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/refs": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link a PR or commit to an issue",
+        "description": "Manually link a GitHub PR (ref_type pr, ref_id = PR number) or commit (ref_type commit, ref_id = SHA) to the issue. 409 on a duplicate link. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["repo", "ref_type", "ref_id", "url"], "properties": { "provider": { "type": "string", "default": "github", "description": "Link provider; only github is supported" }, "repo": { "type": "string", "description": "Repository as owner/name" }, "ref_type": { "type": "string", "enum": ["pr", "commit"] }, "ref_id": { "type": "string", "description": "PR number or commit SHA" }, "url": { "type": "string", "description": "Link URL (http(s))" } } } } } },
+        "responses": { "201": { "description": "Created ref", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExternalRef" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/refs/{refID}": {
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unlink a PR or commit from an issue",
+        "description": "Removes the external ref from the issue. 404 when the ref does not exist on this issue. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "refID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Ref removed" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/relations": {
@@ -1894,6 +1922,7 @@
           "name": { "type": "string" },
           "slug": { "type": "string" },
           "slack_configured": { "type": "boolean", "description": "Whether a Slack incoming-webhook URL is set. The URL itself is never returned." },
+          "github_webhook_configured": { "type": "boolean", "description": "Whether a GitHub repo-webhook secret is set. The secret itself is never returned." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -1905,6 +1934,7 @@
           "slug": { "type": "string" },
           "role": { "type": "integer", "description": "Caller's role: 15 = member, 20 = admin" },
           "slack_configured": { "type": "boolean", "description": "Whether a Slack incoming-webhook URL is set. The URL itself is never returned." },
+          "github_webhook_configured": { "type": "boolean", "description": "Whether a GitHub repo-webhook secret is set. The secret itself is never returned." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -2000,7 +2030,8 @@
         "description": "Issue plus subtask_progress rollup and optional attachments: children (with ?include_children=1) and custom_values keyed by field id (with ?include_custom=1).",
         "properties": {
           "children": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } },
-          "custom_values": { "type": "object", "additionalProperties": {}, "description": "Custom-field id → value" }
+          "custom_values": { "type": "object", "additionalProperties": {}, "description": "Custom-field id → value" },
+          "external_refs": { "type": "array", "items": { "$ref": "#/components/schemas/ExternalRef" }, "description": "PRs/commits linked to the issue (manual links and GitHub webhook auto-links). Always present on the detail response (empty array when nothing is linked)." }
         }
       },
       "SubtaskProgress": {
@@ -2496,6 +2527,21 @@
           "id": { "type": "string", "format": "uuid" },
           "target_issue_id": { "type": "string", "format": "uuid" },
           "kind": { "type": "string" }
+        }
+      },
+      "ExternalRef": {
+        "type": "object",
+        "description": "A PR or commit linked to an issue (C17T0 two-way GitHub linkage).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
+          "provider": { "type": "string", "example": "github" },
+          "repo": { "type": "string", "description": "Repository as owner/name" },
+          "ref_type": { "type": "string", "enum": ["pr", "commit"] },
+          "ref_id": { "type": "string", "description": "PR number or commit SHA" },
+          "url": { "type": "string" },
+          "state": { "type": "string", "enum": ["open", "merged", "closed"] },
+          "created_at": { "type": "string", "format": "date-time" }
         }
       },
       "IssueRelation": {

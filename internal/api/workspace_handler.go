@@ -66,6 +66,10 @@ func workspaceError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack_webhook_url must be an https://hooks.slack.com/ URL", nil)
 	case errors.Is(err, service.ErrSlackNotConfigured):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "slack webhook not configured", nil)
+	// C17T0: never echo the secret back — the rejection reason is the
+	// same for every bad value (no oracle), exactly like the Slack URL.
+	case errors.Is(err, service.ErrGitHubBadSecret):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "github_webhook_secret must be 1-256 printable ASCII characters without whitespace", nil)
 	case errors.Is(err, service.ErrLastAdmin):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cannot remove or demote the last admin", nil)
 	default:
@@ -129,11 +133,19 @@ type updateWorkspaceBody struct {
 	// bug — PatchField records presence in UnmarshalJSON instead).
 	// The stored URL is a secret and is never returned.
 	SlackWebhookURL service.PatchField[string] `json:"slack_webhook_url"`
+	// GitHubWebhookSecret is tri-state (service.PatchField): omitted key =
+	// leave untouched, explicit null = clear the column, string = set
+	// (write-time validated: 1-256 printable-ASCII chars). The secret is
+	// used to verify X-Hub-Signature-256 on inbound repo-webhook
+	// deliveries; it is NEVER returned — responses carry
+	// github_webhook_configured instead.
+	GitHubWebhookSecret service.PatchField[string] `json:"github_webhook_secret"`
 }
 
 // updateWorkspace implements PATCH /api/v1/workspaces/{slug}: rename
 // (name, plus optional slug change) and/or set/clear the Slack
-// incoming-webhook URL. Admin only (the service enforces it).
+// incoming-webhook URL and/or the GitHub repo-webhook secret. Admin only
+// (the service enforces it).
 func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 	var body updateWorkspaceBody
 	if err := c.Bind(&body); err != nil {
@@ -169,6 +181,15 @@ func (h *WorkspaceHandler) updateWorkspace(c *echo.Context) error {
 	if body.SlackWebhookURL.Set {
 		var err error
 		ws, err = service.SetWorkspaceSlackURL(ctx, h.Pool, slug, actorID, body.SlackWebhookURL.Value)
+		if err != nil {
+			return workspaceError(c, err)
+		}
+	}
+	// C17T0: set/clear the GitHub repo-webhook secret. Admin only (the
+	// service enforces it); the secret itself never leaves the server.
+	if body.GitHubWebhookSecret.Set {
+		var err error
+		ws, err = service.SetWorkspaceGitHubSecret(ctx, h.Pool, slug, actorID, body.GitHubWebhookSecret.Value)
 		if err != nil {
 			return workspaceError(c, err)
 		}

@@ -485,9 +485,9 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID string) (*IssueListItem, error) {
 	var item IssueListItem
 	var description []byte
-	var assigneesJSON, labelsJSON, progressJSON []byte
+	var assigneesJSON, labelsJSON, progressJSON, refsJSON []byte
 	err := q.QueryRow(ctx,
-		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+` FROM issues i
+		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+`, `+externalRefsAgg+` FROM issues i
 		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
 		issueID, projectID).Scan(
 		&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
@@ -496,7 +496,7 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		&item.StartDate, &item.TargetDate, &item.EstimatePointID,
 		&item.IsDraft, &item.ArchivedAt,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-		&assigneesJSON, &labelsJSON, &progressJSON,
+		&assigneesJSON, &labelsJSON, &progressJSON, &refsJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -508,6 +508,9 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		return nil, err
 	}
 	if err := unmarshalSubtaskProgress(progressJSON, &item); err != nil {
+		return nil, err
+	}
+	if err := unmarshalExternalRefs(refsJSON, &item); err != nil {
 		return nil, err
 	}
 	item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
@@ -1962,6 +1965,23 @@ const labelsAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
 	FROM issue_labels il JOIN labels l ON l.id = il.label_id
 	WHERE il.issue_id = i.id)`
 
+// externalRefsAgg aggregates an issue's linked PRs/commits (C17T0),
+// oldest first. Selected only by the detail query (getIssueRow); the
+// list query is untouched.
+const externalRefsAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
+		'id', r.id::text,
+		'issue_id', r.issue_id::text,
+		'provider', r.provider,
+		'repo', r.repo,
+		'ref_type', r.ref_type,
+		'ref_id', r.ref_id,
+		'url', r.url,
+		'state', r.state,
+		'created_at', r.created_at)
+		ORDER BY r.created_at)::jsonb, '[]'::jsonb)
+	FROM issue_external_refs r
+	WHERE r.issue_id = i.id)`
+
 // subtaskProgressAgg rolls up an issue's DIRECT children (C17T2): total
 // children and how many sit in a 'completed'-group state. Only direct
 // children count (parent_id = i.id, no recursion); soft-deleted children
@@ -2000,6 +2020,19 @@ func unmarshalSubtaskProgress(progressJSON []byte, item *IssueListItem) error {
 		return fmt.Errorf("service: decode subtask progress: %w", err)
 	}
 	item.SubtaskProgress = &p
+	return nil
+}
+
+// unmarshalExternalRefs decodes the externalRefsAgg JSON array into the
+// list item. The aggregate COALESCEs to '[]', so the detail response
+// always embeds the array (empty when nothing is linked); a corrupt
+// payload is a real error, never silently swallowed.
+func unmarshalExternalRefs(refsJSON []byte, item *IssueListItem) error {
+	refs := []ExternalRef{}
+	if err := json.Unmarshal(refsJSON, &refs); err != nil {
+		return fmt.Errorf("service: decode external refs: %w", err)
+	}
+	item.ExternalRefs = refs
 	return nil
 }
 
@@ -2119,6 +2152,11 @@ type IssueListItem struct {
 	Issue
 	Assignees []IssueAssignee `json:"assignees"`
 	Labels    []IssueLabel    `json:"labels"`
+	// ExternalRefs carries linked PRs/commits (C17T0). Populated only by
+	// the detail query (getIssueRow) — list queries leave it nil and
+	// omitempty keeps their responses byte-identical. The detail response
+	// always embeds the array (empty when nothing is linked).
+	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
 }
 
 // ListIssuesResult is the paginated list envelope (spec §5).
