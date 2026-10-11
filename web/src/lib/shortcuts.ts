@@ -24,7 +24,10 @@ export type ShortcutAction =
   | "goto-home"
   | "goto-mywork"
   | "toggle-sidebar"
-  | "open-notifications";
+  | "open-notifications"
+  | "copy-branch"
+  | "copy-url"
+  | "copy-id";
 
 export type ShortcutContext =
   | "Global"
@@ -103,6 +106,27 @@ export const SHORTCUT_REGISTRY: ShortcutDefinition[] = [
     keys: ["c"],
     description: "Create issue",
     contexts: ["Issue list"],
+  },
+  {
+    action: "copy-branch",
+    keys: ["c", "b"],
+    chord: true,
+    description: "Copy branch name",
+    contexts: ["Issue detail"],
+  },
+  {
+    action: "copy-url",
+    keys: ["c", "u"],
+    chord: true,
+    description: "Copy issue URL",
+    contexts: ["Issue detail"],
+  },
+  {
+    action: "copy-id",
+    keys: ["c", "i"],
+    chord: true,
+    description: "Copy issue ID",
+    contexts: ["Issue detail"],
   },
   {
     action: "focus-search",
@@ -191,13 +215,24 @@ export function resolveKeyPress(
       return { action: "open-notifications", pendingPrefix: null };
     // Not a known chord: drop the prefix and fall through to normal keys.
   }
+  if (pendingPrefix === "c") {
+    const lower = key.toLowerCase();
+    if (lower === "b") return { action: "copy-branch", pendingPrefix: null };
+    if (lower === "u") return { action: "copy-url", pendingPrefix: null };
+    if (lower === "i") return { action: "copy-id", pendingPrefix: null };
+    // Not a known chord: drop the prefix and fall through to normal keys.
+  }
   switch (key) {
     case "g":
       return { action: null, pendingPrefix: "g" };
+    case "c":
+      // "c" doubles as the copy-chord prefix on issue detail. The global
+      // listener fires new-issue immediately for a bare "c" when no copy
+      // handlers are registered, and defers it past the chord window when
+      // they are — so this only ever arms the prefix here.
+      return { action: null, pendingPrefix: "c" };
     case "?":
       return { action: "open-cheatsheet", pendingPrefix: null };
-    case "c":
-      return { action: "new-issue", pendingPrefix: null };
     case "/":
       return { action: "focus-search", pendingPrefix: null };
     case "j":
@@ -214,6 +249,18 @@ let installed = false;
 // Chord keys expire: a lone "g" older than this stops acting as a prefix.
 const CHORD_TIMEOUT_MS = 800;
 
+// hasCopyHandlers reports whether any copy-* shortcut handler is currently
+// registered (i.e. the issue detail copy menu is mounted). The global
+// listener uses it to decide whether a bare "c" means new-issue
+// (immediately, as before) or arms the copy chord.
+function hasCopyHandlers(): boolean {
+  const copyActions: ShortcutAction[] = ["copy-branch", "copy-url", "copy-id"];
+  return copyActions.some((a) => {
+    const set = handlers.get(a);
+    return !!set && set.size > 0;
+  });
+}
+
 // installGlobalShortcuts installs the window keydown listener. Idempotent;
 // returns a remover.
 //
@@ -226,7 +273,12 @@ const CHORD_TIMEOUT_MS = 800;
 //   g then m   → goto-mywork
 //   g then h   → goto-home
 //   g then n   → open-notifications
-//   c          → new-issue
+//   c          → new-issue (immediate when no copy handlers are
+//                registered; on issue detail it arms the copy chord and a
+//                bare "c" defers new-issue past the chord window)
+//   c then b   → copy-branch (issue detail)
+//   c then u   → copy-url (issue detail)
+//   c then i   → copy-id (issue detail)
 //   /          → focus-search
 //   j / k      → next-item / prev-item
 export function installGlobalShortcuts(): () => void {
@@ -273,6 +325,15 @@ export function installGlobalShortcuts(): () => void {
       clearChord();
       return;
     }
+    // "c" doubles as new-issue and the copy-chord prefix. On pages without
+    // the issue copy menu it fires new-issue immediately (unchanged
+    // behavior); where the menu is mounted it arms the chord instead, and
+    // a bare "c" falls back to new-issue when the chord window expires
+    // (a no-op there — new-issue has no handler on issue detail).
+    if (e.key === "c" && pendingPrefix === null && !hasCopyHandlers()) {
+      emitShortcutAction("new-issue");
+      return;
+    }
     const { action, pendingPrefix: next } = resolveKeyPress(
       e.key,
       pendingPrefix,
@@ -280,7 +341,11 @@ export function installGlobalShortcuts(): () => void {
     clearChord();
     if (next) {
       pendingPrefix = next;
-      chordTimer = setTimeout(clearChord, CHORD_TIMEOUT_MS);
+      chordTimer = setTimeout(() => {
+        clearChord();
+        // A bare "c" with no follow-up key keeps its old meaning.
+        if (next === "c") emitShortcutAction("new-issue");
+      }, CHORD_TIMEOUT_MS);
     }
     if (action) {
       if (action === "focus-search") e.preventDefault();
