@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../components/ui/card";
+import EmojiPicker from "../components/project/EmojiPicker";
 import {
   Dialog,
   DialogContent,
@@ -37,6 +38,8 @@ export default function Projects() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [identifier, setIdentifier] = useState("");
+  // C18T4: optional project emoji icon picked in the dialog.
+  const [icon, setIcon] = useState<string | null>(null);
   // C17T1: optional project template applied in the creation transaction.
   const [templates, setTemplates] = useState<ProjectTemplate[] | null>(null);
   const [templateId, setTemplateId] = useState("");
@@ -69,6 +72,7 @@ export default function Projects() {
     if (!dialogOpen || !slug) return;
     setTemplates(null);
     setTemplateId("");
+    setIcon(null);
     fetchProjectTemplates(slug)
       .then(setTemplates)
       .catch(() => setTemplates([]));
@@ -85,6 +89,8 @@ export default function Projects() {
         {
           name: name.trim(),
           identifier: identifier.trim(),
+          // C18T4: optional emoji icon; omitted when unset.
+          ...(icon ? { icon } : {}),
           // C17T1: template seeds states/labels/modules/estimate scale
           // in the same transaction as project creation.
           ...(templateId ? { template_id: templateId } : {}),
@@ -94,6 +100,7 @@ export default function Projects() {
       setName("");
       setIdentifier("");
       setTemplateId("");
+      setIcon(null);
       navigate(`/w/${slug}/p/${p.identifier}`);
     } catch (err) {
       // 409 duplicate identifier surfaces the API's message verbatim.
@@ -147,15 +154,25 @@ export default function Projects() {
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={onCreate} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="p-name">Name</Label>
-                <Input
-                  id="p-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Platform"
-                  required
-                />
+              <div className="flex items-end gap-3">
+                <div className="space-y-2">
+                  <Label>Icon</Label>
+                  <EmojiPicker
+                    value={icon}
+                    onChange={setIcon}
+                    label="Choose project icon"
+                  />
+                </div>
+                <div className="flex-1 space-y-2">
+                  <Label htmlFor="p-name">Name</Label>
+                  <Input
+                    id="p-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Platform"
+                    required
+                  />
+                </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="p-identifier">Identifier</Label>
@@ -248,6 +265,11 @@ export default function Projects() {
               onActivate={() => navigate(`/w/${slug}/p/${p.identifier}`)}
             >
               <CardHeader className="flex flex-row items-center gap-3 space-y-0">
+                {p.icon ? (
+                  <span className="text-xl leading-none" aria-hidden="true">
+                    {p.icon}
+                  </span>
+                ) : null}
                 <Badge>{p.identifier}</Badge>
                 <CardTitle className="text-base">{p.name}</CardTitle>
               </CardHeader>

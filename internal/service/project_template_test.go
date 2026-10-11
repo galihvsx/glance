@@ -247,7 +247,7 @@ func TestCreateProjectWithTemplate(t *testing.T) {
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-pt-apply"), admin)
 	tmpl := createTestProjectTemplate(t, pool, ws.Slug, admin, "Full", fullTemplatePayload)
 
-	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Templated", uniqueTestIdentifier(), &tmpl.ID)
+	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Templated", uniqueTestIdentifier(), &tmpl.ID, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithTemplate: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestCreateProjectWithTemplateUnknownID(t *testing.T) {
 	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("acme-pt-unk"), admin)
 
 	bogus := "00000000-0000-0000-0000-000000000000"
-	if _, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Nope", uniqueTestIdentifier(), &bogus); !errors.Is(err, ErrUnknownTemplateID) {
+	if _, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Nope", uniqueTestIdentifier(), &bogus, nil); !errors.Is(err, ErrUnknownTemplateID) {
 		t.Fatalf("err = %v, want ErrUnknownTemplateID", err)
 	}
 
@@ -321,7 +321,7 @@ func TestCreateProjectWithTemplateUnknownID(t *testing.T) {
 	other := createTestUser(t, pool, uniqueTestEmail("pt-unk-other"))
 	ws2 := createTestWorkspace(t, pool, "Other", uniqueTestSlug("acme-pt-unk2"), other)
 	foreign := createTestProjectTemplate(t, pool, ws2.Slug, other, "Foreign", `{}`)
-	if _, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Nope2", uniqueTestIdentifier(), &foreign.ID); !errors.Is(err, ErrUnknownTemplateID) {
+	if _, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Nope2", uniqueTestIdentifier(), &foreign.ID, nil); !errors.Is(err, ErrUnknownTemplateID) {
 		t.Fatalf("foreign template err = %v, want ErrUnknownTemplateID", err)
 	}
 
@@ -351,7 +351,7 @@ func TestCreateProjectWithTemplateReusesExistingLabels(t *testing.T) {
 	}
 
 	tmpl := createTestProjectTemplate(t, pool, ws.Slug, admin, "Reuse", fullTemplatePayload)
-	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Reused", uniqueTestIdentifier(), &tmpl.ID)
+	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Reused", uniqueTestIdentifier(), &tmpl.ID, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithTemplate: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestCreateProjectWithoutTemplateUnchanged(t *testing.T) {
 
 	// nil template → exactly the old behavior: default states, no labels,
 	// no modules, no estimates.
-	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Plain", uniqueTestIdentifier(), nil)
+	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "Plain", uniqueTestIdentifier(), nil, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithTemplate: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestCreateProjectWithLabelsOnlyTemplate(t *testing.T) {
 	// labels/modules/estimates.
 	tmpl := createTestProjectTemplate(t, pool, ws.Slug, admin, "LabelsOnly",
 		`{"labels": [{"name": "docs", "color": "#10b981"}], "modules": [{"name": "Guide"}]}`)
-	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "LO", uniqueTestIdentifier(), &tmpl.ID)
+	p, err := CreateProjectWithTemplate(ctx, pool, ws.Slug, admin, "LO", uniqueTestIdentifier(), &tmpl.ID, nil)
 	if err != nil {
 		t.Fatalf("CreateProjectWithTemplate: %v", err)
 	}

@@ -22,6 +22,8 @@ export interface FavoriteProject {
   name: string;
   workspace_slug: string;
   starred_at: string;
+  /** Project emoji icon (C18T4); null/undefined = unset. */
+  icon?: string | null;
 }
 
 export interface FavoritesList {

@@ -114,3 +114,108 @@ func TestProjectPatchPartialSemantics(t *testing.T) {
 		t.Fatalf("400 envelope = %+v, want code=bad_request message=nothing to update", env.Error)
 	}
 }
+
+func decodeProjectIcon(t *testing.T, recBody []byte) *string {
+	t.Helper()
+	var p struct {
+		Icon *string `json:"icon"`
+	}
+	if err := json.Unmarshal(recBody, &p); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	return p.Icon
+}
+
+// TestProjectIconHTTP exercises the icon through the API: POST accepts an
+// optional icon (invalid → 400), GET returns it, PATCH sets/clears it
+// (invalid → 400).
+func TestProjectIconHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	migrateTestDB(t, pool)
+	e := testProjectServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("proj-icon-http"), "test-agent/1.0", uniqueIP())
+	slug := uniqueSlug("proj-icon-http")
+	createWorkspaceHTTP(t, e, cookie, "Icon Co", slug)
+
+	// POST with a valid icon: 201, icon echoed.
+	ident := uniqueProjectIdentifier("IC")
+	rec := postAuthedJSON(t, e, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/projects", cookie,
+		fmt.Sprintf(`{"name":%q,"identifier":%q,"icon":"🚀"}`, "Rocket", ident))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with icon: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if icon := decodeProjectIcon(t, rec.Body.Bytes()); icon == nil || *icon != "🚀" {
+		t.Fatalf("create icon = %v, want 🚀", icon)
+	}
+
+	// POST with an invalid icon: 400 bad_request.
+	rec = postAuthedJSON(t, e, http.MethodPost,
+		"/api/v1/workspaces/"+slug+"/projects", cookie,
+		fmt.Sprintf(`{"name":%q,"identifier":%q,"icon":"not-an-emoji"}`, "Bad", uniqueProjectIdentifier("IB")))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create bad icon: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// GET returns the icon.
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident
+	rec = getAuthed(t, e, http.MethodGet, base, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get project: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if icon := decodeProjectIcon(t, rec.Body.Bytes()); icon == nil || *icon != "🚀" {
+		t.Fatalf("get icon = %v, want 🚀", icon)
+	}
+
+	// PATCH changes it.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base, cookie, `{"icon":"🎯"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch icon: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if icon := decodeProjectIcon(t, rec.Body.Bytes()); icon == nil || *icon != "🎯" {
+		t.Fatalf("patch icon = %v, want 🎯", icon)
+	}
+
+	// PATCH with a ZWJ sequence: 400.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base, cookie, `{"icon":"👨‍👩‍👧"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch zwj icon: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// PATCH with explicit "": clears to NULL (icon omitted from payload).
+	rec = postAuthedJSON(t, e, http.MethodPatch, base, cookie, `{"icon":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear icon: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if icon := decodeProjectIcon(t, rec.Body.Bytes()); icon != nil {
+		t.Fatalf("clear icon = %q, want NULL", *icon)
+	}
+
+	// GET list includes the icon field contract (null here after clear).
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/workspaces/"+slug+"/projects", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list projects: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Projects []struct {
+			Identifier string  `json:"identifier"`
+			Icon       *string `json:"icon"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	found := false
+	for _, p := range list.Projects {
+		if p.Identifier == ident {
+			found = true
+			if p.Icon != nil {
+				t.Fatalf("list icon = %q, want NULL after clear", *p.Icon)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("project %s missing from list", ident)
+	}
+}
