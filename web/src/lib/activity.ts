@@ -14,6 +14,9 @@ export interface ActivityEntry {
   field: string;
   old: string | null;
   new: string | null;
+  /** Workspace activity feed (C17T4) rows carry the owning project. */
+  project_identifier?: string;
+  project_name?: string;
 }
 
 const FIELD_LABELS: Record<string, string> = {

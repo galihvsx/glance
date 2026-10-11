@@ -20,7 +20,7 @@
     { "name": "pages", "description": "Wiki pages" },
     { "name": "releases", "description": "Releases" },
     { "name": "intake", "description": "Intake inbox triage" },
-    { "name": "activity", "description": "Project activity feed" },
+    { "name": "activity", "description": "Project and workspace activity feeds" },
     { "name": "analytics", "description": "Analytics summaries, burndown, trends" },
     { "name": "time", "description": "Time tracking entries and summaries" },
     { "name": "templates", "description": "Issue templates" },
@@ -1385,6 +1385,20 @@
         "responses": { "200": { "description": "Activity entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "activity": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
     },
+    "/api/v1/workspaces/{slug}/activity": {
+      "get": {
+        "tags": ["activity"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get the workspace activity feed",
+        "description": "The issue_activities field-level audit rows aggregated across every project of the workspace the caller is a member (15)+ of, newest first. Member (15)+; guests get 403; a bad slug or non-member caller gets 404. `before` is the opaque cursor from a previous page's `next_cursor` (rows strictly before it); `types` is a comma-separated list of activity field names (e.g. \"state_id,priority\", \"_created\") to filter by. `next_cursor` is null when the feed is exhausted.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "before", "in": "query", "description": "Opaque cursor for the next page (previous page's next_cursor).", "schema": { "type": "string" } },
+          { "name": "types", "in": "query", "description": "Comma-separated activity field names to include (e.g. \"state_id,priority\").", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Workspace activity entries plus the next-page cursor", "content": { "application/json": { "schema": { "type": "object", "properties": { "activity": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceActivityEntry" } }, "next_cursor": { "type": "string", "nullable": true, "description": "Opaque cursor for the next page; null when the feed is exhausted." } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/automations": {
       "get": {
         "tags": ["automations"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2251,6 +2265,21 @@
           "action": { "type": "string" },
           "issue_id": { "type": "string", "format": "uuid", "nullable": true },
           "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WorkspaceActivityEntry": {
+        "type": "object",
+        "description": "One row of the workspace activity feed: a field-level audit row plus the owning project.",
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "actor": { "type": "string", "description": "Actor display name" },
+          "issue_uuid": { "type": "string", "format": "uuid" },
+          "issue_identifier": { "type": "string", "description": "e.g. ENG-123" },
+          "field": { "type": "string", "description": "Changed field name; _created/_deleted for lifecycle rows" },
+          "old": { "type": "string", "nullable": true, "description": "Raw JSONB-as-text old value, null when unset" },
+          "new": { "type": "string", "nullable": true, "description": "Raw JSONB-as-text new value, null when unset" },
+          "project_identifier": { "type": "string", "description": "Owning project identifier, e.g. ENG" },
+          "project_name": { "type": "string", "description": "Owning project name (badge label)" }
         }
       },
       "ProjectOverview": {
