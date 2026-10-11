@@ -6,8 +6,8 @@ import { api, ApiError } from "../lib/api";
 import { INTAKE_STATUS } from "../lib/types";
 import type { IntakeInbox, IntakeItem } from "../lib/types";
 import type { IssueListResult } from "../lib/types";
+import { Inbox } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { Card, CardContent } from "../components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +21,11 @@ import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import { cn } from "../lib/utils";
+import {
+  OrgEmpty,
+  OrgSectionHead,
+} from "../components/org/OrgViews";
 
 /**
  * The effective status of an inbox item. The server stores the snoozed
@@ -57,6 +62,25 @@ function toLocalInputValue(d: Date): string {
 
 // ---------- Row ----------
 
+/** Compact 26px triage button language. */
+function triageBtnClass(kind: "accept" | "outline" | "reject"): string {
+  return cn(
+    "inline-flex h-[26px] shrink-0 items-center rounded-[4px] border px-2 text-[10px] font-medium transition-colors",
+    "disabled:cursor-not-allowed disabled:opacity-50",
+    kind === "accept" &&
+      "border-accent-blue bg-accent-blue text-white hover:border-accent-blue-hover hover:bg-accent-blue-hover",
+    kind === "outline" &&
+      "border-border bg-surface text-ink-secondary hover:bg-raised hover:text-ink",
+    kind === "reject" &&
+      "border-border bg-surface text-accent-red hover:bg-raised",
+  );
+}
+
+/**
+ * Dense 47px queue row (IssueRow grid language): ID mono 10px muted |
+ * title 12px ink | arrived-time 10px muted, hairline separator, hover
+ * wash. Triage actions are compact 26px buttons on the right.
+ */
 function IntakeRow({
   item,
   onAccept,
@@ -75,61 +99,80 @@ function IntakeRow({
   const resurfaced =
     item.status === INTAKE_STATUS.snoozed && effectivePending(item);
   return (
-    <Card>
-      <CardContent className="flex flex-wrap items-center gap-3 py-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            {item.issue ? (
-              <>
-                <Badge variant="secondary">{item.issue.display_id}</Badge>
-                <Link
-                  to={`../i/${item.issue.id}`}
-                  className="truncate font-medium hover:underline"
-                >
-                  {item.issue.name}
-                </Link>
-              </>
-            ) : (
-              <span className="text-sm text-muted-foreground">
-                Issue {item.issue_id}
-              </span>
-            )}
-            {resurfaced && <Badge variant="outline">resurfaced</Badge>}
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            arrived {fmtTime(item.created_at)}
-            {item.snoozed_till && !resurfaced
+    <div className="flex min-h-[47px] items-center gap-[10px] border-b border-border-hairline py-2 transition-colors hover:bg-wash-hover">
+      <div className="grid min-h-[27px] flex-1 grid-cols-[76px_minmax(0,1fr)_150px] items-center gap-[10px]">
+        <span className="truncate font-mono text-[10px] text-ink-muted">
+          {item.issue ? item.issue.display_id : `Issue ${item.issue_id}`}
+        </span>
+        <span className="flex min-w-0 items-center gap-2">
+          {item.issue ? (
+            <Link
+              to={`../i/${item.issue.id}`}
+              className="truncate text-[12px] text-ink hover:underline"
+              title={item.issue.name}
+            >
+              {item.issue.name}
+            </Link>
+          ) : (
+            <span className="truncate text-[12px] text-ink-muted">
+              {item.issue_id}
+            </span>
+          )}
+          {resurfaced && (
+            <span className="inline-flex h-[18px] shrink-0 items-center rounded-[3px] border border-border px-1 text-[9px] text-ink-muted">
+              resurfaced
+            </span>
+          )}
+        </span>
+        <span
+          className="truncate text-[10px] text-ink-muted"
+          title={`arrived ${fmtTime(item.created_at)}${
+            item.snoozed_till && !resurfaced
               ? ` · snoozed until ${fmtTime(item.snoozed_till)}`
-              : null}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={onAccept} disabled={busy}>
-            Accept
-          </Button>
-          <Button size="sm" variant="outline" onClick={onSnooze} disabled={busy}>
-            Snooze
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onDuplicate}
-            disabled={busy}
-          >
-            Duplicate
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-destructive"
-            onClick={onReject}
-            disabled={busy}
-          >
-            Reject
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+              : ""
+          }`}
+        >
+          arrived {fmtTime(item.created_at)}
+          {item.snoozed_till && !resurfaced
+            ? ` · snoozed until ${fmtTime(item.snoozed_till)}`
+            : null}
+        </span>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 pr-1">
+        <button
+          type="button"
+          className={triageBtnClass("accept")}
+          onClick={onAccept}
+          disabled={busy}
+        >
+          Accept
+        </button>
+        <button
+          type="button"
+          className={triageBtnClass("outline")}
+          onClick={onSnooze}
+          disabled={busy}
+        >
+          Snooze
+        </button>
+        <button
+          type="button"
+          className={triageBtnClass("outline")}
+          onClick={onDuplicate}
+          disabled={busy}
+        >
+          Duplicate
+        </button>
+        <button
+          type="button"
+          className={triageBtnClass("reject")}
+          onClick={onReject}
+          disabled={busy}
+        >
+          Reject
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -314,8 +357,7 @@ export default function Intake() {
     <div className="w-full">
       {/* C19T4: shared page header replaces the per-page h1. */}
       <PageHeader viewName="Intake" count={pendingItems.length} />
-      <div className="mx-auto w-full max-w-4xl p-6">
-
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
         {inboxQuery.isError && (
           <Alert variant="destructive" className="mb-4">
             <AlertDescription>
@@ -332,29 +374,27 @@ export default function Intake() {
         )}
 
         {inboxQuery.isLoading ? (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-20 w-full" />
+              <Skeleton key={i} className="h-[47px] w-full" />
             ))}
           </div>
         ) : data ? (
           <>
             <section>
-              <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-                Needs triage ({pendingItems.length})
-              </h2>
+              <OrgSectionHead title="Needs triage" count={pendingItems.length} />
               {pendingItems.length === 0 ? (
-                <Card>
-                  <CardContent className="py-10 text-center">
-                    <p className="text-lg font-medium">Inbox zero</p>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Nothing waiting for triage. New issues created with intake
-                      enabled will show up here.
-                    </p>
-                  </CardContent>
-                </Card>
+                <div className="pt-3">
+                  <OrgEmpty
+                    title="Inbox zero"
+                    icon={<Inbox className="h-4 w-4" aria-hidden />}
+                  >
+                    Nothing waiting for triage. New issues created with intake
+                    enabled will show up here.
+                  </OrgEmpty>
+                </div>
               ) : (
-                <div className="space-y-3">
+                <div>
                   {pendingItems.map((item) => (
                     <IntakeRow
                       key={item.id}
@@ -372,10 +412,8 @@ export default function Intake() {
 
             {snoozedItems.length > 0 && (
               <section className="mt-8">
-                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-                  Snoozed ({snoozedItems.length})
-                </h2>
-                <div className="space-y-3">
+                <OrgSectionHead title="Snoozed" count={snoozedItems.length} />
+                <div>
                   {snoozedItems.map((item) => (
                     <IntakeRow
                       key={item.id}
@@ -505,8 +543,8 @@ export default function Intake() {
                       type="button"
                       onClick={() => setDupTargetId(i.id)}
                       className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent ${
-                      dupTargetId === i.id ? "bg-accent" : ""
-                    }`}
+                        dupTargetId === i.id ? "bg-accent" : ""
+                      }`}
                     >
                       <Badge variant="secondary">{i.display_id}</Badge>
                       <span className="truncate">{i.name}</span>

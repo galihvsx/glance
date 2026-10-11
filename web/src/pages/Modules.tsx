@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -15,9 +15,7 @@ import type {
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import { Badge } from "../components/ui/badge";
-import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import {
   Dialog,
@@ -36,6 +34,18 @@ import {
   NativeSelectOption,
 } from "../components/ui/native-select";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import { stateDotClass } from "../lib/stateDot";
+import {
+  OrgCard,
+  OrgDetailHeader,
+  OrgEmpty,
+  OrgHeaderButton,
+  OrgIssueRow,
+  OrgPropertyGrid,
+  OrgSectionHead,
+  OrgStatBand,
+  OrgStatusChip,
+} from "../components/org/OrgViews";
 
 /** State groups in display order (mirrors Cycles.tsx). */
 const STATE_GROUPS = [
@@ -49,14 +59,15 @@ const STATE_GROUPS = [
 
 const MODULE_STATUSES = ["active", "completed", "archived"] as const;
 
-function statusVariant(status: string): "default" | "secondary" | "outline" {
+/** Status chip dot colors: state/accent colors. */
+function statusColor(status: string): string {
   switch (status) {
     case "active":
-      return "default";
+      return "#4f8ef7"; // accent blue
     case "completed":
-      return "secondary";
+      return "#42c88a"; // accent green
     default:
-      return "outline";
+      return "#777780"; // muted (archived)
   }
 }
 
@@ -82,6 +93,38 @@ function progressCounts(issues: Issue[], states: IssueState[]) {
     else if (g === "triage" || g === "backlog" || g === "unstarted") open++;
   }
   return { open, inProgress, done };
+}
+
+function ModuleCard({
+  module,
+  onSelect,
+}: {
+  module: Module;
+  onSelect: () => void;
+}) {
+  return (
+    <OrgCard label={`Open module ${module.name}`} onActivate={onSelect}>
+      <div className="flex items-center gap-2">
+        <span className="truncate text-[13px] font-semibold text-ink">
+          {module.name}
+        </span>
+        <span className="ml-auto">
+          <OrgStatusChip
+            color={statusColor(module.status)}
+            label={module.status}
+          />
+        </span>
+      </div>
+      <p className="mt-1.5 text-[10px] tabular-nums text-ink-muted">
+        {dateRange(module)}
+        <span className="mx-1.5" aria-hidden>
+          ·
+        </span>
+        <span className="font-mono">{module.issue_count}</span> issue
+        {module.issue_count === 1 ? "" : "s"}
+      </p>
+    </OrgCard>
+  );
 }
 
 interface ModuleFormValues {
@@ -317,10 +360,9 @@ export default function Modules() {
         count={modules.length}
         addButton={{ label: "New module", onClick: openCreate }}
       />
-      <div className="mx-auto w-full max-w-4xl p-6">
-
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
         {modulesQuery.isError && (
-          <Alert variant="destructive" className="mt-4">
+          <Alert variant="destructive" className="mb-4">
             <AlertDescription>
               {modulesQuery.error instanceof ApiError
                 ? modulesQuery.error.message
@@ -329,7 +371,7 @@ export default function Modules() {
           </Alert>
         )}
         {formError && (
-          <Alert variant="destructive" className="mt-4">
+          <Alert variant="destructive" className="mb-4">
             <AlertDescription>{formError}</AlertDescription>
           </Alert>
         )}
@@ -337,8 +379,8 @@ export default function Modules() {
         <div className="mt-4">
           {modulesQuery.isPending ? (
             <div className="space-y-3">
-              <Skeleton className="h-28 w-full" />
-              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-[68px] w-full rounded-md" />
+              <Skeleton className="h-[68px] w-full rounded-md" />
             </div>
           ) : selected ? (
             <ModuleDetail
@@ -360,42 +402,18 @@ export default function Modules() {
               identifier={identifier}
             />
           ) : modules.length === 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>No modules yet</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Group this project's work into modules — epics, components, or
-                  whatever slices make sense.
-                </p>
-              </CardContent>
-            </Card>
+            <OrgEmpty title="No modules yet">
+              Group this project's work into modules — epics, components, or
+              whatever slices make sense.
+            </OrgEmpty>
           ) : (
             <div className="space-y-3">
               {modules.map((m) => (
-                <ActionCard
+                <ModuleCard
                   key={m.id}
-                  role="button"
-                  label={`Select module ${m.name}`}
-                  aria-pressed={selectedId === m.id}
-                  onActivate={() => setSelectedId(m.id)}
-                >
-                  <CardHeader className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <CardTitle className="text-base font-medium">
-                        {m.name}
-                      </CardTitle>
-                      <Badge variant={statusVariant(m.status)} className="ml-auto">
-                        {m.status}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {dateRange(m)} · {m.issue_count} issue
-                      {m.issue_count === 1 ? "" : "s"}
-                    </p>
-                  </CardHeader>
-                </ActionCard>
+                  module={m}
+                  onSelect={() => setSelectedId(m.id)}
+                />
               ))}
             </div>
           )}
@@ -443,8 +461,8 @@ export default function Modules() {
                     <label
                       key={i.id}
                       className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
-                      already ? "opacity-50" : ""
-                    }`}
+                        already ? "opacity-50" : ""
+                      }`}
                     >
                       <Checkbox
                         checked={already || picked.has(i.id)}
@@ -514,293 +532,294 @@ export default function Modules() {
         </Dialog>
       </div>
     </div>
-    );
+  );
+}
+
+function ModuleFormDialog({
+  open,
+  onOpenChange,
+  initial,
+  members,
+  pending,
+  error,
+  onSubmit,
+  title,
+  submitLabel,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  initial: ModuleFormValues;
+  members: Member[];
+  pending: boolean;
+  error: string | null;
+  onSubmit: (v: ModuleFormValues) => void;
+  title: string;
+  submitLabel: string;
+}) {
+  const [values, setValues] = useState<ModuleFormValues>(initial);
+  // The parent passes key={editing?.id ?? "new"} so this dialog remounts
+  // fresh for each create/edit session — no reset-on-render needed.
+
+  function onForm(e: FormEvent) {
+    e.preventDefault();
+    onSubmit(values);
   }
 
-  function ModuleFormDialog({
-    open,
-    onOpenChange,
-    initial,
-    members,
-    pending,
-    error,
-    onSubmit,
-    title,
-    submitLabel,
-  }: {
-    open: boolean;
-    onOpenChange: (o: boolean) => void;
-    initial: ModuleFormValues;
-    members: Member[];
-    pending: boolean;
-    error: string | null;
-    onSubmit: (v: ModuleFormValues) => void;
-    title: string;
-    submitLabel: string;
-  }) {
-    const [values, setValues] = useState<ModuleFormValues>(initial);
-    // The parent passes key={editing?.id ?? "new"} so this dialog remounts
-    // fresh for each create/edit session — no reset-on-render needed.
+  const set = (k: keyof ModuleFormValues) => (v: string) =>
+    setValues((prev) => ({ ...prev, [k]: v }));
 
-    function onForm(e: FormEvent) {
-      e.preventDefault();
-      onSubmit(values);
-    }
-
-    const set = (k: keyof ModuleFormValues) => (v: string) =>
-      setValues((prev) => ({ ...prev, [k]: v }));
-
-    return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogDescription>
-              A module groups related issues — an epic, a component, a release
-              train.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={onForm} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="m-name">Name</Label>
-              <Input
-                id="m-name"
-                value={values.name}
-                onChange={(e) => set("name")(e.target.value)}
-                placeholder="Authentication overhaul"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="m-desc">Description</Label>
-              <Textarea
-                id="m-desc"
-                value={values.description}
-                onChange={(e) => set("description")(e.target.value)}
-                placeholder="What belongs in this module…"
-                rows={3}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="m-status">Status</Label>
-                <NativeSelect
-                  id="m-status"
-                  value={values.status}
-                  onChange={(e) => set("status")(e.target.value)}
-                >
-                  {MODULE_STATUSES.map((s) => (
-                    <NativeSelectOption key={s} value={s}>
-                      {s}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="m-lead">Lead</Label>
-                <NativeSelect
-                  id="m-lead"
-                  value={values.leadId}
-                  onChange={(e) => set("leadId")(e.target.value)}
-                >
-                  <NativeSelectOption value="">No lead</NativeSelectOption>
-                  {members.map((m) => (
-                    <NativeSelectOption key={m.id} value={m.id}>
-                      {m.name ?? m.email}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="m-start">Start date</Label>
-                <Input
-                  id="m-start"
-                  type="date"
-                  value={values.startDate}
-                  onChange={(e) => set("startDate")(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="m-target">Target date</Label>
-                <Input
-                  id="m-target"
-                  type="date"
-                  value={values.targetDate}
-                  onChange={(e) => set("targetDate")(e.target.value)}
-                />
-              </div>
-            </div>
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            <DialogFooter>
-              <Button type="submit" disabled={pending || !values.name.trim()}>
-                {pending ? "Saving…" : submitLabel}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    );
-  }
-
-  function ModuleDetail({
-    module,
-    states,
-    issues,
-    issuesLoading,
-    members,
-    onBack,
-    onEdit,
-    onDelete,
-    onAdd,
-    onRemove,
-    slug,
-    identifier,
-  }: {
-    module: Module;
-    states: IssueState[];
-    issues: Issue[];
-    issuesLoading: boolean;
-    members: Member[];
-    onBack: () => void;
-    onEdit: () => void;
-    onDelete: () => void;
-    onAdd: () => void;
-    onRemove: (issueId: string) => void;
-    slug: string;
-    identifier: string;
-  }) {
-    const counts = progressCounts(issues, states);
-    const lead = members.find((m) => m.id === module.lead_id);
-
-    const grouped = useMemo(() => {
-      const groupOf = new Map(states.map((s) => [s.id, s.group]));
-      const buckets = new Map<string, Issue[]>();
-      for (const i of issues) {
-        const g = groupOf.get(i.state_id) ?? "unstarted";
-        const arr = buckets.get(g) ?? [];
-        arr.push(i);
-        buckets.set(g, arr);
-      }
-      return STATE_GROUPS.map((g) => ({
-        group: g,
-        issues: buckets.get(g) ?? [],
-      })).filter((b) => b.issues.length > 0);
-    }, [issues, states]);
-
-    return (
-      <div>
-        <button
-          onClick={onBack}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← All modules
-        </button>
-        <div className="mt-2 flex items-center gap-3">
-          <h2 className="text-xl font-semibold tracking-tight">{module.name}</h2>
-          <Badge variant={statusVariant(module.status)}>{module.status}</Badge>
-          <span className="text-sm text-muted-foreground">
-            {dateRange(module)}
-          </span>
-          <div className="ml-auto flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={onEdit}>
-              <Pencil className="mr-1 h-3 w-3" />
-              Edit
-            </Button>
-            <Button variant="outline" size="sm" onClick={onAdd}>
-              <Plus className="mr-1 h-3 w-3" />
-              Add issues
-            </Button>
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              Delete
-            </Button>
-          </div>
-        </div>
-        {module.description && (
-          <p className="mt-2 text-sm text-muted-foreground">
-            {module.description}
-          </p>
-        )}
-        {lead && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Lead: {lead.name ?? lead.email}
-          </p>
-        )}
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Open</p>
-              <p className="text-2xl font-semibold tabular-nums">{counts.open}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">In progress</p>
-              <p className="text-2xl font-semibold tabular-nums">
-                {counts.inProgress}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Done</p>
-              <p className="text-2xl font-semibold tabular-nums">{counts.done}</p>
-            </CardContent>
-          </Card>
-        </div>
-        <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
-          Issues in this module ({issues.length})
-        </h3>
-        {issuesLoading ? (
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            A module groups related issues — an epic, a component, a release
+            train.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={onForm} className="space-y-4">
           <div className="space-y-2">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
+            <Label htmlFor="m-name">Name</Label>
+            <Input
+              id="m-name"
+              value={values.name}
+              onChange={(e) => set("name")(e.target.value)}
+              placeholder="Authentication overhaul"
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="m-desc">Description</Label>
+            <Textarea
+              id="m-desc"
+              value={values.description}
+              onChange={(e) => set("description")(e.target.value)}
+              placeholder="What belongs in this module…"
+              rows={3}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="m-status">Status</Label>
+              <NativeSelect
+                id="m-status"
+                value={values.status}
+                onChange={(e) => set("status")(e.target.value)}
+              >
+                {MODULE_STATUSES.map((s) => (
+                  <NativeSelectOption key={s} value={s}>
+                    {s}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="m-lead">Lead</Label>
+              <NativeSelect
+                id="m-lead"
+                value={values.leadId}
+                onChange={(e) => set("leadId")(e.target.value)}
+              >
+                <NativeSelectOption value="">No lead</NativeSelectOption>
+                {members.map((m) => (
+                  <NativeSelectOption key={m.id} value={m.id}>
+                    {m.name ?? m.email}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="m-start">Start date</Label>
+              <Input
+                id="m-start"
+                type="date"
+                value={values.startDate}
+                onChange={(e) => set("startDate")(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="m-target">Target date</Label>
+              <Input
+                id="m-target"
+                type="date"
+                value={values.targetDate}
+                onChange={(e) => set("targetDate")(e.target.value)}
+              />
+            </div>
+          </div>
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <DialogFooter>
+            <Button type="submit" disabled={pending || !values.name.trim()}>
+              {pending ? "Saving…" : submitLabel}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ModuleDetail({
+  module,
+  states,
+  issues,
+  issuesLoading,
+  members,
+  onBack,
+  onEdit,
+  onDelete,
+  onAdd,
+  onRemove,
+  slug,
+  identifier,
+}: {
+  module: Module;
+  states: IssueState[];
+  issues: Issue[];
+  issuesLoading: boolean;
+  members: Member[];
+  onBack: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onAdd: () => void;
+  onRemove: (issueId: string) => void;
+  slug: string;
+  identifier: string;
+}) {
+  const counts = progressCounts(issues, states);
+  const lead = members.find((m) => m.id === module.lead_id);
+  const stateById = useMemo(
+    () => new Map(states.map((s) => [s.id, s])),
+    [states],
+  );
+
+  const grouped = useMemo(() => {
+    const groupOf = new Map(states.map((s) => [s.id, s.group]));
+    const buckets = new Map<string, Issue[]>();
+    for (const i of issues) {
+      const g = groupOf.get(i.state_id) ?? "unstarted";
+      const arr = buckets.get(g) ?? [];
+      arr.push(i);
+      buckets.set(g, arr);
+    }
+    return STATE_GROUPS.map((g) => ({
+      group: g,
+      label: g.charAt(0).toUpperCase() + g.slice(1),
+      issues: buckets.get(g) ?? [],
+    })).filter((b) => b.issues.length > 0);
+  }, [issues, states]);
+
+  const properties: { label: string; value: React.ReactNode }[] = [];
+  if (lead) {
+    properties.push({ label: "Lead", value: lead.name ?? lead.email });
+  }
+  properties.push(
+    {
+      label: "Start date",
+      value: module.start_date?.slice(0, 10) ?? "—",
+    },
+    {
+      label: "Target date",
+      value: module.target_date?.slice(0, 10) ?? "—",
+    },
+  );
+
+  return (
+    <div>
+      <OrgDetailHeader
+        backLabel="All modules"
+        onBack={onBack}
+        title={module.name}
+        chip={
+          <OrgStatusChip
+            color={statusColor(module.status)}
+            label={module.status}
+          />
+        }
+        meta={dateRange(module)}
+        actions={
+          <>
+            <OrgHeaderButton onClick={onEdit}>
+              <Pencil className="h-3 w-3" aria-hidden />
+              Edit
+            </OrgHeaderButton>
+            <OrgHeaderButton onClick={onAdd}>
+              <Plus className="h-3 w-3" aria-hidden />
+              Add issues
+            </OrgHeaderButton>
+            <OrgHeaderButton onClick={onDelete} destructive>
+              Delete
+            </OrgHeaderButton>
+          </>
+        }
+      />
+
+      {module.description && (
+        <p className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
+          {module.description}
+        </p>
+      )}
+      <div className="mt-3">
+        <OrgPropertyGrid properties={properties} />
+      </div>
+
+      <div className="mt-4">
+        <OrgStatBand
+          stats={[
+            { label: "Open", value: counts.open, note: "triaged, backlog, unstarted" },
+            { label: "In progress", value: counts.inProgress, note: "started" },
+            { label: "Done", value: counts.done, note: "completed" },
+          ]}
+        />
+      </div>
+
+      <div className="mt-6">
+        <OrgSectionHead title="Issues in this module" count={issues.length} />
+        {issuesLoading ? (
+          <div className="space-y-2 pt-2">
+            <Skeleton className="h-[47px] w-full" />
+            <Skeleton className="h-[47px] w-full" />
           </div>
         ) : issues.length === 0 ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              No issues assigned to this module yet.
-            </CardContent>
-          </Card>
+          <div className="pt-3">
+            <OrgEmpty title="No issues assigned to this module yet" />
+          </div>
         ) : (
-          <div className="space-y-4">
-            {grouped.map(({ group, issues: gi }) => (
-              <div key={group}>
-                <p className="mb-1 text-xs font-medium capitalize text-muted-foreground">
-                  {group} · {gi.length}
-                </p>
-                <div className="space-y-2">
+          <div>
+            {grouped.map(({ group, label, issues: gi }) => (
+              <div key={group} className={group !== grouped[0].group ? "mt-4" : undefined}>
+                <OrgSectionHead
+                  title={label}
+                  count={gi.length}
+                  prefix={
+                    <span
+                      className={`state-dot ${stateDotClass(group)}`}
+                      aria-hidden
+                    />
+                  }
+                />
+                <div>
                   {gi.map((i) => (
-                    <div
+                    <OrgIssueRow
                       key={i.id}
-                      className="group flex items-center gap-3 rounded-md border p-3 text-sm transition-colors hover:bg-accent"
-                    >
-                      <Link
-                        to={`/w/${slug}/p/${identifier}/i/${i.id}`}
-                        className="flex min-w-0 flex-1 items-center gap-3"
-                      >
-                        <Badge
-                          variant="outline"
-                          className="font-mono text-[11px]"
-                        >
-                          {i.display_id}
-                        </Badge>
-                        <span className="truncate font-medium">{i.name}</span>
-                      </Link>
-                      <button
-                        onClick={() => onRemove(i.id)}
-                        className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                        title={`Remove ${i.display_id} from module`}
-                        aria-label={`Remove ${i.display_id} from module`}
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
+                      issue={i}
+                      state={stateById.get(i.state_id)}
+                      slug={slug}
+                      identifier={identifier}
+                      action={{
+                        label: `Remove ${i.display_id} from module`,
+                        title: `Remove ${i.display_id} from module`,
+                        onClick: () => onRemove(i.id),
+                        icon: <X className="h-4 w-4" aria-hidden />,
+                      }}
+                    />
                   ))}
                 </div>
               </div>
@@ -808,5 +827,6 @@ export default function Modules() {
           </div>
         )}
       </div>
+    </div>
   );
 }
