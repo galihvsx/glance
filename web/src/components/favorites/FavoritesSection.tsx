@@ -1,7 +1,7 @@
-// Favorites sidebar section (C7T4): the caller's starred issues and
-// projects as a right-rail card — starred issues link to their detail
-// page, starred projects to their issue list. Honest empty state when
-// nothing is starred. Dark-theme aware via theme tokens.
+// Favorites sidebar section (C7T4, C19T9 polish): the caller's starred
+// issues and projects as dense hairline rows — starred issues link to
+// their detail page, starred projects to their issue list. SectionBar
+// header, token empty state.
 import { Link } from "react-router-dom";
 import { FolderOpen, Star } from "lucide-react";
 import {
@@ -9,9 +9,9 @@ import {
   projectFavoriteHref,
   useFavorites,
 } from "../../lib/favorites";
+import EmptyState from "../personal/EmptyState";
+import { SectionBar } from "../personal/SectionBar";
 import { Alert, AlertDescription } from "../ui/alert";
-import { Badge } from "../ui/badge";
-import { Card, CardContent } from "../ui/card";
 import { Skeleton } from "../ui/skeleton";
 
 export default function FavoritesSection() {
@@ -19,74 +19,65 @@ export default function FavoritesSection() {
 
   const issues = data?.issues ?? [];
   const projects = data?.projects ?? [];
+  const total = issues.length + projects.length;
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Favorites
-        </h2>
-      </div>
+      <SectionBar label="Favorites" count={total || undefined} />
 
       {isPending ? (
-        <div className="space-y-2">
-          <Skeleton className="h-14 w-full" />
-          <Skeleton className="h-14 w-full" />
+        <div className="space-y-2 pt-2">
+          <Skeleton className="h-[47px] w-full" />
+          <Skeleton className="h-[47px] w-full" />
         </div>
       ) : isError ? (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="mt-2">
           <AlertDescription>Failed to load favorites.</AlertDescription>
         </Alert>
-      ) : issues.length === 0 && projects.length === 0 ? (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <Star className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-              <div>
-                <p className="text-sm font-medium">No favorites yet</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Star issues and projects to pin them here for quick
-                  access.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+      ) : total === 0 ? (
+        <div className="pt-4">
+          <EmptyState icon={Star} title="No favorites yet">
+            <p>Star issues and projects to pin them here for quick access.</p>
+          </EmptyState>
+        </div>
       ) : (
-        <div className="space-y-2">
+        <ul className="mt-2 divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
           {issues.map((f) => (
-            <Link
-              key={`issue-${f.id}`}
-              to={issueFavoriteHref(f)}
-              className="block rounded-lg border p-3 transition-colors hover:bg-muted/50"
-            >
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="font-mono text-[11px]">
-                  {f.display_id}
-                </Badge>
-                <span className="text-[11px] text-muted-foreground">
-                  {f.project_identifier}
+            <li key={`issue-${f.id}`}>
+              <Link
+                to={issueFavoriteHref(f)}
+                className="flex min-h-[47px] flex-col justify-center gap-0.5 px-3 py-2 transition-colors hover:bg-wash-hover"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-ink-muted">
+                    {f.display_id}
+                  </span>
+                  <span className="text-[10px] text-ink-muted">
+                    {f.project_identifier}
+                  </span>
                 </span>
-              </div>
-              <p className="mt-1.5 truncate text-sm font-medium">{f.name}</p>
-            </Link>
+                <span className="truncate text-[12px] text-ink">{f.name}</span>
+              </Link>
+            </li>
           ))}
           {projects.map((f) => (
-            <Link
-              key={`project-${f.id}`}
-              to={projectFavoriteHref(f)}
-              className="block rounded-lg border p-3 transition-colors hover:bg-muted/50"
-            >
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <Badge variant="secondary" className="font-mono text-[11px]">
+            <li key={`project-${f.id}`}>
+              <Link
+                to={projectFavoriteHref(f)}
+                className="flex min-h-[47px] items-center gap-2 px-3 py-2 transition-colors hover:bg-wash-hover"
+              >
+                <FolderOpen
+                  className="h-3.5 w-3.5 shrink-0 text-ink-muted"
+                  aria-hidden="true"
+                />
+                <span className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-ink-secondary">
                   {f.identifier}
-                </Badge>
-              </div>
-              <p className="mt-1.5 truncate text-sm font-medium">{f.name}</p>
-            </Link>
+                </span>
+                <span className="truncate text-[12px] text-ink">{f.name}</span>
+              </Link>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );

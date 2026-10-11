@@ -1,6 +1,8 @@
-// Recent activity section for the Home page (C17T4): the newest
-// workspace-wide activity rows across the caller's workspaces, under
-// "Your work". Each row carries a project badge and links to the issue.
+// Recent activity section for the Home page (C17T4, C19T9 polish): the
+// newest workspace-wide activity rows across the caller's workspaces,
+// under "Your work". Dense hairline rows in the token ramp: 24px actor
+// avatar, 12px copy, 10px muted meta. SectionBar header, token empty
+// state.
 //
 // The workspace feed endpoint is per-workspace, so this fans out like
 // Home's "Your work" aggregation (capped workspaces, small limits) and
@@ -17,8 +19,8 @@ import { describeChange, type ActivityEntry } from "../../lib/activity";
 import { relativeTime } from "../../lib/relativeTime";
 import type { IssueState, Workspace } from "../../lib/types";
 import { Avatar, AvatarFallback } from "../ui/avatar";
-import { Badge } from "../ui/badge";
-import { Card, CardContent } from "../ui/card";
+import EmptyState from "../personal/EmptyState";
+import { SectionBar } from "../personal/SectionBar";
 import { Skeleton } from "../ui/skeleton";
 
 const enc = encodeURIComponent;
@@ -76,7 +78,7 @@ function ChangeText({
       return (
         <>
           set <span className="font-medium">{d.label}</span> to{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+          <code className="rounded bg-raised px-1 py-0.5 font-mono text-[11px]">
             {d.newText}
           </code>
         </>
@@ -91,11 +93,11 @@ function ChangeText({
       return (
         <>
           changed <span className="font-medium">{d.label}</span> from{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+          <code className="rounded bg-raised px-1 py-0.5 font-mono text-[11px]">
             {d.oldText}
           </code>{" "}
           to{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+          <code className="rounded bg-raised px-1 py-0.5 font-mono text-[11px]">
             {d.newText}
           </code>
         </>
@@ -111,30 +113,32 @@ function ActivityRow({
   stateById: Map<string, string>;
 }) {
   return (
-    <div className="flex items-start gap-3 border-b px-4 py-3 last:border-b-0">
-      <Avatar className="h-8 w-8 shrink-0">
-        <AvatarFallback className="text-xs font-semibold">
+    <div className="flex items-center gap-[10px] px-3 py-2">
+      <Avatar className="h-6 w-6 shrink-0">
+        <AvatarFallback className="text-[10px] font-semibold">
           {actorInitial(entry.actor)}
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
-        <p className="text-sm leading-snug">
+        <p className="truncate text-[12px] leading-snug text-ink">
           <span className="font-medium">{entry.actor}</span>{" "}
-          <ChangeText entry={entry} stateById={stateById} />
+          <span className="text-ink-secondary">
+            <ChangeText entry={entry} stateById={stateById} />
+          </span>
         </p>
-        <div className="mt-1 flex flex-wrap items-center gap-2">
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <Link
             to={`/w/${entry.slug}/p/${entry.project_identifier}/i/${entry.issue_uuid}`}
-            className="font-mono text-xs text-muted-foreground hover:text-foreground hover:underline"
+            className="font-mono text-[10px] text-ink-muted hover:text-ink hover:underline"
           >
             {entry.issue_identifier}
           </Link>
           {entry.project_name && (
-            <Badge variant="secondary" className="text-[11px]">
+            <span className="rounded border border-border px-1.5 py-0.5 text-[10px] leading-none text-ink-secondary">
               {entry.project_name}
-            </Badge>
+            </span>
           )}
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-[10px] text-ink-muted">
             {relativeTime(entry.at)}
           </span>
         </div>
@@ -194,38 +198,28 @@ export default function RecentActivitySection({
 
   return (
     <div className="mt-8">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Recent activity
-        </h2>
-      </div>
+      <SectionBar label="Recent activity" count={rows.length || undefined} />
       {activityQuery.isPending ? (
-        <div className="space-y-2">
-          <Skeleton className="h-14 w-full" />
-          <Skeleton className="h-14 w-full" />
-          <Skeleton className="h-14 w-full" />
+        <div className="space-y-2 pt-2">
+          <Skeleton className="h-[47px] w-full" />
+          <Skeleton className="h-[47px] w-full" />
+          <Skeleton className="h-[47px] w-full" />
         </div>
       ) : activityQuery.isError ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="pt-2 text-xs text-ink-muted">
           Couldn&apos;t load recent activity.
         </p>
       ) : rows.length === 0 ? (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-3">
-              <ActivityIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-              <div>
-                <p className="text-sm font-medium">No recent activity</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Issue changes across your projects will show up here,
-                  newest first.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="pt-4">
+          <EmptyState icon={ActivityIcon} title="No recent activity">
+            <p>
+              Issue changes across your projects will show up here, newest
+              first.
+            </p>
+          </EmptyState>
+        </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="mt-2 divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
           {rows.map((e, i) => (
             <ActivityRow
               key={`${e.at}-${e.issue_uuid}-${e.field}-${i}`}
