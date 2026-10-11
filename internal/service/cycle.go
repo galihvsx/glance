@@ -115,7 +115,14 @@ func cycleStatusFor(start, end, now time.Time) string {
 // the live cycle, all scoped to the project. Guests may read; callers
 // pass needMember to enforce member (15)+ for mutations.
 func resolveCycleProject(ctx context.Context, q queryRower, wsSlug, identifier, actorID string, needMember bool) (projectID string, role int, err error) {
-	_, projectID, role, err = resolveIssueProject(ctx, q, wsSlug, identifier, actorID)
+	// Normalize like every other service entry point (CreateIssue,
+	// CreateAutomationRule, ...): identifiers are stored uppercased,
+	// and a raw lowercase path param must resolve the same project.
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return "", 0, err
+	}
+	_, projectID, role, err = resolveIssueProject(ctx, q, wsSlug, ident, actorID)
 	if err != nil {
 		return "", 0, err
 	}

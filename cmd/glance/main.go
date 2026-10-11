@@ -208,6 +208,23 @@ func main() {
 		log.Printf("glance: scheduled backups disabled (GLANCE_BACKUP_INTERVAL empty)")
 	}
 
+	// Scheduled automation triggers (C16T1): on
+	// GLANCE_AUTOMATION_SCHEDULE_INTERVAL, evaluate the scheduled
+	// triggers (issue.due_soon, issue.overdue, issue.stale,
+	// cycle.ending_soon) of every project's enabled rules. An empty
+	// interval (the default) disables the pass — scheduled-trigger
+	// rules then never fire. Same in-process, one-instance design as
+	// the other tickers.
+	if cfg.AutomationSchedule.ScheduleEnabled() {
+		schedTicker := &ticker.AutomationScheduleTicker{
+			Pool:     pool,
+			Interval: cfg.AutomationSchedule.Interval,
+		}
+		schedTicker.Start(ctx)
+	} else {
+		log.Printf("glance: scheduled automation triggers disabled (GLANCE_AUTOMATION_SCHEDULE_INTERVAL empty)")
+	}
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via

@@ -12,7 +12,12 @@ package service
 // optional label_ids filter), issue.priority_changed (optional
 // from_priorities / to_priorities filters), issue.due_date_changed (the
 // target date changes), issue.estimate_changed (the estimate point
-// changes) and issue.comment_added. Actions run in order
+// changes) and issue.comment_added. Scheduled triggers (C16T1) are
+// evaluated by the automation-schedule ticker instead of by issue
+// events — see RunScheduledAutomationPass in automation_schedule.go:
+// issue.due_soon, issue.overdue, issue.stale, cycle.ending_soon.
+//
+// Actions run in order
 // inside the firing transaction: assign, add_label, add_comment,
 // set_priority, set_state (C12T2). An action failure is LOGGED (slog)
 // and never blocks the firing event. Automation-driven changes never
@@ -77,7 +82,12 @@ var (
 // issue.priority_changed (optional from_priorities / to_priorities
 // filters, 0-4), issue.due_date_changed (the issue's target date — its
 // due date — changes), issue.estimate_changed (the estimate point
-// changes) and issue.comment_added. Apart from labels_changed and
+// changes) and issue.comment_added. C16T1 adds the scheduled triggers,
+// evaluated by the automation-schedule ticker instead of by issue
+// events: issue.due_soon (optional window_hours filter, default
+// DefaultDueSoonWindowHours), issue.overdue (no filters),
+// issue.stale (optional stale_days filter, default DefaultStaleDays)
+// and cycle.ending_soon (no filters). Apart from labels_changed and
 // priority_changed, the new events take no filters in v1: a filter on
 // them is rejected rather than silently ignored.
 type AutomationTrigger struct {
@@ -87,6 +97,14 @@ type AutomationTrigger struct {
 	LabelIDs       []string `json:"label_ids,omitempty"`
 	FromPriorities []int    `json:"from_priorities,omitempty"`
 	ToPriorities   []int    `json:"to_priorities,omitempty"`
+	// WindowHours is issue.due_soon only: fire for issues whose target
+	// date falls within this many hours from now. Nil = default
+	// (DefaultDueSoonWindowHours). Must be > 0 when set.
+	WindowHours *int `json:"window_hours,omitempty"`
+	// StaleDays is issue.stale only: fire for open issues with no
+	// update in this many days. Nil = default (DefaultStaleDays).
+	// Must be > 0 when set.
+	StaleDays *int `json:"stale_days,omitempty"`
 }
 
 // AutomationAction is one ordered step: exactly one of assign (user_id),
@@ -186,10 +204,17 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 	// filterless reports whether the trigger carries no filter field at
 	// all; filterless event types reject any of them.
 	filterless := len(t.FromStates) == 0 && len(t.ToStates) == 0 &&
+		len(t.LabelIDs) == 0 && len(t.FromPriorities) == 0 && len(t.ToPriorities) == 0 &&
+		t.WindowHours == nil && t.StaleDays == nil
+	// eventFilterless reports whether the trigger carries none of the
+	// event-only filters — used by the scheduled triggers to reject
+	// everything except their own window fields.
+	eventFilterless := len(t.FromStates) == 0 && len(t.ToStates) == 0 &&
 		len(t.LabelIDs) == 0 && len(t.FromPriorities) == 0 && len(t.ToPriorities) == 0
 	switch t.Type {
 	case "issue.state_changed":
-		if len(t.LabelIDs) > 0 || len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 {
+		if len(t.LabelIDs) > 0 || len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 ||
+			t.WindowHours != nil || t.StaleDays != nil {
 			return ErrInvalidAutomationTrigger
 		}
 		for _, sid := range append(append([]string{}, t.FromStates...), t.ToStates...) {
@@ -200,7 +225,8 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 		return nil
 	case "issue.labels_changed":
 		if len(t.FromStates) > 0 || len(t.ToStates) > 0 ||
-			len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 {
+			len(t.FromPriorities) > 0 || len(t.ToPriorities) > 0 ||
+			t.WindowHours != nil || t.StaleDays != nil {
 			return ErrInvalidAutomationTrigger
 		}
 		for _, lid := range t.LabelIDs {
@@ -220,7 +246,8 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 		}
 		return nil
 	case "issue.priority_changed":
-		if len(t.FromStates) > 0 || len(t.ToStates) > 0 || len(t.LabelIDs) > 0 {
+		if len(t.FromStates) > 0 || len(t.ToStates) > 0 || len(t.LabelIDs) > 0 ||
+			t.WindowHours != nil || t.StaleDays != nil {
 			return ErrInvalidAutomationTrigger
 		}
 		for _, p := range append(append([]int{}, t.FromPriorities...), t.ToPriorities...) {
@@ -229,8 +256,29 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 			}
 		}
 		return nil
+	case "issue.due_soon":
+		// Optional window_hours filter (default DefaultDueSoonWindowHours
+		// when nil); every other filter is rejected.
+		if !eventFilterless || t.StaleDays != nil {
+			return ErrInvalidAutomationTrigger
+		}
+		if t.WindowHours != nil && *t.WindowHours <= 0 {
+			return ErrInvalidAutomationTrigger
+		}
+		return nil
+	case "issue.stale":
+		// Optional stale_days filter (default DefaultStaleDays when
+		// nil); every other filter is rejected.
+		if !eventFilterless || t.WindowHours != nil {
+			return ErrInvalidAutomationTrigger
+		}
+		if t.StaleDays != nil && *t.StaleDays <= 0 {
+			return ErrInvalidAutomationTrigger
+		}
+		return nil
 	case "issue.created", "issue.assigned", "issue.unassigned",
-		"issue.due_date_changed", "issue.estimate_changed", "issue.comment_added":
+		"issue.due_date_changed", "issue.estimate_changed", "issue.comment_added",
+		"issue.overdue", "cycle.ending_soon":
 		if !filterless {
 			return ErrInvalidAutomationTrigger
 		}
@@ -687,7 +735,6 @@ func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectI
 		return nil
 	}
 
-	actx := context.WithValue(ctx, automationActiveKey{}, true)
 	var notified []*Notification
 	for _, r := range rules {
 		var trig AutomationTrigger
@@ -704,46 +751,66 @@ func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectI
 		if !trig.matchesEvent(ev) {
 			continue
 		}
-		var actions []AutomationAction
-		if err := json.Unmarshal(r.Actions, &actions); err != nil {
-			slog.Warn("automation: skipping rule with corrupt actions",
-				"rule_id", r.ID, "error", err)
-			continue
-		}
-		// C12T1: record each action's outcome for the run row written
-		// after the loop — one row per firing, never per action.
-		results := make([]AutomationActionResult, 0, len(actions))
-		anyEffect := false
-		for i, a := range actions {
-			ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
-			if err != nil {
-				// Logged, never fatal: the state change already
-				// happened; a broken action must not roll it back.
-				slog.Error("automation: action failed; continuing with next action",
-					"rule_id", r.ID, "rule_name", r.Name,
-					"action_index", i, "action_type", a.Type, "error", err)
-				errText := err.Error()
-				results = append(results, AutomationActionResult{Type: a.Type, OK: false, Error: &errText})
-				anyEffect = true
-				continue
-			}
-			notified = append(notified, ns...)
-			results = append(results, AutomationActionResult{Type: a.Type, OK: true})
-			if !noop {
-				anyEffect = true
-			}
-		}
-		if !anyEffect {
-			// C12T2: the firing changed nothing (every action was a
-			// no-op, e.g. set_state to the issue's current state) —
-			// no run row, no activity, nothing to announce.
-			continue
-		}
-		// C12T1: one run row per firing, in this same tx — the state
-		// change and its log commit atomically. A run-row insert
-		// failure is logged, never fatal (same ethos as actions).
-		recordAutomationRunTx(actx, tx, r.ID, issueID, trig.Type, results)
+		notified = append(notified,
+			runAutomationRuleActionsTx(ctx, tx, wsID, projectID, ident, issueID, actorID, r, trig)...)
 	}
+	return notified
+}
+
+// runAutomationRuleActionsTx runs a rule's actions against one issue in
+// the caller's tx and writes exactly one automation_runs row for the
+// firing — unless every action was a no-op (C12T2: e.g. set_state to
+// the issue's current state), in which case no run row, no activity,
+// and nothing to announce. Shared by the event path
+// (runAutomationRulesForEventTx) and the scheduled-trigger pass
+// (RunScheduledAutomationPass): scheduled firings have no triggering
+// actor, so that caller passes the rule's author (r.CreatedBy) as
+// actorID for honest attribution on activities and comments. Returned
+// notifications are for the caller to announce after commit. The
+// depth-1 loop guard is set on actx so an action's own writes can never
+// cascade into another automation pass. Per-action failures are
+// logged, never fatal — the run row still records ok:false.
+func runAutomationRuleActionsTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, r *AutomationRule, trig AutomationTrigger) []*Notification {
+	var notified []*Notification
+	var actions []AutomationAction
+	if err := json.Unmarshal(r.Actions, &actions); err != nil {
+		slog.Warn("automation: skipping rule with corrupt actions",
+			"rule_id", r.ID, "error", err)
+		return nil
+	}
+	actx := context.WithValue(ctx, automationActiveKey{}, true)
+	// C12T1: record each action's outcome for the run row written
+	// after the loop — one row per firing, never per action.
+	results := make([]AutomationActionResult, 0, len(actions))
+	anyEffect := false
+	for i, a := range actions {
+		ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
+		if err != nil {
+			// Logged, never fatal: the firing event already happened;
+			// a broken action must not roll it back.
+			slog.Error("automation: action failed; continuing with next action",
+				"rule_id", r.ID, "rule_name", r.Name,
+				"action_index", i, "action_type", a.Type, "error", err)
+			errText := err.Error()
+			results = append(results, AutomationActionResult{Type: a.Type, OK: false, Error: &errText})
+			anyEffect = true
+			continue
+		}
+		notified = append(notified, ns...)
+		results = append(results, AutomationActionResult{Type: a.Type, OK: true})
+		if !noop {
+			anyEffect = true
+		}
+	}
+	if !anyEffect {
+		// C12T2: the firing changed nothing — no run row, no
+		// activity, nothing to announce.
+		return notified
+	}
+	// C12T1: one run row per firing, in this same tx — the firing and
+	// its log commit atomically. A run-row insert failure is logged,
+	// never fatal (same ethos as actions).
+	recordAutomationRunTx(actx, tx, r.ID, issueID, trig.Type, results)
 	return notified
 }
 
