@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -14,9 +14,7 @@ import type {
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import { Badge } from "../components/ui/badge";
-import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import {
   Dialog,
@@ -35,6 +33,19 @@ import {
   NativeSelectOption,
 } from "../components/ui/native-select";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import { stateDotClass } from "../lib/stateDot";
+import {
+  OrgCard,
+  OrgDetailHeader,
+  OrgDoneBar,
+  OrgEmpty,
+  OrgHeaderButton,
+  OrgHeaderPrimaryButton,
+  OrgIssueRow,
+  OrgSectionHead,
+  OrgStatBand,
+  OrgStatusChip,
+} from "../components/org/OrgViews";
 
 /** State groups in display order (mirrors Modules.tsx). */
 const STATE_GROUPS = [
@@ -48,14 +59,15 @@ const STATE_GROUPS = [
 
 const RELEASE_STATUSES = ["planned", "released"] as const;
 
-function statusVariant(status: string): "default" | "secondary" | "outline" {
+/** Status chip dot colors: state/accent colors. */
+function statusColor(status: string): string {
   switch (status) {
     case "released":
-      return "default";
+      return "#42c88a"; // accent green
     case "planned":
-      return "secondary";
+      return "#e7ad42"; // accent amber
     default:
-      return "outline";
+      return "#777780";
   }
 }
 
@@ -79,26 +91,35 @@ export function progressCounts(issues: Issue[], states: IssueState[]) {
   return { open, inProgress, done };
 }
 
-/** Simple done-% bar; colors use semantic theme classes (dark-theme aware). */
-export function DoneBar({ done, total }: { done: number; total: number }) {
-  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+function ReleaseCard({
+  release,
+  onSelect,
+}: {
+  release: Release;
+  onSelect: () => void;
+}) {
   return (
-    <div className="flex items-center gap-2">
-      <div
-        className="h-2 w-full overflow-hidden rounded-full bg-muted"
-        role="progressbar"
-        aria-valuenow={pct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`${pct}% done`}
-      >
-        <div
-          className="h-full rounded-full bg-primary transition-all"
-          style={{ width: `${pct}%` }}
-        />
+    <OrgCard label={`Open release ${release.name}`} onActivate={onSelect}>
+      <div className="flex items-center gap-2">
+        <span className="truncate text-[13px] font-semibold text-ink">
+          {release.name}
+        </span>
+        <span className="ml-auto">
+          <OrgStatusChip
+            color={statusColor(release.status)}
+            label={release.status}
+          />
+        </span>
       </div>
-      <span className="shrink-0 text-xs text-muted-foreground">{pct}%</span>
-    </div>
+      <p className="mt-1.5 text-[10px] tabular-nums text-ink-muted">
+        {fmtDate(release.release_date)}
+        <span className="mx-1.5" aria-hidden>
+          ·
+        </span>
+        <span className="font-mono">{release.issue_count}</span> issue
+        {release.issue_count === 1 ? "" : "s"}
+      </p>
+    </OrgCard>
   );
 }
 
@@ -362,10 +383,9 @@ export default function Releases() {
         count={releases.length}
         addButton={{ label: "New release", onClick: openCreate }}
       />
-      <div className="mx-auto w-full max-w-4xl p-6">
-
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
         {releasesQuery.isError && (
-          <Alert variant="destructive" className="mt-4">
+          <Alert variant="destructive" className="mb-4">
             <AlertDescription>
               {releasesQuery.error instanceof ApiError
                 ? releasesQuery.error.message
@@ -374,7 +394,7 @@ export default function Releases() {
           </Alert>
         )}
         {formError && (
-          <Alert variant="destructive" className="mt-4">
+          <Alert variant="destructive" className="mb-4">
             <AlertDescription>{formError}</AlertDescription>
           </Alert>
         )}
@@ -382,8 +402,8 @@ export default function Releases() {
         <div className="mt-4">
           {releasesQuery.isPending ? (
             <div className="space-y-3">
-              <Skeleton className="h-28 w-full" />
-              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-[68px] w-full rounded-md" />
+              <Skeleton className="h-[68px] w-full rounded-md" />
             </div>
           ) : selected ? (
             <ReleaseDetail
@@ -406,42 +426,18 @@ export default function Releases() {
               identifier={identifier}
             />
           ) : releases.length === 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>No releases yet</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Plan your project's milestones — mark what ships in each
-                  release, then track progress as issues close.
-                </p>
-              </CardContent>
-            </Card>
+            <OrgEmpty title="No releases yet">
+              Plan your project's milestones — mark what ships in each
+              release, then track progress as issues close.
+            </OrgEmpty>
           ) : (
             <div className="space-y-3">
               {releases.map((r) => (
-                <ActionCard
+                <ReleaseCard
                   key={r.id}
-                  role="button"
-                  label={`Select release ${r.name}`}
-                  aria-pressed={selectedId === r.id}
-                  onActivate={() => setSelectedId(r.id)}
-                >
-                  <CardHeader className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <CardTitle className="text-base font-medium">
-                        {r.name}
-                      </CardTitle>
-                      <Badge variant={statusVariant(r.status)} className="ml-auto">
-                        {r.status}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {fmtDate(r.release_date)} · {r.issue_count} issue
-                      {r.issue_count === 1 ? "" : "s"}
-                    </p>
-                  </CardHeader>
-                </ActionCard>
+                  release={r}
+                  onSelect={() => setSelectedId(r.id)}
+                />
               ))}
             </div>
           )}
@@ -488,8 +484,8 @@ export default function Releases() {
                     <label
                       key={i.id}
                       className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
-                      already ? "opacity-50" : ""
-                    }`}
+                        already ? "opacity-50" : ""
+                      }`}
                     >
                       <Checkbox
                         checked={already || picked.has(i.id)}
@@ -619,165 +615,170 @@ export default function Releases() {
         </Dialog>
       </div>
     </div>
-    );
-  }
+  );
+}
 
-  function ReleaseDetail({
-    release,
-    states,
-    issues,
-    issuesLoading,
-    onBack,
-    onEdit,
-    onDelete,
-    onAdd,
-    onRemove,
-    onMarkReleased,
-    markReleasedPending,
-    slug,
-    identifier,
-  }: {
-    release: Release;
-    states: IssueState[];
-    issues: Issue[];
-    issuesLoading: boolean;
-    onBack: () => void;
-    onEdit: () => void;
-    onDelete: () => void;
-    onAdd: () => void;
-    onRemove: (issueId: string) => void;
-    onMarkReleased: () => void;
-    markReleasedPending: boolean;
-    slug: string;
-    identifier: string;
-  }) {
-    const counts = progressCounts(issues, states);
-    const total = counts.open + counts.inProgress + counts.done;
+function ReleaseDetail({
+  release,
+  states,
+  issues,
+  issuesLoading,
+  onBack,
+  onEdit,
+  onDelete,
+  onAdd,
+  onRemove,
+  onMarkReleased,
+  markReleasedPending,
+  slug,
+  identifier,
+}: {
+  release: Release;
+  states: IssueState[];
+  issues: Issue[];
+  issuesLoading: boolean;
+  onBack: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onAdd: () => void;
+  onRemove: (issueId: string) => void;
+  onMarkReleased: () => void;
+  markReleasedPending: boolean;
+  slug: string;
+  identifier: string;
+}) {
+  const counts = progressCounts(issues, states);
+  const total = counts.open + counts.inProgress + counts.done;
+  const stateById = useMemo(
+    () => new Map(states.map((s) => [s.id, s])),
+    [states],
+  );
 
-    const grouped = useMemo(() => {
-      const groupOf = new Map(states.map((s) => [s.id, s.group]));
-      const buckets = new Map<string, Issue[]>();
-      for (const i of issues) {
-        const g = groupOf.get(i.state_id) ?? "unstarted";
-        const arr = buckets.get(g) ?? [];
-        arr.push(i);
-        buckets.set(g, arr);
-      }
-      return STATE_GROUPS.map((g) => ({
-        group: g,
-        label: g.charAt(0).toUpperCase() + g.slice(1),
-        issues: buckets.get(g) ?? [],
-      })).filter((b) => b.issues.length > 0);
-    }, [issues, states]);
+  const grouped = useMemo(() => {
+    const groupOf = new Map(states.map((s) => [s.id, s.group]));
+    const buckets = new Map<string, Issue[]>();
+    for (const i of issues) {
+      const g = groupOf.get(i.state_id) ?? "unstarted";
+      const arr = buckets.get(g) ?? [];
+      arr.push(i);
+      buckets.set(g, arr);
+    }
+    return STATE_GROUPS.map((g) => ({
+      group: g,
+      label: g.charAt(0).toUpperCase() + g.slice(1),
+      issues: buckets.get(g) ?? [],
+    })).filter((b) => b.issues.length > 0);
+  }, [issues, states]);
 
-    return (
-      <div className="space-y-4">
-        <Button variant="outline" size="sm" onClick={onBack}>
-          ← All releases
-        </Button>
-        <Card>
-          <CardHeader className="space-y-3">
-            <div className="flex items-center gap-2">
-              <CardTitle className="text-lg">{release.name}</CardTitle>
-              <Badge variant={statusVariant(release.status)} className="ml-auto">
-                {release.status}
-              </Badge>
-            </div>
-            {release.description && (
-              <p className="text-sm text-muted-foreground">
-                {release.description}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              {fmtDate(release.release_date)} · {release.issue_count} issue
-              {release.issue_count === 1 ? "" : "s"}
-            </p>
-            {total > 0 && <DoneBar done={counts.done} total={total} />}
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {release.status === "planned" && (
-                <Button
-                  size="sm"
-                  onClick={onMarkReleased}
-                  disabled={markReleasedPending}
-                  className="gap-2"
-                >
-                  <Rocket className="h-4 w-4" />
-                  {markReleasedPending ? "Marking…" : "Mark released"}
-                </Button>
-              )}
-              <Button size="sm" variant="outline" onClick={onEdit} className="gap-2">
-                <Pencil className="h-4 w-4" />
-                Edit
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onDelete}
-                className="gap-2 text-destructive"
+  return (
+    <div>
+      <OrgDetailHeader
+        backLabel="All releases"
+        onBack={onBack}
+        title={release.name}
+        chip={
+          <OrgStatusChip
+            color={statusColor(release.status)}
+            label={release.status}
+          />
+        }
+        meta={`${fmtDate(release.release_date)} · ${release.issue_count} issue${release.issue_count === 1 ? "" : "s"}`}
+        actions={
+          <>
+            {release.status === "planned" && (
+              <OrgHeaderPrimaryButton
+                onClick={onMarkReleased}
+                disabled={markReleasedPending}
               >
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </Button>
-            </div>
-          </CardHeader>
-        </Card>
+                <Rocket className="h-3 w-3" aria-hidden />
+                {markReleasedPending ? "Marking…" : "Mark released"}
+              </OrgHeaderPrimaryButton>
+            )}
+            <OrgHeaderButton onClick={onEdit}>
+              <Pencil className="h-3 w-3" aria-hidden />
+              Edit
+            </OrgHeaderButton>
+            <OrgHeaderButton onClick={onDelete} destructive>
+              <Trash2 className="h-3 w-3" aria-hidden />
+              Delete
+            </OrgHeaderButton>
+          </>
+        }
+      />
 
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">Issues in this release</h2>
-          <Button size="sm" variant="outline" onClick={onAdd} className="gap-2">
-            <Plus className="h-4 w-4" />
-            Add issues
-          </Button>
+      {release.description && (
+        <p className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
+          {release.description}
+        </p>
+      )}
+
+      <div className="mt-4">
+        <OrgStatBand
+          stats={[
+            { label: "Open", value: counts.open, note: "triaged, backlog, unstarted" },
+            { label: "In progress", value: counts.inProgress, note: "started" },
+            { label: "Done", value: counts.done, note: "completed, cancelled" },
+          ]}
+        />
+      </div>
+
+      {total > 0 && (
+        <div className="mt-4">
+          <OrgDoneBar done={counts.done} total={total} />
         </div>
+      )}
 
+      <div className="mt-6">
+        <OrgSectionHead
+          title="Issues in this release"
+          count={issues.length}
+          actions={
+            <OrgHeaderButton onClick={onAdd}>
+              <Plus className="h-3 w-3" aria-hidden />
+              Add issues
+            </OrgHeaderButton>
+          }
+        />
         {issuesLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
+          <div className="space-y-2 pt-2">
+            <Skeleton className="h-[47px] w-full" />
+            <Skeleton className="h-[47px] w-full" />
           </div>
         ) : issues.length === 0 ? (
-          <Card>
-            <CardContent className="pt-6">
-              <p className="text-sm text-muted-foreground">
-                No issues in this release yet — add some to start tracking
-                progress.
-              </p>
-            </CardContent>
-          </Card>
+          <div className="pt-3">
+            <OrgEmpty title="No issues in this release yet">
+              Add some to start tracking progress.
+            </OrgEmpty>
+          </div>
         ) : (
-          <div className="space-y-4">
-            {grouped.map((b) => (
-              <div key={b.group}>
-                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {b.label} · {b.issues.length}
-                </h3>
-                <div className="space-y-2">
-                  {b.issues.map((i) => (
-                    <Card key={i.id}>
-                      <CardContent className="flex items-center gap-3 py-3">
-                        <Badge
-                          variant="outline"
-                          className="shrink-0 font-mono text-[11px]"
-                        >
-                          {i.display_id}
-                        </Badge>
-                        <Link
-                          to={`/w/${slug}/p/${identifier}/i/${i.id}`}
-                          className="truncate text-sm hover:underline"
-                        >
-                          {i.name}
-                        </Link>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="ml-auto shrink-0"
-                          onClick={() => onRemove(i.id)}
-                          aria-label={`Remove ${i.display_id} from release`}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </CardContent>
-                    </Card>
+          <div>
+            {grouped.map(({ group, label, issues: gi }) => (
+              <div key={group} className={group !== grouped[0].group ? "mt-4" : undefined}>
+                <OrgSectionHead
+                  title={label}
+                  count={gi.length}
+                  prefix={
+                    <span
+                      className={`state-dot ${stateDotClass(group)}`}
+                      aria-hidden
+                    />
+                  }
+                />
+                <div>
+                  {gi.map((i) => (
+                    <OrgIssueRow
+                      key={i.id}
+                      issue={i}
+                      state={stateById.get(i.state_id)}
+                      slug={slug}
+                      identifier={identifier}
+                      action={{
+                        label: `Remove ${i.display_id} from release`,
+                        title: `Remove ${i.display_id} from release`,
+                        onClick: () => onRemove(i.id),
+                        icon: <X className="h-4 w-4" aria-hidden />,
+                      }}
+                    />
                   ))}
                 </div>
               </div>
@@ -785,6 +786,7 @@ export default function Releases() {
           </div>
         )}
       </div>
+    </div>
   );
 }
 

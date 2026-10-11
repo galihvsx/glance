@@ -24,8 +24,8 @@ export default function BurndownChart({ data }: { data: CycleBurndown }) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center gap-4">
-          <CardTitle className="text-sm font-medium">Burndown</CardTitle>
-          <span className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
+          <CardTitle className="text-[13px] font-semibold text-ink">Burndown</CardTitle>
+          <span className="ml-auto flex items-center gap-4 text-[10px] text-ink-muted">
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-0.5 w-5 bg-primary" />
               Remaining

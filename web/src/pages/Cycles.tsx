@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -17,9 +17,7 @@ import type {
 import PageHeader from "../components/shell/PageHeader";
 import BurndownChart from "../components/cycle/BurndownChart";
 import { Badge } from "../components/ui/badge";
-import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
 import {
   Dialog,
@@ -33,25 +31,27 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import {
+  OrgCard,
+  OrgDetailHeader,
+  OrgEmpty,
+  OrgHeaderButton,
+  OrgIssueRow,
+  OrgProgressBar,
+  OrgSectionHead,
+  OrgStatBand,
+  OrgStatusChip,
+} from "../components/org/OrgViews";
 
-/** The six snapshot groups, in display order (backend snapshotGroups). */
-const SNAPSHOT_GROUPS = [
-  "triage",
-  "backlog",
-  "unstarted",
-  "started",
-  "completed",
-  "cancelled",
-] as const;
-
-function statusVariant(status: string): "default" | "secondary" | "outline" {
+/** Status chip dot colors: state/accent colors, never hardcoded grays. */
+function statusColor(status: string): string {
   switch (status) {
     case "current":
-      return "default";
-    case "upcoming":
-      return "secondary";
+      return "#4f8ef7"; // accent blue
+    case "completed":
+      return "#42c88a"; // accent green
     default:
-      return "outline";
+      return "#777780"; // muted (upcoming / archived)
   }
 }
 
@@ -59,66 +59,45 @@ function dateOnly(iso: string): string {
   return iso.slice(0, 10);
 }
 
-/** Stacked progress bar from a progress_snapshot. Group colors come from
- *  the project's states (first state in the group), so no color is
- *  hardcoded. */
-function ProgressBar({
-  snapshot,
+function CycleCard({
+  cycle,
   states,
+  onSelect,
 }: {
-  snapshot: Record<string, number>;
+  cycle: Cycle;
   states: IssueState[];
+  onSelect: () => void;
 }) {
-  const total = SNAPSHOT_GROUPS.reduce((n, g) => n + (snapshot[g] ?? 0), 0);
-  if (total === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No issues in this cycle yet.
-      </p>
-    );
-  }
+  const issueCount = Object.values(cycle.progress_snapshot ?? {}).reduce(
+    (n, c) => n + c,
+    0,
+  );
   return (
-    <div>
-      <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
-        {SNAPSHOT_GROUPS.map((g) => {
-          const n = snapshot[g] ?? 0;
-          if (n === 0) return null;
-          const color =
-            states.find((s) => s.group === g)?.color ?? "var(--muted)";
-          return (
-            <div
-              key={g}
-              className="h-full"
-              style={{
-                width: `${(n / total) * 100}%`,
-                backgroundColor: color,
-              }}
-              title={`${g}: ${n}`}
-            />
-          );
-        })}
+    <OrgCard label={`Open cycle ${cycle.name}`} onActivate={onSelect}>
+      <div className="flex items-center gap-2">
+        <span className="truncate text-[13px] font-semibold text-ink">
+          {cycle.name}
+        </span>
+        <span className="ml-auto">
+          <OrgStatusChip color={statusColor(cycle.status)} label={cycle.status} />
+        </span>
       </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-        {SNAPSHOT_GROUPS.map((g) => {
-          const n = snapshot[g] ?? 0;
-          const color =
-            states.find((s) => s.group === g)?.color ?? "var(--muted)";
-          return (
-            <span
-              key={g}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground"
-            >
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ backgroundColor: color }}
-                aria-hidden
-              />
-              {g} · {n}
-            </span>
-          );
-        })}
+      <p className="mt-1.5 text-[10px] tabular-nums text-ink-muted">
+        {dateOnly(cycle.start_date)} → {dateOnly(cycle.end_date)}
+        <span className="mx-1.5" aria-hidden>
+          ·
+        </span>
+        <span className="font-mono">{issueCount}</span> issue
+        {issueCount === 1 ? "" : "s"}
+      </p>
+      <div className="mt-2.5">
+        <OrgProgressBar
+          snapshot={cycle.progress_snapshot ?? {}}
+          states={states}
+          emptyLabel="No issues in this cycle yet."
+        />
       </div>
-    </div>
+    </OrgCard>
   );
 }
 
@@ -267,7 +246,7 @@ export default function Cycles() {
         count={cycles.length}
         addButton={{ label: "New cycle", onClick: () => setNewOpen(true) }}
       />
-      <div className="mx-auto w-full max-w-4xl p-6">
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
         <Dialog open={newOpen} onOpenChange={setNewOpen}>
           <DialogContent>
             <DialogHeader>
@@ -328,7 +307,7 @@ export default function Cycles() {
         </Dialog>
 
         {cyclesQuery.isError && (
-          <Alert variant="destructive" className="mt-4">
+          <Alert variant="destructive" className="mb-4">
             <AlertDescription>
               {cyclesQuery.error instanceof ApiError
                 ? cyclesQuery.error.message
@@ -340,8 +319,8 @@ export default function Cycles() {
         <div className="mt-4">
           {cyclesQuery.isPending ? (
             <div className="space-y-3">
-              <Skeleton className="h-28 w-full" />
-              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-[86px] w-full rounded-md" />
+              <Skeleton className="h-[86px] w-full rounded-md" />
             </div>
           ) : selected ? (
             <CycleDetail
@@ -359,47 +338,18 @@ export default function Cycles() {
               identifier={identifier}
             />
           ) : cycles.length === 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>No cycles yet</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Create the first cycle to start time-boxing work.
-                </p>
-              </CardContent>
-            </Card>
+            <OrgEmpty title="No cycles yet">
+              Create the first cycle to start time-boxing work.
+            </OrgEmpty>
           ) : (
             <div className="space-y-3">
               {cycles.map((c) => (
-                <ActionCard
+                <CycleCard
                   key={c.id}
-                  role="button"
-                  label={`Select cycle ${c.name}`}
-                  aria-pressed={selectedId === c.id}
-                  onActivate={() => setSelectedId(c.id)}
-                >
-                  <CardHeader className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <CardTitle className="text-base font-medium">
-                        {c.name}
-                      </CardTitle>
-                      <Badge
-                        variant={statusVariant(c.status)}
-                        className="ml-auto"
-                      >
-                        {c.status}
-                      </Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {dateOnly(c.start_date)} → {dateOnly(c.end_date)}
-                    </p>
-                    <ProgressBar
-                      snapshot={c.progress_snapshot ?? {}}
-                      states={states}
-                    />
-                  </CardHeader>
-                </ActionCard>
+                  cycle={c}
+                  states={states}
+                  onSelect={() => setSelectedId(c.id)}
+                />
               ))}
             </div>
           )}
@@ -434,8 +384,8 @@ export default function Cycles() {
                     <label
                       key={i.id}
                       className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
-                      already ? "opacity-50" : ""
-                    }`}
+                        already ? "opacity-50" : ""
+                      }`}
                     >
                       <Checkbox
                         checked={already || picked.has(i.id)}
@@ -470,142 +420,127 @@ export default function Cycles() {
         </Dialog>
       </div>
     </div>
-    );
-  }
+  );
+}
 
-  function CycleDetail({
-    cycle,
-    states,
-    issues,
-    issuesLoading,
-    onBack,
-    onAdd,
-    slug,
-    identifier,
-  }: {
-    cycle: Cycle;
-    states: IssueState[];
-    issues: Issue[];
-    issuesLoading: boolean;
-    onBack: () => void;
-    onAdd: () => void;
-    slug: string;
-    identifier: string;
-  }) {
-    const burndownQuery = useQuery({
-      queryKey: ["cycle-burndown", slug, identifier, cycle.id],
-      queryFn: () =>
-        api.get<CycleBurndown>(
-          `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/cycles/${cycle.id}/burndown`,
-        ),
-    });
-    const snapshot = cycle.progress_snapshot ?? {};
-    const openCount =
-      (snapshot.triage ?? 0) + (snapshot.backlog ?? 0) + (snapshot.unstarted ?? 0);
-    const inProgressCount = snapshot.started ?? 0;
-    const doneCount = snapshot.completed ?? 0;
+function CycleDetail({
+  cycle,
+  states,
+  issues,
+  issuesLoading,
+  onBack,
+  onAdd,
+  slug,
+  identifier,
+}: {
+  cycle: Cycle;
+  states: IssueState[];
+  issues: Issue[];
+  issuesLoading: boolean;
+  onBack: () => void;
+  onAdd: () => void;
+  slug: string;
+  identifier: string;
+}) {
+  const burndownQuery = useQuery({
+    queryKey: ["cycle-burndown", slug, identifier, cycle.id],
+    queryFn: () =>
+      api.get<CycleBurndown>(
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/cycles/${cycle.id}/burndown`,
+      ),
+  });
+  const snapshot = cycle.progress_snapshot ?? {};
+  const openCount =
+    (snapshot.triage ?? 0) + (snapshot.backlog ?? 0) + (snapshot.unstarted ?? 0);
+  const inProgressCount = snapshot.started ?? 0;
+  const doneCount = snapshot.completed ?? 0;
+  const stateById = useMemo(
+    () => new Map(states.map((s) => [s.id, s])),
+    [states],
+  );
 
-    return (
-      <div>
-        <button
-          onClick={onBack}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← All cycles
-        </button>
-        <div className="mt-2 flex items-center gap-3">
-          <h2 className="text-xl font-semibold tracking-tight">{cycle.name}</h2>
-          <Badge variant={statusVariant(cycle.status)}>{cycle.status}</Badge>
-          <span className="text-sm text-muted-foreground">
-            {dateOnly(cycle.start_date)} → {dateOnly(cycle.end_date)}
-          </span>
-          <Button variant="outline" size="sm" className="ml-auto" onClick={onAdd}>
-            <Plus className="mr-1 h-4 w-4" />
+  return (
+    <div>
+      <OrgDetailHeader
+        backLabel="All cycles"
+        onBack={onBack}
+        title={cycle.name}
+        chip={
+          <OrgStatusChip color={statusColor(cycle.status)} label={cycle.status} />
+        }
+        meta={`${dateOnly(cycle.start_date)} → ${dateOnly(cycle.end_date)}`}
+        actions={
+          <OrgHeaderButton onClick={onAdd}>
+            <Plus className="h-3 w-3" aria-hidden />
             Add issues
-          </Button>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Open</p>
-              <p className="text-2xl font-semibold tabular-nums">{openCount}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">In progress</p>
-              <p className="text-2xl font-semibold tabular-nums">
-                {inProgressCount}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground">Done</p>
-              <p className="text-2xl font-semibold tabular-nums">{doneCount}</p>
-            </CardContent>
-          </Card>
-        </div>
-        <div className="mt-4">
-          <ProgressBar snapshot={cycle.progress_snapshot ?? {}} states={states} />
-        </div>
-        <div className="mt-4">
-          {burndownQuery.status === "pending" ? (
-            <Skeleton className="h-64 w-full" />
-          ) : burndownQuery.status === "error" ? (
-            <Card>
-              <CardContent className="p-4 text-sm text-muted-foreground">
-                Couldn't load the burndown chart.
-              </CardContent>
-            </Card>
-          ) : burndownQuery.data.total_scope === 0 ? (
-            <Card>
-              <CardContent className="p-4 text-sm text-muted-foreground">
-                No issues in this cycle yet — the burndown chart appears once
-                issues are added.
-              </CardContent>
-            </Card>
-          ) : !burndownQuery.data.days.some((d) => d.remaining != null) ? (
-            <Card>
-              <CardContent className="p-4 text-sm text-muted-foreground">
-                This cycle hasn't started yet — the burndown chart appears once
-                it's underway.
-              </CardContent>
-            </Card>
-          ) : (
-            <BurndownChart data={burndownQuery.data} />
-          )}
-        </div>
-        <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
-          Issues in this cycle ({issues.length})
-        </h3>
+          </OrgHeaderButton>
+        }
+      />
+
+      <div className="mt-4">
+        <OrgStatBand
+          stats={[
+            { label: "Open", value: openCount, note: "triaged, backlog, unstarted" },
+            { label: "In progress", value: inProgressCount, note: "started" },
+            { label: "Done", value: doneCount, note: "completed" },
+          ]}
+        />
+      </div>
+
+      <div className="mt-4">
+        <OrgProgressBar
+          snapshot={cycle.progress_snapshot ?? {}}
+          states={states}
+          legend
+          emptyLabel="No issues in this cycle yet."
+        />
+      </div>
+
+      <div className="mt-4">
+        {burndownQuery.status === "pending" ? (
+          <Skeleton className="h-64 w-full rounded-md" />
+        ) : burndownQuery.status === "error" ? (
+          <OrgEmpty title="Couldn't load the burndown chart" />
+        ) : burndownQuery.data.total_scope === 0 ? (
+          <OrgEmpty title="No burndown yet">
+            No issues in this cycle yet — the burndown chart appears once
+            issues are added.
+          </OrgEmpty>
+        ) : !burndownQuery.data.days.some((d) => d.remaining != null) ? (
+          <OrgEmpty title="No burndown yet">
+            This cycle hasn't started yet — the burndown chart appears once
+            it's underway.
+          </OrgEmpty>
+        ) : (
+          <BurndownChart data={burndownQuery.data} />
+        )}
+      </div>
+
+      <div className="mt-6">
+        <OrgSectionHead title="Issues in this cycle" count={issues.length} />
         {issuesLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
+          <div className="space-y-2 pt-2">
+            <Skeleton className="h-[47px] w-full" />
+            <Skeleton className="h-[47px] w-full" />
           </div>
         ) : issues.length === 0 ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              No issues assigned to this cycle yet.
-            </CardContent>
-          </Card>
+          <div className="pt-3">
+            <OrgEmpty title="No issues assigned to this cycle yet" />
+          </div>
         ) : (
-          <div className="space-y-2">
+          <div>
             {issues.map((i) => (
-              <Link
+              <OrgIssueRow
                 key={i.id}
-                to={`/w/${slug}/p/${identifier}/i/${i.id}`}
-                className="flex items-center gap-3 rounded-md border p-3 text-sm transition-colors hover:bg-accent"
-              >
-                <Badge variant="outline" className="font-mono text-[11px]">
-                  {i.display_id}
-                </Badge>
-                <span className="truncate font-medium">{i.name}</span>
-              </Link>
+                issue={i}
+                state={stateById.get(i.state_id)}
+                slug={slug}
+                identifier={identifier}
+              />
             ))}
           </div>
         )}
       </div>
+    </div>
   );
 }
