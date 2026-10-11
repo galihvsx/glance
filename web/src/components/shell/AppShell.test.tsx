@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AppShell from "./AppShell";
 
-// The shell footer reads useAuth; stub it (same pattern as ShellFooter.test).
+// The topbar avatar reads useAuth; stub it (same pattern as before).
 vi.mock("../../lib/auth", () => ({
   useAuth: () => ({
     user: {
@@ -100,13 +100,57 @@ describe("project tabs slot", () => {
 });
 
 describe("shell chrome", () => {
-  it("renders the sidebar and top bar around page content", () => {
+  it("renders rail, sidebar, and top bar around page content", () => {
     const { container } = renderApp("/w/acme/p/ENG", "/w/:slug/p/:identifier");
-    // Sidebar primitives + top bar + page outlet.
+    expect(container.querySelector('[data-slot="rail"]')).toBeTruthy();
     expect(container.querySelector('[data-slot="sidebar"]')).toBeTruthy();
-    expect(
-      container.querySelector('button[aria-label="Toggle sidebar"]'),
-    ).toBeTruthy();
+    expect(container.querySelector('[data-slot="topbar"]')).toBeTruthy();
     expect(container.textContent).toContain("page content");
+  });
+
+  it("uses the 52px | 280px | 1fr grid when expanded", () => {
+    const { container } = renderApp("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+    const grid = container.querySelector(
+      '[data-slot="shell-grid"]',
+    ) as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toBe(
+      "52px 280px minmax(0,1fr)",
+    );
+  });
+
+  it("collapses the sidebar to grid-0 and reopens via the switcher", () => {
+    const { container } = renderApp("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+    const grid = container.querySelector(
+      '[data-slot="shell-grid"]',
+    ) as HTMLElement;
+
+    // Reopen control is hidden while expanded.
+    expect(
+      screen.queryByRole("button", { name: "Open sidebar" }),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(grid.style.gridTemplateColumns).toBe(
+      "52px 0px minmax(0,1fr)",
+    );
+    expect(localStorage.getItem("glance:sidebar-collapsed")).toBe("true");
+
+    // The reopen icon-button appears inside the workspace switcher.
+    const reopen = screen.getByRole("button", { name: "Open sidebar" });
+    expect(reopen).toBeTruthy();
+
+    fireEvent.click(reopen);
+    expect(grid.style.gridTemplateColumns).toBe(
+      "52px 280px minmax(0,1fr)",
+    );
+    expect(localStorage.getItem("glance:sidebar-collapsed")).toBe("false");
+  });
+
+  it("keeps the rail visible while collapsed", () => {
+    const { container } = renderApp("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    // The rail is a separate grid column, unaffected by the collapse.
+    expect(container.querySelector('[data-slot="rail"]')).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeTruthy();
   });
 });

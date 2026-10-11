@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import ShellFooter from "./ShellFooter";
+import { AccountMenu } from "./ShellFooter";
 import type { User } from "../../lib/auth";
 
 const state = vi.hoisted(() => ({
@@ -39,27 +39,32 @@ function LocationProbe() {
   return <div data-testid="location">{pathname}</div>;
 }
 
-function renderFooter(collapsed = false) {
+function renderMenu() {
   return render(
     <MemoryRouter initialEntries={["/"]}>
-      <ShellFooter collapsed={collapsed} />
+      <AccountMenu
+        trigger={
+          <button type="button" aria-label="Account: test">
+            TU
+          </button>
+        }
+      />
       <LocationProbe />
     </MemoryRouter>,
   );
 }
 
 async function openMenu() {
-  fireEvent.click(screen.getByLabelText(/Account:/));
+  fireEvent.click(screen.getByLabelText("Account: test"));
   await waitFor(() => {
     expect(screen.getByText("Profile")).toBeInTheDocument();
   });
 }
 
-describe("ShellFooter", () => {
+describe("AccountMenu", () => {
   it("shows the admin link only for admins", async () => {
     state.user = adminUser;
-    renderFooter();
-    expect(screen.getByText("Ada Admin")).toBeInTheDocument();
+    renderMenu();
 
     await openMenu();
     expect(screen.getByText("Administration")).toBeInTheDocument();
@@ -72,16 +77,16 @@ describe("ShellFooter", () => {
 
   it("hides the admin link for non-admins", async () => {
     state.user = memberUser;
-    renderFooter();
+    renderMenu();
 
     await openMenu();
     expect(screen.queryByText("Administration")).not.toBeInTheDocument();
     expect(screen.getByText("API tokens")).toBeInTheDocument();
   });
 
-  it("navigates to profile and API tokens", async () => {
+  it("navigates to profile", async () => {
     state.user = memberUser;
-    renderFooter();
+    renderMenu();
 
     await openMenu();
     fireEvent.click(screen.getByText("Profile"));
@@ -93,22 +98,10 @@ describe("ShellFooter", () => {
   it("calls logout from the menu", async () => {
     state.user = memberUser;
     state.logout.mockClear();
-    renderFooter();
+    renderMenu();
 
     await openMenu();
     fireEvent.click(screen.getByText("Log out"));
     expect(state.logout).toHaveBeenCalledTimes(1);
-  });
-
-  it("renders avatar-only in collapsed mode", () => {
-    state.user = memberUser;
-    renderFooter(true);
-
-    expect(screen.getByLabelText(/Account:/)).toBeInTheDocument();
-    expect(screen.queryByText("Moe Member")).not.toBeInTheDocument();
-    // Theme toggle is still present.
-    expect(
-      screen.getByLabelText(/Switch to (light|dark) theme/),
-    ).toBeInTheDocument();
   });
 });

@@ -1,35 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AppSidebar from "./AppSidebar";
 
-// The shell footer reads useAuth; stub it (same pattern as ShellFooter.test).
-vi.mock("../../lib/auth", () => ({
-  useAuth: () => ({
-    user: {
-      id: "u1",
-      email: "test@example.com",
-      name: "Test User",
-      avatar_url: null,
-      is_active: true,
-      is_admin: false,
-      last_login_at: null,
-      created_at: "",
-      updated_at: "",
-    },
-    loading: false,
-    refresh: vi.fn(),
-    logout: vi.fn(),
-  }),
-}));
 import { ShellProvider, type ShellContextValue } from "./shell-context";
-import { SidebarProvider } from "../ui/sidebar";
-import { favoriteKeys, type FavoritesList } from "../../lib/favorites";
 import { NOTIFICATION_KEYS } from "../../lib/notifications";
-import type { Project, Workspace } from "../../lib/types";
+import { draftsKey } from "../../lib/drafts";
+import type { Issue, Project, Workspace } from "../../lib/types";
 import { workspacesKey } from "../../lib/useWorkspaces";
+import { onShortcutAction } from "../../lib/shortcuts";
 import { ShellCapture, makeQueryClient, stubMatchMedia } from "./test-utils";
 
 const workspaces: Workspace[] = [
@@ -56,8 +37,6 @@ const projects: Project[] = [
   },
 ];
 
-const emptyFavorites: FavoritesList = { issues: [], projects: [] };
-
 function renderSidebar(opts: {
   path: string;
   routePath: string;
@@ -66,7 +45,6 @@ function renderSidebar(opts: {
 }) {
   const qc = makeQueryClient([
     [workspacesKey, workspaces],
-    [favoriteKeys.all, emptyFavorites],
     [NOTIFICATION_KEYS.unread, 3],
     ...(opts.seeds ?? []),
   ]);
@@ -78,10 +56,8 @@ function renderSidebar(opts: {
             path={opts.routePath}
             element={
               <ShellProvider>
-                <SidebarProvider>
-                  <AppSidebar />
-                  <ShellCapture capture={opts.capture} />
-                </SidebarProvider>
+                <AppSidebar />
+                <ShellCapture capture={opts.capture} />
               </ShellProvider>
             }
           />
@@ -100,8 +76,95 @@ beforeEach(() => {
   stubMatchMedia(false);
 });
 
-describe("Triage group", () => {
-  it("notifications trigger calls setNotificationsOpen(true)", () => {
+describe("header", () => {
+  it("shows the Work label and a collapse button that flips the preference", () => {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderSidebar({
+      path: "/w/acme",
+      routePath: "/w/:slug",
+      seeds: [[["projects", "acme"], projects]],
+      capture,
+    });
+
+    expect(screen.getByText("Work")).toBeTruthy();
+    expect(capture.current?.sidebarCollapsed).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(capture.current?.sidebarCollapsed).toBe(true);
+    expect(localStorage.getItem("glance:sidebar-collapsed")).toBe("true");
+  });
+});
+
+describe("new work item", () => {
+  it('fires the "new-issue" shortcut action (same as pressing C)', () => {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderSidebar({
+      path: "/w/acme",
+      routePath: "/w/:slug",
+      seeds: [[["projects", "acme"], projects]],
+      capture,
+    });
+
+    const spy = vi.fn();
+    const off = onShortcutAction("new-issue", spy);
+    try {
+      // The section "+" buttons share the label; the main button is the
+      // one with the C kbd chip.
+      const btn = screen
+        .getByText("New work item", { selector: "span" })
+        .closest("button")!;
+      fireEvent.click(btn);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
+  });
+});
+
+describe("main nav", () => {
+  function renderNav(path: string, routePath: string) {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderSidebar({
+      path,
+      routePath,
+      seeds: [
+        [["projects", "acme"], projects],
+        [draftsKey("acme", "ENG"), [{ id: "d1" }, { id: "d2" }] as Issue[]],
+      ],
+      capture,
+    });
+    return capture;
+  }
+
+  it("links Home, Your work, and Drafts", () => {
+    renderNav("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+
+    expect(screen.getByText("Home").closest("a")?.getAttribute("href")).toBe(
+      "/",
+    );
+    expect(
+      screen.getByText("Your work").closest("a")?.getAttribute("href"),
+    ).toBe("/w/acme/my-work");
+    expect(
+      screen.getByText("Drafts").closest("a")?.getAttribute("href"),
+    ).toBe("/w/acme/p/ENG/drafts");
+  });
+
+  it("shows the drafts count badge for the current project", () => {
+    renderNav("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+    const drafts = screen.getByText("Drafts").closest("a,button")!;
+    expect(drafts.textContent).toContain("2");
+  });
+
+  it("marks the active nav link", () => {
+    renderNav("/w/acme/my-work", "/w/:slug/my-work");
+    expect(
+      screen.getByText("Your work").closest("a")?.getAttribute("aria-current"),
+    ).toBe("page");
+  });
+});
+
+describe("workspace section", () => {
+  it("inbox button opens the notifications sheet and shows the unread badge", () => {
     const capture: { current: ShellContextValue | null } = { current: null };
     renderSidebar({
       path: "/w/acme",
@@ -111,22 +174,30 @@ describe("Triage group", () => {
     });
 
     expect(capture.current?.notificationsOpen).toBe(false);
-    fireEvent.click(screen.getByText("Notifications"));
+    const inbox = screen.getByRole("button", { name: /inbox/i });
+    expect(inbox.textContent).toContain("3");
+    fireEvent.click(inbox);
     expect(capture.current?.notificationsOpen).toBe(true);
   });
 
-  it("shows the unread badge", () => {
+  it("links Views to the current project", () => {
     const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
+    const { container } = renderSidebar({
+      path: "/w/acme/p/ENG",
+      routePath: "/w/:slug/p/:identifier",
       seeds: [[["projects", "acme"], projects]],
       capture,
     });
-    expect(screen.getByText("3")).toBeTruthy();
+    // "Views" also exists as a project sub-link — scope to the section.
+    const section = container.querySelector(
+      'section[aria-label="Workspace"]',
+    ) as HTMLElement;
+    expect(
+      within(section).getByText("Views").closest("a")?.getAttribute("href"),
+    ).toBe("/w/acme/p/ENG");
   });
 
-  it("links My Work to the current workspace", () => {
+  it("collapses and persists", () => {
     const capture: { current: ShellContextValue | null } = { current: null };
     renderSidebar({
       path: "/w/acme",
@@ -134,170 +205,92 @@ describe("Triage group", () => {
       seeds: [[["projects", "acme"], projects]],
       capture,
     });
-    const link = screen.getByText("My Work").closest("a");
-    expect(link?.getAttribute("href")).toBe("/w/acme/my-work");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /collapse workspace section/i }),
+    );
+    expect(screen.queryByRole("button", { name: /inbox/i })).toBeNull();
+    expect(localStorage.getItem("glance:workspace-section-collapsed")).toBe(
+      "true",
+    );
   });
 });
 
-describe("Favorites group", () => {
-  it("is hidden when empty", () => {
+describe("projects section", () => {
+  function renderProjects(path: string, routePath: string) {
     const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
+    const result = renderSidebar({
+      path,
+      routePath,
       seeds: [[["projects", "acme"], projects]],
       capture,
     });
-    expect(screen.queryByText("Favorites")).toBeNull();
+    return { capture, container: result.container };
+  }
+
+  it("expands the current project with the 8 sub-links", () => {
+    const { container } = renderProjects("/w/acme/p/ENG", "/w/:slug/p/:identifier");
+    // Scope to the Projects section ("Views" also lives in Workspace).
+    const section = within(
+      container.querySelector('section[aria-label="Projects"]') as HTMLElement,
+    );
+
+    expect(screen.getByText("Engineering")).toBeTruthy();
+    for (const label of [
+      "Overview",
+      "Work items",
+      "Cycles",
+      "Modules",
+      "Releases",
+      "Views",
+      "Pages",
+      "Intake",
+    ]) {
+      expect(section.getByText(label)).toBeTruthy();
+    }
+    expect(
+      section.getByText("Work items").closest("a")?.getAttribute("href"),
+    ).toBe("/w/acme/p/ENG");
+    expect(
+      section.getByText("Cycles").closest("a")?.getAttribute("href"),
+    ).toBe("/w/acme/p/ENG/cycles");
   });
 
-  it("renders favorite issues with deep links when present", () => {
-    const capture: { current: ShellContextValue | null } = { current: null };
-    const favorites: FavoritesList = {
-      issues: [
-        {
-          id: "i1",
-          display_id: "ENG-1",
-          name: "Fix the bug",
-          workspace_slug: "acme",
-          project_id: "p1",
-          project_identifier: "ENG",
-          project_name: "Engineering",
-          starred_at: "",
-        },
-      ],
-      projects: [],
-    };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
-      seeds: [
-        [favoriteKeys.all, favorites],
-        [["projects", "acme"], projects],
-      ],
-      capture,
-    });
-
-    expect(screen.getByText("Favorites")).toBeTruthy();
-    const link = screen.getByText("Fix the bug").closest("a");
-    expect(link?.getAttribute("href")).toBe("/w/acme/p/ENG/i/i1");
+  it("marks the active sub-link", () => {
+    renderProjects("/w/acme/p/ENG/board", "/w/:slug/p/:identifier/board");
+    // Board is a work-items view: "Work items" takes the active state.
+    expect(
+      screen.getByText("Work items").closest("a")?.getAttribute("aria-current"),
+    ).toBe("page");
   });
-});
 
-describe("Projects group", () => {
+  it("toggles a project row open and closed", () => {
+    renderProjects("/w/acme", "/w/:slug");
+    // Not in a project route: sub-links hidden until expanded.
+    expect(screen.queryByText("Work items")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /expand engineering/i }),
+    );
+    expect(screen.getByText("Work items")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /collapse engineering/i }),
+    );
+    expect(screen.queryByText("Work items")).toBeNull();
+  });
+
+  it("records the visited workspace slug", () => {
+    const { capture } = renderProjects("/w/acme", "/w/:slug");
+    expect(capture.current?.lastWorkspaceSlug).toBe("acme");
+    expect(localStorage.getItem("glance:last-workspace")).toBe("acme");
+  });
+
   it('shows "Select a workspace" when no slug is in the route', () => {
     const capture: { current: ShellContextValue | null } = { current: null };
     renderSidebar({ path: "/", routePath: "/", capture });
 
     const row = screen.getByText("Select a workspace");
-    expect(row).toBeTruthy();
     expect(row.closest("a")?.getAttribute("href")).toBe("/w");
-  });
-
-  it("lists the workspace projects with links", () => {
-    const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
-      seeds: [[["projects", "acme"], projects]],
-      capture,
-    });
-
-    const row = screen.getByText("Engineering");
-    expect(row).toBeTruthy();
-    expect(row.closest("a")?.getAttribute("href")).toBe("/w/acme/p/ENG");
-  });
-
-  it("records the visited workspace slug", () => {
-    const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
-      seeds: [[["projects", "acme"], projects]],
-      capture,
-    });
-    expect(capture.current?.lastWorkspaceSlug).toBe("acme");
-    expect(localStorage.getItem("glance:last-workspace")).toBe("acme");
-  });
-});
-
-describe("workspace header", () => {
-  it("shows the current workspace name", () => {
-    const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
-      seeds: [[["projects", "acme"], projects]],
-      capture,
-    });
-    expect(screen.getByText("Acme Corp")).toBeTruthy();
-  });
-});
-
-describe("project icons", () => {
-  const iconProjects: Project[] = [
-    { ...projects[0], icon: "🚀" },
-    {
-      ...projects[0],
-      id: "p2",
-      identifier: "DES",
-      name: "Design",
-      icon: null,
-    },
-  ];
-
-  function renderWithIcons(favorites: FavoritesList) {
-    const capture: { current: ShellContextValue | null } = { current: null };
-    renderSidebar({
-      path: "/w/acme",
-      routePath: "/w/:slug",
-      seeds: [
-        [["projects", "acme"], iconProjects],
-        [favoriteKeys.all, favorites],
-      ],
-      capture,
-    });
-  }
-
-  it("shows the emoji icon on project rows when set", () => {
-    renderWithIcons(emptyFavorites);
-    expect(screen.getByText("🚀")).toBeInTheDocument();
-    // The icon row keeps no folder glyph: the icon replaces the fallback.
-    const engRow = screen.getByText("Engineering").closest("a");
-    expect(engRow?.querySelector("svg")).toBeNull();
-  });
-
-  it("falls back to the folder glyph when the icon is unset", () => {
-    renderWithIcons(emptyFavorites);
-    const designRow = screen.getByText("Design").closest("a");
-    expect(designRow?.querySelector("svg")).not.toBeNull();
-    expect(designRow?.textContent).not.toContain("🚀");
-  });
-
-  it("shows icons on favorite project rows with the same fallback", () => {
-    renderWithIcons({
-      issues: [],
-      projects: [
-        {
-          id: "p1",
-          identifier: "ENG",
-          name: "Engineering",
-          workspace_slug: "acme",
-          starred_at: "",
-          icon: "🚀",
-        },
-        {
-          id: "p2",
-          identifier: "DES",
-          name: "Design",
-          workspace_slug: "acme",
-          starred_at: "",
-          icon: null,
-        },
-      ],
-    });
-    expect(screen.getByText("Favorites")).toBeTruthy();
-    // Both sidebar sections render: the Projects group plus Favorites.
-    expect(screen.getAllByText("🚀").length).toBeGreaterThanOrEqual(2);
   });
 });

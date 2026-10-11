@@ -5,11 +5,30 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TopBar from "./TopBar";
 import { ShellProvider, type ShellContextValue } from "./shell-context";
-import { SidebarProvider } from "../ui/sidebar";
 import { onShortcutAction } from "../../lib/shortcuts";
 import type { Workspace } from "../../lib/types";
 import { workspacesKey } from "../../lib/useWorkspaces";
 import { ShellCapture, makeQueryClient, stubMatchMedia } from "./test-utils";
+
+// The topbar avatar reads useAuth; stub it.
+vi.mock("../../lib/auth", () => ({
+  useAuth: () => ({
+    user: {
+      id: "u1",
+      email: "test@example.com",
+      name: "Test User",
+      avatar_url: null,
+      is_active: true,
+      is_admin: false,
+      last_login_at: null,
+      created_at: "",
+      updated_at: "",
+    },
+    loading: false,
+    refresh: vi.fn(),
+    logout: vi.fn(),
+  }),
+}));
 
 const workspaces: Workspace[] = [
   {
@@ -26,9 +45,12 @@ const workspaces: Workspace[] = [
 function renderTopBar(opts: {
   path: string;
   routePath: string;
-  mobile: boolean;
   capture: { current: ShellContextValue | null };
+  collapsed?: boolean;
 }) {
+  if (opts.collapsed) {
+    localStorage.setItem("glance:sidebar-collapsed", "true");
+  }
   const qc = makeQueryClient([[workspacesKey, workspaces]]);
   return render(
     <MemoryRouter initialEntries={[opts.path]}>
@@ -38,10 +60,8 @@ function renderTopBar(opts: {
             path={opts.routePath}
             element={
               <ShellProvider>
-                <SidebarProvider>
-                  <TopBar />
-                  <ShellCapture capture={opts.capture} />
-                </SidebarProvider>
+                <TopBar />
+                <ShellCapture capture={opts.capture} />
               </ShellProvider>
             }
           />
@@ -53,11 +73,6 @@ function renderTopBar(opts: {
 
 afterEach(() => {
   cleanup();
-  Object.defineProperty(window, "innerWidth", {
-    value: 1024,
-    writable: true,
-    configurable: true,
-  });
 });
 
 beforeEach(() => {
@@ -65,15 +80,11 @@ beforeEach(() => {
   stubMatchMedia(false);
 });
 
-describe("command palette button", () => {
-  it('fires the "toggle-palette" shortcut action', () => {
+describe("search trigger", () => {
+  it("opens on every route (global palette, not project-scoped)", () => {
     const capture: { current: ShellContextValue | null } = { current: null };
-    renderTopBar({
-      path: "/w/acme/p/ENG",
-      routePath: "/w/:slug/p/:identifier",
-      mobile: false,
-      capture,
-    });
+    // Home route — the old topbar hid the trigger off project routes.
+    renderTopBar({ path: "/", routePath: "/", capture });
 
     const spy = vi.fn();
     const off = onShortcutAction("toggle-palette", spy);
@@ -88,39 +99,103 @@ describe("command palette button", () => {
   });
 });
 
-describe("context label", () => {
-  it("shows workspace name and project identifier", () => {
+describe("workspace switcher", () => {
+  it("shows the current workspace name", () => {
     const capture: { current: ShellContextValue | null } = { current: null };
     renderTopBar({
       path: "/w/acme/p/ENG",
       routePath: "/w/:slug/p/:identifier",
-      mobile: false,
       capture,
     });
-    expect(screen.getByText("Acme Corp / ENG")).toBeTruthy();
+    expect(screen.getByLabelText("Switch workspace")).toHaveTextContent(
+      "Acme Corp",
+    );
   });
 });
 
-describe("sidebar trigger", () => {
-  it("opens the mobile drawer via setMobileOpen on mobile", () => {
-    // The vendored shadcn sidebar keys its mobile Sheet off a 768px
-    // breakpoint read from window.innerWidth.
-    Object.defineProperty(window, "innerWidth", {
-      value: 500,
-      writable: true,
-      configurable: true,
-    });
-    stubMatchMedia(true);
+describe("right cluster", () => {
+  function renderCluster() {
     const capture: { current: ShellContextValue | null } = { current: null };
     renderTopBar({
       path: "/w/acme/p/ENG",
       routePath: "/w/:slug/p/:identifier",
-      mobile: true,
       capture,
     });
+    return capture;
+  }
 
-    expect(capture.current?.mobileOpen).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: /toggle sidebar/i }));
-    expect(capture.current?.mobileOpen).toBe(true);
+  it("links Get started to onboarding", () => {
+    renderCluster();
+    expect(screen.getByText("Get started").getAttribute("href")).toBe(
+      "/onboarding",
+    );
+  });
+
+  it("inbox opens the notifications sheet", () => {
+    const capture = renderCluster();
+    expect(capture.current?.notificationsOpen).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Inbox" }));
+    expect(capture.current?.notificationsOpen).toBe(true);
+  });
+
+  it("help opens the shortcut cheatsheet", () => {
+    renderCluster();
+    const spy = vi.fn();
+    const off = onShortcutAction("open-cheatsheet", spy);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Help" }));
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("AI opens the command palette", () => {
+    renderCluster();
+    const spy = vi.fn();
+    const off = onShortcutAction("toggle-palette", spy);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "AI assistant" }));
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("shows the user avatar with the account menu", () => {
+    renderCluster();
+    expect(
+      screen.getByRole("button", { name: /account: test user/i }),
+    ).toBeTruthy();
+  });
+});
+
+describe("sidebar reopen", () => {
+  it("appears inside the switcher when collapsed and reopens", () => {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderTopBar({
+      path: "/w/acme/p/ENG",
+      routePath: "/w/:slug/p/:identifier",
+      capture,
+      collapsed: true,
+    });
+
+    expect(capture.current?.sidebarCollapsed).toBe(true);
+    const reopen = screen.getByRole("button", { name: "Open sidebar" });
+    fireEvent.click(reopen);
+    expect(capture.current?.sidebarCollapsed).toBe(false);
+    expect(screen.queryByRole("button", { name: "Open sidebar" })).toBeNull();
+  });
+
+  it("is hidden while expanded", () => {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderTopBar({
+      path: "/w/acme/p/ENG",
+      routePath: "/w/:slug/p/:identifier",
+      capture,
+    });
+    expect(
+      screen.queryByRole("button", { name: "Open sidebar" }),
+    ).toBeNull();
   });
 });
