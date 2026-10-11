@@ -17,6 +17,9 @@
 
 set -euo pipefail
 
+# Anchor to the repo root so go test ./... resolves regardless of caller CWD.
+cd "$(dirname "$0")/.."
+
 RUNS="${1:-3}"
 shift || true
 if [[ $# -gt 0 ]]; then
