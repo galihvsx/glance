@@ -30,16 +30,26 @@ var (
 	// ErrNothingToUpdate is returned by UpdateProject when the patch carries
 	// no fields: PATCH with {} is a client error, not a no-op success.
 	ErrNothingToUpdate = errors.New("service: nothing to update")
+	// ErrInvalidIcon is returned when the project icon is not a single
+	// emoji. The icon contract: exactly one emoji (one grapheme cluster).
+	// ZWJ sequences (family/couple/profession combos), multi-emoji
+	// strings, and non-emoji text are rejected; an empty string is
+	// normalized to NULL (unset) rather than rejected.
+	ErrInvalidIcon = errors.New("service: invalid project icon: must be a single emoji")
 )
 
 // Project is an issue container inside a workspace, addressed by its
 // uppercase identifier (ENG-123 style display IDs build on it in Task 14).
 type Project struct {
-	ID            string          `json:"id"`
-	WorkspaceID   string          `json:"workspace_id"`
-	Identifier    string          `json:"identifier"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Identifier  string `json:"identifier"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Icon is the project's emoji icon (C18T4, migration 000046): NULL =
+	// unset. Server-side validated to a single emoji on write; empty
+	// string normalizes to NULL.
+	Icon          *string         `json:"icon,omitempty"`
 	ViewFlags     json.RawMessage `json:"view_flags,omitempty"`
 	ArchiveInDays *int            `json:"archive_in_days,omitempty"`
 	CloseInDays   *int            `json:"close_in_days,omitempty"`
@@ -79,6 +89,102 @@ func normalizeIdentifier(s string) (string, error) {
 	return ident, nil
 }
 
+// Unicode code points relevant to the single-emoji icon contract.
+const (
+	iconZWJ                   = 0x200D // zero-width joiner: compounds emoji
+	iconTextPresentationSel   = 0xFE0E // forces text presentation
+	iconVariationSelector16   = 0xFE0F // forces emoji presentation
+	iconCombiningEnclosingKey = 0x20E3 // keycap combiner
+	iconSkinToneModifierMin   = 0x1F3FB
+	iconSkinToneModifierMax   = 0x1F3FF
+	iconRegionalIndicatorMin  = 0x1F1E6
+	iconRegionalIndicatorMax  = 0x1F1FF
+)
+
+// isEmojiBase reports whether r is a single-rune emoji base: one code
+// point that renders as an emoji on its own. Regional indicators are
+// excluded — a lone one is not an emoji, only a pair (a flag) is.
+func isEmojiBase(r rune) bool {
+	switch {
+	case r >= 0x1F300 && r <= 0x1FAFF: // emoticons, symbols, transport, pictographs
+		return true
+	case r >= 0x2600 && r <= 0x27BF: // misc symbols, dingbats
+		return true
+	case r >= 0x2B00 && r <= 0x2BFF: // misc symbols and arrows
+		return true
+	case r >= 0x2300 && r <= 0x23FF: // misc technical (⌚ ⌛ ⏰ …)
+		return true
+	case r == 0x00A9 || r == 0x00AE: // © ®
+		return true
+	}
+	return false
+}
+
+func isRegionalIndicator(r rune) bool {
+	return r >= iconRegionalIndicatorMin && r <= iconRegionalIndicatorMax
+}
+
+func isSkinToneModifier(r rune) bool {
+	return r >= iconSkinToneModifierMin && r <= iconSkinToneModifierMax
+}
+
+func isKeycapBase(r rune) bool {
+	return (r >= '0' && r <= '9') || r == '#' || r == '*'
+}
+
+// isSingleEmoji reports whether s is exactly one emoji: one base emoji
+// rune, optionally followed by VS16 (emoji presentation) or a skin-tone
+// modifier; a flag (exactly two regional indicators); or a keycap
+// sequence (base + VS16 + enclosing keycap). ZWJ sequences (👨‍👩‍👧),
+// text-presentation selectors, and anything longer than one grapheme are
+// rejected — the icon contract is one icon, one glyph.
+func isSingleEmoji(s string) bool {
+	runes := []rune(s)
+	for _, r := range runes {
+		if r == iconZWJ || r == iconTextPresentationSel {
+			return false
+		}
+		if r <= 0x1F || r == 0x7F || r == ' ' {
+			return false
+		}
+	}
+	switch len(runes) {
+	case 1:
+		return isEmojiBase(runes[0])
+	case 2:
+		// Flag: exactly two regional indicators, e.g. 🇺🇸.
+		if isRegionalIndicator(runes[0]) && isRegionalIndicator(runes[1]) {
+			return true
+		}
+		if !isEmojiBase(runes[0]) {
+			// Bare keycap (no VS16), e.g. 1⃣, is still one emoji.
+			return isKeycapBase(runes[0]) && runes[1] == iconCombiningEnclosingKey
+		}
+		return runes[1] == iconVariationSelector16 || isSkinToneModifier(runes[1])
+	case 3:
+		// Keycap: base + VS16 + enclosing keycap, e.g. 1️⃣.
+		return isKeycapBase(runes[0]) &&
+			runes[1] == iconVariationSelector16 &&
+			runes[2] == iconCombiningEnclosingKey
+	default:
+		return false
+	}
+}
+
+// normalizeProjectIcon validates a project icon for storage. A trimmed
+// empty string normalizes to nil (stored NULL = unset); otherwise the
+// value must be exactly one emoji, else ErrInvalidIcon.
+func normalizeProjectIcon(s string) (*string, error) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return nil, nil
+	}
+	if !isSingleEmoji(t) {
+		return nil, ErrInvalidIcon
+	}
+	return &t, nil
+}
+
 // defaultStates are seeded for every new project in the same transaction
 // as the project row — a project without states is unusable, so the two
 // must commit atomically. Sequences are spaced 10000 apart so a future
@@ -99,7 +205,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -114,19 +220,19 @@ func scanProject(row pgx.Row) (*Project, error) {
 // (no table alias exists there); projectColumnsP is the same list with
 // the p. alias for SELECT ... FROM projects p.
 const projectColumns = `id::text, workspace_id::text, identifier, name, description,
-	view_flags, archive_in_days, close_in_days, automation_run_retention_days, created_at, updated_at`
+	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, created_at, updated_at`
 
 const projectColumnsP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.created_at, p.updated_at`
+	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.created_at, p.updated_at`
 
 // CreateProject inserts the project and seeds its default states in one
 // transaction. The caller must be a workspace member (15) or admin (20);
 // guests (5) get ErrForbidden, non-members ErrNotFound.
 //
-// Delegates to CreateProjectWithTemplate with no template; kept so the
-// existing call sites and tests do not change shape.
+// Delegates to CreateProjectWithTemplate with no template and no icon;
+// kept so the existing call sites and tests do not change shape.
 func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, name, identifier string) (*Project, error) {
-	return CreateProjectWithTemplate(ctx, pool, wsSlug, actorID, name, identifier, nil)
+	return CreateProjectWithTemplate(ctx, pool, wsSlug, actorID, name, identifier, nil, nil)
 }
 
 // ListProjects returns the workspace's projects ordered by name.
@@ -202,6 +308,10 @@ func GetProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 type ProjectPatch struct {
 	Name        *string
 	Description *string
+	// Icon is the project emoji icon (C18T4): nil = untouched; non-nil is
+	// validated as a single emoji, and an explicit empty string clears
+	// it (stored NULL = unset).
+	Icon *string
 	// CloseInDays is the ticker's rollover rule (Task 22): days after a
 	// cycle's end_date before incomplete issues detach to the backlog
 	// when no next cycle exists. Nil = untouched; explicit 0 (or a NULL
@@ -243,6 +353,16 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if patch.Description != nil {
 		args = append(args, *patch.Description)
 		sets = append(sets, fmt.Sprintf("description = $%d", len(args)+2))
+	}
+	if patch.Icon != nil {
+		icon, err := normalizeProjectIcon(*patch.Icon)
+		if err != nil {
+			return nil, err
+		}
+		// nil *string encodes as NULL: an explicit empty string clears
+		// the icon.
+		args = append(args, icon)
+		sets = append(sets, fmt.Sprintf("icon = $%d", len(args)+2))
 	}
 	if patch.CloseInDays != nil {
 		if *patch.CloseInDays < 0 {

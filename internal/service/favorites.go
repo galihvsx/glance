@@ -60,6 +60,8 @@ type FavoriteProjectSummary struct {
 	Name          string    `json:"name"`
 	WorkspaceSlug string    `json:"workspace_slug"`
 	StarredAt     time.Time `json:"starred_at"`
+	// Icon is the project's emoji icon (C18T4); nil = unset.
+	Icon *string `json:"icon,omitempty"`
 }
 
 // FavoritesList is the GET /api/v1/favorites payload. Never nil slices —
@@ -217,7 +219,7 @@ func ListFavorites(ctx context.Context, pool *pgxpool.Pool, actorID string) (*Fa
 	issueRows.Close()
 
 	projectRows, err := pool.Query(ctx,
-		`SELECT p.id::text, p.identifier, p.name, w.slug, f.created_at
+		`SELECT p.id::text, p.identifier, p.name, w.slug, f.created_at, p.icon
 		 FROM favorites f
 		 JOIN projects p ON p.id = f.favoritable_id
 		 JOIN workspaces w ON w.id = p.workspace_id
@@ -230,7 +232,7 @@ func ListFavorites(ctx context.Context, pool *pgxpool.Pool, actorID string) (*Fa
 	}
 	for projectRows.Next() {
 		var s FavoriteProjectSummary
-		if err := projectRows.Scan(&s.ID, &s.Identifier, &s.Name, &s.WorkspaceSlug, &s.StarredAt); err != nil {
+		if err := projectRows.Scan(&s.ID, &s.Identifier, &s.Name, &s.WorkspaceSlug, &s.StarredAt, &s.Icon); err != nil {
 			projectRows.Close()
 			return nil, err
 		}

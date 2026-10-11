@@ -233,3 +233,71 @@ describe("workspace header", () => {
     expect(screen.getByText("Acme Corp")).toBeTruthy();
   });
 });
+
+describe("project icons", () => {
+  const iconProjects: Project[] = [
+    { ...projects[0], icon: "🚀" },
+    {
+      ...projects[0],
+      id: "p2",
+      identifier: "DES",
+      name: "Design",
+      icon: null,
+    },
+  ];
+
+  function renderWithIcons(favorites: FavoritesList) {
+    const capture: { current: ShellContextValue | null } = { current: null };
+    renderSidebar({
+      path: "/w/acme",
+      routePath: "/w/:slug",
+      seeds: [
+        [["projects", "acme"], iconProjects],
+        [favoriteKeys.all, favorites],
+      ],
+      capture,
+    });
+  }
+
+  it("shows the emoji icon on project rows when set", () => {
+    renderWithIcons(emptyFavorites);
+    expect(screen.getByText("🚀")).toBeInTheDocument();
+    // The icon row keeps no folder glyph: the icon replaces the fallback.
+    const engRow = screen.getByText("Engineering").closest("a");
+    expect(engRow?.querySelector("svg")).toBeNull();
+  });
+
+  it("falls back to the folder glyph when the icon is unset", () => {
+    renderWithIcons(emptyFavorites);
+    const designRow = screen.getByText("Design").closest("a");
+    expect(designRow?.querySelector("svg")).not.toBeNull();
+    expect(designRow?.textContent).not.toContain("🚀");
+  });
+
+  it("shows icons on favorite project rows with the same fallback", () => {
+    renderWithIcons({
+      issues: [],
+      projects: [
+        {
+          id: "p1",
+          identifier: "ENG",
+          name: "Engineering",
+          workspace_slug: "acme",
+          starred_at: "",
+          icon: "🚀",
+        },
+        {
+          id: "p2",
+          identifier: "DES",
+          name: "Design",
+          workspace_slug: "acme",
+          starred_at: "",
+          icon: null,
+        },
+      ],
+    });
+    expect(screen.getByText("Favorites")).toBeTruthy();
+    // Both sidebar sections render: the Projects group plus Favorites.
+    expect(screen.getAllByText("🚀").length).toBeGreaterThanOrEqual(2);
+  });
+});

@@ -59,6 +59,10 @@ type createProjectBody struct {
 	// states/labels/modules/estimate scale are seeded in the same
 	// transaction as the project. Unknown id → 400.
 	TemplateID *string `json:"template_id"`
+	// Icon is the optional project emoji icon (C18T4): a single emoji.
+	// Empty string normalizes to NULL (unset); anything else invalid
+	// is a 400.
+	Icon *string `json:"icon"`
 }
 
 // createProject implements POST /api/v1/workspaces/{slug}/projects: creates
@@ -70,13 +74,16 @@ func (h *ProjectHandler) createProject(c *echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	p, err := service.CreateProjectWithTemplate(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Identifier, body.TemplateID)
+	p, err := service.CreateProjectWithTemplate(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Identifier, body.TemplateID, body.Icon)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 		}
 		if errors.Is(err, service.ErrUnknownTemplateID) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "unknown template_id", nil)
+		}
+		if errors.Is(err, service.ErrInvalidIcon) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid icon: must be a single emoji", nil)
 		}
 		return projectError(c, err)
 	}
@@ -116,6 +123,10 @@ type updateProjectBody struct {
 	// in days (C13T0): nil = untouched; 0 = keep runs forever; unset
 	// (NULL) = the 90-day default. Negative is a 400.
 	AutomationRunRetentionDays *int `json:"automation_run_retention_days"`
+	// Icon is the project emoji icon (C18T4): nil = untouched; a single
+	// emoji sets it; an explicit "" clears it (NULL = unset). Anything
+	// else invalid is a 400.
+	Icon *string `json:"icon"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -126,7 +137,7 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
-		service.ProjectPatch{Name: body.Name, Description: body.Description, CloseInDays: body.CloseInDays,
+		service.ProjectPatch{Name: body.Name, Description: body.Description, Icon: body.Icon, CloseInDays: body.CloseInDays,
 			AutomationRunRetentionDays: body.AutomationRunRetentionDays})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
@@ -134,6 +145,9 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 		}
 		if errors.Is(err, service.ErrNothingToUpdate) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+		}
+		if errors.Is(err, service.ErrInvalidIcon) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid icon: must be a single emoji", nil)
 		}
 		if errors.Is(err, service.ErrInvalidCloseInDays) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "close_in_days must be >= 0", nil)

@@ -234,7 +234,13 @@ function FavoritesGroup() {
                   isActive={pathname === href}
                   tooltip={f.name}
                 >
-                  <Folder />
+                  {f.icon ? (
+                    <span className="text-base leading-none" aria-hidden="true">
+                      {f.icon}
+                    </span>
+                  ) : (
+                    <Folder />
+                  )}
                   <span>{f.name}</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -348,7 +354,16 @@ function ProjectsGroup() {
                           }
                           tooltip={p.name}
                         >
-                          <FolderKanban />
+                          {p.icon ? (
+                            <span
+                              className="text-base leading-none"
+                              aria-hidden="true"
+                            >
+                              {p.icon}
+                            </span>
+                          ) : (
+                            <FolderKanban />
+                          )}
                           <span>{p.name}</span>
                         </SidebarMenuButton>
                       </SidebarMenuItem>

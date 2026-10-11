@@ -9,6 +9,7 @@ import { api } from "../lib/api";
 import type { Workspace } from "../lib/types";
 import ProjectNav from "../components/project/ProjectNav";
 import EstimatesSection from "../components/settings/EstimatesSection";
+import GeneralSection from "../components/settings/GeneralSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import StatesSection from "../components/settings/StatesSection";
 import TemplatesSection from "../components/settings/TemplatesSection";
@@ -51,8 +52,9 @@ export default function ProjectSettings() {
       {role === null ? (
         <Skeleton className="h-64 w-full" />
       ) : (
-        <Tabs defaultValue="labels">
+        <Tabs defaultValue="general">
           <TabsList>
+            <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="labels">Labels</TabsTrigger>
             <TabsTrigger value="states">States</TabsTrigger>
             <TabsTrigger value="estimates">Estimates</TabsTrigger>
@@ -61,6 +63,9 @@ export default function ProjectSettings() {
             <TabsTrigger value="automations">Automations</TabsTrigger>
             <TabsTrigger value="import">Import</TabsTrigger>
           </TabsList>
+          <TabsContent value="general" className="mt-4">
+            <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
+          </TabsContent>
           <TabsContent value="labels" className="mt-4">
             <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
           </TabsContent>

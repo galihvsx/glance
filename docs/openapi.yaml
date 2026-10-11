@@ -302,7 +302,7 @@
         "summary": "Create a project",
         "description": "The identifier is uppercased and unique per workspace; default states are seeded, or the template's states/labels/modules/estimate scale when template_id is given.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" }, "template_id": { "type": "string", "format": "uuid", "description": "Optional project template id; unknown id is 400" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" }, "template_id": { "type": "string", "format": "uuid", "description": "Optional project template id; unknown id is 400" }, "icon": { "type": "string", "description": "Optional project emoji icon; single emoji, empty string = unset; anything else invalid is 400" } } } } } },
         "responses": { "201": { "description": "Created project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
     },
@@ -327,7 +327,7 @@
         "summary": "Update a project",
         "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
@@ -1985,6 +1985,7 @@
           "name": { "type": "string" },
           "identifier": { "type": "string" },
           "description": { "type": "string", "nullable": true },
+          "icon": { "type": "string", "nullable": true, "description": "Project emoji icon; single emoji, null = unset" },
           "close_in_days": { "type": "integer", "description": "Cycle-rollover grace in days" },
           "automation_run_retention_days": { "type": "integer", "nullable": true, "description": "Automation run retention window in days; null = 90-day default, 0 = keep forever" },
           "created_at": { "type": "string", "format": "date-time" }

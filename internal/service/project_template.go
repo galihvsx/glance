@@ -515,9 +515,10 @@ func applyTemplateSeedsTx(ctx context.Context, tx pgx.Tx, wsID, projectID string
 // template: the template's states/labels/modules/estimate scale are
 // seeded in the SAME transaction as the project row. A template_id that
 // matches no template in this workspace is ErrUnknownTemplateID (400).
-// The caller must be a workspace member (15) or admin (20), like
-// CreateProject.
-func CreateProjectWithTemplate(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, name, identifier string, templateID *string) (*Project, error) {
+// The optional icon is validated as a single emoji (C18T4); empty
+// normalizes to NULL (unset). The caller must be a workspace member (15)
+// or admin (20), like CreateProject.
+func CreateProjectWithTemplate(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, name, identifier string, templateID *string, icon *string) (*Project, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, ErrNameRequired
@@ -525,6 +526,13 @@ func CreateProjectWithTemplate(ctx context.Context, pool *pgxpool.Pool, wsSlug, 
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return nil, err
+	}
+	var iconVal *string
+	if icon != nil {
+		iconVal, err = normalizeProjectIcon(*icon)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -570,10 +578,10 @@ func CreateProjectWithTemplate(ctx context.Context, pool *pgxpool.Pool, wsSlug, 
 	}
 
 	p, err := scanProject(tx.QueryRow(ctx,
-		`INSERT INTO projects (workspace_id, identifier, name)
-		 VALUES ($1::uuid, $2, $3)
+		`INSERT INTO projects (workspace_id, identifier, name, icon)
+		 VALUES ($1::uuid, $2, $3, $4)
 		 RETURNING `+projectColumns,
-		wsID, ident, name))
+		wsID, ident, name, iconVal))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrIdentifierConflict
