@@ -12,6 +12,7 @@ import {
   type RecentIssue,
 } from "../components/issue/recents";
 import FavoritesSection from "../components/favorites/FavoritesSection";
+import RecentActivitySection from "../components/home/RecentActivitySection";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -256,6 +257,9 @@ export default function Home() {
               ))}
             </div>
           )}
+
+          {/* Recent activity (C17T4): workspace-wide feed under Your work. */}
+          <RecentActivitySection workspaces={workspaces} />
         </div>
 
         {/* Right rail */}
