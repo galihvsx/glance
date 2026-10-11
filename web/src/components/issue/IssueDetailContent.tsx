@@ -49,6 +49,7 @@ import StatePicker from "./StatePicker";
 import PriorityPicker from "./PriorityPicker";
 import AssigneePicker from "./AssigneePicker";
 import ShareModal from "../ShareModal";
+import IssueCopyMenu from "./IssueCopyMenu";
 import LabelPicker from "./LabelPicker";
 import TimeTracker from "./TimeTracker";
 import Attachments from "./Attachments";
@@ -832,6 +833,15 @@ export default function IssueDetailContent({
                 <Share2 className="h-3.5 w-3.5" />
                 Share
               </Button>
+              {/* C17T3: dev quick actions — a separate "Copy" cluster so it
+                  doesn't collide with the overflow menu or the subtask
+                  progress bar work in the same header row. */}
+              <IssueCopyMenu
+                slug={slug}
+                identifier={identifier}
+                uuid={uuid}
+                issue={issue}
+              />
               {/* C8T4: overflow menu — currently just Clone; the home for
                   future per-issue actions (delete, move, archive). */}
               <DropdownMenu>

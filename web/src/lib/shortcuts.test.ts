@@ -31,10 +31,6 @@ describe("isTypingTarget", () => {
 
 describe("resolveKeyPress", () => {
   it("maps single keys to actions", () => {
-    expect(resolveKeyPress("c", null)).toEqual({
-      action: "new-issue",
-      pendingPrefix: null,
-    });
     expect(resolveKeyPress("/", null)).toEqual({
       action: "focus-search",
       pendingPrefix: null,
@@ -71,6 +67,50 @@ describe("resolveKeyPress", () => {
     });
   });
 
+  it("starts a c-chord on 'c' (new-issue is fired by the listener)", () => {
+    expect(resolveKeyPress("c", null)).toEqual({
+      action: null,
+      pendingPrefix: "c",
+    });
+  });
+
+  it("resolves c-chords case-insensitively", () => {
+    expect(resolveKeyPress("b", "c")).toEqual({
+      action: "copy-branch",
+      pendingPrefix: null,
+    });
+    expect(resolveKeyPress("B", "c")).toEqual({
+      action: "copy-branch",
+      pendingPrefix: null,
+    });
+    expect(resolveKeyPress("u", "c")).toEqual({
+      action: "copy-url",
+      pendingPrefix: null,
+    });
+    expect(resolveKeyPress("i", "c")).toEqual({
+      action: "copy-id",
+      pendingPrefix: null,
+    });
+  });
+
+  it("falls through to normal keys when the c-chord is unknown", () => {
+    // c then x: not a chord, so x resolves as usual.
+    expect(resolveKeyPress("x", "c")).toEqual({
+      action: null,
+      pendingPrefix: null,
+    });
+    // c then c: re-arms the prefix.
+    expect(resolveKeyPress("c", "c")).toEqual({
+      action: null,
+      pendingPrefix: "c",
+    });
+    // c then j: not a chord, j still moves selection.
+    expect(resolveKeyPress("j", "c")).toEqual({
+      action: "next-item",
+      pendingPrefix: null,
+    });
+  });
+
   it("resolves g-chords case-insensitively", () => {
     expect(resolveKeyPress("m", "g")).toEqual({
       action: "goto-mywork",
@@ -102,10 +142,10 @@ describe("resolveKeyPress", () => {
   });
 
   it("falls through to normal keys when the chord is unknown", () => {
-    // g then c: not a chord, so c still creates an issue.
+    // g then c: not a chord, so c arms the copy prefix.
     expect(resolveKeyPress("c", "g")).toEqual({
-      action: "new-issue",
-      pendingPrefix: null,
+      action: null,
+      pendingPrefix: "c",
     });
     // g then g: re-arms the prefix.
     expect(resolveKeyPress("g", "g")).toEqual({
@@ -129,6 +169,9 @@ describe("SHORTCUT_REGISTRY", () => {
     "goto-mywork",
     "toggle-sidebar",
     "open-notifications",
+    "copy-branch",
+    "copy-url",
+    "copy-id",
   ];
 
   it("documents every shortcut action exactly once", () => {
