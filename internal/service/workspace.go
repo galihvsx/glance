@@ -15,10 +15,14 @@ import (
 )
 
 // Workspace membership roles. Higher wins; only RoleAdmin (20) manages
-// members or renames the workspace. Levels are spaced (not 1/2/3) so a
-// future intermediate role slots in without renumbering.
+// members or renames the workspace. Levels are spaced so a future
+// intermediate role slots in without renumbering. Viewers (10) are
+// read-only: every write path gates on role >= RoleMember (15), while
+// reads only require membership — so adding this level changes no
+// enforcement logic, only who passes the existing checks.
 const (
 	RoleGuest  = 5
+	RoleViewer = 10
 	RoleMember = 15
 	RoleAdmin  = 20
 )
@@ -79,7 +83,7 @@ func validSlug(s string) bool {
 }
 
 func validRole(r int) bool {
-	return r == RoleGuest || r == RoleMember || r == RoleAdmin
+	return r == RoleGuest || r == RoleViewer || r == RoleMember || r == RoleAdmin
 }
 
 // isUniqueViolation reports Postgres 23505 (unique constraint). Used to

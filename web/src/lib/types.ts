@@ -42,6 +42,8 @@ export function roleLabel(role: number): string {
       return "Admin";
     case 15:
       return "Member";
+    case 10:
+      return "Viewer";
     case 5:
       return "Guest";
     default:
@@ -54,7 +56,7 @@ export interface WorkspaceMember {
   id: string;
   name?: string | null;
   email: string;
-  /** 20 = admin, 15 = member, 5 = guest */
+  /** 20 = admin, 15 = member, 10 = viewer, 5 = guest */
   role: number;
 }
 
@@ -62,6 +64,7 @@ export interface WorkspaceMember {
 export const WORKSPACE_ROLES = [
   { value: 20, label: "Admin" },
   { value: 15, label: "Member" },
+  { value: 10, label: "Viewer" },
   { value: 5, label: "Guest" },
 ] as const;
 
