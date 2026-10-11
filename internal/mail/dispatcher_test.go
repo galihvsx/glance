@@ -74,7 +74,6 @@ func enqueueCommitted(t *testing.T, ctx context.Context, pool *pgxpool.Pool, eve
 func TestEnqueueAndDispatch(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	// Enqueue inside the caller's transaction; the row must be picked up
 	// by the dispatcher after commit.
@@ -122,7 +121,6 @@ func TestEnqueueAndDispatch(t *testing.T) {
 func TestDispatchRetryBackoff(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	to := uniqueAddr("retry")
 	enqueueCommitted(t, ctx, pool, "email.otp",
@@ -181,7 +179,6 @@ func TestDispatchRetryBackoff(t *testing.T) {
 func TestDispatchMarksFailedAfterMaxAttempts(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	to := uniqueAddr("deadletter")
 	enqueueCommitted(t, ctx, pool, "email.otp",
@@ -214,7 +211,6 @@ func TestDispatchMarksFailedAfterMaxAttempts(t *testing.T) {
 func TestDispatcherIgnoresOtherNamespaces(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	// A webhook.* row belongs to a later dispatcher; the mail dispatcher
 	// must leave it alone. The direct assertion is the webhook row's

@@ -58,7 +58,6 @@ func (b *blockingSender) count() int {
 func TestDispatcherSingleFlight(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
-	migrateTestDB(t, pool)
 
 	to := uniqueAddr("singleflight")
 	enqueueCommitted(t, ctx, pool, "email.otp",

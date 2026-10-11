@@ -14,7 +14,6 @@ import (
 
 	"glance/internal/config"
 	"glance/internal/store"
-	"glance/migrations"
 )
 
 // testSeq hands out process-unique sequence numbers so parallel test
@@ -42,18 +41,6 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
-}
-
-// migrateTestDB applies the real migrations. It deliberately does NOT
-// truncate any table: test packages run in parallel against one shared
-// database, so each test uses unique keys and filters its assertions to
-// its own rows instead of assuming a clean slate.
-func migrateTestDB(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	if err := store.Migrate(ctx, pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
 }
 
 func TestLogSenderWhenNoSMTP(t *testing.T) {
