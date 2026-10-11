@@ -12,7 +12,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { api } from "../lib/api";
 import { describeChange, type ActivityEntry } from "../lib/activity";
-import { renderMarkdown } from "../lib/markdown";
+import { Markdown } from "../components/Markdown";
 import {
   completionStats,
   cyclePercent,
@@ -181,9 +181,9 @@ function DescriptionCard({
               </Button>
             </div>
             {preview ? (
-              <div
+              <Markdown
+                markdown={draft}
                 className="wiki-content min-h-32 rounded-md border p-3 text-sm"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(draft) }}
               />
             ) : (
               <Textarea
@@ -213,10 +213,7 @@ function DescriptionCard({
             </div>
           </div>
         ) : description ? (
-          <div
-            className="wiki-content text-sm"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(description) }}
-          />
+          <Markdown markdown={description} className="wiki-content text-sm" />
         ) : (
           <p className="text-sm text-muted-foreground">
             No description yet.{" "}

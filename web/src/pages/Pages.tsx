@@ -16,7 +16,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
-import { renderMarkdown } from "../lib/markdown";
+import { Markdown } from "../components/Markdown";
 import type { Page, PageRevision, Project } from "../lib/types";
 import { cn } from "../lib/utils";
 import ProjectNav from "../components/project/ProjectNav";
@@ -515,11 +515,9 @@ export default function Pages() {
               </CardHeader>
               <CardContent>
                 {selected.content ? (
-                  <div
+                  <Markdown
+                    markdown={selected.content}
                     className="wiki-content"
-                    dangerouslySetInnerHTML={{
-                      __html: renderMarkdown(selected.content),
-                    }}
                   />
                 ) : (
                   <p className="text-sm text-muted-foreground">
@@ -707,11 +705,9 @@ export default function Pages() {
                     <CardTitle className="text-sm">{previewRev.title}</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div
+                    <Markdown
+                      markdown={previewRev.content}
                       className="wiki-content max-h-[40vh] overflow-y-auto"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(previewRev.content),
-                      }}
                     />
                     <div className="mt-4">
                       <Button

@@ -149,3 +149,12 @@ body {
     @apply font-sans;
   }
 }
+
+/* Mermaid diagrams (C18T5). The fallback code block needs no styling; once
+   hydrated, the SVG is constrained to the container width. */
+.glance-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin-inline: auto;
+}

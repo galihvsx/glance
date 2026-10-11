@@ -3,12 +3,23 @@
 // everything first, then applies inline formatting; link hrefs are
 // allow-listed to http(s)/mailto. Shared by wiki pages and the project
 // overview description.
+// ```mermaid fences (C18T5) become hydratable placeholders here; mermaid
+// itself is lazy-loaded by the Markdown component and never joins the
+// initial bundle.
 
 /* ------------------------------------------------------------------ */
 /* Tiny markdown renderer (C3T4). Lean by design: no new deps (single-  */
 /* binary thesis). HTML-escapes everything first, then applies inline  */
 /* formatting; link hrefs are allow-listed to http(s)/mailto.          */
 /* ------------------------------------------------------------------ */
+
+/** CSS class marking a fenced-code placeholder that holds a mermaid diagram. */
+export const MERMAID_CLASS = "glance-mermaid";
+
+/** True when a fenced-code info string marks a mermaid block (case-insensitive). */
+export function isMermaidFence(info: string): boolean {
+  return /^mermaid(?:\s|$)/i.test(info.trim());
+}
 
 function escapeHtml(s: string): string {
   return s
@@ -58,6 +69,7 @@ export function renderMarkdown(src: string): string {
     const line = lines[i];
     // Fenced code block
     if (/^```/.test(line)) {
+      const info = line.slice(3).trim();
       const buf: string[] = [];
       i++;
       while (i < lines.length && !/^```/.test(lines[i])) {
@@ -65,7 +77,16 @@ export function renderMarkdown(src: string): string {
         i++;
       }
       i++; // consume closing fence (or EOF)
-      html.push(`<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`);
+      if (isMermaidFence(info)) {
+        // Mermaid fence (C18T5): emit a plain-code-block placeholder; the
+        // Markdown component hydrates it into a diagram client-side. The
+        // code block doubles as the no-JS / render-failure fallback.
+        html.push(
+          `<pre class="${MERMAID_CLASS}"><code class="language-mermaid">${escapeHtml(buf.join("\n"))}</code></pre>`,
+        );
+      } else {
+        html.push(`<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`);
+      }
       continue;
     }
     // ATX heading
