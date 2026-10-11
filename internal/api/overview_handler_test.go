@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,8 +255,19 @@ func TestOverviewHTTPGuestForbidden(t *testing.T) {
 
 func TestOverviewHTTPNotFound(t *testing.T) {
 	e, cookie, base := setupOverviewHTTP(t)
+	// Malformed identifier (12-char ident + "XXX" = 15 chars > 12):
+	// the service normalizes identifiers like every other entry point,
+	// so a malformed identifier is a 400, not a 404.
 	rec := getAuthed(t, e, http.MethodGet, base+"XXX/overview", cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed identifier overview: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	// Well-formed but nonexistent identifier: 404.
+	slug := base[len("/api/v1/workspaces/"):]
+	slug = slug[:strings.Index(slug, "/")]
+	rec = getAuthed(t, e, http.MethodGet,
+		"/api/v1/workspaces/"+slug+"/projects/ZZZ999999999/overview", cookie)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("bad identifier overview: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+		t.Fatalf("unknown identifier overview: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
