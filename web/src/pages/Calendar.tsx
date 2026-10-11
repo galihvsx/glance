@@ -6,12 +6,13 @@ import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { api, ApiError } from "../lib/api";
+import { stateDotClass } from "../lib/stateDot";
 import {
   createFeedToken,
   fetchFeedTokenStatus,
   projectFeedURL,
 } from "../lib/calendarFeed";
-import type { Issue, IssueListResult } from "../lib/types";
+import type { Issue, IssueListResult, IssueState } from "../lib/types";
 import {
   bucketIssuesByDay,
   dayKey,
@@ -23,14 +24,9 @@ import { cn } from "../lib/utils";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/** Priority dot colors (subtle, readable on dark-default and light). */
-const PRIORITY_DOT = [
-  "bg-muted-foreground/40", // 0 None
-  "bg-blue-500", // 1 Low
-  "bg-yellow-500", // 2 Medium
-  "bg-orange-500", // 3 High
-  "bg-red-500", // 4 Urgent
-];
+/** 28px toolbar button in the C19 token ramp (matches PageHeader controls). */
+const calControlClass =
+  "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50";
 
 /** Fetch every page of a bounded list query (per_page=100, cursor loop). */
 async function fetchAllIssues(path: string): Promise<Issue[]> {
@@ -47,21 +43,27 @@ async function fetchAllIssues(path: string): Promise<Issue[]> {
   return out;
 }
 
-function IssueChip({ issue, onOpen }: { issue: Issue; onOpen: () => void }) {
+function IssueChip({
+  issue,
+  state,
+  onOpen,
+}: {
+  issue: Issue;
+  state?: IssueState;
+  onOpen: () => void;
+}) {
   return (
     <button
       type="button"
       onClick={onOpen}
       title={`${issue.display_id}: ${issue.name}`}
-      className="flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-xs hover:bg-accent"
+      className="flex w-full items-center gap-1.5 rounded-[4px] px-1.5 py-[3px] text-left text-[11px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
     >
       <span
-        className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          PRIORITY_DOT[issue.priority] ?? PRIORITY_DOT[0],
-        )}
+        className={cn("state-dot", stateDotClass(state?.group))}
+        aria-hidden
       />
-      <span className="shrink-0 font-mono text-muted-foreground">
+      <span className="shrink-0 font-mono text-[10px] text-ink-muted">
         {issue.display_id}
       </span>
       <span className="truncate">{issue.name}</span>
@@ -116,6 +118,19 @@ export default function Calendar() {
     queryKey: ["calendar", slug, identifier, "undated"],
     queryFn: () => fetchAllIssues(`${base}/issues?undated=1`),
   });
+
+  // Workflow states drive the state-dot colors on the event chips
+  // (C19 state-dot system — same vocabulary as the board cards).
+  const statesQuery = useQuery({
+    queryKey: ["states", slug, identifier],
+    queryFn: () =>
+      api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
+  });
+  const statesById = useMemo(() => {
+    const m = new Map<string, IssueState>();
+    for (const s of statesQuery.data ?? []) m.set(s.id, s);
+    return m;
+  }, [statesQuery.data]);
 
   const cells = useMemo(() => monthGrid(year, month), [year, month]);
   const byDay = useMemo(
@@ -175,48 +190,46 @@ export default function Calendar() {
     <>
       {/* C19T4: shared page header replaces the per-page ProjectNav. */}
       <PageHeader viewName="Calendar" showViews />
-      <div className="flex h-full flex-col gap-4 p-4">
-        <div className="flex items-center gap-2">
+      <div className="flex h-full flex-col gap-3 p-4">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => go(-1)}
-            className="rounded-md border p-1.5 hover:bg-accent"
+            className={cn(calControlClass, "px-1.5")}
             aria-label="Previous month"
           >
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={goToday}
-            className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
-          >
+          <button type="button" onClick={goToday} className={calControlClass}>
             Today
           </button>
           <button
             type="button"
             onClick={() => go(1)}
-            className="rounded-md border p-1.5 hover:bg-accent"
+            className={cn(calControlClass, "px-1.5")}
             aria-label="Next month"
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-3.5 w-3.5" />
           </button>
-          <h2 className="ml-2 text-base font-semibold">{monthLabel}</h2>
+          <h2 className="ml-2 text-[13px] font-semibold text-ink">
+            {monthLabel}
+          </h2>
           <button
             type="button"
             onClick={copyICalURL}
             disabled={copying}
-            className="ml-auto flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            className={cn(calControlClass, "ml-auto")}
           >
             <CalendarPlus className="h-3.5 w-3.5" />
             {copying ? "Copying…" : "Copy iCal URL"}
           </button>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-[11px] text-ink-muted">
             Placed by due date, start date when there is no due date
           </span>
         </div>
 
         {feedMsg && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-[11px] text-ink-muted">
             {feedMsg.includes("Profile") ? (
               <>
                 A feed token is already active — regenerate it from{" "}
@@ -232,18 +245,18 @@ export default function Calendar() {
         )}
 
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading calendar…</p>
+          <p className="text-[13px] text-ink-muted">Loading calendar…</p>
         ) : error ? (
-          <p className="text-sm text-destructive">
+          <p className="text-[13px] text-destructive">
             {error instanceof ApiError ? error.message : "Failed to load calendar"}
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-7 overflow-hidden rounded-md border">
+            <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
               {WEEKDAYS.map((d) => (
                 <div
                   key={d}
-                  className="border-b bg-muted/50 px-2 py-1.5 text-xs font-medium text-muted-foreground [&:not(:last-child)]:border-r"
+                  className="border-b border-border-hairline bg-raised px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline"
                 >
                   {d}
                 </div>
@@ -257,16 +270,16 @@ export default function Calendar() {
                   <div
                     key={key}
                     className={cn(
-                      "min-h-24 border-b p-1 [&:not(:nth-child(7n))]:border-r",
+                      "min-h-24 border-b border-border-hairline p-1 [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline",
                       isOtherMonth && "opacity-40",
                     )}
                   >
                     <div
                       className={cn(
-                        "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-xs",
+                        "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
                         isToday
-                          ? "bg-primary font-semibold text-primary-foreground"
-                          : "text-muted-foreground",
+                          ? "bg-accent-blue font-semibold text-white"
+                          : "text-ink-muted",
                       )}
                     >
                       {date.getDate()}
@@ -276,6 +289,7 @@ export default function Calendar() {
                         <IssueChip
                           key={issue.id}
                           issue={issue}
+                          state={statesById.get(issue.state_id)}
                           onOpen={() => openPeek(issue.id)}
                         />
                       ))}
@@ -286,7 +300,7 @@ export default function Calendar() {
             </div>
 
             {byDay.size === 0 && undated.length === 0 && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-[13px] text-ink-muted">
                 No issues scheduled for {monthLabel}. Issues appear here once they
                 get a due or start date.
               </p>
@@ -294,13 +308,17 @@ export default function Calendar() {
 
             {undated.length > 0 && (
               <section>
-                <h3 className="mb-2 text-sm font-medium text-muted-foreground">
+                <h3 className="mb-2 text-[12px] font-medium text-ink-secondary">
                   Unscheduled ({undated.length})
                 </h3>
-                <div className="flex flex-wrap gap-1 rounded-md border p-2">
+                <div className="flex flex-wrap gap-1 rounded-md border border-border bg-surface p-2">
                   {undated.map((issue) => (
                     <span key={issue.id} className="max-w-64">
-                      <IssueChip issue={issue} onOpen={() => openPeek(issue.id)} />
+                      <IssueChip
+                        issue={issue}
+                        state={statesById.get(issue.state_id)}
+                        onOpen={() => openPeek(issue.id)}
+                      />
                     </span>
                   ))}
                 </div>
