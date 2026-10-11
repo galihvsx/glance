@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -24,9 +23,61 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ------------------------------------------------------------------
+ * Cycle 19 "UI polish — Plane layout parity" design tokens.
+ * Source of truth: .superpowers/sdd/2026-10-11-glance-cycle19/prototype-spec.md
+ * ("Design tokens" section). Static tokens — dark-ramp values are literal
+ * from the prototype. Later tasks use them as e.g.:
+ *   bg-canvas bg-rail bg-surface bg-raised
+ *   border-border (base .09) / border-border-hairline (hairline .052)
+ *   text-ink / text-ink-secondary / text-ink-muted
+ *   bg-wash-hover / bg-wash-active
+ *   text-accent-blue bg-accent-green border-accent-amber ...
+ * Note: shadcn's `text-muted` maps to the *surface* token --muted, so muted
+ * text is `text-ink-muted` (or shadcn's `text-muted-foreground`, which is
+ * remapped to the same #777780 in dark mode below).
+ * ------------------------------------------------------------------ */
+@theme {
+  /* Surfaces */
+  --color-canvas: #09090b;
+  --color-rail: #0b0b0d;
+  --color-surface: #141416;
+  --color-raised: #1a1a1e;
+
+  /* Borders (base is shadcn --border, remapped to .09 in .dark below) */
+  --color-border-hairline: rgba(255, 255, 255, 0.052);
+
+  /* Hover / active washes */
+  --color-wash-hover: rgba(255, 255, 255, 0.05);
+  --color-wash-active: rgba(255, 255, 255, 0.085);
+
+  /* Text ramp */
+  --color-ink: #f4f4f5;
+  --color-ink-secondary: #b0b0b9;
+  --color-ink-muted: #777780;
+
+  /* Accents */
+  --color-accent-blue: #4f8ef7;
+  --color-accent-blue-hover: #649cf5;
+  --color-accent-green: #42c88a;
+  --color-accent-amber: #e7ad42;
+  --color-accent-red: #df6b77;
+  --color-accent-purple: #9c83e6;
+
+  /* Workflow state colors (used by .state-dot below) */
+  --color-state-backlog: #71717a;
+  --color-state-todo: #8d8d96;
+  --color-state-in-progress: #4f8ef7;
+  --color-state-done: #42c88a;
+  --color-state-cancelled: #696971;
+
+  /* Focus ring */
+  --color-focus: rgba(79, 142, 247, 0.8);
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -103,39 +154,42 @@ body {
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* Dark mode = the prototype ramp. The app is dark by default (see index.html
+   pre-load script + use-theme), so these are the tokens users actually see.
+   Light mode above keeps the stock shadcn values untouched. */
 .dark {
   color-scheme: dark;
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #09090b; /* canvas */
+  --foreground: #f4f4f5; /* text */
+  --card: #141416; /* surface */
+  --card-foreground: #f4f4f5;
+  --popover: #141416; /* surface */
+  --popover-foreground: #f4f4f5;
+  --primary: #4f8ef7; /* blue accent */
+  --primary-foreground: #ffffff;
+  --secondary: #1a1a1e; /* raised */
+  --secondary-foreground: #f4f4f5;
+  --muted: #1a1a1e; /* raised */
+  --muted-foreground: #777780; /* text muted */
+  --accent: rgba(255, 255, 255, 0.05); /* hover wash */
+  --accent-foreground: #f4f4f5;
+  --destructive: #df6b77; /* red accent */
+  --border: rgba(255, 255, 255, 0.09); /* base border */
+  --input: rgba(255, 255, 255, 0.09);
+  --ring: rgba(79, 142, 247, 0.8); /* focus */
+  --chart-1: #4f8ef7;
+  --chart-2: #42c88a;
+  --chart-3: #e7ad42;
+  --chart-4: #df6b77;
+  --chart-5: #9c83e6;
+  --sidebar: #101012;
+  --sidebar-foreground: #f4f4f5;
+  --sidebar-primary: #4f8ef7;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(255, 255, 255, 0.085); /* active wash */
+  --sidebar-accent-foreground: #f4f4f5;
+  --sidebar-border: rgba(255, 255, 255, 0.052); /* hairline */
+  --sidebar-ring: rgba(79, 142, 247, 0.8);
 }
 
 @layer base {
@@ -144,10 +198,68 @@ body {
   }
   body {
     @apply bg-background text-foreground;
+    font-size: 13px; /* prototype base font size */
   }
   html {
     @apply font-sans;
   }
+  /* Prototype focus language: 2px solid rgba(79,142,247,.8), offset 2px. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+/* Prototype: prefers-reduced-motion disables transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Workflow state-dot system (prototype "State dot system").
+ * 8x8px circle, 1.5px solid border. Usage:
+ *   <span class="state-dot state-dot--in-progress" aria-hidden="true" />
+ * ------------------------------------------------------------------ */
+.state-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid;
+  position: relative;
+}
+.state-dot--backlog {
+  border-color: var(--color-state-backlog); /* #71717a, hollow */
+}
+.state-dot--todo {
+  border-color: var(--color-state-todo); /* #8d8d96, hollow */
+}
+.state-dot--in-progress {
+  border-color: var(--color-state-in-progress); /* #4f8ef7, dashed */
+  border-style: dashed;
+}
+.state-dot--done {
+  border-color: var(--color-state-done); /* #42c88a, filled */
+  background-color: var(--color-state-done);
+}
+.state-dot--cancelled {
+  border-color: var(--color-state-cancelled); /* #696971, slashed */
+}
+.state-dot--cancelled::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 1px;
+  background-color: var(--color-state-cancelled);
+  transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 /* Mermaid diagrams (C18T5). The fallback code block needs no styling; once
