@@ -619,6 +619,22 @@ queued onboarding follow-up (invites endpoint).
   (zero new backend surface); optimistic update with error rollback;
   Esc cancels, Enter/blur commits; row navigation suppressed while editing.
 
+**Cycle 23 — Test isolation**
+- Per-package test databases (C23T0): new `internal/testdb` — each
+  DB-touching test package gets a fresh, private database
+  (`glance_test_<pkg>`, drop+create+migrate in TestMain, best-effort
+  teardown), killing the whole shared-DB flake class (cross-package row
+  interference) and cross-run row accumulation (the suite no longer
+  self-slows). Identifier-validated DDL, panics on setup failure
+  (no silent skips). Piloted on `internal/mail`.
+- Rollout (C23T1+C23T2): api, auth, service, store, ticker, perf all
+  migrated; redundant `migrateTestDB` helpers + 438 call sites deleted;
+  api's `TRUNCATE rate_limits` dead code removed. The two FLAKES.md
+  `suspected` rows (`TestGetWorkspaceActivityAggregates`,
+  `TestActivityHTTPLimit`/`TestActivityHTTPFeed`) promoted to FIXED —
+  root cause was shared-DB interference, removed by isolation.
+  Test files only; zero production-code changes.
+
 **Cycle 22 — Hardening, proven**
 - `TestDispatcherSingleFlight` root-caused + fixed (C22T0): a test bug,
   not a prod race — the shared outbox table plus `claimDue`'s 25-oldest
