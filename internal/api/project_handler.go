@@ -26,6 +26,9 @@ func RegisterProjectRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.GET("", h.listProjects)
 	g.GET("/:identifier", h.getProject)
 	g.PATCH("/:identifier", h.updateProject)
+	g.DELETE("/:identifier", h.deleteProject)
+	g.POST("/:identifier/archive", h.archiveProject)
+	g.POST("/:identifier/unarchive", h.unarchiveProject)
 	g.GET("/:identifier/states", h.listStates)
 }
 
@@ -47,7 +50,17 @@ func projectError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "identifier already taken", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid identifier: 1-12 letters and digits", nil)
+	case errors.Is(err, service.ErrConfirmMismatch):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "confirm must match the project identifier", nil)
 	default:
+		// ErrProjectDeleteBlocked carries the live-issue count in the
+		// 409 details so the client can name the blocker.
+		var blocked *service.DeleteBlockedError
+		if errors.As(err, &blocked) {
+			return WriteError(c, http.StatusConflict, ErrCodeConflict,
+				"project has non-archived issues; archive them first or retry with ?force=true",
+				map[string]any{"non_archived_issues": blocked.NonArchivedIssues})
+		}
 		return WriteInternalError(c)
 	}
 }
@@ -91,8 +104,12 @@ func (h *ProjectHandler) createProject(c *echo.Context) error {
 }
 
 // listProjects implements GET /api/v1/workspaces/{slug}/projects.
+// Archived projects are excluded by default (sidebar + list + the
+// C18T0 palette all consume this); ?archived=true includes them for the
+// projects page's "Archived" section.
 func (h *ProjectHandler) listProjects(c *echo.Context) error {
-	projects, err := service.ListProjects(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID)
+	includeArchived := c.QueryParam("archived") == "true" || c.QueryParam("archived") == "1"
+	projects, err := service.ListProjects(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, includeArchived)
 	if err != nil {
 		return projectError(c, err)
 	}
@@ -167,4 +184,47 @@ func (h *ProjectHandler) listStates(c *echo.Context) error {
 		return projectError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"states": states})
+}
+
+// archiveProject implements POST /api/v1/workspaces/{slug}/projects/{identifier}/archive.
+// Admin (20) ONLY; members/viewers/guests get 403, non-members 404.
+// Archiving is idempotent (already-archived → 200 with the project) and
+// archives every live issue of the project in the same transaction.
+func (h *ProjectHandler) archiveProject(c *echo.Context) error {
+	p, err := service.ArchiveProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, true)
+	if err != nil {
+		return projectError(c, err)
+	}
+	return c.JSON(http.StatusOK, p)
+}
+
+// unarchiveProject implements POST /api/v1/workspaces/{slug}/projects/{identifier}/unarchive.
+// Admin (20) ONLY. Idempotent (already-live → 200). Issues the archive
+// itself archived are restored; issues archived individually before the
+// project archive stay archived.
+func (h *ProjectHandler) unarchiveProject(c *echo.Context) error {
+	p, err := service.ArchiveProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, false)
+	if err != nil {
+		return projectError(c, err)
+	}
+	return c.JSON(http.StatusOK, p)
+}
+
+// deleteProject implements DELETE /api/v1/workspaces/{slug}/projects/{identifier}.
+// Admin (20) ONLY — the authz gate runs before any other check, so a
+// non-admin learns nothing beyond 403. Safety interlocks:
+//   - ?confirm=<identifier> must match the project identifier (400).
+//   - With >0 non-archived issues the delete is refused with 409 naming
+//     the blocker count, unless ?force=true.
+//
+// 204 on success; the project and all its children are gone.
+func (h *ProjectHandler) deleteProject(c *echo.Context) error {
+	qp := c.QueryParams()
+	force := qp.Get("force") == "true" || qp.Get("force") == "1"
+	err := service.DeleteProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"),
+		CurrentUser(c).ID, qp.Get("confirm"), force)
+	if err != nil {
+		return projectError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
 }

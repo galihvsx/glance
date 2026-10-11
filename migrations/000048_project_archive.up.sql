@@ -1,0 +1,23 @@
+-- 000048_project_archive: project archive/delete (C18T3).
+--
+-- projects.archived_at is NULL = live. Archiving a project is a soft state:
+-- the row stays, archived projects are excluded from the list/sidebar/search
+-- server-side, and the archive transaction sets archived_at on every live
+-- issue of the project in the same transaction (reusing the issue
+-- archived_at semantics: archived issues are hidden from default lists,
+-- analytics, and automation).
+--
+-- FK cascade coverage for hard DELETE (verified against the migration set:
+-- all 14 project_id FKs carry ON DELETE CASCADE — issues, issue_sequences,
+-- states, cycles (+cycle_issues via cycles), modules (+module_issues,
+-- module_members via modules), pages, intake, estimates, labels
+-- (taxonomy), releases, issue_templates, custom_fields, issue_views,
+-- automation_rules, share_links). One ordering hazard: issues.state_id ->
+-- states(id) is NO ACTION, so a bare DELETE FROM projects can hit the
+-- states cascade before the issues cascade and trip the RESTRICT check.
+-- DeleteProject therefore deletes issues explicitly first (their children
+-- cascade), then the project row. No DDL change needed; the C18T3 cascade
+-- test deletes a populated project and asserts every child row is gone.
+--
+-- Idempotent: safe to re-run.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ NULL;

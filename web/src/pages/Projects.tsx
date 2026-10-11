@@ -35,6 +35,9 @@ export default function Projects() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // C18T3: archived projects live in their own section below (the list
+  // endpoint excludes them by default; ?archived=true includes them).
+  const [archived, setArchived] = useState<Project[] | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [identifier, setIdentifier] = useState("");
@@ -58,6 +61,15 @@ export default function Projects() {
     } catch (e) {
       setProjects([]);
       setError(e instanceof ApiError ? e.message : "Failed to load projects");
+    }
+    // Archived projects: separate section, never mixed into the live list.
+    try {
+      const data = await api.get<{ projects: Project[] }>(
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects?archived=true`,
+      );
+      setArchived(data.projects.filter((p) => p.archived_at));
+    } catch {
+      setArchived([]);
     }
   }, [slug]);
 
@@ -275,6 +287,45 @@ export default function Projects() {
               </CardHeader>
             </ActionCard>
           ))}
+        </div>
+      )}
+
+      {/* ---------- Archived (C18T3) ---------- */}
+      {archived !== null && archived.length > 0 && (
+        <div className="mt-8">
+          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Archived
+          </h2>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Hidden from the sidebar and search. Admins can restore a project
+            from its settings → Danger zone.
+          </p>
+          <div className="space-y-3">
+            {archived.map((p) => (
+              <ActionCard
+                key={p.id}
+                role="link"
+                label={`Open archived project ${p.name}`}
+                onActivate={() => navigate(`/w/${slug}/p/${p.identifier}`)}
+              >
+                <CardHeader className="flex flex-row items-center gap-3 space-y-0 opacity-70">
+                  {p.icon ? (
+                    <span className="text-xl leading-none" aria-hidden="true">
+                      {p.icon}
+                    </span>
+                  ) : null}
+                  <Badge variant="outline">{p.identifier}</Badge>
+                  <CardTitle className="text-base">{p.name}</CardTitle>
+                  {p.archived_at && (
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      archived{" "}
+                      {new Date(p.archived_at).toLocaleDateString()}
+                    </span>
+                  )}
+                </CardHeader>
+              </ActionCard>
+            ))}
+          </div>
         </div>
       )}
     </div>

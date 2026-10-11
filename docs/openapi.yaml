@@ -294,7 +294,8 @@
       "get": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List projects in a workspace",
-        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "description": "Archived projects are excluded by default; ?archived=true includes them (the projects page renders them in a separate Archived section).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "archived", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Include archived projects" } ],
         "responses": { "200": { "description": "Project list", "content": { "application/json": { "schema": { "type": "object", "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } } } } } } 
       },
       "post": {
@@ -329,6 +330,31 @@
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Hard-delete a project",
+        "description": "Admin (20) only. Hard-deletes the project and, via FK cascades, everything under it (issues, cycles, modules, pages, views, links). Safety interlocks: ?confirm=<identifier> must match the project identifier (400 on mismatch); with >0 non-archived issues the delete is refused with 409 naming the blocker count unless ?force=true.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "confirm", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Typed confirmation: must equal the project identifier" }, { "name": "force", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Delete even when the project still has non-archived issues" } ],
+        "responses": { "204": { "description": "Deleted" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "description": "Project has non-archived issues; details.non_archived_issues carries the blocker count", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/archive": {
+      "post": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Archive a project",
+        "description": "Admin (20) only. Idempotent. Sets projects.archived_at and, in the same transaction, archives every live issue of the project (reusing the issue archived_at semantics). Archived projects are excluded from the project list, sidebar and global search.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Archived project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/unarchive": {
+      "post": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Restore an archived project",
+        "description": "Admin (20) only. Idempotent. Clears projects.archived_at and restores the issues the archive itself archived; issues archived individually before the project archive stay archived.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Restored project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/imports": {
@@ -2022,6 +2048,7 @@
           "icon": { "type": "string", "nullable": true, "description": "Project emoji icon; single emoji, null = unset" },
           "close_in_days": { "type": "integer", "description": "Cycle-rollover grace in days" },
           "automation_run_retention_days": { "type": "integer", "nullable": true, "description": "Automation run retention window in days; null = 90-day default, 0 = keep forever" },
+          "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Project archive timestamp; null = live. Archived projects are excluded from the project list, sidebar and global search" },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },

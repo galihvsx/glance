@@ -158,6 +158,24 @@ func SearchIssues(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor st
 
 	// The rank expression is deterministic for a fixed query, so keyset
 	// pagination on (rank, id) is stable across pages.
+	//
+	// C18T3: hits whose project is archived are skipped. The filter is
+	// defensive — the projects.archived_at column may be absent (a
+	// database migrated before 000048) — so its presence is probed in Go
+	// and the predicate is only appended when the column exists. (A SQL
+	// OR-guard would NOT work: an unknown column is a parse-time error
+	// regardless of runtime short-circuiting.) Filtering in SQL (not
+	// post-hoc) keeps the keyset pagination page sizes correct.
+	var hasArchivedCol bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name = 'projects' AND column_name = 'archived_at')`).Scan(&hasArchivedCol); err != nil {
+		return nil, err
+	}
+	archivedFilter := ""
+	if hasArchivedCol {
+		archivedFilter = " AND p.archived_at IS NULL"
+	}
 	query := `WITH q AS (SELECT plainto_tsquery('english', $1) AS tsq)
 		SELECT ` + issueColumnsI + `, ` + assigneesAgg + `, ` + labelsAgg + `,
 			ts_rank(i.search, q.tsq) AS rank, p.identifier, w.slug
@@ -166,7 +184,7 @@ func SearchIssues(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor st
 		JOIN workspaces w ON w.id = p.workspace_id
 		JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
 		CROSS JOIN q
-		WHERE i.deleted_at IS NULL AND i.search @@ q.tsq`
+		WHERE i.deleted_at IS NULL AND i.search @@ q.tsq` + archivedFilter
 	args := []any{q, actorID}
 	if cur != nil {
 		query += ` AND (ts_rank(i.search, q.tsq) < $3::float8
