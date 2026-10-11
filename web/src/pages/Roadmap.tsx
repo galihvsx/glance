@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import PageHeader from "../components/shell/PageHeader";
+import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
-import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
+import PriorityBars from "../components/issue/PriorityBars";
 import { api } from "../lib/api";
 import type { Issue, IssueListResult, IssueState } from "../lib/types";
 import { priorityLabel } from "../lib/types";
+import { stateDotClass } from "../lib/stateDot";
 import {
   bucketIssues,
   currentMonthStart,
@@ -28,6 +28,11 @@ import { cn } from "../lib/utils";
  */
 const RANGES = [3, 6, 12] as const;
 type Range = (typeof RANGES)[number];
+
+/** 22px meta chip — the same chip vocabulary as the board cards
+ *  (C19T2 board card anatomy). */
+const roadmapChipClass =
+  "inline-flex h-[22px] items-center gap-[5px] rounded-[4px] border border-border bg-[#111113] px-[6px] text-[9px] text-ink-secondary";
 
 async function fetchAllIssues(path: string): Promise<Issue[]> {
   const issues: Issue[] = [];
@@ -104,34 +109,36 @@ export default function Roadmap() {
         key={issue.id}
         type="button"
         onClick={() => openPeek(issue.id)}
-        className="w-full space-y-1.5 rounded-md border bg-card p-2.5 text-left text-sm shadow-sm transition-colors hover:bg-accent"
+        className="w-full rounded-[6px] border border-border bg-surface p-[10px] text-left transition-[border-color,background-color] duration-150 hover:border-[#3f3f46] hover:bg-[#17171a]"
         title={`${issue.display_id}: ${issue.name}`}
       >
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="font-mono text-[11px]">
+        <div className="flex items-center">
+          <span className="font-mono text-[10px] text-ink-muted">
             {issue.display_id}
-          </Badge>
-          <span className="ml-auto text-[11px] text-muted-foreground">
-            {priorityLabel(issue.priority)}
           </span>
+          {target && (
+            <span className="ml-auto font-mono text-[10px] text-ink-muted">
+              Due {formatDay(target)}
+            </span>
+          )}
         </div>
-        <p className="font-medium leading-snug">{issue.name}</p>
-        <div className="flex flex-wrap items-center gap-2">
+        <p className="mb-[10px] mt-[5px] text-[13px] font-[570] leading-[18px] tracking-[-0.008em] text-ink">
+          {issue.name}
+        </p>
+        <div className="flex flex-wrap gap-[4px]">
           {state && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span className={roadmapChipClass}>
               <span
-                className="h-2 w-2 rounded-full"
-                style={{ backgroundColor: state.color }}
+                className={cn("state-dot", stateDotClass(state.group))}
                 aria-hidden
               />
               {state.name}
             </span>
           )}
-          {target && (
-            <span className="text-[11px] text-muted-foreground">
-              Due {formatDay(target)}
-            </span>
-          )}
+          <span className={roadmapChipClass}>
+            <PriorityBars priority={issue.priority} />
+            {priorityLabel(issue.priority)}
+          </span>
         </div>
       </button>
     );
@@ -141,45 +148,46 @@ export default function Roadmap() {
     <>
       {/* C19T4: shared page header replaces the per-page ProjectNav. */}
       <PageHeader viewName="Roadmap" />
-      <div className="flex h-full flex-col gap-4 p-4">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex h-full flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-center gap-1.5">
           <div
-            className="inline-flex rounded-md border"
+            className="inline-flex h-[30px] items-center rounded-[6px] border border-border bg-[#101012] p-[2px]"
             role="group"
             aria-label="Range"
           >
             {RANGES.map((r) => (
-              <Button
+              <button
                 key={r}
                 type="button"
-                variant={range === r ? "secondary" : "ghost"}
-                size="sm"
-                className={cn(
-                  "rounded-none first:rounded-l-md last:rounded-r-md",
-                  range === r && "font-medium",
-                )}
                 onClick={() => setRange(r)}
+                className={cn(
+                  "h-[24px] rounded-[4px] px-2 text-[10px]",
+                  range === r
+                    ? "bg-raised font-medium text-ink"
+                    : "text-ink-muted hover:text-ink-secondary",
+                )}
               >
                 {r} mo
-              </Button>
+              </button>
             ))}
           </div>
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="sm"
             onClick={() => setAnchor(currentMonthStart())}
+            className={pageHeaderControlClass}
           >
             Today
-          </Button>
-          <span className="text-sm font-medium">{windowLabel}</span>
+          </button>
+          <span className="ml-1 text-[13px] font-semibold text-ink">
+            {windowLabel}
+          </span>
         </div>
 
         {loading && (
-          <div className="text-sm text-muted-foreground">Loading roadmap…</div>
+          <div className="text-[13px] text-ink-muted">Loading roadmap…</div>
         )}
         {error && (
-          <div className="text-sm text-destructive">
+          <div className="text-[13px] text-destructive">
             Failed to load issues.{" "}
             <button
               type="button"
@@ -194,23 +202,25 @@ export default function Roadmap() {
           </div>
         )}
         {!loading && !error && (
-          <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
+          <div className="flex min-h-0 flex-1 gap-[28px] overflow-x-auto px-[18px] pb-[18px] pt-[14px]">
             {columns.map(({ bucket, issues }) => (
               <section
                 key={bucket.month}
                 aria-label={bucket.label}
-                className="flex w-72 shrink-0 flex-col rounded-md border bg-muted/30"
+                className="flex w-[325px] shrink-0 flex-col rounded-[7px] border border-border bg-[#0f0f11] px-[8px] pb-[8px]"
               >
-                <header className="flex items-center justify-between border-b px-3 py-2">
-                  <h3 className="text-sm font-medium">{bucket.label}</h3>
-                  <Badge variant="secondary" className="text-[11px]">
+                <header className="flex h-[42px] items-center gap-[7px] border-b border-border-hairline px-[4px]">
+                  <h3 className="text-[11px] font-semibold text-ink">
+                    {bucket.label}
+                  </h3>
+                  <span className="font-mono text-[10px] text-ink-muted">
                     {issues.length}
-                  </Badge>
+                  </span>
                 </header>
-                <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+                <div className="flex min-h-0 flex-1 flex-col gap-[7px] overflow-y-auto pt-[8px]">
                   {issues.map(renderIssue)}
                   {issues.length === 0 && (
-                    <p className="px-1 py-2 text-xs text-muted-foreground">
+                    <p className="px-1 py-2 text-[11px] text-ink-muted">
                       No issues due this month.
                     </p>
                   )}
@@ -222,20 +232,20 @@ export default function Roadmap() {
                 issue; see roadmapBucket). */}
             <section
               aria-label="Unscheduled"
-              className="flex w-72 shrink-0 flex-col rounded-md border border-dashed bg-muted/10"
+              className="flex w-[325px] shrink-0 flex-col rounded-[7px] border border-dashed border-border bg-transparent px-[8px] pb-[8px]"
             >
-              <header className="flex items-center justify-between border-b border-dashed px-3 py-2">
-                <h3 className="text-sm font-medium text-muted-foreground">
+              <header className="flex h-[42px] items-center gap-[7px] border-b border-dashed border-border-hairline px-[4px]">
+                <h3 className="text-[11px] font-semibold text-ink-muted">
                   Unscheduled
                 </h3>
-                <Badge variant="outline" className="text-[11px]">
+                <span className="font-mono text-[10px] text-ink-muted">
                   {unscheduled.length}
-                </Badge>
+                </span>
               </header>
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+              <div className="flex min-h-0 flex-1 flex-col gap-[7px] overflow-y-auto pt-[8px]">
                 {unscheduled.map(renderIssue)}
                 {unscheduled.length === 0 && (
-                  <p className="px-1 py-2 text-xs text-muted-foreground">
+                  <p className="px-1 py-2 text-[11px] text-ink-muted">
                     Every issue has a target date.
                   </p>
                 )}

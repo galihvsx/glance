@@ -19,8 +19,8 @@ import {
 import { Kbd } from "../components/ui/kbd";
 import { toast } from "../components/ui/toast";
 import { api } from "../lib/api";
-import type {
-  Issue,
+import { stateDotClass } from "../lib/stateDot";
+import type {  Issue,
   IssueLink,
   IssueListResult,
   IssueState,
@@ -63,6 +63,10 @@ const DAY_W = 28;
 const ROW_H = 34;
 const HEADER_H = 56;
 const GUTTER_W = 260;
+
+/** 28px toolbar button in the C19 token ramp (matches PageHeader controls). */
+const ganttControlClass =
+  "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-ink-secondary hover:bg-raised hover:text-ink";
 
 interface ListResultWithLinks extends IssueListResult {
   links?: IssueLink[];
@@ -416,7 +420,7 @@ export default function Gantt() {
       {/* C19T4: shared page header replaces the per-page ProjectNav. */}
       <PageHeader viewName="Timeline" showViews />
       <div
-      className="flex h-full flex-col gap-4 p-4"
+      className="flex h-full flex-col gap-3 p-4"
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         if (linkUi.drawingFrom) {
@@ -427,14 +431,14 @@ export default function Gantt() {
         }
       }}
     >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => go(-1)}
-            className="rounded-md border p-1.5 hover:bg-accent"
+            className={cn(ganttControlClass, "px-1.5")}
             aria-label="Previous month"
           >
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -443,19 +447,19 @@ export default function Gantt() {
               setYear(t.getFullYear());
               setMonth(t.getMonth());
             }}
-            className="rounded-md border px-2 py-1 text-xs hover:bg-accent"
+            className={ganttControlClass}
           >
             Today
           </button>
           <button
             type="button"
             onClick={() => go(1)}
-            className="rounded-md border p-1.5 hover:bg-accent"
+            className={cn(ganttControlClass, "px-1.5")}
             aria-label="Next month"
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-3.5 w-3.5" />
           </button>
-          <span className="text-sm font-medium">
+          <span className="ml-1 text-[13px] font-semibold text-ink">
             {monthLabel(days[0])} – {monthLabel(days[days.length - 1])}
           </span>
           {canEdit && (
@@ -470,23 +474,23 @@ export default function Gantt() {
                 )
               }
               title="Draw dependency edges between issue bars"
-              className="gap-1.5"
+              className="ml-1 h-7 gap-1.5 rounded-md border-border bg-surface text-[11px] text-ink-secondary hover:bg-raised hover:text-ink"
             >
               <Link2 className="h-3.5 w-3.5" />
               {linkUi.linkMode ? "Linking…" : "Add dependencies"}
             </Button>
           )}
           {!canEdit && (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-[11px] text-ink-muted">
               Guest access — timeline is read-only.
             </span>
           )}
         </div>
         {linkUi.linkMode && canEdit && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-[11px] text-ink-muted">
             <span>
               Link mode: drag from one issue bar to another to create a{" "}
-              <span className="font-medium text-foreground">blocks</span>{" "}
+              <span className="font-medium text-ink">blocks</span>{" "}
               dependency. Click an existing edge to remove it.
             </span>
             <span className="flex items-center gap-1">
@@ -496,10 +500,10 @@ export default function Gantt() {
         )}
 
         {loading && (
-          <div className="text-sm text-muted-foreground">Loading timeline…</div>
+          <div className="text-[13px] text-ink-muted">Loading timeline…</div>
         )}
         {error && (
-          <div className="text-sm text-destructive">
+          <div className="text-[13px] text-destructive">
             Failed to load issues.{" "}
             <button
               type="button"
@@ -515,21 +519,21 @@ export default function Gantt() {
           </div>
         )}
         {!loading && !error && rows.length === 0 && (
-          <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border bg-surface p-8 text-center text-[13px] text-ink-muted">
             No issues with dates in this window. Set start or due dates on
             issues to see them on the timeline.
           </div>
         )}
         {!loading && !error && rows.length > 0 && (
-          <div className="overflow-auto rounded-md border">
+          <div className="overflow-auto rounded-md border border-border">
             <div className="flex" style={{ width: GUTTER_W + width }}>
               {/* Left gutter: sticky issue labels */}
               <div
-                className="sticky left-0 z-10 shrink-0 border-r bg-background"
+                className="sticky left-0 z-10 shrink-0 border-r border-border bg-canvas"
                 style={{ width: GUTTER_W }}
               >
                 <div
-                  className="border-b font-medium"
+                  className="border-b border-border"
                   style={{ height: HEADER_H }}
                 />
                 {rows.map((r) => {
@@ -537,9 +541,13 @@ export default function Gantt() {
                     return (
                       <div
                         key={`g-${r.group}`}
-                        className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        className="flex items-center gap-1.5 border-b border-border-hairline bg-raised px-3 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted"
                         style={{ height: ROW_H }}
                       >
+                        <span
+                          className={cn("state-dot", stateDotClass(r.group))}
+                          aria-hidden
+                        />
                         {r.group}
                       </div>
                     );
@@ -548,7 +556,7 @@ export default function Gantt() {
                     return (
                       <div
                         key="unsched"
-                        className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        className="flex items-center border-b border-border-hairline bg-raised px-3 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted"
                         style={{ height: ROW_H }}
                       >
                         Unscheduled
@@ -560,11 +568,11 @@ export default function Gantt() {
                       key={r.issue.id}
                       type="button"
                       onClick={() => openPeek(r.issue.id)}
-                      className="flex w-full items-center gap-1.5 border-b px-3 text-left text-xs hover:bg-accent"
+                      className="flex w-full items-center gap-1.5 border-b border-border-hairline px-3 text-left text-[13px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
                       style={{ height: ROW_H }}
                       title={`${r.issue.display_id}: ${r.issue.name}`}
                     >
-                      <span className="shrink-0 font-mono text-muted-foreground">
+                      <span className="shrink-0 font-mono text-[10px] text-ink-muted">
                         {r.issue.display_id}
                       </span>
                       <span className="truncate">{r.issue.name}</span>
@@ -613,12 +621,12 @@ export default function Gantt() {
                         y={0}
                         width={m.span * DAY_W}
                         height={28}
-                        className="fill-muted/40"
+                        className="fill-raised"
                       />
                       <text
                         x={x + 8}
                         y={19}
-                        className="fill-foreground text-xs font-medium"
+                        className="fill-ink text-[11px] font-medium"
                       >
                         {monthLabel(m.day)}
                       </text>
@@ -639,23 +647,34 @@ export default function Gantt() {
                           y={HEADER_H}
                           width={DAY_W}
                           height={height - HEADER_H}
-                          className="fill-muted/20"
+                          className="fill-wash-hover"
                         />
                       )}
                       {isToday && (
-                        <rect
-                          x={x}
-                          y={0}
-                          width={DAY_W}
-                          height={height}
-                          className="fill-primary/10"
-                        />
+                        <>
+                          <rect
+                            x={x}
+                            y={0}
+                            width={DAY_W}
+                            height={height}
+                            className="fill-accent-blue/10"
+                          />
+                          <line
+                            x1={x}
+                            y1={0}
+                            x2={x}
+                            y2={height}
+                            className="stroke-accent-blue"
+                            strokeWidth={1.5}
+                            opacity={0.7}
+                          />
+                        </>
                       )}
                       <text
                         x={x + DAY_W / 2}
                         y={44}
                         textAnchor="middle"
-                        className="fill-muted-foreground text-[10px]"
+                        className="fill-ink-muted text-[10px]"
                       >
                         {d.slice(8, 10)}
                       </text>
@@ -664,7 +683,7 @@ export default function Gantt() {
                         y1={HEADER_H}
                         x2={x}
                         y2={height}
-                        className="stroke-border"
+                        className="stroke-border-hairline"
                         strokeWidth={1}
                       />
                     </g>
@@ -682,7 +701,7 @@ export default function Gantt() {
                       y={y}
                       width={width}
                       height={ROW_H}
-                      className="fill-muted/40"
+                      className="fill-raised"
                     />
                   );
                 })}
@@ -779,7 +798,9 @@ export default function Gantt() {
                         height={16}
                         rx={4}
                         fill={color}
-                        fillOpacity={0.85}
+                        fillOpacity={0.9}
+                        stroke="rgba(0,0,0,0.3)"
+                        strokeWidth={1}
                         className={cn(
                           canEdit && !linkUi.linkMode && "cursor-grab",
                           canEdit && linkUi.linkMode && "cursor-crosshair",
@@ -816,7 +837,7 @@ export default function Gantt() {
           </div>
         )}
         {patchMutation.isError && (
-          <div className="text-sm text-destructive">
+          <div className="text-[13px] text-destructive">
             Failed to reschedule — the timeline was refreshed.
           </div>
         )}
