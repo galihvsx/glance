@@ -59,7 +59,7 @@ func workspaceError(c *echo.Context, err error) error {
 	case errors.Is(err, service.ErrInvalidSlug):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid slug: use lowercase letters, numbers and hyphens", nil)
 	case errors.Is(err, service.ErrInvalidRole):
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid role: must be 5 (guest), 15 (member) or 20 (admin)", nil)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid role: must be 5 (guest), 10 (viewer), 15 (member) or 20 (admin)", nil)
 	case errors.Is(err, service.ErrBadSlackWebhookURL):
 		// Never echo the URL back: it is a secret, and the rejection
 		// reason is the same for every bad value (no oracle).

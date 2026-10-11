@@ -255,7 +255,7 @@
         "summary": "Add or re-role a member",
         "description": "Admin only.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id", "role"], "properties": { "user_id": { "type": "string", "format": "uuid" }, "role": { "type": "integer", "description": "15 = member, 20 = admin" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id", "role"], "properties": { "user_id": { "type": "string", "format": "uuid" }, "role": { "type": "integer", "description": "5 = guest, 10 = viewer (read-only), 15 = member, 20 = admin" } } } } } },
         "responses": { "200": { "description": "Member upserted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
@@ -274,7 +274,7 @@
         "summary": "Invite registered users by email",
         "description": "Admin only. Every email gets a per-email result (invited | already-member | not-registered | invalid) — unknown emails are results, not errors.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["emails"], "properties": { "emails": { "type": "array", "items": { "type": "string" } }, "role": { "type": "integer" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["emails"], "properties": { "emails": { "type": "array", "items": { "type": "string" } }, "role": { "type": "integer", "description": "0 or omitted = member (15); also accepts 5 = guest, 10 = viewer (read-only), 20 = admin" } } } } } },
         "responses": { "200": { "description": "Per-email results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/InviteResult" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
@@ -1956,7 +1956,7 @@
           "id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
           "slug": { "type": "string" },
-          "role": { "type": "integer", "description": "Caller's role: 15 = member, 20 = admin" },
+          "role": { "type": "integer", "description": "Caller's role: 5 = guest, 10 = viewer (read-only), 15 = member, 20 = admin" },
           "slack_configured": { "type": "boolean", "description": "Whether a Slack incoming-webhook URL is set. The URL itself is never returned." },
           "github_webhook_configured": { "type": "boolean", "description": "Whether a GitHub repo-webhook secret is set. The secret itself is never returned." },
           "created_at": { "type": "string", "format": "date-time" }
@@ -1968,7 +1968,7 @@
           "user_id": { "type": "string", "format": "uuid" },
           "email": { "type": "string" },
           "name": { "type": "string" },
-          "role": { "type": "integer", "description": "15 = member, 20 = admin" }
+          "role": { "type": "integer", "description": "5 = guest, 10 = viewer (read-only), 15 = member, 20 = admin" }
         }
       },
       "InviteResult": {
@@ -2298,7 +2298,7 @@
         "type": "object",
         "properties": {
           "project": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "identifier": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" } } },
-          "role": { "type": "integer", "description": "Caller's workspace role (5 guest, 15 member, 20 admin)" },
+          "role": { "type": "integer", "description": "Caller's workspace role (5 guest, 10 viewer read-only, 15 member, 20 admin)" },
           "summary": { "$ref": "#/components/schemas/AnalyticsSummary" },
           "states": { "type": "array", "items": { "$ref": "#/components/schemas/State" } },
           "activity": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } },

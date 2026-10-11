@@ -36,11 +36,11 @@ package service
 // (15)+ like every other project read; writes need member (15)+,
 // mirroring UpdateProject — the project-settings write convention.
 // The plan's "maintainer/admin (role >= 10?)" hint maps to exactly this:
-// this codebase has no maintainer role (roles are 5/15/20, spaced so a
-// future intermediate slots in), and automation actions only touch issue
+// this codebase has no maintainer role (roles are 5/10/15/20, spaced so
+// a future intermediate still slots in), and automation actions only touch issue
 // fields a member can already change by hand, so the admin-only
 // webhook/Slack convention (role == 20) would over-gate it. Guests (5)
-// get ErrForbidden on both paths.
+// and viewers (10) get ErrForbidden on the write paths.
 
 import (
 	"context"
