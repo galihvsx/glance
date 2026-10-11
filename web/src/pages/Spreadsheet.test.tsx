@@ -2,7 +2,7 @@
 // C20T2: spreadsheet Cycle/Module/Release columns — chip rendering,
 // membership wiring via ?include_project_structure=1, and sort behavior
 // (empty cells sort last, matching the existing spreadsheet convention).
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -53,6 +53,34 @@ const structures: Record<string, IssueProjectStructure> = {
   i3: { modules: [] },
 };
 
+// C20T3: states + members fixtures for the inline-editing tests. The
+// pre-existing C20T2 tests never open the new-issue dialog or the assignee
+// popover, so the richer fixtures don't affect them.
+const states = [
+  {
+    id: "s",
+    project_id: "proj-1",
+    name: "Backlog",
+    group: "backlog",
+    color: "#999999",
+    sequence: 0,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "s2",
+    project_id: "proj-1",
+    name: "In Progress",
+    group: "started",
+    color: "#3b82f6",
+    sequence: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+];
+
+const members = [{ id: "u2", name: "Ada", email: "ada@example.com", role: 1 }];
+
 const BASE = "/api/v1/workspaces/acme/projects/ENG";
 
 vi.mock("../lib/api", () => ({
@@ -65,10 +93,10 @@ vi.mock("../lib/api", () => ({
         return Promise.resolve({ project_structure: structures[id] });
       }
       if (path.includes("/states")) {
-        return Promise.resolve({ states: [] });
+        return Promise.resolve({ states });
       }
       if (path.includes("/members")) {
-        return Promise.resolve({ members: [] });
+        return Promise.resolve({ members });
       }
       if (path.includes("/labels")) {
         return Promise.resolve({ labels: [] });
@@ -98,7 +126,18 @@ vi.mock("../lib/api", () => ({
     patch: vi.fn(),
     del: vi.fn(),
   },
-  ApiError: class ApiError extends Error {},
+  // Mirror the real ApiError constructor (status, body, ...) so tests can
+  // construct errors the same way production code does.
+  ApiError: class ApiError extends Error {
+    code?: string;
+    details?: unknown;
+    constructor(status: number, body: string, code?: string, details?: unknown) {
+      super(body || `Request failed with status ${status}`);
+      this.name = "ApiError";
+      this.code = code;
+      this.details = details;
+    }
+  },
 }));
 
 vi.mock("../lib/auth", () => ({
@@ -226,5 +265,160 @@ describe("Spreadsheet Cycle/Module/Release columns", () => {
     labels = rowLabels();
     expect(labels[0]).toMatch(/ENG-1/);
     expect(labels.slice(1).join(" ")).toMatch(/ENG-2.*ENG-3/);
+  });
+});
+
+describe("Spreadsheet inline cell editing (C20T3)", () => {
+  async function renderReady() {
+    renderSpreadsheet();
+    await screen.findByRole("button", { name: "Sort by Cycle" });
+    return userEvent.setup();
+  }
+
+  function eng1() {
+    return screen.getByRole("link", { name: /Open issue ENG-1/ });
+  }
+
+  it("commits a state change through PATCH .../issues/{id}", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    await user.click(within(row).getByTitle("Click to edit state"));
+    const select = screen.getByLabelText("Edit state for ENG-1");
+    expect(select).toBeInTheDocument();
+
+    const { api } = await import("../lib/api");
+    (api.patch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...issues[0],
+      state_id: "s2",
+    });
+    await user.selectOptions(select, "s2");
+
+    expect(api.patch).toHaveBeenCalledWith(
+      expect.stringContaining("/issues/i1"),
+      { state_id: "s2" },
+    );
+    // Editor closes after commit.
+    expect(
+      screen.queryByLabelText("Edit state for ENG-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("optimistically updates priority and rolls back on PATCH failure", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    const { api, ApiError } = await import("../lib/api");
+    const patchMock = api.patch as ReturnType<typeof vi.fn>;
+    let rejectPatch!: (e: unknown) => void;
+    patchMock.mockImplementationOnce(
+      () =>
+        new Promise((_res, rej) => {
+          rejectPatch = rej;
+        }),
+    );
+
+    await user.click(within(row).getByTitle("Click to edit priority"));
+    const select = screen.getByLabelText("Edit priority for ENG-1");
+    await user.selectOptions(select, "3");
+
+    // PATCH still pending → optimistic value is visible.
+    expect(within(row).getByText("High")).toBeInTheDocument();
+
+    // Fail the request → rollback to the previous value + error banner.
+    await act(async () => {
+      rejectPatch(new ApiError(500, "nope"));
+    });
+    expect(within(row).getByText("None")).toBeInTheDocument();
+    expect(await screen.findByText("nope")).toBeInTheDocument();
+  });
+
+  it("commits a start-date edit on Enter", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    await user.click(within(row).getByTitle("Click to edit start date"));
+    const input = screen.getByLabelText(
+      "Edit start date for ENG-1",
+    ) as HTMLInputElement;
+
+    const { api } = await import("../lib/api");
+    (api.patch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({});
+    fireEvent.change(input, { target: { value: "2026-03-04" } });
+    await user.keyboard("{Enter}");
+
+    expect(api.patch).toHaveBeenCalledWith(
+      expect.stringContaining("/issues/i1"),
+      { start_date: "2026-03-04" },
+    );
+  });
+
+  it("commits a target-date edit on blur", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    await user.click(within(row).getByTitle("Click to edit target date"));
+    const input = screen.getByLabelText(
+      "Edit target date for ENG-1",
+    ) as HTMLInputElement;
+
+    const { api } = await import("../lib/api");
+    (api.patch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({});
+    fireEvent.change(input, { target: { value: "2026-04-05" } });
+    // Tab away → blur commits.
+    await user.tab();
+
+    expect(api.patch).toHaveBeenCalledWith(
+      expect.stringContaining("/issues/i1"),
+      { target_date: "2026-04-05" },
+    );
+  });
+
+  it("cancels a date edit on Escape without PATCHing", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    await user.click(within(row).getByTitle("Click to edit target date"));
+    const input = screen.getByLabelText(
+      "Edit target date for ENG-1",
+    ) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: "2026-05-06" } });
+    await user.keyboard("{Escape}");
+
+    const { api } = await import("../lib/api");
+    expect(api.patch).not.toHaveBeenCalled();
+    expect(
+      screen.queryByLabelText("Edit target date for ENG-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("toggles an assignee through the relation endpoint with optimistic update", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    const { api } = await import("../lib/api");
+    // Never resolve: no refetch, so the optimistic badge stays put.
+    (api.post as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+
+    // Unassigned → the picker trigger shows an em dash.
+    const trigger = within(row).getByRole("button", { name: "—" });
+    await user.click(trigger);
+    const checkbox = await screen.findByRole("checkbox", { name: "Ada" });
+    await user.click(checkbox);
+
+    expect(api.post).toHaveBeenCalledWith(
+      expect.stringContaining("/issues/i1/assignees/u2"),
+    );
+    expect(await within(row).findByText("Ada")).toBeInTheDocument();
+  });
+
+  it("does not navigate to the issue when opening a cell editor", async () => {
+    const user = await renderReady();
+    const row = eng1();
+    await user.click(within(row).getByTitle("Click to edit state"));
+    // Editor opened instead of navigation: the select is in the document
+    // and the row is still on the spreadsheet (no navigation happened —
+    // navigation would unmount the table).
+    expect(
+      screen.getByLabelText("Edit state for ENG-1"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
   });
 });
