@@ -17,7 +17,6 @@ import type {
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
 import { Button } from "../components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -33,8 +32,8 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
+import PriorityBars from "../components/issue/PriorityBars";
 import StatePicker from "../components/issue/StatePicker";
-import StateBadge from "../components/issue/StateBadge";
 import PageHeader, {
   pageHeaderControlClass,
 } from "../components/shell/PageHeader";
@@ -56,6 +55,7 @@ import {
   type IssueFilters,
 } from "../lib/filters";
 import { useShortcutAction } from "../lib/shortcuts";
+import { stateDotClass } from "../lib/stateDot";
 import { cn } from "../lib/utils";
 
 const PER_PAGE = 25;
@@ -104,7 +104,7 @@ type SortKey =
   | "updated_at";
 
 const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
-  { key: "display_id", label: "ID", className: "w-24" },
+  { key: "display_id", label: "ID", className: "w-28" },
   { key: "name", label: "Title", className: "min-w-64" },
   { key: "state", label: "State", className: "min-w-36" },
   { key: "priority", label: "Priority", className: "w-28" },
@@ -442,19 +442,20 @@ export default function Spreadsheet() {
         {/* Filter toolbar — same query params as the list view */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <form onSubmit={onSearchSubmit} className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-ink-muted" />
             <Input
               ref={searchRef}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search issues…  ( / )"
-              className="w-56 pl-8"
+              className="w-56 bg-surface pl-8 text-[13px]"
             />
           </form>
           {hasActiveFilters && (
             <Button
               variant="ghost"
               size="sm"
+              className="text-ink-secondary hover:bg-wash-hover hover:text-ink"
               onClick={() => {
                 clearFilters();
                 setSearchInput("");
@@ -482,44 +483,42 @@ export default function Spreadsheet() {
             <Skeleton className="h-64 w-full" />
           </div>
         ) : sortedIssues.length === 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                {hasActiveFilters ? "No issues match" : "No issues yet"}
-              </CardTitle>
-              <CardDescription>
-                {hasActiveFilters
-                  ? "Try clearing the filters."
-                  : "Create the first issue in this project."}
-              </CardDescription>
-            </CardHeader>
-          </Card>
+          <div className="rounded-lg border border-border bg-surface px-6 py-12 text-center">
+            <p className="text-[13px] font-medium text-ink">
+              {hasActiveFilters ? "No issues match" : "No issues yet"}
+            </p>
+            <p className="mt-1 text-[12px] text-ink-muted">
+              {hasActiveFilters
+                ? "Try clearing the filters."
+                : "Create the first issue in this project."}
+            </p>
+          </div>
         ) : (
           <>
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full min-w-[1200px] border-collapse text-sm">
+            <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+              <table className="w-full min-w-[1200px] border-collapse text-[13px] text-ink">
                 <thead className="sticky top-0 z-20">
-                  <tr className="border-b bg-muted/80 backdrop-blur">
+                  <tr className="border-b border-border-hairline">
                     {COLUMNS.map((col, ci) => {
                       const active = sortKey === col.key;
                       return (
                         <th
                           key={col.key}
                           className={cn(
-                            "px-3 py-2.5 text-left align-middle",
+                            "bg-surface px-3 py-2 text-left align-middle",
                             col.className,
                             ci === 0 &&
-                              "sticky left-0 z-30 border-r bg-muted shadow-[1px_0_0_0_var(--border)]",
+                              "sticky left-0 z-30 border-r border-border-hairline",
                           )}
                         >
                           <button
                             type="button"
                             onClick={() => toggleSort(col.key)}
                             className={cn(
-                              "inline-flex items-center gap-1.5 font-medium hover:text-foreground",
+                              "inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] font-medium",
                               active
-                                ? "text-foreground"
-                                : "text-muted-foreground",
+                                ? "text-accent-blue"
+                                : "text-ink-muted hover:text-ink-secondary",
                             )}
                             aria-label={`Sort by ${col.label}`}
                             aria-sort={
@@ -533,9 +532,15 @@ export default function Spreadsheet() {
                             {col.label}
                             {active ? (
                               sortDir === "asc" ? (
-                                <ArrowUp className="h-3.5 w-3.5" aria-hidden />
+                                <ArrowUp
+                                  className="h-3.5 w-3.5 text-accent-blue"
+                                  aria-hidden
+                                />
                               ) : (
-                                <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+                                <ArrowDown
+                                  className="h-3.5 w-3.5 text-accent-blue"
+                                  aria-hidden
+                                />
                               )
                             ) : (
                               <ArrowUpDown
@@ -553,10 +558,10 @@ export default function Spreadsheet() {
                     {visibleCfFields.map((f) => (
                       <th
                         key={`cf-${f.id}`}
-                        className="min-w-36 px-3 py-2.5 text-left align-middle"
+                        className="min-w-36 bg-surface px-3 py-2 text-left align-middle"
                       >
                         <span
-                          className="inline-flex items-center gap-1.5 font-medium text-muted-foreground"
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] font-medium text-ink-muted"
                           title={`Custom field — read-only in the spreadsheet`}
                         >
                           {f.name}
@@ -580,27 +585,40 @@ export default function Spreadsheet() {
                             openIssue(issue);
                           }
                         }}
-                        className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                        className="cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
                       >
-                        <td className="sticky left-0 z-10 border-r bg-background px-3 py-2.5 align-middle">
-                          <Badge variant="outline" className="font-mono">
+                        <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
+                          <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
                             {issue.display_id || issue.id.slice(0, 8)}
-                          </Badge>
+                          </span>
                         </td>
-                        <td className="max-w-64 truncate px-3 py-2.5 align-middle font-medium">
+                        <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
                           {issue.name}
                         </td>
-                        <td className="px-3 py-2.5 align-middle">
+                        <td className="px-3 py-2 align-middle">
                           {state ? (
-                            <StateBadge state={state} />
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                className={`state-dot ${stateDotClass(state.group)}`}
+                                aria-hidden="true"
+                              />
+                              <span className="text-[13px] text-ink-secondary">
+                                {state.name}
+                              </span>
+                            </span>
                           ) : (
-                            <span className="text-muted-foreground">—</span>
+                            <span className="text-[13px] text-ink-muted">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 align-middle">
-                          {priorityLabel(issue.priority)}
+                        <td className="px-3 py-2 align-middle">
+                          <span className="inline-flex items-center gap-1.5">
+                            <PriorityBars priority={issue.priority} />
+                            <span className="text-[13px] text-ink-secondary">
+                              {priorityLabel(issue.priority)}
+                            </span>
+                          </span>
                         </td>
-                        <td className="px-3 py-2.5 align-middle">
+                        <td className="px-3 py-2 align-middle">
                           {issue.assignees.length > 0 ? (
                             <span className="flex flex-wrap gap-1">
                               {issue.assignees.map((a) => (
@@ -614,10 +632,10 @@ export default function Spreadsheet() {
                               ))}
                             </span>
                           ) : (
-                            <span className="text-muted-foreground">—</span>
+                            <span className="text-[13px] text-ink-muted">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 align-middle">
+                        <td className="px-3 py-2 align-middle">
                           {issue.labels.length > 0 ? (
                             <span className="flex flex-wrap gap-1">
                               {issue.labels.map((l) => (
@@ -636,19 +654,19 @@ export default function Spreadsheet() {
                               ))}
                             </span>
                           ) : (
-                            <span className="text-muted-foreground">—</span>
+                            <span className="text-[13px] text-ink-muted">—</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.start_date)}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.target_date)}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.created_at)}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">
+                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.updated_at)}
                         </td>
                         {/*
@@ -663,7 +681,7 @@ export default function Spreadsheet() {
                         {visibleCfFields.map((f) => (
                           <td
                             key={`cf-${f.id}`}
-                            className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground"
+                            className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
                           >
                             {formatCustomValue(
                               f,
