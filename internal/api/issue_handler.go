@@ -281,9 +281,10 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // parseIssueListInput parses the query params shared by the issue list
 // and the export endpoint (C8T3), so both honor identical filter
 // semantics. Pagination/sort params (per_page, cursor, order_by,
-// fields, include_links) are parsed for the list; exporters ignore them.
-// A non-nil error is always a 400-class client error with a
-// human-readable message.
+// fields) and ?include_project_structure=1 (C21T2: batched
+// cycle/module/release membership on list rows) are parsed for the list;
+// exporters ignore them. A non-nil error is always a 400-class client
+// error with a human-readable message.
 func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 
 	var priorities []int
@@ -416,6 +417,12 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		Draft:          draft,
 		SequenceID:     sequenceID,
 		Fields:         fields,
+		// C21T2: batched project-structure on the list endpoint — the
+		// cycle/module/release membership rides on every returned row in
+		// ONE query, replacing the spreadsheet's old per-row
+		// ?include_project_structure=1 detail fetches. Same truthy
+		// parsing as the detail endpoint's flag.
+		IncludeProjectStructure: qp.Get("include_project_structure") == "1" || qp.Get("include_project_structure") == "true",
 	}, nil
 }
 

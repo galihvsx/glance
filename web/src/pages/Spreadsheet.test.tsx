@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 // C20T2: spreadsheet Cycle/Module/Release columns — chip rendering,
-// membership wiring via ?include_project_structure=1, and sort behavior
-// (empty cells sort last, matching the existing spreadsheet convention).
+// batched membership wiring (the list query carries
+// ?include_project_structure=1, resolved server-side in one query — C21T2
+// killed the old per-row N+1), and sort behavior (empty cells sort last,
+// matching the existing spreadsheet convention).
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -86,12 +88,6 @@ const BASE = "/api/v1/workspaces/acme/projects/ENG";
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((path: string) => {
-      // C20T2 per-row membership fetch — must precede the generic /issues
-      // branch below.
-      if (path.includes("include_project_structure=1")) {
-        const id = path.split("/issues/")[1].split("?")[0];
-        return Promise.resolve({ project_structure: structures[id] });
-      }
       if (path.includes("/states")) {
         return Promise.resolve({ states });
       }
@@ -111,7 +107,15 @@ vi.mock("../lib/api", () => ({
         return Promise.resolve({ views: [] });
       }
       if (path.includes("/issues")) {
-        return Promise.resolve({ results: issues, next_cursor: undefined });
+        // C21T2: the list carries project_structure batched on every row —
+        // one request, no per-row ?include_project_structure=1 fetches.
+        return Promise.resolve({
+          results: issues.map((i) => ({
+            ...i,
+            project_structure: structures[i.id],
+          })),
+          next_cursor: undefined,
+        });
       }
       if (path === BASE) {
         return Promise.resolve({
@@ -191,21 +195,22 @@ describe("Spreadsheet Cycle/Module/Release columns", () => {
     ).toBeInTheDocument();
   });
 
-  it("fetches per-row membership via ?include_project_structure=1", async () => {
-    const { container } = renderSpreadsheet();
-    await screen.findByRole("button", { name: "Sort by Cycle" });
+  it("fetches membership batched with the list query — one request, no per-row N+1", async () => {
+    renderSpreadsheet();
     // Wait for the membership chips to render before asserting on calls.
     await screen.findByTitle("Sprint 1");
     const { api } = await import("../lib/api");
     const getMock = api.get as ReturnType<typeof vi.fn>;
-    for (const id of ["i1", "i2", "i3"]) {
-      expect(getMock).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `/issues/${id}?include_project_structure=1`,
-        ),
-      );
-    }
-    void container;
+    const calls = getMock.mock.calls.map(
+      (args: unknown[]) => args[0] as string,
+    );
+    // Exactly one list request, carrying the flag.
+    const listCalls = calls.filter((p) => p.includes("/issues?"));
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0]).toContain("include_project_structure=1");
+    // No per-row issue fetches anymore (the C20T2 useQueries N+1 is gone).
+    const perRow = calls.filter((p) => /\/issues\/[^?]+\?/.test(p));
+    expect(perRow).toHaveLength(0);
   });
 
   it("renders cycle/module/release chips; empty cells show an em dash", async () => {

@@ -98,6 +98,10 @@ function buildIssuePath(
   const p = toApiParams(f);
   p.set("per_page", String(PER_PAGE));
   if (cursor) p.set("cursor", cursor);
+  // C21T2: batched project-structure — every returned row carries its
+  // cycle/module/release membership (one server-side query), replacing
+  // the old per-row ?include_project_structure=1 detail fetches.
+  p.set("include_project_structure", "1");
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
 
@@ -161,9 +165,9 @@ function cellValue(
       return issue.created_at;
     case "updated_at":
       return issue.updated_at;
-    // C20T2: membership comes from the per-row
-    // ?include_project_structure=1 fetch (structureByIssue), never from
-    // the list rows.
+    // C21T2: membership comes from the batched
+    // ?include_project_structure=1 list query (structureByIssue), never
+    // from per-row fetches.
     case "cycle":
       return structure?.cycle?.name.toLowerCase() ?? "";
     case "module": {
@@ -473,33 +477,20 @@ export default function Spreadsheet() {
     [issues, cfValueQueries],
   );
 
-  // C20T2: per-row cycle/module/release membership. The list endpoint
-  // deliberately never carries project_structure (C19T3 attached it to the
-  // issue detail endpoint only, keeping the list query untouched for perf),
-  // so each visible issue is fetched once via ?include_project_structure=1
-  // — the same per-row pattern C9T4 uses for custom values, and zero new
-  // backend surface. Cache key is distinct from the detail page's
-  // ["issue", ...] key (different data shape) with a 60s stale time.
-  const structureQueries = useQueries({
-    queries: issues.map((issue) => ({
-      queryKey: ["issue-project-structure", slug, identifier, issue.id],
-      queryFn: () =>
-        api
-          .get<Issue>(
-            `${base}/issues/${encodeURIComponent(issue.id)}?include_project_structure=1`,
-          )
-          .then((d) => d.project_structure ?? { modules: [] }),
-      staleTime: 60_000,
-    })),
-  });
+  // C21T2: cycle/module/release membership rides on the list rows —
+  // the list query passes ?include_project_structure=1 and the server
+  // resolves it batched in one query, so the old per-row useQueries N+1
+  // (one ?include_project_structure=1 detail fetch per visible issue) is
+  // gone. Rows without membership carry { modules: [] } with
+  // cycle/release omitted, exactly like the detail shape.
   const structureByIssue = useMemo(
     () =>
       new Map(
         issues.map(
-          (issue, i) => [issue.id, structureQueries[i]?.data] as const,
+          (issue) => [issue.id, issue.project_structure] as const,
         ),
       ),
-    [issues, structureQueries],
+    [issues],
   );
   const sortedIssues = useMemo(() => {
     if (!sortKey) return issues;
@@ -976,11 +967,11 @@ export default function Spreadsheet() {
                         <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.updated_at)}
                         </td>
-                        {/* C20T2: cycle/module/release membership columns.
-                            Membership is wired via per-row
-                            ?include_project_structure=1 (structureByIssue)
-                            — no new backend surface. Read-only; inline
-                            editing is C20T3. */}
+                        {/* C20T2 columns, C21T2 batched: cycle/module/release
+                            membership comes from the list rows'
+                            ?include_project_structure=1 (structureByIssue) —
+                            resolved server-side in one query, no per-row
+                            fetches. Read-only; inline editing is C20T3. */}
                         <td className="px-3 py-2 align-middle">
                           {structure?.cycle ? (
                             <Badge

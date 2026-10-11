@@ -105,8 +105,10 @@ export interface Issue {
   /** Custom values keyed by field_id; present only on the detail endpoint
    *  fetched with ?include_custom=1 (C7T3). */
   custom_values?: Record<string, CustomValue>;
-  /** Project-structure membership; present only on the detail endpoint
-   *  fetched with ?include_project_structure=1 (C19T3). */
+  /** Project-structure membership; present on the detail endpoint when
+   *  fetched with ?include_project_structure=1 (C19T3), and on every row
+   *  of the list endpoint when fetched with ?include_project_structure=1
+   *  (C21T2: batched server-side, one query). */
   project_structure?: IssueProjectStructure;
   sort_order: number;
   start_date?: string | null;
@@ -131,7 +133,9 @@ export interface NamedRef {
 }
 
 /** Cycle/module/release membership of an issue; present on the detail
- *  endpoint only when fetched with ?include_project_structure=1 (C19T3).
+ *  endpoint when fetched with ?include_project_structure=1 (C19T3), and on
+ *  every list row when the list is fetched with ?include_project_structure=1
+ *  (C21T2: resolved batched server-side in one query).
  *  Feeds the Properties > Project structure group in the peek panel. */
 export interface IssueProjectStructure {
   cycle?: NamedRef | null;
