@@ -10,10 +10,9 @@ import { api, ApiError } from "../lib/api";
 import type {
   Issue,
   IssueState,
-  Project,
   Release,
 } from "../lib/types";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
 import { Button } from "../components/ui/button";
@@ -143,10 +142,6 @@ export default function Releases() {
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const releasesKey = ["releases", slug, identifier] as const;
 
-  const projectQuery = useQuery({
-    queryKey: ["project", slug, identifier],
-    queryFn: () => api.get<Project>(base),
-  });
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
     queryFn: () =>
@@ -360,455 +355,436 @@ export default function Releases() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-4xl p-6">
-      <div className="mb-4">
-        <Link
-          to={`/w/${slug}`}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← Projects
-        </Link>
-        <div className="mt-1 flex items-start justify-between gap-4">
-          <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight">
-            {projectQuery.data ? (
-              <>
-                <Badge>{projectQuery.data.identifier}</Badge>
-                {projectQuery.data.name}
-              </>
-            ) : (
-              <Skeleton className="h-8 w-48" />
-            )}
-          </h1>
-          <div className="flex items-center gap-2">
-            <Button onClick={openCreate} className="gap-2">
-              <Plus className="h-4 w-4" />
-              New release
-            </Button>
-          </div>
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Releases"
+        count={releases.length}
+        addButton={{ label: "New release", onClick: openCreate }}
+      />
+      <div className="mx-auto w-full max-w-4xl p-6">
+
+        {releasesQuery.isError && (
+          <Alert variant="destructive" className="mt-4">
+            <AlertDescription>
+              {releasesQuery.error instanceof ApiError
+                ? releasesQuery.error.message
+                : "Failed to load releases"}
+            </AlertDescription>
+          </Alert>
+        )}
+        {formError && (
+          <Alert variant="destructive" className="mt-4">
+            <AlertDescription>{formError}</AlertDescription>
+          </Alert>
+        )}
+
+        <div className="mt-4">
+          {releasesQuery.isPending ? (
+            <div className="space-y-3">
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : selected ? (
+            <ReleaseDetail
+              release={selected}
+              states={states}
+              issues={releaseIssuesQuery.data ?? []}
+              issuesLoading={releaseIssuesQuery.isPending}
+              onBack={() => setSelectedId(null)}
+              onEdit={() => openEdit(selected)}
+              onDelete={() => openDelete(selected)}
+              onAdd={() => {
+                setPicked(new Set());
+                setFormError(null);
+                setAddOpen(true);
+              }}
+              onRemove={(id) => removeIssueMutation.mutate(id)}
+              onMarkReleased={() => markReleasedMutation.mutate(selected)}
+              markReleasedPending={markReleasedMutation.isPending}
+              slug={slug}
+              identifier={identifier}
+            />
+          ) : releases.length === 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>No releases yet</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">
+                  Plan your project's milestones — mark what ships in each
+                  release, then track progress as issues close.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {releases.map((r) => (
+                <ActionCard
+                  key={r.id}
+                  role="button"
+                  label={`Select release ${r.name}`}
+                  aria-pressed={selectedId === r.id}
+                  onActivate={() => setSelectedId(r.id)}
+                >
+                  <CardHeader className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-base font-medium">
+                        {r.name}
+                      </CardTitle>
+                      <Badge variant={statusVariant(r.status)} className="ml-auto">
+                        {r.status}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {fmtDate(r.release_date)} · {r.issue_count} issue
+                      {r.issue_count === 1 ? "" : "s"}
+                    </p>
+                  </CardHeader>
+                </ActionCard>
+              ))}
+            </div>
+          )}
         </div>
+
+        <ReleaseFormDialog
+          key={`${editing?.id ?? "new"}-${formOpen ? "open" : "closed"}`}
+          open={formOpen}
+          onOpenChange={setFormOpen}
+          initial={editing ? formFromRelease(editing) : emptyForm()}
+          pending={createMutation.isPending || updateMutation.isPending}
+          error={formError}
+          onSubmit={submitForm}
+          title={editing ? "Edit release" : "New release"}
+          submitLabel={editing ? "Save changes" : "Create release"}
+        />
+
+        {/* Add-issues dialog */}
+        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+          <DialogContent className="max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Add issues to {selected?.name}</DialogTitle>
+              <DialogDescription>
+                Select issues to include in this release. Issues already in the
+                release are checked and can't be picked again.
+              </DialogDescription>
+            </DialogHeader>
+            {formError && (
+              <Alert variant="destructive">
+                <AlertDescription>{formError}</AlertDescription>
+              </Alert>
+            )}
+            {allIssuesQuery.isPending ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {(allIssuesQuery.data ?? []).map((i) => {
+                  const already = inRelease.has(i.id);
+                  return (
+                    <label
+                      key={i.id}
+                      className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
+                      already ? "opacity-50" : ""
+                    }`}
+                    >
+                      <Checkbox
+                        checked={already || picked.has(i.id)}
+                        disabled={already}
+                        onCheckedChange={() => togglePicked(i.id)}
+                      />
+                      <Badge variant="outline" className="font-mono text-[11px]">
+                        {i.display_id}
+                      </Badge>
+                      <span className="truncate">{i.name}</span>
+                    </label>
+                  );
+                })}
+                {(allIssuesQuery.data ?? []).length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No issues in this project yet.
+                  </p>
+                )}
+              </div>
+            )}
+            <DialogFooter>
+              <Button
+                disabled={addIssuesMutation.isPending || picked.size === 0}
+                onClick={() => addIssuesMutation.mutate([...picked])}
+              >
+                {addIssuesMutation.isPending
+                  ? "Adding…"
+                  : `Add ${picked.size} issue${picked.size === 1 ? "" : "s"}`}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete confirmation — escalates on 409 to reassign / force-detach */}
+        <Dialog
+          open={deleteTarget !== null}
+          onOpenChange={(o) => {
+            if (!o) {
+              setDeleteTarget(null);
+              setDeleteConflict(false);
+              setReassignTo("");
+            }
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete release "{deleteTarget?.name}"?</DialogTitle>
+              <DialogDescription>
+                {deleteConflict ? (
+                  <>
+                    This release still has {deleteTarget?.issue_count} issue
+                    {deleteTarget?.issue_count === 1 ? "" : "s"}. Move them to
+                    another release, or detach them (they'll be kept, just
+                    unassigned).
+                  </>
+                ) : deleteTarget && deleteTarget.issue_count > 0 ? (
+                  <>
+                    This release has {deleteTarget.issue_count} issue
+                    {deleteTarget.issue_count === 1 ? "" : "s"}.
+                  </>
+                ) : (
+                  "This can't be undone."
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            {deleteConflict && (
+              <div className="space-y-2">
+                <Label htmlFor="r-reassign">Move issues to another release</Label>
+                <NativeSelect
+                  id="r-reassign"
+                  value={reassignTo}
+                  onChange={(e) => setReassignTo(e.target.value)}
+                >
+                  <NativeSelectOption value="">
+                    — or detach them (force) —
+                  </NativeSelectOption>
+                  {reassignCandidates.map((r) => (
+                    <NativeSelectOption key={r.id} value={r.id}>
+                      {r.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </div>
+            )}
+            {formError && (
+              <Alert variant="destructive">
+                <AlertDescription>{formError}</AlertDescription>
+              </Alert>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteConflict(false);
+                  setReassignTo("");
+                }}
+              >
+                Cancel
+              </Button>
+              {deleteConflict ? (
+                <Button
+                  variant="destructive"
+                  disabled={deleteWithOptionMutation.isPending}
+                  onClick={() =>
+                    deleteTarget &&
+                    deleteWithOptionMutation.mutate(deleteTarget)
+                  }
+                >
+                  {deleteWithOptionMutation.isPending
+                    ? "Deleting…"
+                    : reassignTo
+                      ? "Move issues & delete"
+                      : "Detach issues & delete"}
+                </Button>
+              ) : (
+                <Button
+                  variant="destructive"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+                >
+                  {deleteMutation.isPending ? "Deleting…" : "Delete release"}
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
-      <ProjectNav />
+    </div>
+    );
+  }
 
-      {releasesQuery.isError && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>
-            {releasesQuery.error instanceof ApiError
-              ? releasesQuery.error.message
-              : "Failed to load releases"}
-          </AlertDescription>
-        </Alert>
-      )}
-      {formError && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
-      )}
+  function ReleaseDetail({
+    release,
+    states,
+    issues,
+    issuesLoading,
+    onBack,
+    onEdit,
+    onDelete,
+    onAdd,
+    onRemove,
+    onMarkReleased,
+    markReleasedPending,
+    slug,
+    identifier,
+  }: {
+    release: Release;
+    states: IssueState[];
+    issues: Issue[];
+    issuesLoading: boolean;
+    onBack: () => void;
+    onEdit: () => void;
+    onDelete: () => void;
+    onAdd: () => void;
+    onRemove: (issueId: string) => void;
+    onMarkReleased: () => void;
+    markReleasedPending: boolean;
+    slug: string;
+    identifier: string;
+  }) {
+    const counts = progressCounts(issues, states);
+    const total = counts.open + counts.inProgress + counts.done;
 
-      <div className="mt-4">
-        {releasesQuery.isPending ? (
-          <div className="space-y-3">
-            <Skeleton className="h-28 w-full" />
-            <Skeleton className="h-28 w-full" />
-          </div>
-        ) : selected ? (
-          <ReleaseDetail
-            release={selected}
-            states={states}
-            issues={releaseIssuesQuery.data ?? []}
-            issuesLoading={releaseIssuesQuery.isPending}
-            onBack={() => setSelectedId(null)}
-            onEdit={() => openEdit(selected)}
-            onDelete={() => openDelete(selected)}
-            onAdd={() => {
-              setPicked(new Set());
-              setFormError(null);
-              setAddOpen(true);
-            }}
-            onRemove={(id) => removeIssueMutation.mutate(id)}
-            onMarkReleased={() => markReleasedMutation.mutate(selected)}
-            markReleasedPending={markReleasedMutation.isPending}
-            slug={slug}
-            identifier={identifier}
-          />
-        ) : releases.length === 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>No releases yet</CardTitle>
-            </CardHeader>
-            <CardContent>
+    const grouped = useMemo(() => {
+      const groupOf = new Map(states.map((s) => [s.id, s.group]));
+      const buckets = new Map<string, Issue[]>();
+      for (const i of issues) {
+        const g = groupOf.get(i.state_id) ?? "unstarted";
+        const arr = buckets.get(g) ?? [];
+        arr.push(i);
+        buckets.set(g, arr);
+      }
+      return STATE_GROUPS.map((g) => ({
+        group: g,
+        label: g.charAt(0).toUpperCase() + g.slice(1),
+        issues: buckets.get(g) ?? [],
+      })).filter((b) => b.issues.length > 0);
+    }, [issues, states]);
+
+    return (
+      <div className="space-y-4">
+        <Button variant="outline" size="sm" onClick={onBack}>
+          ← All releases
+        </Button>
+        <Card>
+          <CardHeader className="space-y-3">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-lg">{release.name}</CardTitle>
+              <Badge variant={statusVariant(release.status)} className="ml-auto">
+                {release.status}
+              </Badge>
+            </div>
+            {release.description && (
               <p className="text-sm text-muted-foreground">
-                Plan your project's milestones — mark what ships in each
-                release, then track progress as issues close.
+                {release.description}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              {fmtDate(release.release_date)} · {release.issue_count} issue
+              {release.issue_count === 1 ? "" : "s"}
+            </p>
+            {total > 0 && <DoneBar done={counts.done} total={total} />}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {release.status === "planned" && (
+                <Button
+                  size="sm"
+                  onClick={onMarkReleased}
+                  disabled={markReleasedPending}
+                  className="gap-2"
+                >
+                  <Rocket className="h-4 w-4" />
+                  {markReleasedPending ? "Marking…" : "Mark released"}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={onEdit} className="gap-2">
+                <Pencil className="h-4 w-4" />
+                Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onDelete}
+                className="gap-2 text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          </CardHeader>
+        </Card>
+
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">Issues in this release</h2>
+          <Button size="sm" variant="outline" onClick={onAdd} className="gap-2">
+            <Plus className="h-4 w-4" />
+            Add issues
+          </Button>
+        </div>
+
+        {issuesLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+          </div>
+        ) : issues.length === 0 ? (
+          <Card>
+            <CardContent className="pt-6">
+              <p className="text-sm text-muted-foreground">
+                No issues in this release yet — add some to start tracking
+                progress.
               </p>
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-3">
-            {releases.map((r) => (
-              <ActionCard
-                key={r.id}
-                role="button"
-                label={`Select release ${r.name}`}
-                aria-pressed={selectedId === r.id}
-                onActivate={() => setSelectedId(r.id)}
-              >
-                <CardHeader className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-medium">
-                      {r.name}
-                    </CardTitle>
-                    <Badge variant={statusVariant(r.status)} className="ml-auto">
-                      {r.status}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {fmtDate(r.release_date)} · {r.issue_count} issue
-                    {r.issue_count === 1 ? "" : "s"}
-                  </p>
-                </CardHeader>
-              </ActionCard>
+          <div className="space-y-4">
+            {grouped.map((b) => (
+              <div key={b.group}>
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {b.label} · {b.issues.length}
+                </h3>
+                <div className="space-y-2">
+                  {b.issues.map((i) => (
+                    <Card key={i.id}>
+                      <CardContent className="flex items-center gap-3 py-3">
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 font-mono text-[11px]"
+                        >
+                          {i.display_id}
+                        </Badge>
+                        <Link
+                          to={`/w/${slug}/p/${identifier}/i/${i.id}`}
+                          className="truncate text-sm hover:underline"
+                        >
+                          {i.name}
+                        </Link>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="ml-auto shrink-0"
+                          onClick={() => onRemove(i.id)}
+                          aria-label={`Remove ${i.display_id} from release`}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
       </div>
-
-      <ReleaseFormDialog
-        key={`${editing?.id ?? "new"}-${formOpen ? "open" : "closed"}`}
-        open={formOpen}
-        onOpenChange={setFormOpen}
-        initial={editing ? formFromRelease(editing) : emptyForm()}
-        pending={createMutation.isPending || updateMutation.isPending}
-        error={formError}
-        onSubmit={submitForm}
-        title={editing ? "Edit release" : "New release"}
-        submitLabel={editing ? "Save changes" : "Create release"}
-      />
-
-      {/* Add-issues dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add issues to {selected?.name}</DialogTitle>
-            <DialogDescription>
-              Select issues to include in this release. Issues already in the
-              release are checked and can't be picked again.
-            </DialogDescription>
-          </DialogHeader>
-          {formError && (
-            <Alert variant="destructive">
-              <AlertDescription>{formError}</AlertDescription>
-            </Alert>
-          )}
-          {allIssuesQuery.isPending ? (
-            <div className="space-y-2">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {(allIssuesQuery.data ?? []).map((i) => {
-                const already = inRelease.has(i.id);
-                return (
-                  <label
-                    key={i.id}
-                    className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
-                      already ? "opacity-50" : ""
-                    }`}
-                  >
-                    <Checkbox
-                      checked={already || picked.has(i.id)}
-                      disabled={already}
-                      onCheckedChange={() => togglePicked(i.id)}
-                    />
-                    <Badge variant="outline" className="font-mono text-[11px]">
-                      {i.display_id}
-                    </Badge>
-                    <span className="truncate">{i.name}</span>
-                  </label>
-                );
-              })}
-              {(allIssuesQuery.data ?? []).length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  No issues in this project yet.
-                </p>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button
-              disabled={addIssuesMutation.isPending || picked.size === 0}
-              onClick={() => addIssuesMutation.mutate([...picked])}
-            >
-              {addIssuesMutation.isPending
-                ? "Adding…"
-                : `Add ${picked.size} issue${picked.size === 1 ? "" : "s"}`}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete confirmation — escalates on 409 to reassign / force-detach */}
-      <Dialog
-        open={deleteTarget !== null}
-        onOpenChange={(o) => {
-          if (!o) {
-            setDeleteTarget(null);
-            setDeleteConflict(false);
-            setReassignTo("");
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete release "{deleteTarget?.name}"?</DialogTitle>
-            <DialogDescription>
-              {deleteConflict ? (
-                <>
-                  This release still has {deleteTarget?.issue_count} issue
-                  {deleteTarget?.issue_count === 1 ? "" : "s"}. Move them to
-                  another release, or detach them (they'll be kept, just
-                  unassigned).
-                </>
-              ) : deleteTarget && deleteTarget.issue_count > 0 ? (
-                <>
-                  This release has {deleteTarget.issue_count} issue
-                  {deleteTarget.issue_count === 1 ? "" : "s"}.
-                </>
-              ) : (
-                "This can't be undone."
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          {deleteConflict && (
-            <div className="space-y-2">
-              <Label htmlFor="r-reassign">Move issues to another release</Label>
-              <NativeSelect
-                id="r-reassign"
-                value={reassignTo}
-                onChange={(e) => setReassignTo(e.target.value)}
-              >
-                <NativeSelectOption value="">
-                  — or detach them (force) —
-                </NativeSelectOption>
-                {reassignCandidates.map((r) => (
-                  <NativeSelectOption key={r.id} value={r.id}>
-                    {r.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </div>
-          )}
-          {formError && (
-            <Alert variant="destructive">
-              <AlertDescription>{formError}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setDeleteTarget(null);
-                setDeleteConflict(false);
-                setReassignTo("");
-              }}
-            >
-              Cancel
-            </Button>
-            {deleteConflict ? (
-              <Button
-                variant="destructive"
-                disabled={deleteWithOptionMutation.isPending}
-                onClick={() =>
-                  deleteTarget &&
-                  deleteWithOptionMutation.mutate(deleteTarget)
-                }
-              >
-                {deleteWithOptionMutation.isPending
-                  ? "Deleting…"
-                  : reassignTo
-                    ? "Move issues & delete"
-                    : "Detach issues & delete"}
-              </Button>
-            ) : (
-              <Button
-                variant="destructive"
-                disabled={deleteMutation.isPending}
-                onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
-              >
-                {deleteMutation.isPending ? "Deleting…" : "Delete release"}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function ReleaseDetail({
-  release,
-  states,
-  issues,
-  issuesLoading,
-  onBack,
-  onEdit,
-  onDelete,
-  onAdd,
-  onRemove,
-  onMarkReleased,
-  markReleasedPending,
-  slug,
-  identifier,
-}: {
-  release: Release;
-  states: IssueState[];
-  issues: Issue[];
-  issuesLoading: boolean;
-  onBack: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  onAdd: () => void;
-  onRemove: (issueId: string) => void;
-  onMarkReleased: () => void;
-  markReleasedPending: boolean;
-  slug: string;
-  identifier: string;
-}) {
-  const counts = progressCounts(issues, states);
-  const total = counts.open + counts.inProgress + counts.done;
-
-  const grouped = useMemo(() => {
-    const groupOf = new Map(states.map((s) => [s.id, s.group]));
-    const buckets = new Map<string, Issue[]>();
-    for (const i of issues) {
-      const g = groupOf.get(i.state_id) ?? "unstarted";
-      const arr = buckets.get(g) ?? [];
-      arr.push(i);
-      buckets.set(g, arr);
-    }
-    return STATE_GROUPS.map((g) => ({
-      group: g,
-      label: g.charAt(0).toUpperCase() + g.slice(1),
-      issues: buckets.get(g) ?? [],
-    })).filter((b) => b.issues.length > 0);
-  }, [issues, states]);
-
-  return (
-    <div className="space-y-4">
-      <Button variant="outline" size="sm" onClick={onBack}>
-        ← All releases
-      </Button>
-      <Card>
-        <CardHeader className="space-y-3">
-          <div className="flex items-center gap-2">
-            <CardTitle className="text-lg">{release.name}</CardTitle>
-            <Badge variant={statusVariant(release.status)} className="ml-auto">
-              {release.status}
-            </Badge>
-          </div>
-          {release.description && (
-            <p className="text-sm text-muted-foreground">
-              {release.description}
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            {fmtDate(release.release_date)} · {release.issue_count} issue
-            {release.issue_count === 1 ? "" : "s"}
-          </p>
-          {total > 0 && <DoneBar done={counts.done} total={total} />}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            {release.status === "planned" && (
-              <Button
-                size="sm"
-                onClick={onMarkReleased}
-                disabled={markReleasedPending}
-                className="gap-2"
-              >
-                <Rocket className="h-4 w-4" />
-                {markReleasedPending ? "Marking…" : "Mark released"}
-              </Button>
-            )}
-            <Button size="sm" variant="outline" onClick={onEdit} className="gap-2">
-              <Pencil className="h-4 w-4" />
-              Edit
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onDelete}
-              className="gap-2 text-destructive"
-            >
-              <Trash2 className="h-4 w-4" />
-              Delete
-            </Button>
-          </div>
-        </CardHeader>
-      </Card>
-
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium">Issues in this release</h2>
-        <Button size="sm" variant="outline" onClick={onAdd} className="gap-2">
-          <Plus className="h-4 w-4" />
-          Add issues
-        </Button>
-      </div>
-
-      {issuesLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-        </div>
-      ) : issues.length === 0 ? (
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm text-muted-foreground">
-              No issues in this release yet — add some to start tracking
-              progress.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {grouped.map((b) => (
-            <div key={b.group}>
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {b.label} · {b.issues.length}
-              </h3>
-              <div className="space-y-2">
-                {b.issues.map((i) => (
-                  <Card key={i.id}>
-                    <CardContent className="flex items-center gap-3 py-3">
-                      <Badge
-                        variant="outline"
-                        className="shrink-0 font-mono text-[11px]"
-                      >
-                        {i.display_id}
-                      </Badge>
-                      <Link
-                        to={`/w/${slug}/p/${identifier}/i/${i.id}`}
-                        className="truncate text-sm hover:underline"
-                      >
-                        {i.name}
-                      </Link>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="ml-auto shrink-0"
-                        onClick={() => onRemove(i.id)}
-                        aria-label={`Remove ${i.display_id} from release`}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 

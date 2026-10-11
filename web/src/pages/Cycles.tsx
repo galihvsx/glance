@@ -13,9 +13,8 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
-  Project,
 } from "../lib/types";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import BurndownChart from "../components/cycle/BurndownChart";
 import { Badge } from "../components/ui/badge";
 import { ActionCard } from "../components/ui/action-card";
@@ -141,10 +140,6 @@ export default function Cycles() {
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const cyclesKey = ["cycles", slug, identifier] as const;
 
-  const projectQuery = useQuery({
-    queryKey: ["project", slug, identifier],
-    queryFn: () => api.get<Project>(base),
-  });
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
     queryFn: () =>
@@ -265,371 +260,352 @@ export default function Cycles() {
   const cycles = cyclesQuery.data ?? [];
 
   return (
-    <div className="mx-auto w-full max-w-4xl p-6">
-      <div className="mb-4">
-        <Link
-          to={`/w/${slug}`}
-          className="text-xs text-muted-foreground hover:underline"
-        >
-          ← Projects
-        </Link>
-        <div className="mt-1 flex items-start justify-between gap-4">
-          <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight">
-            {projectQuery.data ? (
-              <>
-                <Badge>{projectQuery.data.identifier}</Badge>
-                {projectQuery.data.name}
-              </>
-            ) : (
-              <Skeleton className="h-8 w-48" />
-            )}
-          </h1>
-          <div className="flex items-center gap-2">
-            <Dialog open={newOpen} onOpenChange={setNewOpen}>
-              <Button onClick={() => setNewOpen(true)} className="gap-2">
-                <Plus className="h-4 w-4" />
-                New cycle
-              </Button>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>New cycle</DialogTitle>
-                <DialogDescription>
-                  A time-boxed iteration. Issues added to it roll over to
-                  the next cycle when it completes.
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={onCreate} className="space-y-4">
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Cycles"
+        count={cycles.length}
+        addButton={{ label: "New cycle", onClick: () => setNewOpen(true) }}
+      />
+      <div className="mx-auto w-full max-w-4xl p-6">
+        <Dialog open={newOpen} onOpenChange={setNewOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>New cycle</DialogTitle>
+              <DialogDescription>
+                A time-boxed iteration. Issues added to it roll over to
+                the next cycle when it completes.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={onCreate} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="c-name">Name</Label>
+                <Input
+                  id="c-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Sprint 12"
+                  required
+                />
+              </div>
+              <div className="flex gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="c-name">Name</Label>
+                  <Label htmlFor="c-start">Start date</Label>
                   <Input
-                    id="c-name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Sprint 12"
+                    id="c-start"
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
                     required
                   />
                 </div>
-                <div className="flex gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="c-start">Start date</Label>
-                    <Input
-                      id="c-start"
-                      type="date"
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="c-end">End date</Label>
-                    <Input
-                      id="c-end"
-                      type="date"
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      required
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <Label htmlFor="c-end">End date</Label>
+                  <Input
+                    id="c-end"
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    required
+                  />
                 </div>
-                {formError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{formError}</AlertDescription>
-                  </Alert>
-                )}
-                <DialogFooter>
-                  <Button
-                    type="submit"
-                    disabled={createMutation.isPending || !name.trim()}
-                  >
-                    {createMutation.isPending ? "Creating…" : "Create cycle"}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-          </div>
+              </div>
+              {formError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{formError}</AlertDescription>
+                </Alert>
+              )}
+              <DialogFooter>
+                <Button
+                  type="submit"
+                  disabled={createMutation.isPending || !name.trim()}
+                >
+                  {createMutation.isPending ? "Creating…" : "Create cycle"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {cyclesQuery.isError && (
+          <Alert variant="destructive" className="mt-4">
+            <AlertDescription>
+              {cyclesQuery.error instanceof ApiError
+                ? cyclesQuery.error.message
+                : "Failed to load cycles"}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <div className="mt-4">
+          {cyclesQuery.isPending ? (
+            <div className="space-y-3">
+              <Skeleton className="h-28 w-full" />
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : selected ? (
+            <CycleDetail
+              cycle={selected}
+              states={states}
+              issues={cycleIssuesQuery.data ?? []}
+              issuesLoading={cycleIssuesQuery.isPending}
+              onBack={() => setSelectedId(null)}
+              onAdd={() => {
+                setPicked(new Set());
+                setFormError(null);
+                setAddOpen(true);
+              }}
+              slug={slug}
+              identifier={identifier}
+            />
+          ) : cycles.length === 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>No cycles yet</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">
+                  Create the first cycle to start time-boxing work.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {cycles.map((c) => (
+                <ActionCard
+                  key={c.id}
+                  role="button"
+                  label={`Select cycle ${c.name}`}
+                  aria-pressed={selectedId === c.id}
+                  onActivate={() => setSelectedId(c.id)}
+                >
+                  <CardHeader className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-base font-medium">
+                        {c.name}
+                      </CardTitle>
+                      <Badge
+                        variant={statusVariant(c.status)}
+                        className="ml-auto"
+                      >
+                        {c.status}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {dateOnly(c.start_date)} → {dateOnly(c.end_date)}
+                    </p>
+                    <ProgressBar
+                      snapshot={c.progress_snapshot ?? {}}
+                      states={states}
+                    />
+                  </CardHeader>
+                </ActionCard>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Add-issues dialog */}
+        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+          <DialogContent className="max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Add issues to {selected?.name}</DialogTitle>
+              <DialogDescription>
+                Select issues to include in this cycle. Issues already in the
+                cycle are checked and can't be picked again.
+              </DialogDescription>
+            </DialogHeader>
+            {formError && (
+              <Alert variant="destructive">
+                <AlertDescription>{formError}</AlertDescription>
+              </Alert>
+            )}
+            {allIssuesQuery.isPending ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {(allIssuesQuery.data ?? []).map((i) => {
+                  const already = inCycle.has(i.id);
+                  return (
+                    <label
+                      key={i.id}
+                      className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
+                      already ? "opacity-50" : ""
+                    }`}
+                    >
+                      <Checkbox
+                        checked={already || picked.has(i.id)}
+                        disabled={already}
+                        onCheckedChange={() => togglePicked(i.id)}
+                      />
+                      <Badge variant="outline" className="font-mono text-[11px]">
+                        {i.display_id}
+                      </Badge>
+                      <span className="truncate">{i.name}</span>
+                    </label>
+                  );
+                })}
+                {(allIssuesQuery.data ?? []).length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No issues in this project yet.
+                  </p>
+                )}
+              </div>
+            )}
+            <DialogFooter>
+              <Button
+                disabled={addIssuesMutation.isPending || picked.size === 0}
+                onClick={() => addIssuesMutation.mutate([...picked])}
+              >
+                {addIssuesMutation.isPending
+                  ? "Adding…"
+                  : `Add ${picked.size} issue${picked.size === 1 ? "" : "s"}`}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
-      <ProjectNav />
+    </div>
+    );
+  }
 
-      {cyclesQuery.isError && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>
-            {cyclesQuery.error instanceof ApiError
-              ? cyclesQuery.error.message
-              : "Failed to load cycles"}
-          </AlertDescription>
-        </Alert>
-      )}
+  function CycleDetail({
+    cycle,
+    states,
+    issues,
+    issuesLoading,
+    onBack,
+    onAdd,
+    slug,
+    identifier,
+  }: {
+    cycle: Cycle;
+    states: IssueState[];
+    issues: Issue[];
+    issuesLoading: boolean;
+    onBack: () => void;
+    onAdd: () => void;
+    slug: string;
+    identifier: string;
+  }) {
+    const burndownQuery = useQuery({
+      queryKey: ["cycle-burndown", slug, identifier, cycle.id],
+      queryFn: () =>
+        api.get<CycleBurndown>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/cycles/${cycle.id}/burndown`,
+        ),
+    });
+    const snapshot = cycle.progress_snapshot ?? {};
+    const openCount =
+      (snapshot.triage ?? 0) + (snapshot.backlog ?? 0) + (snapshot.unstarted ?? 0);
+    const inProgressCount = snapshot.started ?? 0;
+    const doneCount = snapshot.completed ?? 0;
 
-      <div className="mt-4">
-        {cyclesQuery.isPending ? (
-          <div className="space-y-3">
-            <Skeleton className="h-28 w-full" />
-            <Skeleton className="h-28 w-full" />
-          </div>
-        ) : selected ? (
-          <CycleDetail
-            cycle={selected}
-            states={states}
-            issues={cycleIssuesQuery.data ?? []}
-            issuesLoading={cycleIssuesQuery.isPending}
-            onBack={() => setSelectedId(null)}
-            onAdd={() => {
-              setPicked(new Set());
-              setFormError(null);
-              setAddOpen(true);
-            }}
-            slug={slug}
-            identifier={identifier}
-          />
-        ) : cycles.length === 0 ? (
+    return (
+      <div>
+        <button
+          onClick={onBack}
+          className="text-xs text-muted-foreground hover:underline"
+        >
+          ← All cycles
+        </button>
+        <div className="mt-2 flex items-center gap-3">
+          <h2 className="text-xl font-semibold tracking-tight">{cycle.name}</h2>
+          <Badge variant={statusVariant(cycle.status)}>{cycle.status}</Badge>
+          <span className="text-sm text-muted-foreground">
+            {dateOnly(cycle.start_date)} → {dateOnly(cycle.end_date)}
+          </span>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={onAdd}>
+            <Plus className="mr-1 h-4 w-4" />
+            Add issues
+          </Button>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-3">
           <Card>
-            <CardHeader>
-              <CardTitle>No cycles yet</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                Create the first cycle to start time-boxing work.
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Open</p>
+              <p className="text-2xl font-semibold tabular-nums">{openCount}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">In progress</p>
+              <p className="text-2xl font-semibold tabular-nums">
+                {inProgressCount}
               </p>
             </CardContent>
           </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Done</p>
+              <p className="text-2xl font-semibold tabular-nums">{doneCount}</p>
+            </CardContent>
+          </Card>
+        </div>
+        <div className="mt-4">
+          <ProgressBar snapshot={cycle.progress_snapshot ?? {}} states={states} />
+        </div>
+        <div className="mt-4">
+          {burndownQuery.status === "pending" ? (
+            <Skeleton className="h-64 w-full" />
+          ) : burndownQuery.status === "error" ? (
+            <Card>
+              <CardContent className="p-4 text-sm text-muted-foreground">
+                Couldn't load the burndown chart.
+              </CardContent>
+            </Card>
+          ) : burndownQuery.data.total_scope === 0 ? (
+            <Card>
+              <CardContent className="p-4 text-sm text-muted-foreground">
+                No issues in this cycle yet — the burndown chart appears once
+                issues are added.
+              </CardContent>
+            </Card>
+          ) : !burndownQuery.data.days.some((d) => d.remaining != null) ? (
+            <Card>
+              <CardContent className="p-4 text-sm text-muted-foreground">
+                This cycle hasn't started yet — the burndown chart appears once
+                it's underway.
+              </CardContent>
+            </Card>
+          ) : (
+            <BurndownChart data={burndownQuery.data} />
+          )}
+        </div>
+        <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
+          Issues in this cycle ({issues.length})
+        </h3>
+        {issuesLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ) : issues.length === 0 ? (
+          <Card>
+            <CardContent className="p-4 text-sm text-muted-foreground">
+              No issues assigned to this cycle yet.
+            </CardContent>
+          </Card>
         ) : (
-          <div className="space-y-3">
-            {cycles.map((c) => (
-              <ActionCard
-                key={c.id}
-                role="button"
-                label={`Select cycle ${c.name}`}
-                aria-pressed={selectedId === c.id}
-                onActivate={() => setSelectedId(c.id)}
+          <div className="space-y-2">
+            {issues.map((i) => (
+              <Link
+                key={i.id}
+                to={`/w/${slug}/p/${identifier}/i/${i.id}`}
+                className="flex items-center gap-3 rounded-md border p-3 text-sm transition-colors hover:bg-accent"
               >
-                <CardHeader className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-medium">
-                      {c.name}
-                    </CardTitle>
-                    <Badge
-                      variant={statusVariant(c.status)}
-                      className="ml-auto"
-                    >
-                      {c.status}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {dateOnly(c.start_date)} → {dateOnly(c.end_date)}
-                  </p>
-                  <ProgressBar
-                    snapshot={c.progress_snapshot ?? {}}
-                    states={states}
-                  />
-                </CardHeader>
-              </ActionCard>
+                <Badge variant="outline" className="font-mono text-[11px]">
+                  {i.display_id}
+                </Badge>
+                <span className="truncate font-medium">{i.name}</span>
+              </Link>
             ))}
           </div>
         )}
       </div>
-
-      {/* Add-issues dialog */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add issues to {selected?.name}</DialogTitle>
-            <DialogDescription>
-              Select issues to include in this cycle. Issues already in the
-              cycle are checked and can't be picked again.
-            </DialogDescription>
-          </DialogHeader>
-          {formError && (
-            <Alert variant="destructive">
-              <AlertDescription>{formError}</AlertDescription>
-            </Alert>
-          )}
-          {allIssuesQuery.isPending ? (
-            <div className="space-y-2">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {(allIssuesQuery.data ?? []).map((i) => {
-                const already = inCycle.has(i.id);
-                return (
-                  <label
-                    key={i.id}
-                    className={`flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm hover:bg-accent ${
-                      already ? "opacity-50" : ""
-                    }`}
-                  >
-                    <Checkbox
-                      checked={already || picked.has(i.id)}
-                      disabled={already}
-                      onCheckedChange={() => togglePicked(i.id)}
-                    />
-                    <Badge variant="outline" className="font-mono text-[11px]">
-                      {i.display_id}
-                    </Badge>
-                    <span className="truncate">{i.name}</span>
-                  </label>
-                );
-              })}
-              {(allIssuesQuery.data ?? []).length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  No issues in this project yet.
-                </p>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button
-              disabled={addIssuesMutation.isPending || picked.size === 0}
-              onClick={() => addIssuesMutation.mutate([...picked])}
-            >
-              {addIssuesMutation.isPending
-                ? "Adding…"
-                : `Add ${picked.size} issue${picked.size === 1 ? "" : "s"}`}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function CycleDetail({
-  cycle,
-  states,
-  issues,
-  issuesLoading,
-  onBack,
-  onAdd,
-  slug,
-  identifier,
-}: {
-  cycle: Cycle;
-  states: IssueState[];
-  issues: Issue[];
-  issuesLoading: boolean;
-  onBack: () => void;
-  onAdd: () => void;
-  slug: string;
-  identifier: string;
-}) {
-  const burndownQuery = useQuery({
-    queryKey: ["cycle-burndown", slug, identifier, cycle.id],
-    queryFn: () =>
-      api.get<CycleBurndown>(
-        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/cycles/${cycle.id}/burndown`,
-      ),
-  });
-  const snapshot = cycle.progress_snapshot ?? {};
-  const openCount =
-    (snapshot.triage ?? 0) + (snapshot.backlog ?? 0) + (snapshot.unstarted ?? 0);
-  const inProgressCount = snapshot.started ?? 0;
-  const doneCount = snapshot.completed ?? 0;
-
-  return (
-    <div>
-      <button
-        onClick={onBack}
-        className="text-xs text-muted-foreground hover:underline"
-      >
-        ← All cycles
-      </button>
-      <div className="mt-2 flex items-center gap-3">
-        <h2 className="text-xl font-semibold tracking-tight">{cycle.name}</h2>
-        <Badge variant={statusVariant(cycle.status)}>{cycle.status}</Badge>
-        <span className="text-sm text-muted-foreground">
-          {dateOnly(cycle.start_date)} → {dateOnly(cycle.end_date)}
-        </span>
-        <Button variant="outline" size="sm" className="ml-auto" onClick={onAdd}>
-          <Plus className="mr-1 h-4 w-4" />
-          Add issues
-        </Button>
-      </div>
-      <div className="mt-4 grid grid-cols-3 gap-3">
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Open</p>
-            <p className="text-2xl font-semibold tabular-nums">{openCount}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">In progress</p>
-            <p className="text-2xl font-semibold tabular-nums">
-              {inProgressCount}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Done</p>
-            <p className="text-2xl font-semibold tabular-nums">{doneCount}</p>
-          </CardContent>
-        </Card>
-      </div>
-      <div className="mt-4">
-        <ProgressBar snapshot={cycle.progress_snapshot ?? {}} states={states} />
-      </div>
-      <div className="mt-4">
-        {burndownQuery.status === "pending" ? (
-          <Skeleton className="h-64 w-full" />
-        ) : burndownQuery.status === "error" ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              Couldn't load the burndown chart.
-            </CardContent>
-          </Card>
-        ) : burndownQuery.data.total_scope === 0 ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              No issues in this cycle yet — the burndown chart appears once
-              issues are added.
-            </CardContent>
-          </Card>
-        ) : !burndownQuery.data.days.some((d) => d.remaining != null) ? (
-          <Card>
-            <CardContent className="p-4 text-sm text-muted-foreground">
-              This cycle hasn't started yet — the burndown chart appears once
-              it's underway.
-            </CardContent>
-          </Card>
-        ) : (
-          <BurndownChart data={burndownQuery.data} />
-        )}
-      </div>
-      <h3 className="mb-2 mt-6 text-sm font-medium text-muted-foreground">
-        Issues in this cycle ({issues.length})
-      </h3>
-      {issuesLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-12 w-full" />
-          <Skeleton className="h-12 w-full" />
-        </div>
-      ) : issues.length === 0 ? (
-        <Card>
-          <CardContent className="p-4 text-sm text-muted-foreground">
-            No issues assigned to this cycle yet.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-2">
-          {issues.map((i) => (
-            <Link
-              key={i.id}
-              to={`/w/${slug}/p/${identifier}/i/${i.id}`}
-              className="flex items-center gap-3 rounded-md border p-3 text-sm transition-colors hover:bg-accent"
-            >
-              <Badge variant="outline" className="font-mono text-[11px]">
-                {i.display_id}
-              </Badge>
-              <span className="truncate font-medium">{i.name}</span>
-            </Link>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

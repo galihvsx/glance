@@ -33,6 +33,8 @@ interface SavedViewsMenuProps {
    *  applied there carry filters only. */
   display: DisplaySettings | null;
   onApplyDisplay: ((d: DisplaySettings) => void) | null;
+  /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
+  triggerClassName?: string;
 }
 
 /** Per-project saved views: named filter + display presets, persisted
@@ -45,6 +47,7 @@ export default function SavedViewsMenu({
   filters,
   display,
   onApplyDisplay,
+  triggerClassName,
 }: SavedViewsMenuProps) {
   const {
     views,
@@ -209,7 +212,11 @@ export default function SavedViewsMenu({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-2")}
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "gap-2",
+          triggerClassName,
+        )}
         aria-label="Saved views"
       >
         <Bookmark className="h-4 w-4" />

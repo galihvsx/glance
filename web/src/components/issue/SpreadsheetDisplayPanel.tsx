@@ -29,6 +29,7 @@ export default function SpreadsheetDisplayPanel({
   visible,
   onToggle,
   onReset,
+  triggerClassName,
 }: {
   fields: CustomField[];
   isLoading: boolean;
@@ -38,6 +39,8 @@ export default function SpreadsheetDisplayPanel({
   visible: Record<string, boolean>;
   onToggle: (fieldId: string) => void;
   onReset: () => void;
+  /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
+  triggerClassName?: string;
 }) {
   const enabledCount = fields.filter((f) => visible[f.id]).length;
 
@@ -46,7 +49,11 @@ export default function SpreadsheetDisplayPanel({
       {/* Base-UI Trigger renders its own button (no asChild) — style it
           with the shadcn button variants directly. */}
       <PopoverTrigger
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-2")}
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "gap-2",
+          triggerClassName,
+        )}
         aria-label="Display properties"
       >
         <SlidersHorizontal className="h-4 w-4" />

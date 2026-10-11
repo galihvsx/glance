@@ -60,6 +60,7 @@ export default function DisplayPanel({
   onUpdateFields,
   onReset,
   view,
+  triggerClassName,
 }: {
   settings: DisplaySettings;
   onUpdate: (patch: Partial<DisplaySettings>) => void;
@@ -67,6 +68,8 @@ export default function DisplayPanel({
   onReset: () => void;
   /** "board" hides options that don't apply to the kanban (order, none-group). */
   view: "list" | "board";
+  /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
+  triggerClassName?: string;
 }) {
   const groupOptions =
     view === "board"
@@ -83,7 +86,11 @@ export default function DisplayPanel({
       {/* Base-UI Trigger renders its own button (no asChild) — style it
           with the shadcn button variants directly. */}
       <PopoverTrigger
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-2")}
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "gap-2",
+          triggerClassName,
+        )}
         aria-label="Display properties"
       >
         <SlidersHorizontal className="h-4 w-4" />

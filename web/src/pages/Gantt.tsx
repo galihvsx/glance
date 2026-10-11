@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Link2 } from "lucide-react";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Button } from "../components/ui/button";
@@ -412,7 +412,10 @@ export default function Gantt() {
   };
 
   return (
-    <div
+    <>
+      {/* C19T4: shared page header replaces the per-page ProjectNav. */}
+      <PageHeader viewName="Timeline" showViews />
+      <div
       className="flex h-full flex-col gap-4 p-4"
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
@@ -424,444 +427,444 @@ export default function Gantt() {
         }
       }}
     >
-      <ProjectNav />
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => go(-1)}
-          className="rounded-md border p-1.5 hover:bg-accent"
-          aria-label="Previous month"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const t = new Date();
-            setYear(t.getFullYear());
-            setMonth(t.getMonth());
-          }}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-accent"
-        >
-          Today
-        </button>
-        <button
-          type="button"
-          onClick={() => go(1)}
-          className="rounded-md border p-1.5 hover:bg-accent"
-          aria-label="Next month"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-        <span className="text-sm font-medium">
-          {monthLabel(days[0])} – {monthLabel(days[days.length - 1])}
-        </span>
-        {canEdit && (
-          <Button
-            type="button"
-            variant={linkUi.linkMode ? "secondary" : "outline"}
-            size="sm"
-            aria-pressed={linkUi.linkMode}
-            onClick={() =>
-              setLinkUi(
-                linkUi.linkMode ? exitLinkMode(linkUi) : enterLinkMode(linkUi),
-              )
-            }
-            title="Draw dependency edges between issue bars"
-            className="gap-1.5"
-          >
-            <Link2 className="h-3.5 w-3.5" />
-            {linkUi.linkMode ? "Linking…" : "Add dependencies"}
-          </Button>
-        )}
-        {!canEdit && (
-          <span className="text-xs text-muted-foreground">
-            Guest access — timeline is read-only.
-          </span>
-        )}
-      </div>
-      {linkUi.linkMode && canEdit && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>
-            Link mode: drag from one issue bar to another to create a{" "}
-            <span className="font-medium text-foreground">blocks</span>{" "}
-            dependency. Click an existing edge to remove it.
-          </span>
-          <span className="flex items-center gap-1">
-            <Kbd>Esc</Kbd> to exit
-          </span>
-        </div>
-      )}
-
-      {loading && (
-        <div className="text-sm text-muted-foreground">Loading timeline…</div>
-      )}
-      {error && (
-        <div className="text-sm text-destructive">
-          Failed to load issues.{" "}
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            className="underline"
-            onClick={() => {
-              void dueQuery.refetch();
-              void startQuery.refetch();
-              void undatedQuery.refetch();
-            }}
+            onClick={() => go(-1)}
+            className="rounded-md border p-1.5 hover:bg-accent"
+            aria-label="Previous month"
           >
-            Retry
+            <ChevronLeft className="h-4 w-4" />
           </button>
-        </div>
-      )}
-      {!loading && !error && rows.length === 0 && (
-        <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-          No issues with dates in this window. Set start or due dates on
-          issues to see them on the timeline.
-        </div>
-      )}
-      {!loading && !error && rows.length > 0 && (
-        <div className="overflow-auto rounded-md border">
-          <div className="flex" style={{ width: GUTTER_W + width }}>
-            {/* Left gutter: sticky issue labels */}
-            <div
-              className="sticky left-0 z-10 shrink-0 border-r bg-background"
-              style={{ width: GUTTER_W }}
+          <button
+            type="button"
+            onClick={() => {
+              const t = new Date();
+              setYear(t.getFullYear());
+              setMonth(t.getMonth());
+            }}
+            className="rounded-md border px-2 py-1 text-xs hover:bg-accent"
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => go(1)}
+            className="rounded-md border p-1.5 hover:bg-accent"
+            aria-label="Next month"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <span className="text-sm font-medium">
+            {monthLabel(days[0])} – {monthLabel(days[days.length - 1])}
+          </span>
+          {canEdit && (
+            <Button
+              type="button"
+              variant={linkUi.linkMode ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={linkUi.linkMode}
+              onClick={() =>
+                setLinkUi(
+                  linkUi.linkMode ? exitLinkMode(linkUi) : enterLinkMode(linkUi),
+                )
+              }
+              title="Draw dependency edges between issue bars"
+              className="gap-1.5"
             >
+              <Link2 className="h-3.5 w-3.5" />
+              {linkUi.linkMode ? "Linking…" : "Add dependencies"}
+            </Button>
+          )}
+          {!canEdit && (
+            <span className="text-xs text-muted-foreground">
+              Guest access — timeline is read-only.
+            </span>
+          )}
+        </div>
+        {linkUi.linkMode && canEdit && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Link mode: drag from one issue bar to another to create a{" "}
+              <span className="font-medium text-foreground">blocks</span>{" "}
+              dependency. Click an existing edge to remove it.
+            </span>
+            <span className="flex items-center gap-1">
+              <Kbd>Esc</Kbd> to exit
+            </span>
+          </div>
+        )}
+
+        {loading && (
+          <div className="text-sm text-muted-foreground">Loading timeline…</div>
+        )}
+        {error && (
+          <div className="text-sm text-destructive">
+            Failed to load issues.{" "}
+            <button
+              type="button"
+              className="underline"
+              onClick={() => {
+                void dueQuery.refetch();
+                void startQuery.refetch();
+                void undatedQuery.refetch();
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {!loading && !error && rows.length === 0 && (
+          <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+            No issues with dates in this window. Set start or due dates on
+            issues to see them on the timeline.
+          </div>
+        )}
+        {!loading && !error && rows.length > 0 && (
+          <div className="overflow-auto rounded-md border">
+            <div className="flex" style={{ width: GUTTER_W + width }}>
+              {/* Left gutter: sticky issue labels */}
               <div
-                className="border-b font-medium"
-                style={{ height: HEADER_H }}
-              />
-              {rows.map((r) => {
-                if (r.kind === "group") {
+                className="sticky left-0 z-10 shrink-0 border-r bg-background"
+                style={{ width: GUTTER_W }}
+              >
+                <div
+                  className="border-b font-medium"
+                  style={{ height: HEADER_H }}
+                />
+                {rows.map((r) => {
+                  if (r.kind === "group") {
+                    return (
+                      <div
+                        key={`g-${r.group}`}
+                        className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        style={{ height: ROW_H }}
+                      >
+                        {r.group}
+                      </div>
+                    );
+                  }
+                  if (r.kind === "unscheduled-header") {
+                    return (
+                      <div
+                        key="unsched"
+                        className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                        style={{ height: ROW_H }}
+                      >
+                        Unscheduled
+                      </div>
+                    );
+                  }
                   return (
-                    <div
-                      key={`g-${r.group}`}
-                      className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+                    <button
+                      key={r.issue.id}
+                      type="button"
+                      onClick={() => openPeek(r.issue.id)}
+                      className="flex w-full items-center gap-1.5 border-b px-3 text-left text-xs hover:bg-accent"
                       style={{ height: ROW_H }}
+                      title={`${r.issue.display_id}: ${r.issue.name}`}
                     >
-                      {r.group}
-                    </div>
+                      <span className="shrink-0 font-mono text-muted-foreground">
+                        {r.issue.display_id}
+                      </span>
+                      <span className="truncate">{r.issue.name}</span>
+                    </button>
                   );
-                }
-                if (r.kind === "unscheduled-header") {
-                  return (
-                    <div
-                      key="unsched"
-                      className="flex items-center border-b bg-muted/40 px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                      style={{ height: ROW_H }}
-                    >
-                      Unscheduled
-                    </div>
-                  );
-                }
-                return (
-                  <button
-                    key={r.issue.id}
-                    type="button"
-                    onClick={() => openPeek(r.issue.id)}
-                    className="flex w-full items-center gap-1.5 border-b px-3 text-left text-xs hover:bg-accent"
-                    style={{ height: ROW_H }}
-                    title={`${r.issue.display_id}: ${r.issue.name}`}
+                })}
+              </div>
+              {/* Timeline */}
+              <svg
+                ref={svgRef}
+                width={width}
+                height={height}
+                className={cn(
+                  drag && "cursor-grabbing select-none",
+                  linkUi.linkMode && "cursor-crosshair select-none",
+                )}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerLeave={onPointerUp}
+              >
+                <defs>
+                  <marker
+                    id="gantt-arrow"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="7"
+                    refY="4"
+                    orient="auto"
                   >
-                    <span className="shrink-0 font-mono text-muted-foreground">
-                      {r.issue.display_id}
-                    </span>
-                    <span className="truncate">{r.issue.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-            {/* Timeline */}
-            <svg
-              ref={svgRef}
-              width={width}
-              height={height}
-              className={cn(
-                drag && "cursor-grabbing select-none",
-                linkUi.linkMode && "cursor-crosshair select-none",
-              )}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerLeave={onPointerUp}
-            >
-              <defs>
-                <marker
-                  id="gantt-arrow"
-                  markerWidth="8"
-                  markerHeight="8"
-                  refX="7"
-                  refY="4"
-                  orient="auto"
-                >
-                  <path
-                    d="M0,0 L8,4 L0,8"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    className="text-muted-foreground"
-                  />
-                </marker>
-              </defs>
-              {/* Month headers */}
-              {months.map((m) => {
-                const x = dayToX(m.day, windowStart, DAY_W);
-                return (
-                  <g key={m.day}>
-                    <rect
-                      x={x}
-                      y={0}
-                      width={m.span * DAY_W}
-                      height={28}
-                      className="fill-muted/40"
+                    <path
+                      d="M0,0 L8,4 L0,8"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      className="text-muted-foreground"
                     />
-                    <text
-                      x={x + 8}
-                      y={19}
-                      className="fill-foreground text-xs font-medium"
-                    >
-                      {monthLabel(m.day)}
-                    </text>
-                  </g>
-                );
-              })}
-              {/* Day headers + grid */}
-              {days.map((d) => {
-                const x = dayToX(d, windowStart, DAY_W);
-                const isToday = d === todayKey;
-                const dt = new Date(dayToTs(d) + 12 * 3600 * 1000);
-                const weekend = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
-                return (
-                  <g key={d}>
-                    {weekend && (
-                      <rect
-                        x={x}
-                        y={HEADER_H}
-                        width={DAY_W}
-                        height={height - HEADER_H}
-                        className="fill-muted/20"
-                      />
-                    )}
-                    {isToday && (
+                  </marker>
+                </defs>
+                {/* Month headers */}
+                {months.map((m) => {
+                  const x = dayToX(m.day, windowStart, DAY_W);
+                  return (
+                    <g key={m.day}>
                       <rect
                         x={x}
                         y={0}
-                        width={DAY_W}
-                        height={height}
-                        className="fill-primary/10"
+                        width={m.span * DAY_W}
+                        height={28}
+                        className="fill-muted/40"
                       />
-                    )}
-                    <text
-                      x={x + DAY_W / 2}
-                      y={44}
-                      textAnchor="middle"
-                      className="fill-muted-foreground text-[10px]"
-                    >
-                      {d.slice(8, 10)}
-                    </text>
-                    <line
-                      x1={x}
-                      y1={HEADER_H}
-                      x2={x}
-                      y2={height}
-                      className="stroke-border"
-                      strokeWidth={1}
-                    />
-                  </g>
-                );
-              })}
-              {/* Row backgrounds for group headers */}
-              {rows.map((r, idx) => {
-                if (r.kind !== "group" && r.kind !== "unscheduled-header")
-                  return null;
-                const y = HEADER_H + idx * ROW_H;
-                return (
-                  <rect
-                    key={`bg-${idx}`}
-                    x={0}
-                    y={y}
-                    width={width}
-                    height={ROW_H}
-                    className="fill-muted/40"
-                  />
-                );
-              })}
-              {/* Dependency arrows (under the bars). Clicking an edge opens
-                  the delete confirm; a fat invisible hit path makes the
-                  1.5px line easy to grab. */}
-              {arrows.map((a) => {
-                const midX = (a.x1 + a.x2) / 2;
-                return (
-                  <g
-                    key={a.id}
-                    className={cn(canEdit && "cursor-pointer")}
-                    onClick={() => {
-                      if (!canEdit || linkUi.drawingFrom) return;
-                      setLinkUi(requestLinkDelete(linkUi, a.link));
-                    }}
-                  >
-                    <path
-                      d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
-                      fill="none"
-                      stroke="transparent"
-                      strokeWidth={12}
-                      pointerEvents="stroke"
-                    >
-                      <title>
-                        {`${issueById.get(a.link.issue_id)?.display_id ?? ""} blocks ${issueById.get(a.link.target_issue_id)?.display_id ?? ""} — click to remove`}
-                      </title>
-                    </path>
-                    <path
-                      d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
-                      fill="none"
-                      strokeWidth={1.5}
-                      className={cn(
-                        "stroke-muted-foreground",
-                        canEdit && "transition-colors hover:stroke-destructive",
-                      )}
-                      markerEnd="url(#gantt-arrow)"
-                      pointerEvents="none"
-                    />
-                  </g>
-                );
-              })}
-              {/* In-progress edge draw preview. */}
-              {linkUi.drawingFrom &&
-                drawPos &&
-                (() => {
-                  const from = issues.find(
-                    (i) => i.id === linkUi.drawingFrom,
+                      <text
+                        x={x + 8}
+                        y={19}
+                        className="fill-foreground text-xs font-medium"
+                      >
+                        {monthLabel(m.day)}
+                      </text>
+                    </g>
                   );
-                  const fb = from && barSpan(from.start_date, from.target_date);
-                  const fromY = from && rowY.get(from.id);
-                  if (!fb?.start || !fb?.end || fromY === undefined) return null;
-                  const x1 = dayToX(fb.end, windowStart, DAY_W) + DAY_W;
-                  const y1 = fromY + ROW_H / 2;
+                })}
+                {/* Day headers + grid */}
+                {days.map((d) => {
+                  const x = dayToX(d, windowStart, DAY_W);
+                  const isToday = d === todayKey;
+                  const dt = new Date(dayToTs(d) + 12 * 3600 * 1000);
+                  const weekend = dt.getUTCDay() === 0 || dt.getUTCDay() === 6;
                   return (
-                    <path
-                      d={`M ${x1} ${y1} L ${drawPos.x} ${drawPos.y}`}
-                      fill="none"
-                      strokeWidth={1.5}
-                      strokeDasharray="4 3"
-                      className="stroke-primary"
-                      pointerEvents="none"
+                    <g key={d}>
+                      {weekend && (
+                        <rect
+                          x={x}
+                          y={HEADER_H}
+                          width={DAY_W}
+                          height={height - HEADER_H}
+                          className="fill-muted/20"
+                        />
+                      )}
+                      {isToday && (
+                        <rect
+                          x={x}
+                          y={0}
+                          width={DAY_W}
+                          height={height}
+                          className="fill-primary/10"
+                        />
+                      )}
+                      <text
+                        x={x + DAY_W / 2}
+                        y={44}
+                        textAnchor="middle"
+                        className="fill-muted-foreground text-[10px]"
+                      >
+                        {d.slice(8, 10)}
+                      </text>
+                      <line
+                        x1={x}
+                        y1={HEADER_H}
+                        x2={x}
+                        y2={height}
+                        className="stroke-border"
+                        strokeWidth={1}
+                      />
+                    </g>
+                  );
+                })}
+                {/* Row backgrounds for group headers */}
+                {rows.map((r, idx) => {
+                  if (r.kind !== "group" && r.kind !== "unscheduled-header")
+                    return null;
+                  const y = HEADER_H + idx * ROW_H;
+                  return (
+                    <rect
+                      key={`bg-${idx}`}
+                      x={0}
+                      y={y}
+                      width={width}
+                      height={ROW_H}
+                      className="fill-muted/40"
                     />
                   );
-                })()}
-              {/* Bars */}
-              {rows.map((r, idx) => {
-                if (r.kind !== "issue") return null;
-                const b = barSpan(r.issue.start_date, r.issue.target_date);
-                if (!b.start || !b.end) return null;
-                const y = HEADER_H + idx * ROW_H;
-                // Clamp the bar to the visible window.
-                const visStart = b.start < windowStart ? windowStart : b.start;
-                const visEnd =
-                  b.end >= addDays(days[days.length - 1], 1)
-                    ? days[days.length - 1]
-                    : b.end;
-                if (visStart > visEnd) return null;
-                let x = dayToX(visStart, windowStart, DAY_W);
-                let w = (daysBetween(visStart, visEnd) + 1) * DAY_W - 4;
-                // Live drag offset.
-                if (drag?.id === r.issue.id) {
-                  const delta = Math.round(drag.dx / DAY_W);
-                  x = dayToX(addDays(visStart, delta), windowStart, DAY_W);
-                }
-                const color =
-                  statesById.get(r.issue.state_id)?.color ?? "#6366f1";
-                return (
-                  <g key={r.issue.id}>
-                    <rect
-                      x={x + 2}
-                      y={y + 9}
-                      width={Math.max(w, 8)}
-                      height={16}
-                      rx={4}
-                      fill={color}
-                      fillOpacity={0.85}
-                      className={cn(
-                        canEdit && !linkUi.linkMode && "cursor-grab",
-                        canEdit && linkUi.linkMode && "cursor-crosshair",
-                      )}
-                      onPointerDown={(e) =>
-                        onBarPointerDown(e, r.issue, {
-                          start: b.start!,
-                          end: b.end!,
-                        })
-                      }
+                })}
+                {/* Dependency arrows (under the bars). Clicking an edge opens
+                    the delete confirm; a fat invisible hit path makes the
+                    1.5px line easy to grab. */}
+                {arrows.map((a) => {
+                  const midX = (a.x1 + a.x2) / 2;
+                  return (
+                    <g
+                      key={a.id}
+                      className={cn(canEdit && "cursor-pointer")}
                       onClick={() => {
-                        if (!drag && !suppressClick.current && !linkUi.linkMode)
-                          openPeek(r.issue.id);
+                        if (!canEdit || linkUi.drawingFrom) return;
+                        setLinkUi(requestLinkDelete(linkUi, a.link));
                       }}
                     >
-                      <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
-                    </rect>
-                    {/* Link-mode draw handle at the bar's right edge. */}
-                    {linkUi.linkMode && canEdit && (
-                      <circle
-                        cx={x + 2 + Math.max(w, 8)}
-                        cy={y + ROW_H / 2}
-                        r={4.5}
-                        className="fill-primary stroke-background"
+                      <path
+                        d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth={12}
+                        pointerEvents="stroke"
+                      >
+                        <title>
+                          {`${issueById.get(a.link.issue_id)?.display_id ?? ""} blocks ${issueById.get(a.link.target_issue_id)?.display_id ?? ""} — click to remove`}
+                        </title>
+                      </path>
+                      <path
+                        d={`M ${a.x1} ${a.y1} C ${midX} ${a.y1}, ${midX} ${a.y2}, ${a.x2 - 2} ${a.y2}`}
+                        fill="none"
                         strokeWidth={1.5}
+                        className={cn(
+                          "stroke-muted-foreground",
+                          canEdit && "transition-colors hover:stroke-destructive",
+                        )}
+                        markerEnd="url(#gantt-arrow)"
                         pointerEvents="none"
                       />
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
+                    </g>
+                  );
+                })}
+                {/* In-progress edge draw preview. */}
+                {linkUi.drawingFrom &&
+                  drawPos &&
+                  (() => {
+                    const from = issues.find(
+                      (i) => i.id === linkUi.drawingFrom,
+                    );
+                    const fb = from && barSpan(from.start_date, from.target_date);
+                    const fromY = from && rowY.get(from.id);
+                    if (!fb?.start || !fb?.end || fromY === undefined) return null;
+                    const x1 = dayToX(fb.end, windowStart, DAY_W) + DAY_W;
+                    const y1 = fromY + ROW_H / 2;
+                    return (
+                      <path
+                        d={`M ${x1} ${y1} L ${drawPos.x} ${drawPos.y}`}
+                        fill="none"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 3"
+                        className="stroke-primary"
+                        pointerEvents="none"
+                      />
+                    );
+                  })()}
+                {/* Bars */}
+                {rows.map((r, idx) => {
+                  if (r.kind !== "issue") return null;
+                  const b = barSpan(r.issue.start_date, r.issue.target_date);
+                  if (!b.start || !b.end) return null;
+                  const y = HEADER_H + idx * ROW_H;
+                  // Clamp the bar to the visible window.
+                  const visStart = b.start < windowStart ? windowStart : b.start;
+                  const visEnd =
+                    b.end >= addDays(days[days.length - 1], 1)
+                      ? days[days.length - 1]
+                      : b.end;
+                  if (visStart > visEnd) return null;
+                  let x = dayToX(visStart, windowStart, DAY_W);
+                  let w = (daysBetween(visStart, visEnd) + 1) * DAY_W - 4;
+                  // Live drag offset.
+                  if (drag?.id === r.issue.id) {
+                    const delta = Math.round(drag.dx / DAY_W);
+                    x = dayToX(addDays(visStart, delta), windowStart, DAY_W);
+                  }
+                  const color =
+                    statesById.get(r.issue.state_id)?.color ?? "#6366f1";
+                  return (
+                    <g key={r.issue.id}>
+                      <rect
+                        x={x + 2}
+                        y={y + 9}
+                        width={Math.max(w, 8)}
+                        height={16}
+                        rx={4}
+                        fill={color}
+                        fillOpacity={0.85}
+                        className={cn(
+                          canEdit && !linkUi.linkMode && "cursor-grab",
+                          canEdit && linkUi.linkMode && "cursor-crosshair",
+                        )}
+                        onPointerDown={(e) =>
+                          onBarPointerDown(e, r.issue, {
+                            start: b.start!,
+                            end: b.end!,
+                          })
+                        }
+                        onClick={() => {
+                          if (!drag && !suppressClick.current && !linkUi.linkMode)
+                            openPeek(r.issue.id);
+                        }}
+                      >
+                        <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
+                      </rect>
+                      {/* Link-mode draw handle at the bar's right edge. */}
+                      {linkUi.linkMode && canEdit && (
+                        <circle
+                          cx={x + 2 + Math.max(w, 8)}
+                          cy={y + ROW_H / 2}
+                          r={4.5}
+                          className="fill-primary stroke-background"
+                          strokeWidth={1.5}
+                          pointerEvents="none"
+                        />
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
           </div>
-        </div>
-      )}
-      {patchMutation.isError && (
-        <div className="text-sm text-destructive">
-          Failed to reschedule — the timeline was refreshed.
-        </div>
-      )}
-      {peekUuid && (
-        <PeekDrawer
-          slug={slug}
-          identifier={identifier}
-          uuid={peekUuid}
-          onClose={closePeek}
-        />
-      )}
-      {/* Delete-dependency confirm (C15T0). */}
-      <AlertDialog
-        open={!!linkUi.confirmDelete}
-        onOpenChange={(open) => {
-          if (!open) setLinkUi(closeLinkDelete(linkUi));
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove this dependency?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {linkUi.confirmDelete &&
-                `Remove the "blocks" dependency — ${
+        )}
+        {patchMutation.isError && (
+          <div className="text-sm text-destructive">
+            Failed to reschedule — the timeline was refreshed.
+          </div>
+        )}
+        {peekUuid && (
+          <PeekDrawer
+            slug={slug}
+            identifier={identifier}
+            uuid={peekUuid}
+            onClose={closePeek}
+          />
+        )}
+        {/* Delete-dependency confirm (C15T0). */}
+        <AlertDialog
+          open={!!linkUi.confirmDelete}
+          onOpenChange={(open) => {
+            if (!open) setLinkUi(closeLinkDelete(linkUi));
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove this dependency?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {linkUi.confirmDelete &&
+                  `Remove the "blocks" dependency — ${
                   issueById.get(linkUi.confirmDelete.issue_id)?.display_id ??
                   "?"
                 } → ${
                   issueById.get(linkUi.confirmDelete.target_issue_id)
                     ?.display_id ?? "?"
                 }? The issues themselves are not affected.`}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={deleteLinkMutation.isPending}
-              onClick={() => {
-                const target = linkUi.confirmDelete;
-                setLinkUi(closeLinkDelete(linkUi));
-                if (target) deleteLinkMutation.mutate(target);
-              }}
-            >
-              Remove dependency
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={deleteLinkMutation.isPending}
+                onClick={() => {
+                  const target = linkUi.confirmDelete;
+                  setLinkUi(closeLinkDelete(linkUi));
+                  if (target) deleteLinkMutation.mutate(target);
+                }}
+              >
+                Remove dependency
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </>
   );
 }

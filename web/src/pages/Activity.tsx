@@ -11,7 +11,7 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { Input } from "../components/ui/input";
 import { api } from "../lib/api";
@@ -148,59 +148,61 @@ export default function Activity() {
   }, [activityQuery.data, query]);
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <ProjectNav />
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-lg font-semibold">Activity</h1>
-        <div className="relative w-64">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter by issue, actor, or field…"
-            className="pl-8"
-            aria-label="Filter activity"
-          />
-        </div>
-      </div>
-
-      <div
-        className={cn(
-          "overflow-hidden rounded-lg border bg-card",
-          rows.length === 0 && "border-dashed",
-        )}
-      >
-        {activityQuery.isPending || statesQuery.isPending ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">
-            Loading…
-          </div>
-        ) : activityQuery.isError ? (
-          <div className="py-8 text-center text-sm text-destructive">
-            Failed to load: {(activityQuery.error as Error).message}
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">
-            {query.trim()
-              ? "No activity matches this filter."
-              : "No activity yet."}
-          </div>
-        ) : (
-          rows.map((e, i) => (
-            <ActivityRow
-              key={`${e.at}-${e.issue_uuid}-${e.field}-${i}`}
-              entry={e}
-              stateById={stateById}
-              issueBase={issueBase}
+    <>
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader viewName="Activity" count={rows.length} />
+      <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
+        <div className="flex items-center justify-end gap-4">
+          <div className="relative w-64">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by issue, actor, or field…"
+              className="pl-8"
+              aria-label="Filter activity"
             />
-          ))
-        )}
-      </div>
+          </div>
+        </div>
 
-      <p className="text-xs text-muted-foreground">
-        Shows only field changes that have audit rows — issue creation,
-        per-field updates, and deletion are logged; views, comments, and
-        other events are not part of this feed.
-      </p>
-    </div>
+        <div
+          className={cn(
+            "overflow-hidden rounded-lg border bg-card",
+            rows.length === 0 && "border-dashed",
+          )}
+        >
+          {activityQuery.isPending || statesQuery.isPending ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          ) : activityQuery.isError ? (
+            <div className="py-8 text-center text-sm text-destructive">
+              Failed to load: {(activityQuery.error as Error).message}
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              {query.trim()
+                ? "No activity matches this filter."
+                : "No activity yet."}
+            </div>
+          ) : (
+            rows.map((e, i) => (
+              <ActivityRow
+                key={`${e.at}-${e.issue_uuid}-${e.field}-${i}`}
+                entry={e}
+                stateById={stateById}
+                issueBase={issueBase}
+              />
+            ))
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Shows only field changes that have audit rows — issue creation,
+          per-field updates, and deletion are logged; views, comments, and
+          other events are not part of this feed.
+        </p>
+      </div>
+    </>
   );
 }

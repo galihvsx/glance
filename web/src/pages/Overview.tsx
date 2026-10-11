@@ -2,9 +2,8 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil } from "lucide-react";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Progress } from "../components/ui/progress";
@@ -277,196 +276,192 @@ export default function Overview() {
   const maxPriority = Math.max(1, ...priorities.map((p) => p.count));
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <ProjectNav />
-      {overviewQuery.isPending ? (
-        <div className="space-y-4">
-          <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-40 w-full" />
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-24" />
-            ))}
-          </div>
-        </div>
-      ) : overviewQuery.isError ? (
-        <div className="py-8 text-center text-sm text-destructive">
-          Failed to load: {(overviewQuery.error as Error).message}
-        </div>
-      ) : (
-        data && (
-          <>
-            <div className="flex items-center gap-3">
-              <h1 className="text-lg font-semibold">{data.project.name}</h1>
-              <Badge variant="secondary" className="font-mono">
-                {data.project.identifier}
-              </Badge>
-            </div>
-
-            <DescriptionCard
-              description={data.project.description}
-              canEdit={canEdit}
-              saving={saveMutation.isPending}
-              onSave={(next, done) =>
-                saveMutation.mutate(next, { onSuccess: () => done() })
-              }
-            />
-            {saveMutation.isError && (
-              <p className="text-sm text-destructive">
-                Failed to save: {(saveMutation.error as Error).message}
-              </p>
-            )}
-
+    <>
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader viewName="Overview" />
+      <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
+        {overviewQuery.isPending ? (
+          <div className="space-y-4">
+            <Skeleton className="h-8 w-64" />
+            <Skeleton className="h-40 w-full" />
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-              <StatCard
-                label="Open issues"
-                value={String(completion?.open ?? 0)}
-                sub={
-                  completion
-                    ? `${completion.done} of ${completion.total} done`
-                    : undefined
+              {[0, 1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-24" />
+              ))}
+            </div>
+          </div>
+        ) : overviewQuery.isError ? (
+          <div className="py-8 text-center text-sm text-destructive">
+            Failed to load: {(overviewQuery.error as Error).message}
+          </div>
+        ) : (
+          data && (
+            <>
+              <DescriptionCard
+                description={data.project.description}
+                canEdit={canEdit}
+                saving={saveMutation.isPending}
+                onSave={(next, done) =>
+                  saveMutation.mutate(next, { onSuccess: () => done() })
                 }
               />
-              <Card>
-                <CardContent className="pt-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Completion
-                  </p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums">
-                    {completion?.percent ?? 0}%
-                  </p>
-                  <Progress value={completion?.percent ?? 0} className="mt-2" />
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="pt-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    {data.cycle ? `Cycle: ${data.cycle.name}` : "Cycle"}
-                  </p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums">
-                    {data.cycle ? `${data.cycle.completed}/${data.cycle.total}` : "—"}
-                  </p>
-                  {data.cycle ? (
-                    <Progress value={cyclePercent(data.cycle)} className="mt-2" />
-                  ) : (
-                    <p className="mt-2 text-xs text-muted-foreground">No cycles yet</p>
-                  )}
-                </CardContent>
-              </Card>
-              <StatCard
-                label="Overdue"
-                value={String(data.summary.overdue_count)}
-                sub="past target date, not done"
-              />
-            </div>
+              {saveMutation.isError && (
+                <p className="text-sm text-destructive">
+                  Failed to save: {(saveMutation.error as Error).message}
+                </p>
+              )}
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-semibold">
-                    Open issues by priority
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  {priorities.map((p) => (
-                    <div key={p.priority} className="flex items-center gap-3">
-                      <span className="w-16 text-xs text-muted-foreground">
-                        {p.label}
-                      </span>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className={cn(
-                            "h-full rounded-full",
-                            p.priority === 4
-                              ? "bg-destructive"
-                              : p.priority === 3
-                                ? "bg-orange-500"
-                                : "bg-primary",
-                          )}
-                          style={{ width: `${(p.count / maxPriority) * 100}%` }}
-                        />
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                <StatCard
+                  label="Open issues"
+                  value={String(completion?.open ?? 0)}
+                  sub={
+                    completion
+                      ? `${completion.done} of ${completion.total} done`
+                      : undefined
+                  }
+                />
+                <Card>
+                  <CardContent className="pt-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Completion
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {completion?.percent ?? 0}%
+                    </p>
+                    <Progress value={completion?.percent ?? 0} className="mt-2" />
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-4">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      {data.cycle ? `Cycle: ${data.cycle.name}` : "Cycle"}
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {data.cycle ? `${data.cycle.completed}/${data.cycle.total}` : "—"}
+                    </p>
+                    {data.cycle ? (
+                      <Progress value={cyclePercent(data.cycle)} className="mt-2" />
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">No cycles yet</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <StatCard
+                  label="Overdue"
+                  value={String(data.summary.overdue_count)}
+                  sub="past target date, not done"
+                />
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-semibold">
+                      Open issues by priority
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {priorities.map((p) => (
+                      <div key={p.priority} className="flex items-center gap-3">
+                        <span className="w-16 text-xs text-muted-foreground">
+                          {p.label}
+                        </span>
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className={cn(
+                              "h-full rounded-full",
+                              p.priority === 4
+                                ? "bg-destructive"
+                                : p.priority === 3
+                                  ? "bg-orange-500"
+                                  : "bg-primary",
+                            )}
+                            style={{ width: `${(p.count / maxPriority) * 100}%` }}
+                          />
+                        </div>
+                        <span className="w-8 text-right text-xs tabular-nums">
+                          {p.count}
+                        </span>
                       </div>
-                      <span className="w-8 text-right text-xs tabular-nums">
-                        {p.count}
-                      </span>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
+                    ))}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-semibold">
+                      Top contributors
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {contributors.length === 0 ? (
+                      <p className="py-4 text-center text-sm text-muted-foreground">
+                        No activity yet.
+                      </p>
+                    ) : (
+                      contributors.map((c, i) => (
+                        <div
+                          key={c.actor}
+                          className="flex items-center gap-3 border-b py-2 last:border-b-0"
+                        >
+                          <span className="w-6 text-xs tabular-nums text-muted-foreground">
+                            {i + 1}
+                          </span>
+                          <Avatar className="h-7 w-7">
+                            <AvatarFallback className="text-xs font-semibold">
+                              {actorInitial(c.actor)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="flex-1 truncate text-sm font-medium">
+                            {c.actor}
+                          </span>
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {c.changes} {c.changes === 1 ? "change" : "changes"}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Ranked by changes in the recent activity window.
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
 
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                   <CardTitle className="text-sm font-semibold">
-                    Top contributors
+                    Recent activity
                   </CardTitle>
+                  <Link
+                    to={`${issueBase}/activity`}
+                    className="text-xs font-medium text-primary hover:underline"
+                  >
+                    View all
+                  </Link>
                 </CardHeader>
-                <CardContent>
-                  {contributors.length === 0 ? (
-                    <p className="py-4 text-center text-sm text-muted-foreground">
+                <CardContent className="p-0">
+                  {recent.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-muted-foreground">
                       No activity yet.
                     </p>
                   ) : (
-                    contributors.map((c, i) => (
-                      <div
-                        key={c.actor}
-                        className="flex items-center gap-3 border-b py-2 last:border-b-0"
-                      >
-                        <span className="w-6 text-xs tabular-nums text-muted-foreground">
-                          {i + 1}
-                        </span>
-                        <Avatar className="h-7 w-7">
-                          <AvatarFallback className="text-xs font-semibold">
-                            {actorInitial(c.actor)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="flex-1 truncate text-sm font-medium">
-                          {c.actor}
-                        </span>
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          {c.changes} {c.changes === 1 ? "change" : "changes"}
-                        </span>
-                      </div>
+                    recent.map((e, i) => (
+                      <ActivityRow
+                        key={`${e.at}-${e.issue_uuid}-${e.field}-${i}`}
+                        entry={e}
+                        issueBase={issueBase}
+                        stateById={stateById}
+                      />
                     ))
                   )}
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Ranked by changes in the recent activity window.
-                  </p>
                 </CardContent>
               </Card>
-            </div>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-semibold">
-                  Recent activity
-                </CardTitle>
-                <Link
-                  to={`${issueBase}/activity`}
-                  className="text-xs font-medium text-primary hover:underline"
-                >
-                  View all
-                </Link>
-              </CardHeader>
-              <CardContent className="p-0">
-                {recent.length === 0 ? (
-                  <p className="py-8 text-center text-sm text-muted-foreground">
-                    No activity yet.
-                  </p>
-                ) : (
-                  recent.map((e, i) => (
-                    <ActivityRow
-                      key={`${e.at}-${e.issue_uuid}-${e.field}-${i}`}
-                      entry={e}
-                      issueBase={issueBase}
-                      stateById={stateById}
-                    />
-                  ))
-                )}
-              </CardContent>
-            </Card>
-          </>
-        )
-      )}
-    </div>
+            </>
+          )
+        )}
+      </div>
+    </>
   );
 }

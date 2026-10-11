@@ -17,7 +17,7 @@ import {
   unarchiveIssue,
 } from "../lib/archived";
 import { relativeTime } from "../lib/relativeTime";
-import ProjectNav from "../components/project/ProjectNav";
+import PageHeader from "../components/shell/PageHeader";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -65,75 +65,80 @@ export default function Archived() {
   const archived = archivedQuery.data ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-4">
-      <h1 className="text-xl font-semibold">Archived</h1>
-      <ProjectNav />
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
+      <PageHeader
+        viewName="Archived"
+        count={archived.length}
+      />
+      <div className="mx-auto w-full max-w-5xl space-y-4 p-4">
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {errMsg(error, "Something went wrong")}
-          </AlertDescription>
-        </Alert>
-      )}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              {errMsg(error, "Something went wrong")}
+            </AlertDescription>
+          </Alert>
+        )}
 
-      {archivedQuery.isLoading ? (
-        <Skeleton className="h-32 w-full" />
-      ) : archived.length === 0 ? (
-        <Card>
-          <CardContent className="p-6 text-sm text-muted-foreground">
-            No archived issues. Issues archived out of the working set are
-            parked here.
-          </CardContent>
-        </Card>
-      ) : (
-        <ul className="divide-y rounded-md border">
-          {archived.map((a) => (
-            <li key={a.id} className="flex items-center gap-3 px-3 py-2.5">
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <Link
-                    to={`/w/${slug}/p/${identifier}/i/${a.id}`}
-                    className="text-sm font-medium hover:underline"
-                  >
-                    {a.name}
-                  </Link>
-                  <Badge variant="secondary">Archived</Badge>
+        {archivedQuery.isLoading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : archived.length === 0 ? (
+          <Card>
+            <CardContent className="p-6 text-sm text-muted-foreground">
+              No archived issues. Issues archived out of the working set are
+              parked here.
+            </CardContent>
+          </Card>
+        ) : (
+          <ul className="divide-y rounded-md border">
+            {archived.map((a) => (
+              <li key={a.id} className="flex items-center gap-3 px-3 py-2.5">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <Link
+                      to={`/w/${slug}/p/${identifier}/i/${a.id}`}
+                      className="text-sm font-medium hover:underline"
+                    >
+                      {a.name}
+                    </Link>
+                    <Badge variant="secondary">Archived</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-mono">{a.display_id}</span> · archived{" "}
+                    {a.archived_at ? relativeTime(a.archived_at) : "at an unknown time"}
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  <span className="font-mono">{a.display_id}</span> · archived{" "}
-                  {a.archived_at ? relativeTime(a.archived_at) : "at an unknown time"}
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={unarchiveMutation.isPending}
-                  onClick={() => unarchiveMutation.mutate(a.id)}
-                >
-                  Unarchive
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Delete archived issue "${a.name}"? This can't be undone.`,
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={unarchiveMutation.isPending}
+                    onClick={() => unarchiveMutation.mutate(a.id)}
+                  >
+                    Unarchive
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={deleteMutation.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Delete archived issue "${a.name}"? This can't be undone.`,
+                        )
                       )
-                    )
-                      deleteMutation.mutate(a.id);
-                  }}
-                >
-                  Delete
-                </Button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+                        deleteMutation.mutate(a.id);
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
