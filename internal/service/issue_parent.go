@@ -257,3 +257,87 @@ func ListIssueChildren(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 	}
 	return out, rows.Err()
 }
+
+// NamedRef is a minimal id+name reference used by the
+// ?include_project_structure=1 attachment on the issue detail endpoint.
+type NamedRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// IssueProjectStructure is the ?include_project_structure=1 attachment on
+// the issue detail endpoint (C19T3): the issue's cycle/module/release
+// membership, feeding the Properties > Project structure group in the
+// peek panel. Cycle is the first membership by name (an issue is normally
+// in at most one cycle); modules carry every membership; release comes
+// from the issue's own nullable release_id column.
+type IssueProjectStructure struct {
+	Cycle   *NamedRef  `json:"cycle,omitempty"`
+	Modules []NamedRef `json:"modules"`
+	Release *NamedRef  `json:"release,omitempty"`
+}
+
+// GetIssueProjectStructure returns the issue's project-structure
+// membership. Tenancy mirrors ListIssueChildren: any workspace member
+// (guest 5+) may read; a bad slug/non-member surfaces ErrNotFound, a bad
+// identifier ErrProjectNotFound, a missing issue ErrIssueNotFound.
+func GetIssueProjectStructure(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*IssueProjectStructure, error) {
+	issueID = normalizeIssueID(issueID)
+	_, projectID, _, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	out := &IssueProjectStructure{Modules: []NamedRef{}}
+
+	var cyc NamedRef
+	err = pool.QueryRow(ctx,
+		`SELECT c.id::text, c.name
+		 FROM cycle_issues ci
+		 JOIN cycles c ON c.id = ci.cycle_id
+		 WHERE ci.issue_id = $1::uuid AND c.project_id = $2::uuid
+		 ORDER BY c.name ASC LIMIT 1`,
+		issueID, projectID).Scan(&cyc.ID, &cyc.Name)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil {
+		out.Cycle = &cyc
+	}
+
+	rows, err := pool.Query(ctx,
+		`SELECT m.id::text, m.name
+		 FROM module_issues mi
+		 JOIN modules m ON m.id = mi.module_id
+		 WHERE mi.issue_id = $1::uuid AND m.project_id = $2::uuid
+		 ORDER BY m.name ASC`,
+		issueID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m NamedRef
+		if err := rows.Scan(&m.ID, &m.Name); err != nil {
+			return nil, err
+		}
+		out.Modules = append(out.Modules, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var rel NamedRef
+	err = pool.QueryRow(ctx,
+		`SELECT r.id::text, r.name
+		 FROM issues i
+		 JOIN releases r ON r.id = i.release_id
+		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
+		issueID, projectID).Scan(&rel.ID, &rel.Name)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil {
+		out.Release = &rel
+	}
+	return out, nil
+}

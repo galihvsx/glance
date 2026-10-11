@@ -146,8 +146,12 @@ type IssuePatch struct {
 	StartDate       PatchField[time.Time]
 	TargetDate      PatchField[time.Time]
 	EstimatePointID PatchField[string]
-	IsDraft         *bool
-	Archived        *bool // true = archive (now()), false = unarchive (NULL), nil = untouched
+	// ReleaseID is the tri-state release assignment (C19T3): Set with a
+	// value moves the issue to that release, Set with nil clears it.
+	// Validated against the project's releases (resolveRelease).
+	ReleaseID PatchField[string]
+	IsDraft   *bool
+	Archived  *bool // true = archive (now()), false = unarchive (NULL), nil = untouched
 	// IgnoreBlockers is a request directive, not a field: when true, the
 	// C16T3 blocker guard is bypassed on moves into a completed state.
 	// It is never counted by hasFields.
@@ -159,7 +163,7 @@ func (p IssuePatch) hasFields() bool {
 	return p.Name != nil || p.Description.Set || p.Priority != nil ||
 		p.StateID != nil || p.ParentID.Set || p.SortOrder != nil ||
 		p.StartDate.Set || p.TargetDate.Set || p.EstimatePointID.Set ||
-		p.IsDraft != nil || p.Archived != nil
+		p.ReleaseID.Set || p.IsDraft != nil || p.Archived != nil
 }
 
 // issueColumns is the bare column list for INSERT/UPDATE ... RETURNING and
@@ -716,6 +720,22 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		}
 	}
 
+	// C19T3: release assignment — validate the release belongs to the
+	// project before building the SET clause (resolveRelease: 400 on a
+	// malformed id, 404 when it matches nothing in this project).
+	var releaseID PatchField[string]
+	if patch.ReleaseID.Set {
+		if patch.ReleaseID.Value != nil {
+			rid := strings.ToLower(strings.TrimSpace(*patch.ReleaseID.Value))
+			if _, err := resolveRelease(ctx, tx, projectID, rid); err != nil {
+				return nil, nil, err
+			}
+			releaseID = PatchField[string]{Set: true, Value: &rid}
+		} else {
+			releaseID = PatchField[string]{Set: true}
+		}
+	}
+
 	// Effective dates for the range check (patch wins over the old row).
 	effStart := old.StartDate
 	if patch.StartDate.Set {
@@ -793,6 +813,21 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	if estimatePointID.Set && !strPtrEq(old.EstimatePointID, estimatePointID.Value) {
 		add("estimate_point_id", "estimate_point_id", "::uuid", estimatePointID.Value,
 			derefPtr(old.EstimatePointID), derefPtr(estimatePointID.Value))
+	}
+	// C19T3: release assignment. The before-image needs the old release_id,
+	// which the Issue struct does not carry — read it under the same row
+	// lock (FOR UPDATE above) so the change check is race-free.
+	if releaseID.Set {
+		var oldReleaseID *string
+		if err := tx.QueryRow(ctx,
+			`SELECT release_id::text FROM issues WHERE id = $1::uuid`,
+			issueID).Scan(&oldReleaseID); err != nil {
+			return nil, nil, err
+		}
+		if !strPtrEq(oldReleaseID, releaseID.Value) {
+			add("release_id", "release_id", "::uuid", releaseID.Value,
+				derefPtr(oldReleaseID), derefPtr(releaseID.Value))
+		}
 	}
 	if patch.IsDraft != nil && *patch.IsDraft != old.IsDraft {
 		add("is_draft", "is_draft", "", *patch.IsDraft, old.IsDraft, *patch.IsDraft)

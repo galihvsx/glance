@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Paperclip, Trash2, UploadCloud } from "lucide-react";
 
@@ -6,7 +6,6 @@ import { ApiError, api } from "../../lib/api";
 import { formatBytes, formatDateTime } from "../../lib/format";
 import type { Attachment } from "../../lib/types";
 import { Button, buttonVariants } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
 /**
  * Attachments section for the issue detail sidebar (C4T2).
@@ -20,15 +19,24 @@ export default function Attachments({
   slug,
   identifier,
   uuid,
+  /** C19T3: increment to open the file picker from the detail action
+   *  toolbar. */
+  pickSignal,
 }: {
   slug: string;
   identifier: string;
   uuid: string;
+  pickSignal?: number;
 }) {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // C19T3: external "Attach" trigger from the action toolbar.
+  useEffect(() => {
+    if (pickSignal) fileInput.current?.click();
+  }, [pickSignal]);
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/attachments`;
   const key = ["attachments", slug, identifier, uuid];
@@ -82,19 +90,17 @@ export default function Attachments({
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-medium">
-          <Paperclip className="h-4 w-4" aria-hidden />
-          Attachments
-          {attachments.length > 0 && (
-            <span className="text-xs font-normal text-muted-foreground">
-              {attachments.length}
-            </span>
-          )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <section aria-label="Attachments" className="mt-[18px]">
+      <h2 className="mb-[9px] flex items-center gap-2 text-[12px] leading-[1.5] font-semibold text-ink">
+        <Paperclip className="h-3.5 w-3.5 text-ink-muted" aria-hidden />
+        Attachments
+        {attachments.length > 0 && (
+          <span className="text-[10px] font-normal text-ink-muted">
+            {attachments.length}
+          </span>
+        )}
+      </h2>
+      <div className="space-y-3">
         {/* Dropzone */}
         <div
           role="button"
@@ -116,15 +122,15 @@ export default function Attachments({
           }}
           className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 py-5 text-center transition-colors ${
             dragging
-              ? "border-primary bg-primary/5"
-              : "border-muted-foreground/25 hover:border-muted-foreground/50"
+              ? "border-accent-blue bg-accent-blue/5"
+              : "border-ink-muted/25 hover:border-ink-muted/50"
           }`}
         >
           <UploadCloud
-            className="h-5 w-5 text-muted-foreground"
+            className="h-5 w-5 text-ink-muted"
             aria-hidden
           />
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-ink-muted">
             {uploadMutation.isPending
               ? "Uploading…"
               : "Drop files here or click to browse"}
@@ -141,16 +147,16 @@ export default function Attachments({
           />
         </div>
         {uploadError && (
-          <p className="text-xs text-destructive" role="alert">
+          <p className="text-xs text-accent-red" role="alert">
             {uploadError}
           </p>
         )}
 
         {/* List */}
         {listQuery.isLoading ? (
-          <p className="text-xs text-muted-foreground">Loading…</p>
+          <p className="text-xs text-ink-muted">Loading…</p>
         ) : attachments.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No attachments yet.</p>
+          <p className="text-xs text-ink-muted">No attachments yet.</p>
         ) : (
           <ul className="space-y-2">
             {attachments.map((a) => (
@@ -166,7 +172,7 @@ export default function Attachments({
                   >
                     {a.filename}
                   </a>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 text-[11px] text-ink-muted">
                     {formatBytes(a.size_bytes)} ·{" "}
                     {a.uploaded_by.name || a.uploaded_by.email} ·{" "}
                     {formatDateTime(a.created_at)}
@@ -197,7 +203,7 @@ export default function Attachments({
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }

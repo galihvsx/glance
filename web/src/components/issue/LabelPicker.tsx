@@ -16,11 +16,18 @@ export default function LabelPicker({
   applied,
   onToggle,
   disabled,
+  triggerClassName,
+  triggerContent,
 }: {
   labels: ProjectLabel[] | null;
   applied: IssueLabel[];
   onToggle: (labelId: string, currentlyApplied: boolean) => void;
   disabled?: boolean;
+  /** Optional className override for the trigger button (C19T3: the
+   *  Properties cell renders a borderless trigger). */
+  triggerClassName?: string;
+  /** Optional replacement for the trigger's inner content. */
+  triggerContent?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const appliedIds = new Set(applied.map((l) => l.id));
@@ -31,12 +38,20 @@ export default function LabelPicker({
           with the shadcn button variants directly. */}
       <PopoverTrigger
         disabled={disabled}
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-2")}
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "gap-2",
+          triggerClassName,
+        )}
       >
-        <Tags className="h-4 w-4" />
-        {applied.length === 0
-          ? "Labels"
-          : `${applied.length} label${applied.length > 1 ? "s" : ""}`}
+        {triggerContent ?? (
+          <>
+            <Tags className="h-4 w-4" />
+            {applied.length === 0
+              ? "Labels"
+              : `${applied.length} label${applied.length > 1 ? "s" : ""}`}
+          </>
+        )}
       </PopoverTrigger>
       <PopoverContent className="w-64 p-2" align="start">
         {labels === null ? (

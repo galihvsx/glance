@@ -16,11 +16,18 @@ export default function AssigneePicker({
   assigned,
   onToggle,
   disabled,
+  triggerClassName,
+  triggerContent,
 }: {
   members: Member[] | null;
   assigned: IssueAssignee[];
   onToggle: (userId: string, currentlyAssigned: boolean) => void;
   disabled?: boolean;
+  /** Optional className override for the trigger button (C19T3: the
+   *  property strip renders a borderless 27px trigger). */
+  triggerClassName?: string;
+  /** Optional replacement for the trigger's inner content. */
+  triggerContent?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const assignedIds = new Set(assigned.map((a) => a.id));
@@ -31,12 +38,20 @@ export default function AssigneePicker({
           with the shadcn button variants directly. */}
       <PopoverTrigger
         disabled={disabled}
-        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-2")}
+        className={cn(
+          buttonVariants({ variant: "outline", size: "sm" }),
+          "gap-2",
+          triggerClassName,
+        )}
       >
-        <Users className="h-4 w-4" />
-        {assigned.length === 0
-          ? "Assign"
-          : `${assigned.length} assignee${assigned.length > 1 ? "s" : ""}`}
+        {triggerContent ?? (
+          <>
+            <Users className="h-4 w-4" />
+            {assigned.length === 0
+              ? "Assign"
+              : `${assigned.length} assignee${assigned.length > 1 ? "s" : ""}`}
+          </>
+        )}
       </PopoverTrigger>
       <PopoverContent className="w-64 p-2" align="start">
         {members === null ? (

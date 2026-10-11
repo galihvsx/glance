@@ -157,6 +157,11 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid estimate point", nil)
 	case errors.Is(err, service.ErrEstimateInUse):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "estimate scale is used by issues", nil)
+	// C19T3: release assignment errors on PATCH release_id.
+	case errors.Is(err, service.ErrReleaseNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "release not found", nil)
+	case errors.Is(err, service.ErrInvalidReleaseID):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid release_id", nil)
 	case errors.Is(err, service.ErrAssigneeNotMember):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "assignee is not a workspace member", nil)
 	// Task 18: satellite errors.
@@ -508,6 +513,8 @@ type updateIssueBody struct {
 	StartDate       service.PatchField[string]          `json:"start_date"` // YYYY-MM-DD
 	TargetDate      service.PatchField[string]          `json:"target_date"`
 	EstimatePointID service.PatchField[string]          `json:"estimate_point_id"`
+	// C19T3: tri-state release assignment (id string; null clears).
+	ReleaseID service.PatchField[string] `json:"release_id"`
 	// C16T3: bypasses the open-blocker guard when moving to a completed
 	// state. A request directive, not a patch field (never persisted).
 	IgnoreBlockers bool `json:"ignore_blockers"`
@@ -556,6 +563,7 @@ func bindIssuePatch(body updateIssueBody) (service.IssuePatch, error) {
 		StartDate:       start,
 		TargetDate:      target,
 		EstimatePointID: body.EstimatePointID,
+		ReleaseID:       body.ReleaseID,
 		IsDraft:         body.IsDraft,
 		Archived:        body.Archived,
 		IgnoreBlockers:  body.IgnoreBlockers,

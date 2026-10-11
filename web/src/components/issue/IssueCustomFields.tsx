@@ -32,7 +32,6 @@ import {
 import { Alert, AlertDescription } from "../ui/alert";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -128,7 +127,7 @@ function FieldRow({
             onCheckedChange={(v) => setChecked(v === true)}
             disabled={disabled}
           />
-          <Label htmlFor={inputId} className="font-normal text-muted-foreground">
+          <Label htmlFor={inputId} className="font-normal text-ink-muted">
             {checked ? "Checked" : "Unchecked"}
           </Label>
         </div>
@@ -187,7 +186,7 @@ function FieldRow({
               <Button
                 size="sm"
                 variant="ghost"
-                className="h-7 gap-1 px-2 text-muted-foreground"
+                className="h-7 gap-1 px-2 text-ink-muted"
                 onClick={() => onSave({ [field.id]: null })}
                 disabled={saving}
                 title={`Clear the value of "${field.name}"`}
@@ -253,7 +252,7 @@ export function RequiredCustomFieldsForm({
                 />
                 <Label
                   htmlFor={inputId}
-                  className="font-normal text-muted-foreground"
+                  className="font-normal text-ink-muted"
                 >
                   {current === true ? "Checked" : "Unchecked"}
                 </Label>
@@ -361,11 +360,9 @@ export default function IssueCustomFields({
   const values = issue.custom_values ?? {};
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">Custom fields</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+    <section aria-label="Custom fields" className="mt-[18px]">
+      <h2 className="mb-[9px] text-[12px] leading-[1.5] font-semibold text-ink">Custom fields</h2>
+      <div className="space-y-4">
         {apiError && (
           <Alert variant="destructive">
             <AlertDescription>{apiError}</AlertDescription>
@@ -390,7 +387,7 @@ export default function IssueCustomFields({
             </AlertDescription>
           </Alert>
         ) : fields.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-ink-muted">
             No custom fields in this project yet.
             {canEdit &&
               " Add them in Project settings → Custom fields."}
@@ -409,13 +406,13 @@ export default function IssueCustomFields({
                 onSave={(v) => saveMutation.mutate(v)}
               />
             ))}
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-ink-muted">
               Fields marked * are required — saving one without a value is
               rejected by the server.
             </p>
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }
