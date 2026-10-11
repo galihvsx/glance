@@ -122,79 +122,11 @@ const projectColumnsP = `p.id::text, p.workspace_id::text, p.identifier, p.name,
 // CreateProject inserts the project and seeds its default states in one
 // transaction. The caller must be a workspace member (15) or admin (20);
 // guests (5) get ErrForbidden, non-members ErrNotFound.
+//
+// Delegates to CreateProjectWithTemplate with no template; kept so the
+// existing call sites and tests do not change shape.
 func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, name, identifier string) (*Project, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, ErrNameRequired
-	}
-	ident, err := normalizeIdentifier(identifier)
-	if err != nil {
-		return nil, err
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	// Membership lookup reuses Task 11's helper (same package): the query
-	// shape is the caller's, the row interpretation is shared.
-	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
-		`SELECT w.id::text, m.role
-		 FROM workspaces w
-		 JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		wsSlug, actorID))
-	if err != nil {
-		return nil, err
-	}
-	if role < RoleMember {
-		return nil, ErrForbidden
-	}
-
-	p, err := scanProject(tx.QueryRow(ctx,
-		`INSERT INTO projects (workspace_id, identifier, name)
-		 VALUES ($1::uuid, $2, $3)
-		 RETURNING `+projectColumns,
-		wsID, ident, name))
-	if err != nil {
-		if isUniqueViolation(err) {
-			return nil, ErrIdentifierConflict
-		}
-		return nil, err
-	}
-
-	seq := 10000
-	for _, s := range defaultStates {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO states (project_id, name, "group", color, sequence)
-			 VALUES ($1::uuid, $2, $3, $4, $5)`,
-			p.ID, s.name, s.group, s.color, seq); err != nil {
-			return nil, err
-		}
-		seq += 10000
-	}
-
-	// The per-project issue sequence counter (Task 14) is born with the
-	// project, so the atomic UPDATE..RETURNING in CreateIssue is
-	// unconditional — no "row missing" branch in the hot path.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO issue_sequences (project_id) VALUES ($1::uuid)`,
-		p.ID); err != nil {
-		return nil, err
-	}
-
-	// The default intake inbox (Task 20) is born with the project in the
-	// same tx — every project is triage-ready from creation.
-	if err := seedIntakeTx(ctx, tx, p.ID); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return p, nil
+	return CreateProjectWithTemplate(ctx, pool, wsSlug, actorID, name, identifier, nil)
 }
 
 // ListProjects returns the workspace's projects ordered by name.

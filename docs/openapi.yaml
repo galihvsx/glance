@@ -24,6 +24,7 @@
     { "name": "analytics", "description": "Analytics summaries, burndown, trends" },
     { "name": "time", "description": "Time tracking entries and summaries" },
     { "name": "templates", "description": "Issue templates" },
+    { "name": "project-templates", "description": "Workspace project templates (blueprints applied at project creation)" },
     { "name": "custom-fields", "description": "Project custom fields and per-issue values" },
     { "name": "webhooks", "description": "Workspace webhooks" },
     { "name": "notifications", "description": "Notifications and per-event preferences" },
@@ -299,11 +300,20 @@
       "post": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Create a project",
-        "description": "The identifier is uppercased and unique per workspace; default states are seeded.",
+        "description": "The identifier is uppercased and unique per workspace; default states are seeded, or the template's states/labels/modules/estimate scale when template_id is given.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" }, "template_id": { "type": "string", "format": "uuid", "description": "Optional project template id; unknown id is 400" } } } } } },
         "responses": { "201": { "description": "Created project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
+    },
+    "/api/v1/workspaces/{slug}/templates": {
+      "get": {"tags": ["project-templates"], "security": [{"sessionCookie": []}, {"apiToken": []}], "summary": "List project templates in a workspace", "description": "Member (15)+. Guests get 403, non-members 404.", "parameters": [{"$ref": "#/components/parameters/Slug"}], "responses": {"200": {"description": "Template list", "content": {"application/json": {"schema": {"type": "object", "properties": {"templates": {"type": "array", "items": {"$ref": "#/components/schemas/ProjectTemplate"}}}}}}}}},
+      "post": {"tags": ["project-templates"], "security": [{"sessionCookie": []}, {"apiToken": []}], "summary": "Create a project template", "description": "Admin (20) only. The payload is validated strictly: state names 1-120 chars, groups triage|backlog|unstarted|started|completed|cancelled, colors #rrggbb, estimate point keys 1-40 chars.", "parameters": [{"$ref": "#/components/parameters/Slug"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "payload": {"$ref": "#/components/schemas/ProjectTemplatePayload"}}, "required": ["name"]}}}}, "responses": {"201": {"description": "Created template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectTemplate"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}}}
+    },
+    "/api/v1/workspaces/{slug}/templates/{templateID}": {
+      "get": {"tags": ["project-templates"], "security": [{"sessionCookie": []}, {"apiToken": []}], "summary": "Get a project template", "parameters": [{"$ref": "#/components/parameters/Slug"}, {"name": "templateID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectTemplate"}}}}, "404": {"$ref": "#/components/responses/NotFound"}}},
+      "patch": {"tags": ["project-templates"], "security": [{"sessionCookie": []}, {"apiToken": []}], "summary": "Update a project template", "description": "Admin (20) only. Partial update; payload replaces the whole document.", "parameters": [{"$ref": "#/components/parameters/Slug"}, {"name": "templateID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "payload": {"$ref": "#/components/schemas/ProjectTemplatePayload"}}}}}}, "responses": {"200": {"description": "Updated template", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectTemplate"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "404": {"$ref": "#/components/responses/NotFound"}}},
+      "delete": {"tags": ["project-templates"], "security": [{"sessionCookie": []}, {"apiToken": []}], "summary": "Delete a project template", "description": "Admin (20) only. Existing projects are unaffected.", "parameters": [{"$ref": "#/components/parameters/Slug"}, {"name": "templateID", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"204": {"description": "Deleted"}, "404": {"$ref": "#/components/responses/NotFound"}}}
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}": {
       "get": {
@@ -2195,6 +2205,8 @@
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
+      "ProjectTemplate": {"type": "object", "properties": {"id": {"type": "string", "format": "uuid"}, "workspace_id": {"type": "string", "format": "uuid"}, "name": {"type": "string"}, "description": {"type": "string"}, "payload": {"$ref": "#/components/schemas/ProjectTemplatePayload"}, "created_by": {"type": "string", "format": "uuid", "nullable": true}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}}},
+      "ProjectTemplatePayload": {"type": "object", "description": "Seeds applied when a project is created with template_id. States replace the default seed when non-empty; labels are workspace-scoped (existing names are reused); one estimate scale may be defined.", "properties": {"states": {"type": "array", "items": {"type": "object", "required": ["name", "group"], "properties": {"name": {"type": "string"}, "group": {"type": "string", "enum": ["triage", "backlog", "unstarted", "started", "completed", "cancelled"]}, "color": {"type": "string", "description": "#rrggbb"}}}}, "labels": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "color": {"type": "string", "description": "#rrggbb"}}}}, "modules": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "description": {"type": "string"}}}}, "estimate_scale": {"type": "object", "nullable": true, "required": ["name"], "properties": {"name": {"type": "string"}, "points": {"type": "array", "items": {"type": "object", "required": ["key"], "properties": {"key": {"type": "string"}, "value": {"type": "integer"}, "description": {"type": "string"}}}}}}}},
       "CustomField": {
         "type": "object",
         "properties": {

@@ -55,20 +55,28 @@ func projectError(c *echo.Context, err error) error {
 type createProjectBody struct {
 	Name       string `json:"name"`
 	Identifier string `json:"identifier"`
+	// TemplateID is optional (C17T1): when set, the template's
+	// states/labels/modules/estimate scale are seeded in the same
+	// transaction as the project. Unknown id → 400.
+	TemplateID *string `json:"template_id"`
 }
 
 // createProject implements POST /api/v1/workspaces/{slug}/projects: creates
 // the project (identifier uppercased, unique per workspace) and seeds its
-// default states. 201 with the project JSON.
+// default states, or the template's seeds when template_id is given. 201
+// with the project JSON.
 func (h *ProjectHandler) createProject(c *echo.Context) error {
 	var body createProjectBody
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
 	}
-	p, err := service.CreateProject(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Identifier)
+	p, err := service.CreateProjectWithTemplate(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, body.Name, body.Identifier, body.TemplateID)
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
+		}
+		if errors.Is(err, service.ErrUnknownTemplateID) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "unknown template_id", nil)
 		}
 		return projectError(c, err)
 	}

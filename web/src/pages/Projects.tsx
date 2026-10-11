@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import type { Project } from "../lib/types";
+import {
+  fetchProjectTemplates,
+  summarizeProjectTemplatePayload,
+  type ProjectTemplate,
+} from "../lib/projectTemplates";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -32,6 +37,9 @@ export default function Projects() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [identifier, setIdentifier] = useState("");
+  // C17T1: optional project template applied in the creation transaction.
+  const [templates, setTemplates] = useState<ProjectTemplate[] | null>(null);
+  const [templateId, setTemplateId] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -54,6 +62,18 @@ export default function Projects() {
     void load();
   }, [load]);
 
+  // Load the workspace's project templates when the dialog opens so the
+  // picker can offer them. Guests can't create projects anyway; a failed
+  // fetch just hides the picker (never blocks creation).
+  useEffect(() => {
+    if (!dialogOpen || !slug) return;
+    setTemplates(null);
+    setTemplateId("");
+    fetchProjectTemplates(slug)
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
+  }, [dialogOpen, slug]);
+
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
@@ -62,11 +82,18 @@ export default function Projects() {
       // Identifier is uppercased server-side too; we mirror it in the input.
       const p = await api.post<Project>(
         `/api/v1/workspaces/${encodeURIComponent(slug ?? "")}/projects`,
-        { name: name.trim(), identifier: identifier.trim() },
+        {
+          name: name.trim(),
+          identifier: identifier.trim(),
+          // C17T1: template seeds states/labels/modules/estimate scale
+          // in the same transaction as project creation.
+          ...(templateId ? { template_id: templateId } : {}),
+        },
       );
       setDialogOpen(false);
       setName("");
       setIdentifier("");
+      setTemplateId("");
       navigate(`/w/${slug}/p/${p.identifier}`);
     } catch (err) {
       // 409 duplicate identifier surfaces the API's message verbatim.
@@ -147,6 +174,30 @@ export default function Projects() {
                   ENG-2, …
                 </p>
               </div>
+              {templates !== null && templates.length > 0 && (
+                <div className="space-y-2">
+                  <Label htmlFor="p-template">Template</Label>
+                  <select
+                    id="p-template"
+                    value={templateId}
+                    onChange={(e) => setTemplateId(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="">
+                      No template — default states
+                    </option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} — {summarizeProjectTemplatePayload(t.payload)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Applies the template&apos;s states, labels, modules and
+                    estimate scale when the project is created.
+                  </p>
+                </div>
+              )}
               {formError && (
                 <Alert variant="destructive">
                   <AlertDescription>{formError}</AlertDescription>
