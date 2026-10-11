@@ -2522,14 +2522,18 @@
       },
       "AutomationAction": {
         "type": "object",
-        "description": "One ordered action: assign (user_id), add_label (label_id), add_comment (body), set_priority (priority 0-4: none/low/medium/high/urgent), or set_state (state_id, a state UUID in this project). set_priority/set_state targeting the current value are no-ops: no activity row, and a firing of only no-ops writes no run row. A set_state move into a completed state is rejected by the blocker guard when the issue has open blockers — recorded on the run row as ok:false, never a silent skip.",
+        "description": "One ordered action: assign (user_id), add_label (label_id), add_comment (body), set_priority (priority 0-4: none/low/medium/high/urgent), set_state (state_id, a state UUID in this project), remove_label (label_id), unassign (no parameters — clears every assignee), set_estimate (estimate, an estimate-point UUID on one of this project's scales), set_due_date (due_date: an absolute ISO date \"YYYY-MM-DD\" or a relative offset \"+Nd\" days from the firing time), move_to_cycle (cycle_id, a cycle UUID in this project — the issue leaves any other cycles), move_to_module (module_id, a module UUID in this project — the issue leaves any other modules), add_watcher (user_id, a workspace member, added as an issue subscriber). set_priority/set_state targeting the current value are no-ops: no activity row, and a firing of only no-ops writes no run row. A failed action is recorded on the run row as ok:false and aborts the rule's remaining actions (a half-applied rule is worse than a stopped one); it never rolls back the firing event. A set_state move into a completed state is rejected by the blocker guard when the issue has open blockers — recorded on the run row as ok:false, never a silent skip.",
         "properties": {
-          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment", "set_priority", "set_state"] },
+          "type": { "type": "string", "enum": ["assign", "add_label", "add_comment", "set_priority", "set_state", "remove_label", "unassign", "set_estimate", "set_due_date", "move_to_cycle", "move_to_module", "add_watcher"] },
           "user_id": { "type": "string", "format": "uuid" },
           "label_id": { "type": "string", "format": "uuid" },
           "body": { "type": "string", "maxLength": 10000 },
           "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
-          "state_id": { "type": "string", "format": "uuid" }
+          "state_id": { "type": "string", "format": "uuid" },
+          "cycle_id": { "type": "string", "format": "uuid", "description": "move_to_cycle only: the cycle UUID in this project the issue moves into." },
+          "module_id": { "type": "string", "format": "uuid", "description": "move_to_module only: the module UUID in this project the issue moves into." },
+          "estimate": { "type": "string", "format": "uuid", "description": "set_estimate only: the estimate-point UUID on one of this project's scales." },
+          "due_date": { "type": "string", "description": "set_due_date only: an absolute ISO date \"YYYY-MM-DD\" or a relative offset \"+Nd\" days from the firing time." }
         }
       },
       "AutomationRule": {

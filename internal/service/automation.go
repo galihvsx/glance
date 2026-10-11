@@ -19,8 +19,12 @@ package service
 //
 // Actions run in order
 // inside the firing transaction: assign, add_label, add_comment,
-// set_priority, set_state (C12T2). An action failure is LOGGED (slog)
-// and never blocks the firing event. Automation-driven changes never
+// set_priority, set_state (C12T2), remove_label, unassign, set_estimate,
+// set_due_date, move_to_cycle, move_to_module, add_watcher (C16T2). An
+// action failure is LOGGED (slog), recorded on the run row as ok:false,
+// and ABORTS the rule's remaining actions (C16T2 — a half-applied rule
+// is worse than a stopped one); it never rolls back the firing event.
+// Automation-driven changes never
 // re-trigger automations: the depth-1 loop guard (automationActiveKey)
 // suppresses evaluation while automation actions run, so a rule's own
 // add_comment — or its set_state, even on the creation path — can never
@@ -45,6 +49,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,7 +114,15 @@ type AutomationTrigger struct {
 
 // AutomationAction is one ordered step: exactly one of assign (user_id),
 // add_label (label_id), add_comment (body), set_priority (priority,
-// 0-4), set_state (state_id, a state UUID in this project).
+// 0-4), set_state (state_id, a state UUID in this project), remove_label
+// (label_id), unassign (no parameters — clears every assignee),
+// set_estimate (estimate, an estimate-point UUID on one of this project's
+// scales), set_due_date (due_date: an absolute ISO date "YYYY-MM-DD" or a
+// relative offset "+Nd" days from the firing time), move_to_cycle
+// (cycle_id, a cycle UUID in this project — the issue leaves any other
+// cycles), move_to_module (module_id, a module UUID in this project —
+// the issue leaves any other modules), add_watcher (user_id, a workspace
+// member, added as an issue subscriber).
 type AutomationAction struct {
 	Type     string  `json:"type"`
 	UserID   *string `json:"user_id,omitempty"`
@@ -117,6 +130,10 @@ type AutomationAction struct {
 	Body     *string `json:"body,omitempty"`
 	Priority *int    `json:"priority,omitempty"`
 	StateID  *string `json:"state_id,omitempty"`
+	CycleID  *string `json:"cycle_id,omitempty"`
+	ModuleID *string `json:"module_id,omitempty"`
+	Estimate *string `json:"estimate,omitempty"`
+	DueDate  *string `json:"due_date,omitempty"`
 }
 
 // AutomationRule is a stored rule row.
@@ -292,8 +309,15 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 // targets at write time: assign needs a workspace member, add_label a
 // label in this workspace, add_comment a non-empty body, set_priority a
 // priority pinned to the schema enum (0-4), set_state a state in this
-// project (like add_label's write-time check). Targets can still vanish
-// later — execution failures are logged, never fatal.
+// project (like add_label's write-time check), remove_label a label in
+// this workspace, unassign takes no parameters, set_estimate an
+// estimate point on one of this project's scales (reusing
+// checkEstimatePoint — a mismatch is an honest 400), set_due_date an
+// absolute ISO date or a "+Nd" offset, move_to_cycle a cycle in this
+// project, move_to_module a module in this project, add_watcher a
+// workspace member. Targets can still vanish later — execution failures
+// are logged, recorded on the run row, and abort the rule's remaining
+// actions, never the firing event.
 func validateAutomationActions(ctx context.Context, q queryRower, wsID, projectID string, actions []AutomationAction) error {
 	if len(actions) == 0 || len(actions) > MaxAutomationActionsPerRule {
 		return ErrInvalidAutomationAction
@@ -351,11 +375,129 @@ func validateAutomationActions(ctx context.Context, q queryRower, wsID, projectI
 				// 400, same as add_label's target check.
 				return ErrInvalidAutomationAction
 			}
+		case "remove_label":
+			if a.LabelID == nil {
+				return ErrInvalidAutomationAction
+			}
+			lid := strings.ToLower(strings.TrimSpace(*a.LabelID))
+			var owner string
+			err := q.QueryRow(ctx,
+				`SELECT workspace_id::text FROM labels WHERE id = $1::uuid`, lid).Scan(&owner)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+					return ErrInvalidAutomationAction
+				}
+				return err
+			}
+			if owner != wsID {
+				return ErrInvalidAutomationAction
+			}
+		case "unassign":
+			// No parameters: clears every assignee. Nothing to validate.
+		case "set_estimate":
+			if a.Estimate == nil {
+				return ErrInvalidAutomationAction
+			}
+			// Reuse the issue write path's scale validation
+			// (checkEstimatePoint): the point must belong to a scale of
+			// this project. A mismatch is an honest 400.
+			if _, err := checkEstimatePoint(ctx, q, projectID, *a.Estimate); err != nil {
+				if errors.Is(err, ErrInvalidEstimatePoint) {
+					return ErrInvalidAutomationAction
+				}
+				return err
+			}
+		case "set_due_date":
+			if a.DueDate == nil {
+				return ErrInvalidAutomationAction
+			}
+			if _, err := parseAutomationDueDateSpec(*a.DueDate); err != nil {
+				return ErrInvalidAutomationAction
+			}
+		case "move_to_cycle":
+			if a.CycleID == nil {
+				return ErrInvalidAutomationAction
+			}
+			if _, err := resolveCycle(ctx, q, projectID,
+				strings.ToLower(strings.TrimSpace(*a.CycleID))); err != nil {
+				// Bad UUID or a cycle from another project: a write-time
+				// 400, same as set_state's target check.
+				if errors.Is(err, ErrInvalidCycleID) || errors.Is(err, ErrCycleNotFound) {
+					return ErrInvalidAutomationAction
+				}
+				return err
+			}
+		case "move_to_module":
+			if a.ModuleID == nil {
+				return ErrInvalidAutomationAction
+			}
+			if _, err := resolveModule(ctx, q, projectID,
+				strings.ToLower(strings.TrimSpace(*a.ModuleID))); err != nil {
+				if errors.Is(err, ErrInvalidModuleID) || errors.Is(err, ErrModuleNotFound) {
+					return ErrInvalidAutomationAction
+				}
+				return err
+			}
+		case "add_watcher":
+			if a.UserID == nil {
+				return ErrInvalidAutomationAction
+			}
+			uid := strings.ToLower(strings.TrimSpace(*a.UserID))
+			var one int
+			err := q.QueryRow(ctx,
+				`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
+				wsID, uid).Scan(&one)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+					return ErrInvalidAutomationAction
+				}
+				return err
+			}
 		default:
 			return ErrInvalidAutomationAction
 		}
 	}
 	return nil
+}
+
+// automationDueDateSpec is a parsed set_due_date value: either an
+// absolute calendar date or a relative offset of N days from the moment
+// the rule fires.
+type automationDueDateSpec struct {
+	absolute   time.Time // midnight UTC of the absolute date
+	offsetDays int       // +Nd: days after the firing day (UTC)
+	relative   bool
+}
+
+// parseAutomationDueDateSpec parses a set_due_date value: an absolute
+// ISO date ("YYYY-MM-DD") or a relative offset "+Nd" (N days from now).
+// Anything else — "tomorrow", datetimes, negative offsets — is rejected
+// at rule-write time with an honest 400.
+func parseAutomationDueDateSpec(s string) (automationDueDateSpec, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "+") && strings.HasSuffix(s, "d") && len(s) > 2 {
+		n, err := strconv.Atoi(s[1 : len(s)-1])
+		if err != nil || n < 0 {
+			return automationDueDateSpec{}, ErrInvalidAutomationAction
+		}
+		return automationDueDateSpec{relative: true, offsetDays: n}, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return automationDueDateSpec{}, ErrInvalidAutomationAction
+	}
+	return automationDueDateSpec{absolute: t.UTC()}, nil
+}
+
+// at resolves the spec to a calendar date: the absolute date, or the
+// firing day (UTC) plus the offset. Relative offsets are resolved at
+// execution time — "+Nd" means N days from when the rule fires, not
+// from when it was written.
+func (d automationDueDateSpec) at(now time.Time) time.Time {
+	if d.relative {
+		return now.UTC().Truncate(24*time.Hour).AddDate(0, 0, d.offsetDays)
+	}
+	return d.absolute
 }
 
 func validateAutomationName(name string) error {
@@ -703,7 +845,12 @@ func runAutomationCommentAddedTx(ctx context.Context, tx pgx.Tx, wsID, projectID
 // skipped, so a created rule can never fire on a state change and vice
 // versa. The event's filter payload is matched by
 // AutomationTrigger.matchesEvent: filterless event types always match
-// once the type matched.
+// once the type matched. It never returns an error: rule-selection
+// failures are logged via slog and the event proceeds. A failed action
+// is recorded on the run row as ok:false and ABORTS the rule's
+// remaining actions (C16T2 — a half-applied rule is worse than a stopped
+// one); the firing transaction still commits, so a broken rule can
+// never roll back the user's change.
 func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, ev automationEvent) []*Notification {
 	if automationActive(ctx) {
 		return nil
@@ -768,8 +915,10 @@ func runAutomationRulesForEventTx(ctx context.Context, tx pgx.Tx, wsID, projectI
 // actorID for honest attribution on activities and comments. Returned
 // notifications are for the caller to announce after commit. The
 // depth-1 loop guard is set on actx so an action's own writes can never
-// cascade into another automation pass. Per-action failures are
-// logged, never fatal — the run row still records ok:false.
+// cascade into another automation pass. A failed action is logged,
+// recorded on the run row as ok:false, and ABORTS the rule's remaining
+// actions (C16T2 — a half-applied rule is worse than a stopped one);
+// it never rolls back the firing event.
 func runAutomationRuleActionsTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, r *AutomationRule, trig AutomationTrigger) []*Notification {
 	var notified []*Notification
 	var actions []AutomationAction
@@ -786,15 +935,18 @@ func runAutomationRuleActionsTx(ctx context.Context, tx pgx.Tx, wsID, projectID,
 	for i, a := range actions {
 		ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
 		if err != nil {
-			// Logged, never fatal: the firing event already happened;
-			// a broken action must not roll it back.
-			slog.Error("automation: action failed; continuing with next action",
+			// C16T2: a failed action aborts the rule's remaining
+			// actions — the failure is recorded ok:false on the run
+			// row below, and the firing tx still commits. A broken
+			// rule must not roll back the user's change, and a
+			// half-applied rule is worse than a stopped one.
+			slog.Error("automation: action failed; aborting remaining actions of the rule",
 				"rule_id", r.ID, "rule_name", r.Name,
 				"action_index", i, "action_type", a.Type, "error", err)
 			errText := err.Error()
 			results = append(results, AutomationActionResult{Type: a.Type, OK: false, Error: &errText})
 			anyEffect = true
-			continue
+			break
 		}
 		notified = append(notified, ns...)
 		results = append(results, AutomationActionResult{Type: a.Type, OK: true})
@@ -852,6 +1004,43 @@ func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ide
 		}
 		return automationSetStateTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			strings.ToLower(strings.TrimSpace(*a.StateID)))
+	case "remove_label":
+		if a.LabelID == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationRemoveLabelTx(ctx, tx, wsID, issueID, actorID,
+			strings.ToLower(strings.TrimSpace(*a.LabelID)))
+	case "unassign":
+		return automationUnassignTx(ctx, tx, wsID, projectID, ident, issueID, actorID)
+	case "set_estimate":
+		if a.Estimate == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationSetEstimateTx(ctx, tx, projectID, issueID, actorID,
+			strings.TrimSpace(*a.Estimate))
+	case "set_due_date":
+		if a.DueDate == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationSetDueDateTx(ctx, tx, issueID, actorID, *a.DueDate)
+	case "move_to_cycle":
+		if a.CycleID == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationMoveToCycleTx(ctx, tx, projectID, issueID, actorID,
+			strings.ToLower(strings.TrimSpace(*a.CycleID)))
+	case "move_to_module":
+		if a.ModuleID == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationMoveToModuleTx(ctx, tx, projectID, issueID, actorID,
+			strings.ToLower(strings.TrimSpace(*a.ModuleID)))
+	case "add_watcher":
+		if a.UserID == nil {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return automationAddWatcherTx(ctx, tx, wsID, issueID, actorID,
+			strings.ToLower(strings.TrimSpace(*a.UserID)))
 	default:
 		return nil, false, ErrInvalidAutomationAction
 	}
@@ -1166,4 +1355,332 @@ func automationAddCommentTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ide
 		return nil, err
 	}
 	return notified, nil
+}
+
+// automationRemoveLabelTx detaches one label. Idempotent: a label that
+// is not attached is a no-op. The label must still belong to this
+// workspace; a label deleted since rule creation fails the action
+// (logged + run row, aborting the tail), never the firing.
+func automationRemoveLabelTx(ctx context.Context, tx pgx.Tx, wsID, issueID, actorID, labelID string) ([]*Notification, bool, error) {
+	var owner string
+	if err := tx.QueryRow(ctx,
+		`SELECT workspace_id::text FROM labels WHERE id = $1::uuid`, labelID).Scan(&owner); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return nil, false, err
+	}
+	if owner != wsID {
+		return nil, false, ErrInvalidAutomationAction
+	}
+	var old []string
+	rows, err := tx.Query(ctx,
+		`SELECT label_id::text FROM issue_labels WHERE issue_id = $1::uuid ORDER BY label_id::text`, issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		old = append(old, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if !slices.Contains(old, labelID) {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM issue_labels WHERE issue_id = $1::uuid AND label_id = $2::uuid`,
+		issueID, labelID); err != nil {
+		return nil, false, err
+	}
+	oldArr := old
+	if oldArr == nil {
+		oldArr = []string{}
+	}
+	idx := slices.Index(old, labelID) // >= 0: the Contains check above
+	newSet := slices.Delete(slices.Clone(old), idx, idx+1)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'labels', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(oldArr), toJSONBParam(newSet)); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationUnassignTx clears every assignee (the unassign action takes
+// no parameters). A real removal mirrors the manual path: one
+// "assignees" activity row plus an unassigned notification per removed
+// assignee. No assignees is a no-op.
+func automationUnassignTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string) ([]*Notification, bool, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT user_id::text FROM issue_assignees WHERE issue_id = $1::uuid ORDER BY user_id::text`,
+		issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	var old []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		old = append(old, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(old) == 0 {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM issue_assignees WHERE issue_id = $1::uuid`, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'assignees', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(old), toJSONBParam([]string{})); err != nil {
+		return nil, false, err
+	}
+	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	actorName := actorDisplayName(ctx, tx, actorID)
+	var notified []*Notification
+	for _, uid := range old {
+		ns, err := notifyTx(ctx, tx, NotifyIssueUnassigned,
+			fmt.Sprintf("%s unassigned you from %s", actorName, displayID),
+			fmt.Sprintf("Issue: %s", name),
+			map[string]any{
+				"issue_id":     issueID,
+				"display_id":   displayID,
+				"issue_name":   name,
+				"actor_id":     actorID,
+				"workspace_id": wsID,
+				"project_id":   projectID,
+			},
+			actorID, []string{uid})
+		if err != nil {
+			return nil, false, err
+		}
+		notified = append(notified, ns...)
+	}
+	return notified, false, nil
+}
+
+// automationSetEstimateTx points the issue at an estimate point on one
+// of this project's scales, reusing the issue write path's scale
+// validation (checkEstimatePoint): a point deleted since rule creation
+// fails the action (logged + run row), never the firing. A target equal
+// to the current point is a no-op. Manual estimate changes notify
+// nobody in-app, so neither does this.
+func automationSetEstimateTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID, pointID string) ([]*Notification, bool, error) {
+	var old *string
+	if err := tx.QueryRow(ctx,
+		`SELECT estimate_point_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&old); err != nil {
+		return nil, false, err
+	}
+	if old != nil && *old == pointID {
+		return nil, true, nil
+	}
+	epid, err := checkEstimatePoint(ctx, tx, projectID, pointID)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET estimate_point_id = $1::uuid, updated_at = now() WHERE id = $2::uuid`,
+		epid, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'estimate_point_id', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(derefPtr(old)), toJSONBParam(epid)); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationSetDueDateTx sets the issue's target date from a due_date
+// spec: an absolute ISO date or a "+Nd" offset resolved against the
+// firing moment (UTC day). A target equal to the current date is a
+// no-op. Manual due-date changes notify nobody in-app, so neither does
+// this.
+func automationSetDueDateTx(ctx context.Context, tx pgx.Tx, issueID, actorID, spec string) ([]*Notification, bool, error) {
+	d, err := parseAutomationDueDateSpec(spec)
+	if err != nil {
+		// Unreachable after write-time validation; kept honest anyway.
+		return nil, false, ErrInvalidAutomationAction
+	}
+	target := d.at(time.Now())
+	var old *time.Time
+	if err := tx.QueryRow(ctx,
+		`SELECT target_date FROM issues WHERE id = $1::uuid`, issueID).Scan(&old); err != nil {
+		return nil, false, err
+	}
+	if old != nil && old.UTC().Truncate(24*time.Hour).Equal(target) {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET target_date = $1, updated_at = now() WHERE id = $2::uuid`,
+		target, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'target_date', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(derefPtr(old)), toJSONBParam(&target)); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationMoveToCycleTx moves the issue into the target cycle: it
+// leaves every other cycle first ("move" semantics — an issue rides one
+// sprint at a time), then joins the target. Already only in the target
+// is a no-op. A cycle deleted since rule creation fails the action
+// (logged + run row), never the firing. The loop guard makes a cascade
+// structurally impossible.
+func automationMoveToCycleTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID, cycleID string) ([]*Notification, bool, error) {
+	if _, err := resolveCycle(ctx, tx, projectID, cycleID); err != nil {
+		return nil, false, err
+	}
+	var current []string
+	rows, err := tx.Query(ctx,
+		`SELECT cycle_id::text FROM cycle_issues WHERE issue_id = $1::uuid ORDER BY cycle_id::text`,
+		issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		current = append(current, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if slices.Equal(current, []string{cycleID}) {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM cycle_issues WHERE issue_id = $1::uuid`, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO cycle_issues (cycle_id, issue_id) VALUES ($1::uuid, $2::uuid)
+		 ON CONFLICT DO NOTHING`, cycleID, issueID); err != nil {
+		return nil, false, err
+	}
+	oldArr := current
+	if oldArr == nil {
+		oldArr = []string{}
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'cycle_id', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(oldArr), toJSONBParam([]string{cycleID})); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationMoveToModuleTx moves the issue into the target module:
+// same "move" semantics as move_to_cycle over the module_issues
+// junction. A module deleted since rule creation fails the action
+// (logged + run row), never the firing.
+func automationMoveToModuleTx(ctx context.Context, tx pgx.Tx, projectID, issueID, actorID, moduleID string) ([]*Notification, bool, error) {
+	if _, err := resolveModule(ctx, tx, projectID, moduleID); err != nil {
+		return nil, false, err
+	}
+	var current []string
+	rows, err := tx.Query(ctx,
+		`SELECT module_id::text FROM module_issues WHERE issue_id = $1::uuid ORDER BY module_id::text`,
+		issueID)
+	if err != nil {
+		return nil, false, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, false, err
+		}
+		current = append(current, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if slices.Equal(current, []string{moduleID}) {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM module_issues WHERE issue_id = $1::uuid`, issueID); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO module_issues (module_id, issue_id) VALUES ($1::uuid, $2::uuid)
+		 ON CONFLICT DO NOTHING`, moduleID, issueID); err != nil {
+		return nil, false, err
+	}
+	oldArr := current
+	if oldArr == nil {
+		oldArr = []string{}
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+		 VALUES ($1::uuid, $2::uuid, 'module_id', $3::jsonb, $4::jsonb)`,
+		issueID, actorID, toJSONBParam(oldArr), toJSONBParam([]string{moduleID})); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+// automationAddWatcherTx adds the user as an issue subscriber (a
+// "watcher" is the subscriber+assignee union — see issueWatchersTx).
+// Idempotent: an existing subscriber — or an assignee, who already
+// watches — is a no-op. The user must still be a workspace member; a
+// member who left since the rule was created fails the action (logged +
+// run row), never the firing.
+func automationAddWatcherTx(ctx context.Context, tx pgx.Tx, wsID, issueID, actorID, userID string) ([]*Notification, bool, error) {
+	var one int
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
+		wsID, userID).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, false, ErrInvalidAutomationAction
+		}
+		return nil, false, err
+	}
+	var watching bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM issue_subscribers WHERE issue_id = $1::uuid AND user_id = $2::uuid)
+		    OR EXISTS(SELECT 1 FROM issue_assignees WHERE issue_id = $1::uuid AND user_id = $2::uuid)`,
+		issueID, userID).Scan(&watching); err != nil {
+		return nil, false, err
+	}
+	if watching {
+		return nil, true, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_subscribers (issue_id, user_id) VALUES ($1::uuid, $2::uuid)
+		 ON CONFLICT DO NOTHING`, issueID, userID); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
 }
