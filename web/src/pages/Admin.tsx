@@ -153,9 +153,9 @@ function OverviewTab() {
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       {cards.map((c) => (
-        <Card key={c.label}>
+        <Card key={c.label} className="rounded-lg border-border-hairline">
           <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {c.label}
             </CardTitle>
           </CardHeader>
@@ -163,7 +163,7 @@ function OverviewTab() {
             {statsQuery.isLoading ? (
               <Skeleton className="h-8 w-16" />
             ) : (
-              <div className="text-2xl font-semibold tracking-tight">
+              <div className="text-lg font-semibold tracking-tight">
                 {c.value ?? "—"}
               </div>
             )}
@@ -241,7 +241,7 @@ function UsersTab({ selfId }: { selfId: string }) {
   return (
     <div>
       {usersQuery.isError && <AdminError error={usersQuery.error} />}
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <Table>
           <TableHeader>
             <TableRow>
@@ -266,7 +266,7 @@ function UsersTab({ selfId }: { selfId: string }) {
               rows.map((u) => {
                 const isSelf = u.id === selfId;
                 return (
-                  <TableRow key={u.id}>
+                  <TableRow key={u.id} className="hover:bg-wash-hover">
                     <TableCell>
                       <div className="font-medium">{u.email}</div>
                       {u.name && (
@@ -329,7 +329,7 @@ function UsersTab({ selfId }: { selfId: string }) {
         </Table>
       </Card>
       {!usersQuery.isLoading && rows.length === 0 && (
-        <div className="mt-4 flex items-center gap-3 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+        <div className="mt-4 flex items-center gap-3 rounded-lg border border-dashed border-border-hairline p-8 text-xs text-muted-foreground">
           <Users className="h-5 w-5" />
           No users on this instance.
         </div>
@@ -396,7 +396,7 @@ function WorkspacesTab() {
           (projects, issues, attachments). This cannot be undone.
         </AlertDescription>
       </Alert>
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <Table>
           <TableHeader>
             <TableRow>
@@ -419,7 +419,7 @@ function WorkspacesTab() {
               ))}
             {!workspacesQuery.isLoading &&
               rows.map((w) => (
-                <TableRow key={w.id}>
+                <TableRow key={w.id} className="hover:bg-wash-hover">
                   <TableCell>
                     <div className="font-medium">{w.name}</div>
                     <div className="font-mono text-xs text-muted-foreground">
@@ -459,7 +459,7 @@ function WorkspacesTab() {
         </Table>
       </Card>
       {!workspacesQuery.isLoading && rows.length === 0 && (
-        <div className="mt-4 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+        <div className="mt-4 rounded-lg border border-dashed border-border-hairline p-8 text-xs text-muted-foreground">
           No workspaces on this instance.
         </div>
       )}
@@ -571,7 +571,7 @@ function AuditTab() {
   return (
     <div>
       {auditQuery.isError && <AdminError error={auditQuery.error} />}
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-lg border-border-hairline">
         <CardContent className="pt-6">
           <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
             <div className="space-y-1.5">
@@ -637,7 +637,7 @@ function AuditTab() {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <Table>
           <TableHeader>
             <TableRow>
@@ -659,7 +659,7 @@ function AuditTab() {
               ))}
             {!auditQuery.isLoading &&
               rows.map((a: AdminAuditEntry) => (
-                <TableRow key={a.id}>
+                <TableRow key={a.id} className="hover:bg-wash-hover">
                   <TableCell
                     className="whitespace-nowrap text-sm text-muted-foreground"
                     title={a.at}
@@ -700,7 +700,7 @@ function AuditTab() {
         </Table>
       </Card>
       {!auditQuery.isLoading && rows.length === 0 && (
-        <div className="mt-4 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+        <div className="mt-4 rounded-lg border border-dashed border-border-hairline p-8 text-xs text-muted-foreground">
           No audit entries match these filters.
         </div>
       )}
@@ -791,9 +791,9 @@ function BackupsTab() {
   return (
     <div>
       {backupsQuery.isError && <AdminError error={backupsQuery.error} />}
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+          <CardTitle className="flex items-center gap-2 text-xs font-semibold">
             <DatabaseBackup className="h-4 w-4" />
             Schedule
           </CardTitle>
@@ -854,10 +854,10 @@ function BackupsTab() {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <CardHeader>
           <div className="flex flex-wrap items-end justify-between gap-2">
-            <CardTitle className="text-base">History</CardTitle>
+            <CardTitle className="text-xs font-semibold">History</CardTitle>
             <div className="flex items-end gap-2">
               <div className="space-y-1.5">
                 <Label htmlFor="backup-filter-slug" className="sr-only">
@@ -914,7 +914,7 @@ function BackupsTab() {
               ))}
             {!backupsQuery.isLoading &&
               rows.map((r: AdminBackupRun) => (
-                <TableRow key={r.id}>
+                <TableRow key={r.id} className="hover:bg-wash-hover">
                   <TableCell
                     className="whitespace-nowrap text-sm text-muted-foreground"
                     title={r.at}
@@ -944,7 +944,7 @@ function BackupsTab() {
         </Table>
       </Card>
       {!backupsQuery.isLoading && rows.length === 0 && (
-        <div className="mt-4 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+        <div className="mt-4 rounded-lg border border-dashed border-border-hairline p-8 text-xs text-muted-foreground">
           No backups yet. Run one now, or set GLANCE_BACKUP_INTERVAL to
           schedule them.
         </div>
@@ -965,10 +965,10 @@ export default function Admin() {
   return (
     <div className="mx-auto w-full max-w-5xl p-6">
 
-      <h1 className="mb-1 text-2xl font-semibold tracking-tight">
+      <h1 className="mb-1 text-xl font-semibold tracking-tight">
         Administration
       </h1>
-      <p className="mb-6 text-sm text-muted-foreground">
+      <p className="mb-6 text-xs text-muted-foreground">
         Instance-wide stats, user management, and workspace cleanup.
       </p>
 

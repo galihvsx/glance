@@ -117,7 +117,7 @@ function StatesEditor({
                   ),
                 )
               }
-              className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+              className="rounded-md border border-border bg-[#111113] px-2 py-1"
             >
               {PROJECT_TEMPLATE_STATE_GROUPS.map((g) => (
                 <option key={g} value={g}>
@@ -277,7 +277,7 @@ function EstimateEditor({
 }) {
   return (
     <div className="space-y-2">
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2">
         <input
           type="checkbox"
           checked={scale !== null}
@@ -453,7 +453,7 @@ function TemplateDialog({
           </div>
 
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">
+            <legend className="font-medium">
               States{" "}
               <span className="font-normal text-muted-foreground">
                 (replaces the default seed when non-empty)
@@ -466,7 +466,7 @@ function TemplateDialog({
           </fieldset>
 
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">
+            <legend className="font-medium">
               Labels{" "}
               <span className="font-normal text-muted-foreground">
                 (workspace-wide; existing names are reused)
@@ -479,7 +479,7 @@ function TemplateDialog({
           </fieldset>
 
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">Modules</legend>
+            <legend className="font-medium">Modules</legend>
             <ModulesEditor
               modules={payload.modules ?? []}
               onChange={(modules) => patchPayload({ modules })}
@@ -487,7 +487,7 @@ function TemplateDialog({
           </fieldset>
 
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">Estimate scale</legend>
+            <legend className="font-medium">Estimate scale</legend>
             <EstimateEditor
               scale={payload.estimate_scale ?? null}
               onChange={(estimate_scale) => patchPayload({ estimate_scale })}
@@ -557,11 +557,11 @@ export default function ProjectTemplatesSection({ slug }: { slug: string }) {
   const templates = templatesQuery.data ?? null;
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
         <div>
-          <CardTitle>Project templates</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-xs font-semibold">Project templates</CardTitle>
+          <CardDescription className="text-xs">
             Blueprints applied when a project is created: states, labels,
             modules and a default estimate scale.
           </CardDescription>
@@ -585,7 +585,7 @@ export default function ProjectTemplatesSection({ slug }: { slug: string }) {
             <Skeleton className="h-14 w-full" />
           </div>
         ) : templates.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No templates yet. Create one to reuse a project setup across
             new projects.
           </p>
@@ -594,10 +594,10 @@ export default function ProjectTemplatesSection({ slug }: { slug: string }) {
             {templates.map((t) => (
               <li
                 key={t.id}
-                className="flex items-center justify-between gap-3 py-3"
+                className="flex items-center justify-between gap-3 py-3 hover:bg-wash-hover"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{t.name}</p>
+                  <p className="truncate font-medium">{t.name}</p>
                   <p className="truncate text-xs text-muted-foreground">
                     {summarizeProjectTemplatePayload(t.payload)}
                     {" · "}

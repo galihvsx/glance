@@ -214,9 +214,9 @@ export default function CustomFieldsSection({
   const typeChanged = editing !== null && draft !== null && draft.field_type !== editing.field_type;
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Custom fields</CardTitle>
+        <CardTitle className="text-xs font-semibold">Custom fields</CardTitle>
         {canEdit && (
           <Button
             size="sm"
@@ -237,7 +237,7 @@ export default function CustomFieldsSection({
           </Alert>
         )}
         {!canEdit && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             You are a guest here — custom fields are read-only. Members can
             manage them.
           </p>
@@ -258,16 +258,16 @@ export default function CustomFieldsSection({
             </AlertDescription>
           </Alert>
         ) : fields.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No custom fields yet. Create one to let issues carry typed extra
             data — text, numbers, dates, select options, or checkboxes.
           </p>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-border-hairline rounded-md border border-border-hairline">
             {fields.map((f) => (
-              <li key={f.id} className="flex items-center gap-3 px-3 py-2">
+              <li key={f.id} className="flex items-center gap-3 px-3 py-2 hover:bg-wash-hover">
                 <div className="min-w-0 flex-1">
-                  <p className="flex items-center gap-2 text-sm font-medium">
+                  <p className="flex items-center gap-2 font-medium">
                     <span className="truncate">{f.name}</span>
                     <Badge variant="outline" className="shrink-0 text-[10px]">
                       {typeLabel(f.field_type)}
@@ -409,7 +409,7 @@ export default function CustomFieldsSection({
                   </Label>
                 </div>
                 {!draftError.ok && (
-                  <p className="text-sm text-destructive">{draftError.error}</p>
+                  <p className="text-xs text-destructive">{draftError.error}</p>
                 )}
               </div>
             )}

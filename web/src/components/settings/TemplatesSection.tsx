@@ -90,7 +90,7 @@ function DefaultsEditor({
   const appliedLabels = labels.filter((l) => defaults.labelIds.includes(l.id));
   return (
     <div className="space-y-4 rounded-md border p-3">
-      <p className="text-sm font-medium">Default issue values</p>
+      <p className="font-medium">Default issue values</p>
       <div className="space-y-2">
         <Label htmlFor="tmpl-issue-name">Issue title</Label>
         <Input
@@ -323,9 +323,9 @@ export default function TemplatesSection({
   const modalTitle = editing ? `Edit template` : "New template";
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Templates</CardTitle>
+        <CardTitle className="text-xs font-semibold">Templates</CardTitle>
         {canEdit && (
           <Button
             size="sm"
@@ -346,7 +346,7 @@ export default function TemplatesSection({
           </Alert>
         )}
         {!canEdit && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             You are a guest here — templates are read-only. Members can manage
             them.
           </p>
@@ -367,19 +367,19 @@ export default function TemplatesSection({
             </AlertDescription>
           </Alert>
         ) : templates.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No templates yet. Create one to prefill the create-issue form with
             one click.
           </p>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-border-hairline rounded-md border border-border-hairline">
             {templates.map((t) => (
               <li
                 key={t.id}
-                className="flex items-center gap-3 px-3 py-2"
+                className="flex items-center gap-3 px-3 py-2 hover:bg-wash-hover"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{t.name}</p>
+                  <p className="truncate font-medium">{t.name}</p>
                   {t.description && (
                     <p className="truncate text-xs text-muted-foreground">
                       {t.description}

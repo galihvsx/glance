@@ -211,8 +211,8 @@ export default function ApiTokens() {
     <div className="mx-auto max-w-4xl px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">API tokens</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h1 className="text-xl font-semibold tracking-tight">API tokens</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
             Personal tokens for API and CLI access. They act as you — keep them
             secret.
           </p>
@@ -223,10 +223,10 @@ export default function ApiTokens() {
         </Button>
       </div>
 
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle>Tokens</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-xs font-semibold">Tokens</CardTitle>
+          <CardDescription className="text-xs">
             Last used times are updated when a token authenticates a request.
           </CardDescription>
         </CardHeader>
@@ -239,14 +239,14 @@ export default function ApiTokens() {
             </div>
           )}
           {tokensQuery.isError && (
-            <p className="text-sm text-destructive">
+            <p className="text-xs text-destructive">
               {tokensQuery.error instanceof ApiError
                 ? tokensQuery.error.message
                 : "Failed to load tokens"}
             </p>
           )}
           {!tokensQuery.isLoading && !tokensQuery.isError && tokens.length === 0 && (
-            <p className="py-8 text-center text-sm text-muted-foreground">
+            <p className="py-8 text-center text-xs text-muted-foreground">
               No tokens yet. Create one to authenticate API and CLI calls.
             </p>
           )}
@@ -266,7 +266,7 @@ export default function ApiTokens() {
                 {tokens.map((t) => {
                   const expired = isExpired(t, now);
                   return (
-                    <TableRow key={t.id}>
+                    <TableRow key={t.id} className="hover:bg-wash-hover">
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-2">
                           {t.name}
@@ -350,7 +350,7 @@ export default function ApiTokens() {
                 {TOKEN_SCOPES.map((s) => (
                   <label
                     key={s}
-                    className="flex cursor-pointer items-start gap-2 text-sm"
+                    className="flex cursor-pointer items-start gap-2"
                   >
                     <Checkbox
                       checked={scopes.includes(s)}
@@ -382,7 +382,7 @@ export default function ApiTokens() {
               </NativeSelect>
             </div>
             {formError && (
-              <p className="text-sm text-destructive">{formError}</p>
+              <p className="text-xs text-destructive">{formError}</p>
             )}
             <DialogFooter>
               <Button
@@ -415,8 +415,8 @@ export default function ApiTokens() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="flex items-center gap-2 rounded-lg border bg-muted p-3">
-              <code className="flex-1 break-all font-mono text-sm select-all">
+            <div className="flex items-center gap-2 rounded-lg border border-border-hairline bg-raised p-3">
+              <code className="flex-1 break-all font-mono select-all">
                 {secretState.secret}
               </code>
               <Button variant="outline" size="sm" onClick={onCopySecret}>
@@ -428,7 +428,7 @@ export default function ApiTokens() {
                 {copied ? "Copied" : "Copy"}
               </Button>
             </div>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               This token acts as you. Store it in your password manager or CI
               secrets. The glance API will never display it again — if you lose
               it, revoke this token and create a new one.

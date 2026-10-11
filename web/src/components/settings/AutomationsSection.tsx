@@ -287,11 +287,11 @@ export default function AutomationsSection({
 
   return (
     <>
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
-          <CardTitle>Automations</CardTitle>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <CardTitle className="text-xs font-semibold">Automations</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
             When an issue event happens — assignment, labels, priority,
             due date, estimate, comments, state changes, creation — or
             on a schedule (due soon, overdue, stale, cycle ending),
@@ -312,11 +312,11 @@ export default function AutomationsSection({
         {rulesQuery.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : rulesQuery.isError ? (
-          <p className="text-sm text-destructive">
+          <p className="text-xs text-destructive">
             Could not load automation rules.
           </p>
         ) : rules.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No automation rules yet.
             {canEdit
               ? " Create one to react to issue events automatically."
@@ -327,7 +327,7 @@ export default function AutomationsSection({
             {rules.map((rule) => (
               <li
                 key={rule.id}
-                className="flex items-start justify-between gap-3 rounded-md border p-3"
+                className="flex items-start justify-between gap-3 rounded-md border border-border-hairline p-3"
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
@@ -336,10 +336,10 @@ export default function AutomationsSection({
                       <Badge variant="secondary">disabled</Badge>
                     )}
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {describeTrigger(rule.trigger, states, labels)}
                   </p>
-                  <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+                  <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                     {rule.actions.map((a, i) => (
                       <li key={i}>
                         → {describeAction(a, members, labels, states, actionLookups)}
@@ -485,11 +485,11 @@ export default function AutomationsSection({
       </CardContent>
     </Card>
 
-    <Card className="mt-6">
+    <Card className="mt-6 rounded-lg border-border-hairline">
       <CardHeader>
         <div>
-          <CardTitle>Recent runs</CardTitle>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <CardTitle className="text-xs font-semibold">Recent runs</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
             Every rule firing, newest first — what changed and whether
             each action succeeded.
           </p>
@@ -499,11 +499,11 @@ export default function AutomationsSection({
         {runsQuery.isLoading ? (
           <Skeleton className="h-24 w-full" />
         ) : runsQuery.isError ? (
-          <p className="text-sm text-destructive">
+          <p className="text-xs text-destructive">
             Could not load automation runs.
           </p>
         ) : runs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No automation runs yet. A run appears here each time a rule
             fires.
           </p>
@@ -512,9 +512,9 @@ export default function AutomationsSection({
             {runs.map((run) => (
               <li
                 key={run.id}
-                className="rounded-md border p-3"
+                className="rounded-md border border-border-hairline p-3"
               >
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2">
                   <span className="font-medium">{run.rule_name}</span>
                   <span className="text-muted-foreground">on</span>
                   {run.issue_display_id ? (

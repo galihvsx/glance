@@ -105,9 +105,9 @@ export default function GeneralSection({
   }
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader>
-        <CardTitle className="text-base">General</CardTitle>
+        <CardTitle className="text-xs font-semibold">General</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-end gap-3">
@@ -163,7 +163,7 @@ export default function GeneralSection({
           </Alert>
         )}
         {saved && !dirty && (
-          <p className="text-sm text-muted-foreground">Saved.</p>
+          <p className="text-xs text-muted-foreground">Saved.</p>
         )}
         {canEdit && (
           <Button

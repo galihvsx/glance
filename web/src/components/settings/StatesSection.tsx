@@ -162,9 +162,9 @@ export default function StatesSection({
   );
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>States</CardTitle>
+        <CardTitle className="text-xs font-semibold">States</CardTitle>
         {canEdit && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus className="mr-1 h-4 w-4" /> New state
@@ -178,7 +178,7 @@ export default function StatesSection({
           </Alert>
         )}
         {!canEdit && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             You are a guest here — states are read-only. Members can manage them.
           </p>
         )}
@@ -190,15 +190,15 @@ export default function StatesSection({
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {groupLabel(group)}
               </h3>
-              <ul className="divide-y rounded-md border">
+              <ul className="divide-y divide-border-hairline rounded-md border border-border-hairline">
                 {list.map((s) => (
-                  <li key={s.id} className="flex items-center gap-3 px-3 py-2">
+                  <li key={s.id} className="flex items-center gap-3 px-3 py-2 hover:bg-wash-hover">
                     <span
                       className="h-3.5 w-3.5 shrink-0 rounded-full border"
                       style={{ backgroundColor: s.color || "#6b7280" }}
                       aria-hidden
                     />
-                    <span className="flex-1 text-sm font-medium">{s.name}</span>
+                    <span className="flex-1 font-medium">{s.name}</span>
                     {canEdit && (
                       <div className="flex gap-1">
                         <Button

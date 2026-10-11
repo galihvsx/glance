@@ -136,15 +136,15 @@ export default function SlackSection({
   }
 
   return (
-    <Card className="mb-4">
+    <Card className="mb-4 rounded-lg border-border-hairline">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <CardTitle className="flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <MessageSquare className="h-4 w-4" />
               Slack
             </CardTitle>
-            <CardDescription>
+            <CardDescription className="text-xs">
               Post issue notifications to a Slack channel.
             </CardDescription>
           </div>
