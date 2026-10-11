@@ -28,6 +28,7 @@ import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
 import { Calendar } from "lucide-react";
 import DisplayPanel from "../components/issue/DisplayPanel";
+import SubtaskProgressBar from "../components/issue/SubtaskProgressBar";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import { toApiParams, useIssueFilters } from "../lib/filters";
@@ -120,6 +121,9 @@ function SortableCard({
           )}
         </div>
         <p className="text-sm font-medium leading-snug">{issue.name}</p>
+        {/* C17T2: compact subtask progress — renders only when the
+            issue has direct subtasks. */}
+        <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
         {fields.labels && issue.labels.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {issue.labels.slice(0, 3).map((l) => (

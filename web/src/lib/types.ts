@@ -109,6 +109,16 @@ export interface Issue {
   updated_at: string;
   assignees: IssueAssignee[];
   labels: IssueLabel[];
+  /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
+  subtask_progress?: SubtaskProgress | null;
+}
+
+/** Subtask progress rollup (C17T2): DIRECT children only; `done` counts
+ *  children in a 'completed'-group state. Present on detail and list
+ *  responses; zero-subtask issues carry {total: 0, done: 0}. */
+export interface SubtaskProgress {
+  total: number;
+  done: number;
 }
 
 /** One child summary attached to the issue detail response when fetched

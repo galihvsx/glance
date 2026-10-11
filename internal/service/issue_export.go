@@ -125,11 +125,13 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 	// Column order mirrors ListIssues, then the export extras: state
 	// name, estimate key, and the relation aggregates. Description is
 	// always selected (exports are not a working-set view; sparse
-	// fieldsets don't apply).
+	// fieldsets don't apply). The subtask rollup rides along so export
+	// rows keep key/value parity with the list rows (export contract).
 	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, i.description,
 		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
-		s.name, ep.key, ` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
+		s.name, ep.key, ` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` +
+		subtaskProgressAgg + ` AS subtask_progress`
 	query := `SELECT ` + cols + ` FROM issues i
 		LEFT JOIN states s ON s.id = i.state_id
 		LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
@@ -146,7 +148,7 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 		var item ExportIssue
 		var desc []byte
 		var stateName, estimateKey *string
-		var assigneesJSON, labelsJSON []byte
+		var assigneesJSON, labelsJSON, progressJSON []byte
 		if err := rows.Scan(
 			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
 			&desc,
@@ -155,7 +157,7 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 			&item.IsDraft, &item.ArchivedAt,
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&stateName, &estimateKey,
-			&assigneesJSON, &labelsJSON,
+			&assigneesJSON, &labelsJSON, &progressJSON,
 		); err != nil {
 			return err
 		}
@@ -169,6 +171,9 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 			item.EstimateKey = *estimateKey
 		}
 		if err := unmarshalRelations(assigneesJSON, labelsJSON, &item.IssueListItem); err != nil {
+			return err
+		}
+		if err := unmarshalSubtaskProgress(progressJSON, &item.IssueListItem); err != nil {
 			return err
 		}
 		// The aggregate carries emails (ignored by unmarshalRelations);
