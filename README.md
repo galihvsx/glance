@@ -137,6 +137,9 @@ Post-v1, each ships as its own forward-only migration + feature plan: **pages**,
 export TEST_DATABASE_URL=postgres://glance:glance@127.0.0.1:5432/glance_test?sslmode=disable
 go test ./...
 
+# flake sweep — run the suite N times to catch flaky tests (see docs/FLAKES.md)
+./qa/flake-sweep.sh 3 ./...
+
 # frontend
 cd web && npm ci && npx tsc --noEmit && npm run build
 
@@ -153,7 +156,7 @@ from `GLANCE_QA_DB_*` env vars (local-dev defaults in `qa/README.md`). See
 [`qa/README.md`](qa/README.md) for screens, adding new screens, and CI-safe runs.
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes and [docs/perf.md](docs/perf.md) for the performance methodology.
+See [CHANGELOG.md](CHANGELOG.md) for release notes, [docs/perf.md](docs/perf.md) for the performance methodology, and [docs/FLAKES.md](docs/FLAKES.md) for the known-flakes register and the `qa/flake-sweep.sh` flake sweep (3 repeated `go test` runs — run it when a test smells flaky).
 
 ## License
 
