@@ -73,7 +73,7 @@ function ChangeField({ label }: { label: string }) {
 
 function ChangeValue({ text }: { text: string }) {
   return (
-    <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+    <code className="rounded bg-raised px-1 py-0.5 font-mono text-xs">
       {text}
     </code>
   );
@@ -89,14 +89,14 @@ function ActivityRow({
   issueBase: string;
 }) {
   return (
-    <div className="flex items-start gap-3 border-b px-4 py-3 last:border-b-0">
+    <div className="flex items-start gap-3 border-b border-border-hairline px-4 py-3 last:border-b-0 hover:bg-wash-hover">
       <Avatar className="h-8 w-8 shrink-0">
         <AvatarFallback className="text-xs font-semibold">
           {actorInitial(entry.actor)}
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
-        <p className="text-sm leading-snug">
+        <p className="leading-snug">
           <span className="font-medium">{entry.actor}</span>{" "}
           <ChangeText entry={entry} stateById={stateById} />{" "}
           <Link
@@ -167,20 +167,20 @@ export default function Activity() {
 
         <div
           className={cn(
-            "overflow-hidden rounded-lg border bg-card",
+            "overflow-hidden rounded-lg border border-border-hairline bg-surface",
             rows.length === 0 && "border-dashed",
           )}
         >
           {activityQuery.isPending || statesQuery.isPending ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">
+            <div className="py-8 text-center text-xs text-muted-foreground">
               Loading…
             </div>
           ) : activityQuery.isError ? (
-            <div className="py-8 text-center text-sm text-destructive">
+            <div className="py-8 text-center text-xs text-destructive">
               Failed to load: {(activityQuery.error as Error).message}
             </div>
           ) : rows.length === 0 ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">
+            <div className="py-8 text-center text-xs text-muted-foreground">
               {query.trim()
                 ? "No activity matches this filter."
                 : "No activity yet."}

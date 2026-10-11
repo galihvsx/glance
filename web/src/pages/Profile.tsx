@@ -101,9 +101,9 @@ export default function Profile() {
       )}
 
       {/* Identity */}
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle>Identity</CardTitle>
+          <CardTitle className="text-xs font-semibold">Identity</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center gap-4">
@@ -140,7 +140,7 @@ export default function Profile() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <span className="text-base font-medium">
+                  <span className="font-medium">
                     {user?.name ?? (
                       <span className="text-muted-foreground">No name set</span>
                     )}
@@ -168,13 +168,13 @@ export default function Profile() {
       </Card>
 
       {/* API tokens */}
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle>API tokens</CardTitle>
+          <CardTitle className="text-xs font-semibold">API tokens</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground">
               Personal access tokens for scripts and integrations.
             </p>
             <Link
@@ -191,9 +191,9 @@ export default function Profile() {
       <CalendarFeedCard />
 
       {/* Sessions */}
-      <Card>
+      <Card className="rounded-lg border-border-hairline">
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Active sessions</CardTitle>
+          <CardTitle className="text-xs font-semibold">Active sessions</CardTitle>
           {others.length > 0 && (
             <Button variant="outline" size="sm" onClick={onRevokeOthers}>
               Revoke others ({others.length})
@@ -204,18 +204,18 @@ export default function Profile() {
           {sessionsQuery.isLoading ? (
             <Skeleton className="h-16 w-full" />
           ) : sessions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No active sessions.</p>
+            <p className="text-xs text-muted-foreground">No active sessions.</p>
           ) : (
-            <ul className="divide-y rounded-md border">
+            <ul className="divide-y divide-border-hairline rounded-md border border-border-hairline">
               {sessions.map((s) => (
-                <li key={s.id} className="flex items-center gap-3 px-3 py-2.5">
+                <li key={s.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-wash-hover">
                   <MonitorSmartphone
                     className="h-5 w-5 shrink-0 text-muted-foreground"
                     aria-hidden
                   />
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">
+                      <span className="font-medium">
                         {deviceLabel(s.user_agent)}
                       </span>
                       {s.current && <Badge variant="secondary">This device</Badge>}

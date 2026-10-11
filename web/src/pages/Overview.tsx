@@ -48,12 +48,12 @@ function StatCard({
   sub?: string;
 }) {
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardContent className="pt-4">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           {label}
         </p>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+        <p className="mt-1 text-lg font-semibold tabular-nums">{value}</p>
         {sub && <p className="mt-1 text-xs text-muted-foreground">{sub}</p>}
       </CardContent>
     </Card>
@@ -71,14 +71,14 @@ function ActivityRow({
 }) {
   const d = describeChange(entry, stateById);
   return (
-    <div className="flex items-start gap-3 border-b px-4 py-3 last:border-b-0">
+    <div className="flex items-start gap-3 border-b border-border-hairline px-4 py-3 last:border-b-0 hover:bg-wash-hover">
       <Avatar className="h-8 w-8 shrink-0">
         <AvatarFallback className="text-xs font-semibold">
           {actorInitial(entry.actor)}
         </AvatarFallback>
       </Avatar>
       <div className="min-w-0 flex-1">
-        <p className="text-sm leading-snug">
+        <p className="leading-snug">
           <span className="font-medium">{entry.actor}</span>{" "}
           {d.kind === "created" ? (
             <>created</>
@@ -91,7 +91,7 @@ function ActivityRow({
           ) : d.kind === "set" ? (
             <>
               set <span className="font-medium">{d.label}</span> to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+              <code className="rounded bg-raised px-1 py-0.5 font-mono text-xs">
                 {d.newText}
               </code>
             </>
@@ -102,11 +102,11 @@ function ActivityRow({
           ) : (
             <>
               changed <span className="font-medium">{d.label}</span> from{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+              <code className="rounded bg-raised px-1 py-0.5 font-mono text-xs">
                 {d.oldText}
               </code>{" "}
               to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+              <code className="rounded bg-raised px-1 py-0.5 font-mono text-xs">
                 {d.newText}
               </code>
             </>
@@ -150,9 +150,9 @@ function DescriptionCard({
   };
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-semibold">About</CardTitle>
+        <CardTitle className="text-xs font-semibold">About</CardTitle>
         {canEdit && !editing && (
           <Button variant="ghost" size="sm" onClick={startEdit} aria-label="Edit description">
             <Pencil className="mr-1 h-3.5 w-3.5" />
@@ -182,7 +182,7 @@ function DescriptionCard({
             {preview ? (
               <Markdown
                 markdown={draft}
-                className="wiki-content min-h-32 rounded-md border p-3 text-sm"
+                className="wiki-content min-h-32 rounded-md border p-3"
               />
             ) : (
               <Textarea
@@ -212,9 +212,9 @@ function DescriptionCard({
             </div>
           </div>
         ) : description ? (
-          <Markdown markdown={description} className="wiki-content text-sm" />
+          <Markdown markdown={description} className="wiki-content" />
         ) : (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No description yet.{" "}
             {canEdit && (
               <button
@@ -321,23 +321,23 @@ export default function Overview() {
                       : undefined
                   }
                 />
-                <Card>
+                <Card className="rounded-lg border-border-hairline">
                   <CardContent className="pt-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       Completion
                     </p>
-                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                    <p className="mt-1 text-lg font-semibold tabular-nums">
                       {completion?.percent ?? 0}%
                     </p>
                     <Progress value={completion?.percent ?? 0} className="mt-2" />
                   </CardContent>
                 </Card>
-                <Card>
+                <Card className="rounded-lg border-border-hairline">
                   <CardContent className="pt-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       {data.cycle ? `Cycle: ${data.cycle.name}` : "Cycle"}
                     </p>
-                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                    <p className="mt-1 text-lg font-semibold tabular-nums">
                       {data.cycle ? `${data.cycle.completed}/${data.cycle.total}` : "—"}
                     </p>
                     {data.cycle ? (
@@ -355,9 +355,9 @@ export default function Overview() {
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
-                <Card>
+                <Card className="rounded-lg border-border-hairline">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-semibold">
+                    <CardTitle className="text-xs font-semibold">
                       Open issues by priority
                     </CardTitle>
                   </CardHeader>
@@ -367,14 +367,14 @@ export default function Overview() {
                         <span className="w-16 text-xs text-muted-foreground">
                           {p.label}
                         </span>
-                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-raised">
                           <div
                             className={cn(
                               "h-full rounded-full",
                               p.priority === 4
                                 ? "bg-destructive"
                                 : p.priority === 3
-                                  ? "bg-orange-500"
+                                  ? "bg-accent-amber"
                                   : "bg-primary",
                             )}
                             style={{ width: `${(p.count / maxPriority) * 100}%` }}
@@ -388,22 +388,22 @@ export default function Overview() {
                   </CardContent>
                 </Card>
 
-                <Card>
+                <Card className="rounded-lg border-border-hairline">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-semibold">
+                    <CardTitle className="text-xs font-semibold">
                       Top contributors
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     {contributors.length === 0 ? (
-                      <p className="py-4 text-center text-sm text-muted-foreground">
+                      <p className="py-4 text-center text-xs text-muted-foreground">
                         No activity yet.
                       </p>
                     ) : (
                       contributors.map((c, i) => (
                         <div
                           key={c.actor}
-                          className="flex items-center gap-3 border-b py-2 last:border-b-0"
+                          className="flex items-center gap-3 border-b border-border-hairline py-2 last:border-b-0 hover:bg-wash-hover"
                         >
                           <span className="w-6 text-xs tabular-nums text-muted-foreground">
                             {i + 1}
@@ -413,7 +413,7 @@ export default function Overview() {
                               {actorInitial(c.actor)}
                             </AvatarFallback>
                           </Avatar>
-                          <span className="flex-1 truncate text-sm font-medium">
+                          <span className="flex-1 truncate font-medium">
                             {c.actor}
                           </span>
                           <span className="text-xs text-muted-foreground tabular-nums">
@@ -429,9 +429,9 @@ export default function Overview() {
                 </Card>
               </div>
 
-              <Card>
+              <Card className="rounded-lg border-border-hairline">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-semibold">
+                  <CardTitle className="text-xs font-semibold">
                     Recent activity
                   </CardTitle>
                   <Link
@@ -443,7 +443,7 @@ export default function Overview() {
                 </CardHeader>
                 <CardContent className="p-0">
                   {recent.length === 0 ? (
-                    <p className="py-8 text-center text-sm text-muted-foreground">
+                    <p className="py-8 text-center text-xs text-muted-foreground">
                       No activity yet.
                     </p>
                   ) : (

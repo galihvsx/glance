@@ -81,9 +81,9 @@ export default function CalendarFeedCard() {
   const active = status?.active ?? false;
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-xs font-semibold">
           <CalendarDays className="h-4 w-4 text-muted-foreground" aria-hidden />
           Calendar feed
         </CardTitle>
@@ -99,7 +99,7 @@ export default function CalendarFeedCard() {
         )}
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Subscribe to project and cycle calendars from external calendar
           apps (Google Calendar, Apple Calendar). The token authenticates
           the feed — it acts as you for reading dated issues, so keep it
@@ -109,7 +109,7 @@ export default function CalendarFeedCard() {
         {statusQuery.isLoading ? (
           <Skeleton className="h-5 w-48" />
         ) : active ? (
-          <p className="text-sm">
+          <p>
             <span className="font-medium">Active</span>
             {status?.created_at && (
               <span className="text-muted-foreground">
@@ -124,13 +124,13 @@ export default function CalendarFeedCard() {
             )}
           </p>
         ) : (
-          <p className="text-sm text-muted-foreground">No feed token yet.</p>
+          <p className="text-xs text-muted-foreground">No feed token yet.</p>
         )}
 
         {secret && (
           <Alert>
             <AlertDescription className="space-y-2">
-              <p className="text-sm font-medium">
+              <p className="font-medium">
                 Your new feed token — shown once. Copy it now.
               </p>
               <div className="flex items-center gap-2">

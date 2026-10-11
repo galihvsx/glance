@@ -168,9 +168,9 @@ export default function TimeReport() {
     query.error instanceof ApiError ? query.error.message : "Something went wrong";
 
   return (
-    <section className="rounded-lg border bg-card p-4">
+    <section className="rounded-lg border border-border-hairline bg-surface p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Time report</h2>
+        <h2 className="text-xs font-semibold">Time report</h2>
         <div className="flex items-center gap-2 text-xs">
           <label className="text-muted-foreground" htmlFor="tr-group">
             Group by
@@ -179,7 +179,7 @@ export default function TimeReport() {
             id="tr-group"
             value={groupBy}
             onChange={(e) => setGroupBy(e.target.value as TimeGroupBy)}
-            className="rounded-md border bg-background px-2 py-1"
+            className="rounded-md border border-border bg-[#111113] px-2 py-1"
           >
             {GROUP_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -194,7 +194,7 @@ export default function TimeReport() {
             id="tr-days"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
-            className="rounded-md border bg-background px-2 py-1"
+            className="rounded-md border border-border bg-[#111113] px-2 py-1"
           >
             {DAY_OPTIONS.map((d) => (
               <option key={d} value={d}>
@@ -206,14 +206,14 @@ export default function TimeReport() {
       </div>
 
       {query.isLoading ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">Loading…</p>
+        <p className="py-8 text-center text-xs text-muted-foreground">Loading…</p>
       ) : query.error ? (
-        <p className="py-8 text-center text-sm text-destructive">
+        <p className="py-8 text-center text-xs text-destructive">
           Failed to load: {err}
         </p>
       ) : (query.data?.buckets.length ?? 0) === 0 ||
         query.data!.total_seconds === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">
+        <p className="py-8 text-center text-xs text-muted-foreground">
           No logged time in this window.
         </p>
       ) : (

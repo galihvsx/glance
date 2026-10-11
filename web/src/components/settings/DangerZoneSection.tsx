@@ -154,10 +154,10 @@ export default function DangerZoneSection({
       )}
 
       {/* ---------- Archive / restore ---------- */}
-      <Card className="border-destructive/50">
+      <Card className="rounded-lg border-border-hairline border-destructive/50">
         <CardHeader>
-          <CardTitle className="text-destructive">Danger zone</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-xs font-semibold text-destructive">Danger zone</CardTitle>
+          <CardDescription className="text-xs">
             {isArchived
               ? "This project is archived: hidden from the sidebar, project list and search, and its issues are read-only (archived). Restoring brings it back."
               : "Archiving hides the project from the sidebar, project list and search, and archives all its issues in one transaction. Restoring reverses it."}

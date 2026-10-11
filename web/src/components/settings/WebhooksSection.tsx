@@ -80,7 +80,7 @@ function EventsCheckboxes({
 }) {
   return (
     <fieldset className="space-y-2">
-      <legend className="text-sm font-medium">Events</legend>
+      <legend className="font-medium">Events</legend>
       <p className="text-xs text-muted-foreground">
         No events selected means the webhook receives every event.
       </p>
@@ -98,7 +98,7 @@ function EventsCheckboxes({
               aria-label={opt.label}
             />
             <span>
-              <span className="block text-sm font-medium">{opt.label}</span>
+              <span className="block font-medium">{opt.label}</span>
               <span className="block text-xs text-muted-foreground">
                 {opt.hint}
               </span>
@@ -339,15 +339,15 @@ export default function WebhooksSection({ slug }: { slug: string }) {
   const acting = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <Card className="mb-4">
+    <Card className="mb-4 rounded-lg border-border-hairline">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <CardTitle className="flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <WebhookIcon className="h-4 w-4" />
               Webhooks
             </CardTitle>
-            <CardDescription>
+            <CardDescription className="text-xs">
               POST workspace events to external URLs. Deliveries are signed
               with HMAC-SHA256.
             </CardDescription>
@@ -373,7 +373,7 @@ export default function WebhooksSection({ slug }: { slug: string }) {
           </div>
         ) : webhooks.length === 0 ? (
           <div className="rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               No webhooks yet. Create one to start receiving event deliveries.
             </p>
           </div>
@@ -386,7 +386,7 @@ export default function WebhooksSection({ slug }: { slug: string }) {
               >
                 <div className="min-w-0 flex-1">
                   <p
-                    className="truncate font-mono text-sm font-medium"
+                    className="truncate font-mono text-xs font-medium"
                     title={w.url}
                   >
                     {w.url}
@@ -560,12 +560,12 @@ export default function WebhooksSection({ slug }: { slug: string }) {
                   onCheckedChange={(c) => setEditActive(c === true)}
                   aria-label="Webhook active"
                 />
-                <span className="text-sm font-medium">Active</span>
+                <span className="font-medium">Active</span>
               </label>
               <div className="rounded-md border border-border p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium">Signing secret</p>
+                    <p className="font-medium">Signing secret</p>
                     <p className="text-xs text-muted-foreground">
                       The current secret is never shown. Regenerating replaces
                       it and shows the new one once.

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import type { Workspace, WorkspaceMember } from "../lib/types";
 import { roleLabel, WORKSPACE_ROLES } from "../lib/types";
+import PageHeader from "../components/shell/PageHeader";
 import { Button } from "../components/ui/button";
 import {
   Card,
@@ -205,45 +206,40 @@ export default function WorkspaceSettings() {
 
   if (loadError) {
     return (
-      <div className="mx-auto w-full max-w-3xl p-6">
-        <Alert variant="destructive">
-          <AlertDescription>{loadError}</AlertDescription>
-        </Alert>
-        <Link to="/w" className="text-sm text-muted-foreground hover:underline">
-          ← Back to workspaces
-        </Link>
-      </div>
+      <>
+        <PageHeader viewName="Settings" showAnalytics={false} addButton={null} />
+        <div className="mx-auto w-full max-w-3xl p-6">
+          <Alert variant="destructive">
+            <AlertDescription>{loadError}</AlertDescription>
+          </Alert>
+          <Link to="/w" className="text-sm text-muted-foreground hover:underline">
+            ← Back to workspaces
+          </Link>
+        </div>
+      </>
     );
   }
 
   if (!ws) {
     return (
-      <div className="mx-auto w-full max-w-3xl space-y-3 p-6">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-40 w-full" />
-        <Skeleton className="h-40 w-full" />
-      </div>
+      <>
+        <PageHeader viewName="Settings" showAnalytics={false} addButton={null} />
+        <div className="mx-auto w-full max-w-3xl space-y-3 p-6">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-40 w-full" />
+          <Skeleton className="h-40 w-full" />
+        </div>
+      </>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <Link
-            to={`/w/${ws.slug}`}
-            className="text-xs text-muted-foreground hover:underline"
-          >
-            ← {ws.name}
-          </Link>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Workspace settings
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Manage this workspace, its members, webhooks and danger zone.
-          </p>
-        </div>
-      </div>
+    <>
+      {/* C19T10: shared page header replaces the per-page h1. The
+          Analytics / add-work-item controls are project-scoped, so they
+          stay hidden here (empty identifier would build broken URLs). */}
+      <PageHeader viewName="Settings" showAnalytics={false} addButton={null} />
+      <div className="mx-auto w-full max-w-3xl p-6">
 
       {!isAdmin && (
         <Alert className="mb-4">
@@ -255,10 +251,10 @@ export default function WorkspaceSettings() {
       )}
 
       {/* ---------- General ---------- */}
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle>General</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-xs font-semibold">General</CardTitle>
+          <CardDescription className="text-xs">
             The name and URL slug for this workspace.
           </CardDescription>
         </CardHeader>
@@ -312,10 +308,10 @@ export default function WorkspaceSettings() {
       </Card>
 
       {/* ---------- Members ---------- */}
-      <Card className="mb-4">
+      <Card className="mb-4 rounded-lg border-border-hairline">
         <CardHeader>
-          <CardTitle>Members</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-xs font-semibold">Members</CardTitle>
+          <CardDescription className="text-xs">
             {members?.length ?? 0} member
             {members?.length === 1 ? "" : "s"} in this workspace.
           </CardDescription>
@@ -332,14 +328,14 @@ export default function WorkspaceSettings() {
               <Skeleton className="h-10 w-full" />
             </div>
           ) : (
-            <ul className="divide-y divide-border">
+            <ul className="divide-y divide-border-hairline">
               {members.map((m) => (
                 <li
                   key={m.id}
                   className="flex items-center justify-between gap-3 py-2.5"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
+                    <p className="truncate font-medium">
                       {m.name ?? m.email}
                     </p>
                     {m.name && (
@@ -358,7 +354,7 @@ export default function WorkspaceSettings() {
                           onChange={(e) =>
                             onRoleChange(m, Number(e.target.value))
                           }
-                          className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+                          className="rounded-md border border-border bg-[#111113] px-2 py-1"
                         >
                           {WORKSPACE_ROLES.map((r) => (
                             <option key={r.value} value={r.value}>
@@ -402,10 +398,10 @@ export default function WorkspaceSettings() {
 
       {/* ---------- Danger zone ---------- */}
       {isAdmin && (
-        <Card className="border-destructive/50">
+        <Card className="rounded-lg border-border-hairline border-destructive/50">
           <CardHeader>
-            <CardTitle className="text-destructive">Danger zone</CardTitle>
-            <CardDescription>
+            <CardTitle className="text-xs font-semibold text-destructive">Danger zone</CardTitle>
+            <CardDescription className="text-xs">
               Deleting a workspace removes its projects, issues, pages and
               members. This cannot be undone.
             </CardDescription>
@@ -470,6 +466,7 @@ export default function WorkspaceSettings() {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+      </div>
+    </>
   );
 }

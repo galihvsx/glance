@@ -57,7 +57,7 @@ function Stepper({ step }: { step: number }) {
             {i + 1}
           </span>
           <span
-            className={`text-sm ${i === step ? "font-medium" : "text-muted-foreground"}`}
+            className={`${i === step ? "font-medium" : "text-muted-foreground"}`}
           >
             {label}
           </span>
@@ -72,15 +72,15 @@ function Stepper({ step }: { step: number }) {
 
 function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md rounded-lg border-border-hairline">
       <CardHeader className="text-center">
-        <CardTitle className="text-2xl">Welcome to glance</CardTitle>
-        <CardDescription>
+        <CardTitle className="text-xl">Welcome to glance</CardTitle>
+        <CardDescription className="text-xs">
           A lean, self-hosted issue tracker. Let's get your first workspace
           set up — it takes under a minute.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3 text-sm text-muted-foreground">
+      <CardContent className="space-y-3 text-xs text-muted-foreground">
         <p>
           <span className="font-medium text-foreground">1. Workspace.</span>{" "}
           A home for your team's projects.
@@ -145,10 +145,10 @@ function CreateWorkspaceStep({
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md rounded-lg border-border-hairline">
       <CardHeader>
         <CardTitle>Create your workspace</CardTitle>
-        <CardDescription>
+        <CardDescription className="text-xs">
           Workspaces hold projects. You can rename it later.
         </CardDescription>
       </CardHeader>
@@ -302,10 +302,10 @@ function InviteStep({
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full max-w-md rounded-lg border-border-hairline">
       <CardHeader>
         <CardTitle>Invite your team</CardTitle>
-        <CardDescription>
+        <CardDescription className="text-xs">
           Optional — you can skip this and invite people later.
         </CardDescription>
       </CardHeader>
@@ -336,7 +336,7 @@ function InviteStep({
             {emails.map((e) => (
               <li
                 key={e}
-                className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"
+                className="flex items-center justify-between rounded-md border border-border-hairline px-3 py-2"
               >
                 <span className="truncate">{e}</span>
                 <span className="flex items-center gap-2">

@@ -20,7 +20,7 @@ import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 
 const selectClass =
-  "rounded-md border border-input bg-background px-2 py-1.5 text-sm";
+  "rounded-md border border-border bg-[#111113] px-2 py-1.5";
 
 export interface TriggerLookups {
   states: { id: string; name: string }[];
@@ -339,7 +339,7 @@ export function ActionFields({
         </select>
       )}
       {action.type === "unassign" && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Clears every assignee on the issue. No further input.
         </p>
       )}
@@ -371,7 +371,7 @@ export function ActionFields({
                 ["relative", "Relative to when the rule fires"],
               ] as const
             ).map(([mode, text]) => (
-              <label key={mode} className="flex items-center gap-1.5 text-sm">
+              <label key={mode} className="flex items-center gap-1.5">
                 <input
                   type="radio"
                   name={`auto-duedate-mode-${index}`}
@@ -399,7 +399,7 @@ export function ActionFields({
                 onChange={(e) => onChange({ dueDateOffset: e.target.value })}
                 className="w-24"
               />
-              <span className="text-sm text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 days after the rule fires
               </span>
             </div>

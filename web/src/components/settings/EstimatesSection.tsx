@@ -114,9 +114,9 @@ export default function EstimatesSection({
   const estimates = estimatesQuery.data ?? [];
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Estimate scales</CardTitle>
+        <CardTitle className="text-xs font-semibold">Estimate scales</CardTitle>
         {canEdit && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus className="mr-1 h-4 w-4" /> New scale
@@ -130,23 +130,23 @@ export default function EstimatesSection({
           </Alert>
         )}
         {!canEdit && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             You are a guest here — estimate scales are read-only. Members can manage them.
           </p>
         )}
         {estimatesQuery.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : estimates.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No estimate scales yet. Create one (e.g. Fibonacci) to enable
             story-point estimation.
           </p>
         ) : (
           <ul className="space-y-3">
             {estimates.map((e) => (
-              <li key={e.id} className="rounded-md border p-3">
+              <li key={e.id} className="rounded-md border border-border-hairline p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">{e.name}</span>
+                  <span className="font-medium">{e.name}</span>
                   {canEdit && (
                     <div className="flex gap-1">
                       <Button

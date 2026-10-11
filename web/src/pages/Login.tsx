@@ -110,10 +110,10 @@ export default function Login() {
 
   return (
     <div className="flex min-h-svh items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
+      <Card className="w-full max-w-sm rounded-lg border-border-hairline bg-surface">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl">glance</CardTitle>
-          <CardDescription>
+          <CardDescription className="text-xs">
             Sign in with a one-time code — no password needed.
           </CardDescription>
         </CardHeader>

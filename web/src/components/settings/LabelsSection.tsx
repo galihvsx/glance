@@ -106,9 +106,9 @@ export default function LabelsSection({
   const labels = labelsQuery.data ?? [];
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Labels</CardTitle>
+        <CardTitle className="text-xs font-semibold">Labels</CardTitle>
         {canEdit && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus className="mr-1 h-4 w-4" /> New label
@@ -122,29 +122,29 @@ export default function LabelsSection({
           </Alert>
         )}
         {!canEdit && (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             You are a guest here — labels are read-only. Members can manage them.
           </p>
         )}
         {labelsQuery.isLoading ? (
           <Skeleton className="h-10 w-full" />
         ) : labels.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             No labels yet. Create one to start categorizing issues.
           </p>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-border-hairline rounded-md border border-border-hairline">
             {labels.map((l) => (
               <li
                 key={l.id}
-                className="flex items-center gap-3 px-3 py-2"
+                className="flex items-center gap-3 px-3 py-2 hover:bg-wash-hover"
               >
                 <span
                   className="h-3.5 w-3.5 shrink-0 rounded-full border"
                   style={{ backgroundColor: l.color }}
                   aria-hidden
                 />
-                <span className="flex-1 text-sm font-medium">{l.name}</span>
+                <span className="flex-1 font-medium">{l.name}</span>
                 {canEdit && (
                   <div className="flex gap-1">
                     <Button

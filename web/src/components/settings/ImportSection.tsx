@@ -100,7 +100,7 @@ function RowErrors({ errors, label }: { errors: ImportRowError[]; label: string 
         <p className="font-medium">
           {errors.length} {label} {errors.length === 1 ? "error" : "errors"}
         </p>
-        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm">
+        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto">
           {errors.map((e, i) => (
             <li key={i} className="font-mono text-xs">
               #{e.row}: {e.message}
@@ -250,9 +250,9 @@ function CsvPanel({ slug, identifier }: { slug: string; identifier: string }) {
       )}
 
       {preview && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="text-sm">
+            <CardTitle className="text-xs font-semibold">
               Preview — first {preview.rows.length} rows
             </CardTitle>
           </CardHeader>
@@ -285,9 +285,9 @@ function CsvPanel({ slug, identifier }: { slug: string; identifier: string }) {
       )}
 
       {result && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result
             </CardTitle>
           </CardHeader>
@@ -543,9 +543,9 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
       )}
 
       {preview && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="text-sm">
+            <CardTitle className="text-xs font-semibold">
               Preview — {preview.rows.length} of {preview.total} issues from{" "}
               {preview.source}
             </CardTitle>
@@ -557,9 +557,9 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
       )}
 
       {result && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
               {result.source}
             </CardTitle>
@@ -764,7 +764,7 @@ function JiraPanel({ slug, identifier }: { slug: string; identifier: string }) {
                 onChange={(e) => setSite(e.target.value)}
                 className="rounded-r-none"
               />
-              <span className="rounded-r-md border border-l-0 bg-muted px-3 py-2 text-sm text-muted-foreground">
+              <span className="rounded-r-md border border-border-hairline border-l-0 bg-raised px-3 py-2 text-muted-foreground">
                 .atlassian.net
               </span>
             </div>
@@ -860,9 +860,9 @@ function JiraPanel({ slug, identifier }: { slug: string; identifier: string }) {
       )}
 
       {preview && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="text-sm">
+            <CardTitle className="text-xs font-semibold">
               Preview — {preview.rows.length} of {preview.total} issues from{" "}
               {preview.source}
             </CardTitle>
@@ -874,9 +874,9 @@ function JiraPanel({ slug, identifier }: { slug: string; identifier: string }) {
       )}
 
       {result && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
               {result.source}
             </CardTitle>
@@ -1202,9 +1202,9 @@ function TrelloPanel({ slug, identifier }: { slug: string; identifier: string })
       )}
 
       {preview && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="text-sm">
+            <CardTitle className="text-xs font-semibold">
               Preview — {preview.rows.length} of {preview.total} cards from{" "}
               {preview.source}
             </CardTitle>
@@ -1216,9 +1216,9 @@ function TrelloPanel({ slug, identifier }: { slug: string; identifier: string })
       )}
 
       {result && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-sm">
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
               <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
               {result.source}
             </CardTitle>
@@ -1327,7 +1327,7 @@ function MappingTable({
   if (names.length === 0) return null;
   return (
     <div className="space-y-2 rounded-md border p-3">
-      <p className="text-sm font-medium">
+      <p className="font-medium">
         {title}{" "}
         <span className="font-normal text-muted-foreground">
           ({names.length} unresolved)
@@ -1337,7 +1337,7 @@ function MappingTable({
       <div className="space-y-1.5">
         {names.map((name) => (
           <div key={name} className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm" title={name}>
+            <span className="min-w-0 flex-1 truncate" title={name}>
               {name}
             </span>
             <div className="w-56 shrink-0">{render(name)}</div>
@@ -1357,7 +1357,7 @@ function PlaneRowErrors({ errors }: { errors: PlaneImportRowError[] }) {
         <p className="font-medium">
           {errors.length} {errors.length === 1 ? "issue error" : "issue errors"}
         </p>
-        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm">
+        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto">
           {errors.map((e) => (
             <li key={e.identifier} className="font-mono text-xs">
               {e.identifier}: {e.message}
@@ -1373,7 +1373,7 @@ function PlaneGaps({ gaps }: { gaps: PlaneImportGap[] }) {
   if (gaps.length === 0) return null;
   return (
     <div className="mt-4">
-      <p className="mb-1 text-sm font-medium">
+      <p className="mb-1 font-medium">
         Data that did not survive the import (
         {gaps.length} {gaps.length === 1 ? "issue" : "issues"})
       </p>
@@ -1424,9 +1424,9 @@ function PlaneCreatedLists({ report }: { report: PlaneImportReport }) {
 
 function PlaneResultCard({ report }: { report: PlaneImportReport }) {
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
+        <CardTitle className="flex items-center gap-2 text-xs font-semibold">
           <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
           {report.project_identifier}
         </CardTitle>
@@ -1566,14 +1566,14 @@ function PlanePanel({ slug, identifier }: { slug: string; identifier: string }) 
               checked={strictStates}
               onCheckedChange={(v) => setStrictStates(v === true)}
             />
-            <Label htmlFor="plane-strict" className="text-sm font-normal">
+            <Label htmlFor="plane-strict" className="font-normal">
               Strict states — fail rows with unknown states instead of creating
               them
             </Label>
           </div>
         </div>
         <div className="space-y-2">
-          <p className="text-sm font-medium">What doesn't survive the import</p>
+          <p className="font-medium">What doesn't survive the import</p>
           <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
             {PLANE_LOSSES.map((l) => (
               <li key={l}>{l}</li>
@@ -1604,9 +1604,9 @@ function PlanePanel({ slug, identifier }: { slug: string; identifier: string }) 
       )}
 
       {analysis && (
-        <Card>
+        <Card className="rounded-lg border-border-hairline">
           <CardHeader>
-            <CardTitle className="text-sm">
+            <CardTitle className="text-xs font-semibold">
               Analysis — {analysis.issue_count} issues from{" "}
               {analysis.project_identifier}
               {unresolvedCount > 0 && (
@@ -1631,12 +1631,12 @@ function PlanePanel({ slug, identifier }: { slug: string; identifier: string }) 
               </Alert>
             )}
             {unresolvedCount === 0 ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Everything resolved automatically — no mapping needed. Hit
                 Import when ready.
               </p>
             ) : busy === "refs" || !refs ? (
-              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Spinner /> Loading workspace data for mapping…
               </p>
             ) : (
@@ -1807,9 +1807,9 @@ export default function ImportSection({
   }
 
   return (
-    <Card>
+    <Card className="rounded-lg border-border-hairline">
       <CardHeader>
-        <CardTitle className="text-base">Import issues</CardTitle>
+        <CardTitle className="text-xs font-semibold">Import issues</CardTitle>
         <div className="flex gap-2 pt-2">
           <Button
             variant={source === "jira" ? "default" : "outline"}

@@ -77,7 +77,7 @@ function ImportResultSummary({ report }: { report: ArchiveImportReport }) {
   );
   return (
     <div className="space-y-3 rounded-md border p-3">
-      <p className="flex items-center gap-2 text-sm font-medium">
+      <p className="flex items-center gap-2 font-medium">
         <CheckCircle2 className="h-4 w-4 text-green-600" />
         Import complete — {totalImported} rows restored
         {report.skipped.count > 0 &&
@@ -100,7 +100,7 @@ function ImportResultSummary({ report }: { report: ArchiveImportReport }) {
       )}
       {report.skipped.count > 0 && (
         <div>
-          <p className="text-sm font-medium">
+          <p className="font-medium">
             Skipped ({report.skipped.count})
           </p>
           <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto text-xs text-muted-foreground">
@@ -177,20 +177,20 @@ export default function DataSection({ slug }: { slug: string }) {
   }
 
   return (
-    <Card className="mb-4">
+    <Card className="mb-4 rounded-lg border-border-hairline">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-xs font-semibold">
           <Database className="h-4 w-4" />
           Data
         </CardTitle>
-        <CardDescription>
+        <CardDescription className="text-xs">
           Download a full archive of this workspace&apos;s data, or restore
           one from an archive file.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Exports everything into a single JSON archive (format{" "}
             <span className="font-mono text-xs">glance-export/1</span>):
             projects and their issues — with comments, custom field values,
@@ -206,7 +206,7 @@ export default function DataSection({ slug }: { slug: string }) {
         </div>
 
         <div className="space-y-4 border-t pt-4">
-          <p className="text-sm text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Restores a <span className="font-mono text-xs">glance-export/1</span>{" "}
             archive into <span className="font-medium">this workspace</span>.
             Members are matched to existing users by email — they are never

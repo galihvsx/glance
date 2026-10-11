@@ -39,9 +39,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-lg border bg-card p-4">
+    <section className="rounded-lg border border-border-hairline bg-surface p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">{title}</h2>
+        <h2 className="text-xs font-semibold">{title}</h2>
         {right}
       </div>
       {children}
@@ -50,12 +50,12 @@ function Section({
 }
 
 function Loading() {
-  return <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>;
+  return <div className="py-8 text-center text-xs text-muted-foreground">Loading…</div>;
 }
 
 function ErrorBox({ message }: { message: string }) {
   return (
-    <div className="py-8 text-center text-sm text-destructive">
+    <div className="py-8 text-center text-xs text-destructive">
       Failed to load: {message}
     </div>
   );
@@ -63,7 +63,7 @@ function ErrorBox({ message }: { message: string }) {
 
 function EmptyChart({ label }: { label: string }) {
   return (
-    <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+    <div className="flex h-40 items-center justify-center text-xs text-muted-foreground">
       {label}
     </div>
   );
@@ -105,7 +105,7 @@ function StateDonut({
           x={cx}
           y={cy - 6}
           textAnchor="middle"
-          className="fill-foreground text-2xl font-bold"
+          className="fill-foreground text-xl font-semibold"
         >
           {total}
         </text>
@@ -118,7 +118,7 @@ function StateDonut({
           issues
         </text>
       </svg>
-      <ul className="flex flex-col gap-1.5 text-sm">
+      <ul className="flex flex-col gap-1.5">
         {slices.map((s) => (
           <li key={s.label} className="flex items-center gap-2">
             <span
@@ -148,9 +148,9 @@ function PriorityBars({
   return (
     <ul className="flex flex-col gap-2">
       {rows.map((r, i) => (
-        <li key={r.label} className="flex items-center gap-3 text-sm">
+        <li key={r.label} className="flex items-center gap-3">
           <span className="w-16 shrink-0 text-muted-foreground">{r.label}</span>
-          <div className="h-5 w-[220px] rounded bg-muted/60">
+          <div className="h-5 w-[220px] rounded bg-raised">
             <div
               className="h-5 rounded transition-all"
               style={{ width: widths[i], backgroundColor: r.color }}
@@ -165,8 +165,8 @@ function PriorityBars({
 
 function StatCard({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="rounded-lg border bg-card p-4">
-      <div className="text-2xl font-bold">{value}</div>
+    <div className="rounded-lg border border-border-hairline bg-surface p-4">
+      <div className="text-lg font-semibold">{value}</div>
       <div className="text-xs text-muted-foreground">{label}</div>
     </div>
   );
@@ -192,16 +192,16 @@ function BurndownChart({ data }: { data: AnalyticsBurndown }) {
   return (
     <div>
       <div className="mb-2 flex items-center gap-2 text-xs">
-        <div className="flex rounded-md border">
+        <div className="flex rounded-md border border-border-hairline bg-[#101012] p-0.5">
           {(["count", "estimate"] as const).map((m) => (
             <button
               key={m}
               type="button"
               onClick={() => setMetric(m)}
               className={cn(
-                "px-2 py-1 capitalize",
+                "rounded px-2 py-1 capitalize",
                 metric === m
-                  ? "bg-accent font-medium"
+                  ? "bg-raised font-medium text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -297,11 +297,11 @@ function TrendsChart({ days }: { days: AnalyticsTrendDay[] }) {
     <div>
       <div className="mb-2 flex items-center gap-4 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#60a5fa]" />
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent-blue" />
           Created
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-[#34d399]" />
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent-green" />
           Closed
         </span>
       </div>
@@ -352,7 +352,7 @@ function TrendsChart({ days }: { days: AnalyticsTrendDay[] }) {
               y={baseY - b.createdH}
               width={b.barW}
               height={b.createdH}
-              fill="#60a5fa"
+              fill="#4f8ef7"
               rx={2}
             >
               <title>
@@ -364,7 +364,7 @@ function TrendsChart({ days }: { days: AnalyticsTrendDay[] }) {
               y={baseY - b.closedH}
               width={b.barW}
               height={b.closedH}
-              fill="#34d399"
+              fill="#42c88a"
               rx={2}
             >
               <title>
@@ -520,13 +520,13 @@ export default function Analytics() {
               </div>
               <div className="grid gap-6 md:grid-cols-2">
                 <div>
-                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                  <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
                     BY STATE
                   </h3>
                   <StateDonut rows={stateRows} />
                 </div>
                 <div>
-                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                  <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
                     BY PRIORITY
                   </h3>
                   <PriorityBars rows={priorityRows} />
@@ -534,14 +534,14 @@ export default function Analytics() {
               </div>
               {labelRows.length > 0 && (
                 <div>
-                  <h3 className="mb-2 text-xs font-medium text-muted-foreground">
+                  <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
                     BY LABEL
                   </h3>
                   <div className="flex flex-wrap gap-2">
                     {labelRows.map((r) => (
                       <span
                         key={r.id}
-                        className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-border-hairline px-2.5 py-1 text-xs"
                       >
                         <span
                           className="inline-block h-2.5 w-2.5 rounded-full"
@@ -563,7 +563,7 @@ export default function Analytics() {
           title="Cycle burndown"
           right={
             <select
-              className="rounded-md border bg-background px-2 py-1 text-xs"
+              className="rounded-md border border-border bg-[#111113] px-2 py-1 text-xs"
               value={effectiveCycleId}
               onChange={(e) => setCycleId(e.target.value)}
               aria-label="Select cycle"
@@ -598,16 +598,16 @@ export default function Analytics() {
         <Section
           title="Activity trends"
           right={
-            <div className="flex rounded-md border text-xs">
+            <div className="flex rounded-md border border-border-hairline bg-[#101012] p-0.5">
               {TREND_RANGES.map((d) => (
                 <button
                   key={d}
                   type="button"
                   onClick={() => setTrendDays(d)}
                   className={cn(
-                    "px-2 py-1",
+                    "rounded px-2 py-1 text-xs",
                     trendDays === d
-                      ? "bg-accent font-medium"
+                      ? "bg-raised font-medium text-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
