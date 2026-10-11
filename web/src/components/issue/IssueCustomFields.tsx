@@ -5,8 +5,9 @@
 // issue's stored values arrive via ?include_custom=1 (same pattern as C5T5's
 // ?include_children=1 — the list query is untouched). Each row validates
 // locally first (lib/customFields), and the server's 400 message is shown
-// verbatim when it disagrees. `required` is a visual marker only — the
-// server does not enforce it on value writes (C7T2 contract).
+// verbatim when it disagrees. `required` is enforced server-side (C18T1):
+// updates only enforce the fields they touch that were previously empty,
+// and the 400 names the missing fields.
 //
 // Reads: any member (guest 5+); value mutations are member (15)+ and the
 // server is the gate — guests get a read-only rendering.
@@ -106,7 +107,7 @@ function FieldRow({
           {field.required && (
             <span
               className="ml-0.5 text-destructive"
-              title="Required is a visual indicator only — the API does not block saving without a value."
+              title="Required — the server rejects saving this field without a value."
             >
               *
             </span>
@@ -197,6 +198,115 @@ function FieldRow({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * RequiredCustomFieldsForm (C18T1): compact editors for the project's
+ * required custom fields, embedded in the issue create dialog. Values are
+ * owned by the parent (field id → CustomValueInput); the parent defaults
+ * untouched checkboxes to false via withCheckboxDefaults at submit time —
+ * unchecked IS the displayed state, and false counts as an explicit
+ * present value server-side. Renders nothing when fields is empty.
+ */
+export function RequiredCustomFieldsForm({
+  fields,
+  values,
+  onChange,
+  disabled,
+}: {
+  fields: CustomField[];
+  values: Record<string, CustomValueInput>;
+  onChange: (values: Record<string, CustomValueInput>) => void;
+  disabled?: boolean;
+}) {
+  if (fields.length === 0) return null;
+
+  function setValue(field: CustomField, v: CustomValueInput) {
+    onChange({ ...values, [field.id]: v });
+  }
+
+  return (
+    <div className="space-y-3">
+      {fields.map((field) => {
+        const inputId = `cf-create-${field.id}`;
+        const current = values[field.id];
+        return (
+          <div key={field.id} className="space-y-1.5">
+            <Label htmlFor={field.field_type === "checkbox" ? undefined : inputId}>
+              {field.name}
+              <span
+                className="ml-0.5 text-destructive"
+                title="Required — the server rejects creating without a value."
+              >
+                *
+              </span>
+            </Label>
+            {field.field_type === "checkbox" ? (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={inputId}
+                  checked={current === true}
+                  onCheckedChange={(v) => setValue(field, v === true)}
+                  disabled={disabled}
+                />
+                <Label
+                  htmlFor={inputId}
+                  className="font-normal text-muted-foreground"
+                >
+                  {current === true ? "Checked" : "Unchecked"}
+                </Label>
+              </div>
+            ) : field.field_type === "select" ? (
+              <NativeSelect
+                id={inputId}
+                value={typeof current === "string" ? current : ""}
+                onChange={(e) =>
+                  setValue(field, e.target.value === "" ? null : e.target.value)
+                }
+                disabled={disabled}
+                className="w-full"
+              >
+                <NativeSelectOption value="">—</NativeSelectOption>
+                {field.options.map((o) => (
+                  <NativeSelectOption key={o.value} value={o.value}>
+                    {o.value}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            ) : (
+              <Input
+                id={inputId}
+                type={
+                  field.field_type === "date"
+                    ? "date"
+                    : field.field_type === "number"
+                      ? "number"
+                      : "text"
+                }
+                inputMode={field.field_type === "number" ? "decimal" : undefined}
+                step={field.field_type === "number" ? "any" : undefined}
+                value={
+                  typeof current === "string" || typeof current === "number"
+                    ? String(current)
+                    : ""
+                }
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (field.field_type === "number") {
+                    setValue(field, raw.trim() === "" ? null : Number(raw));
+                  } else {
+                    setValue(field, raw === "" ? null : raw);
+                  }
+                }}
+                disabled={disabled}
+                placeholder="—"
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -300,8 +410,8 @@ export default function IssueCustomFields({
               />
             ))}
             <p className="text-xs text-muted-foreground">
-              Fields marked * are required by convention — the API does not
-              block saving without a value.
+              Fields marked * are required — saving one without a value is
+              rejected by the server.
             </p>
           </>
         )}

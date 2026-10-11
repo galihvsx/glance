@@ -16,11 +16,12 @@ package service
 //     an honest message on mismatch). A JSON null in the values map
 //     clears that field's value (deletes the row), same as the explicit
 //     DELETE .../custom-values/{fieldID}.
-//   - `required` is stored and exposed so clients (C7T3) can render it,
-//     but it is NOT enforced server-side on value writes: values may be
-//     set, changed, and cleared regardless of required. Documented here
-//     on purpose — enforcement would need issue-lifecycle integration
-//     (e.g. state transitions), which is out of scope for C7T2.
+//   - `required` is enforced server-side on issue create and custom-value
+//     writes (C18T1): a create must supply a non-empty value for every
+//     required field of the project (drafts exempt); a custom-value update
+//     enforces only the fields it touches that were previously empty.
+//     Clearing a required field that already holds a value is permitted —
+//     it is an explicit, separate action, not an accidental gap.
 //   - Changing a field's type deletes its existing values in the same
 //     statement: values are only ever valid for the field's current
 //     type. Changing select options is NOT retroactive — existing values
@@ -68,7 +69,27 @@ var (
 	// ErrCustomValuesEmpty is returned when the values map of a bulk set
 	// is missing or empty.
 	ErrCustomValuesEmpty = errors.New("service: values is required")
+	// ErrCustomFieldRequired is returned when an issue create or
+	// custom-value update would leave a required custom field without a
+	// value. The *CustomFieldRequiredError carries the missing field
+	// names; handlers map it to 400.
+	ErrCustomFieldRequired = errors.New("service: missing required custom field value")
 )
+
+// CustomFieldRequiredError names the required custom fields left without
+// a value by an issue create or custom-value update. It unwraps to
+// ErrCustomFieldRequired so errors.Is matches the sentinel while the
+// field names stay available for the 400 response.
+type CustomFieldRequiredError struct {
+	FieldNames []string
+}
+
+func (e *CustomFieldRequiredError) Error() string {
+	return fmt.Sprintf("service: missing value for required custom field(s): %s",
+		strings.Join(e.FieldNames, ", "))
+}
+
+func (e *CustomFieldRequiredError) Unwrap() error { return ErrCustomFieldRequired }
 
 // CustomValueError is returned when a submitted value fails the field's
 // type check. The handler maps it to 400 with the honest message: it
@@ -532,52 +553,139 @@ func checkCustomValue(field CustomField, raw json.RawMessage) (col string, val a
 	}
 }
 
-// SetCustomValues bulk-sets the issue's custom values in one transaction.
-// values maps field_id → raw JSON value; a JSON null clears that field.
-// Every field is resolved in the issue's project first: a field from
-// another project (or nowhere) is ErrCustomFieldNotFound (404), a
-// type-mismatched value is a *CustomValueError (400). Member (15)+.
-func SetCustomValues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, issueID string, values map[string]json.RawMessage) (map[string]CustomValue, error) {
-	_, projectID, _, err := resolveCustomFieldProject(ctx, pool, wsSlug, identifier, actorID, true)
+// requiredCustomFields returns the project's required custom fields,
+// ordered by position then creation so missing-field messages are stable.
+func requiredCustomFields(ctx context.Context, q queryQuerier, projectID string) ([]CustomField, error) {
+	rows, err := q.Query(ctx,
+		`SELECT `+customFieldColumns+`
+		   FROM custom_fields
+		  WHERE project_id = $1::uuid AND required
+		  ORDER BY position, created_at`, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if len(values) == 0 {
-		return nil, ErrCustomValuesEmpty
+	defer rows.Close()
+	out := []CustomField{}
+	for rows.Next() {
+		f, err := scanCustomField(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
 	}
-	if err := resolveCustomIssue(ctx, pool, projectID, issueID); err != nil {
+	return out, rows.Err()
+}
+
+// requiredFieldHasValue reports, per required field id, whether the issue
+// currently holds a non-empty value. A stored empty/whitespace-only text
+// counts as empty (mirroring customRawIsEmpty); a checkbox false counts
+// as present — an explicit choice.
+func requiredFieldHasValue(ctx context.Context, q queryQuerier, projectID, issueID string) (map[string]bool, error) {
+	rows, err := q.Query(ctx,
+		`SELECT f.id::text,
+		        (v.value_text IS NOT NULL AND btrim(v.value_text) <> '')
+		         OR v.value_number IS NOT NULL
+		         OR v.value_date IS NOT NULL
+		         OR v.value_bool IS NOT NULL
+		   FROM custom_fields f
+		   LEFT JOIN issue_custom_values v
+		     ON v.field_id = f.id AND v.issue_id = $1::uuid
+		  WHERE f.project_id = $2::uuid AND f.required`,
+		issueID, projectID)
+	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var has bool
+		if err := rows.Scan(&id, &has); err != nil {
+			return nil, err
+		}
+		out[id] = has
+	}
+	return out, rows.Err()
+}
+
+// customRawIsEmpty reports whether a submitted raw JSON value counts as
+// missing for required-field enforcement: null and empty/whitespace-only
+// strings. A checkbox false is an explicit choice and counts as present;
+// any other well-formed JSON value counts as present (malformed values
+// are rejected separately by checkCustomValue's type check).
+func customRawIsEmpty(field CustomField, raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return true
+	}
+	if field.FieldType != CustomFieldCheckbox {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil && strings.TrimSpace(s) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// checkRequiredCustomValues enforces required custom fields on a write,
+// returning the missing field names in field order (nil when satisfied).
+//
+//   - full (issue create): every required field must arrive non-empty in
+//     the request — absent, null, and empty/whitespace-only strings count
+//     as missing; checkbox false counts as present (explicit choice).
+//   - partial (custom-value update): only fields the update touches AND
+//     that were previously empty are enforced — an unrelated edit must
+//     not fail because some other required field is still blank.
+func checkRequiredCustomValues(required []CustomField, submitted map[string]json.RawMessage, hasValue map[string]bool, full bool) []string {
+	var missing []string
+	for _, f := range required {
+		raw, touched := submitted[f.ID]
+		if full {
+			if !touched || customRawIsEmpty(f, raw) {
+				missing = append(missing, f.Name)
+			}
+			continue
+		}
+		if !touched || hasValue[f.ID] {
+			continue
+		}
+		if customRawIsEmpty(f, raw) {
+			missing = append(missing, f.Name)
+		}
+	}
+	return missing
+}
+
+// writeCustomValuesTx type-checks and writes the submitted values inside
+// the caller's transaction. values maps field_id → raw JSON value; a JSON
+// null clears that field. Shared by SetCustomValues and CreateIssue so the
+// write path (and its type errors) stay identical.
+func writeCustomValuesTx(ctx context.Context, tx pgx.Tx, projectID, issueID string, values map[string]json.RawMessage) error {
 	type write struct {
-		field CustomField
-		col   string
-		val   any
-		clear bool
+		fieldID string
+		col     string
+		val     any
+		clear   bool
 	}
 	writes := make([]write, 0, len(values))
 	for fieldID, raw := range values {
-		field, err := resolveCustomField(ctx, pool, projectID, fieldID)
+		field, err := resolveCustomField(ctx, tx, projectID, fieldID)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		col, val, clear, err := checkCustomValue(field, raw)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		writes = append(writes, write{field: field, col: col, val: val, clear: clear})
+		writes = append(writes, write{fieldID: field.ID, col: col, val: val, clear: clear})
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	for _, w := range writes {
 		if w.clear {
 			if _, err := tx.Exec(ctx,
 				`DELETE FROM issue_custom_values
 				  WHERE issue_id = $1::uuid AND field_id = $2::uuid`,
-				issueID, w.field.ID); err != nil {
-				return nil, err
+				issueID, w.fieldID); err != nil {
+				return err
 			}
 			continue
 		}
@@ -597,9 +705,51 @@ func SetCustomValues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier
 			     value_number = EXCLUDED.value_number,
 			     value_date = EXCLUDED.value_date,
 			     value_bool = EXCLUDED.value_bool`,
-			issueID, w.field.ID, w.col, customValueParam(w.val)); err != nil {
+			issueID, w.fieldID, w.col, customValueParam(w.val)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetCustomValues bulk-sets the issue's custom values in one transaction.
+// values maps field_id → raw JSON value; a JSON null clears that field.
+// Every field is resolved in the issue's project first: a field from
+// another project (or nowhere) is ErrCustomFieldNotFound (404), a
+// type-mismatched value is a *CustomValueError (400). Required-field
+// enforcement (C18T1) uses partial-update semantics: only required fields
+// this update touches AND that were previously empty must end up
+// non-empty, else *CustomFieldRequiredError (400) naming them.
+// Member (15)+.
+func SetCustomValues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, issueID string, values map[string]json.RawMessage) (map[string]CustomValue, error) {
+	_, projectID, _, err := resolveCustomFieldProject(ctx, pool, wsSlug, identifier, actorID, true)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, ErrCustomValuesEmpty
+	}
+	if err := resolveCustomIssue(ctx, pool, projectID, issueID); err != nil {
+		return nil, err
+	}
+	if required, err := requiredCustomFields(ctx, pool, projectID); err != nil {
+		return nil, err
+	} else if len(required) > 0 {
+		hasValue, err := requiredFieldHasValue(ctx, pool, projectID, issueID)
+		if err != nil {
 			return nil, err
 		}
+		if missing := checkRequiredCustomValues(required, values, hasValue, false); len(missing) > 0 {
+			return nil, &CustomFieldRequiredError{FieldNames: missing}
+		}
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := writeCustomValuesTx(ctx, tx, projectID, issueID, values); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
