@@ -57,6 +57,9 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterSatelliteRoutes(e, issueHandler)
 	RegisterIntakeRoutes(e, issueHandler)
 	RegisterIssueLinkRoutes(e, issueHandler)
+	// C17T0: keep in lockstep with cmd/glance/main.go.
+	RegisterGitHubLinkRoutes(e, issueHandler)
+	RegisterGitHubWebhookRoutes(e, &GitHubWebhookHandler{})
 	RegisterMyWorkRoutes(e, &MyWorkHandler{})
 	RegisterCycleRoutes(e, issueHandler)
 	RegisterModuleRoutes(e, issueHandler)

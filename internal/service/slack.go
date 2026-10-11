@@ -100,11 +100,11 @@ func SetWorkspaceSlackURL(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	var role int
 	err = tx.QueryRow(ctx,
 		`SELECT w.id::text, w.slug::text, w.name, w.created_at, w.updated_at,
-		        w.slack_webhook_url IS NOT NULL, m.role
+		        w.slack_webhook_url IS NOT NULL, w.github_webhook_secret IS NOT NULL, m.role
 		   FROM workspaces w
 		   JOIN workspace_members m ON m.workspace_id = w.id
 		  WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		wsSlug, actorID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured, &role)
+		wsSlug, actorID).Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.CreatedAt, &ws.UpdatedAt, &ws.SlackConfigured, &ws.GitHubWebhookConfigured, &role)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -128,8 +128,8 @@ func SetWorkspaceSlackURL(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	if err := tx.QueryRow(ctx,
 		`UPDATE workspaces SET slack_webhook_url = $1, updated_at = now()
 		  WHERE id = $2::uuid
-		  RETURNING slack_webhook_url IS NOT NULL`,
-		newURL, ws.ID).Scan(&ws.SlackConfigured); err != nil {
+		  RETURNING slack_webhook_url IS NOT NULL, github_webhook_secret IS NOT NULL`,
+		newURL, ws.ID).Scan(&ws.SlackConfigured, &ws.GitHubWebhookConfigured); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

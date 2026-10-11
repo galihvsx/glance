@@ -283,6 +283,10 @@ func main() {
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
 	api.RegisterIssueLinkRoutes(e, issueHandler)
+	// C17T0: GitHub two-way linkage — manual issue↔PR refs (authed) plus
+	// the public HMAC-verified inbound repo webhook.
+	api.RegisterGitHubLinkRoutes(e, issueHandler)
+	api.RegisterGitHubWebhookRoutes(e, &api.GitHubWebhookHandler{Pool: pool})
 	api.RegisterMyWorkRoutes(e, &api.MyWorkHandler{Pool: pool})
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
