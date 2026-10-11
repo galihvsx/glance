@@ -1955,6 +1955,7 @@
           "archived": { "type": "boolean" },
           "assignees": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
           "labels": { "type": "array", "items": { "$ref": "#/components/schemas/Label" } },
+          "subtask_progress": { "$ref": "#/components/schemas/SubtaskProgress", "nullable": true, "description": "Direct-child rollup; present on detail and list responses" },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
@@ -1996,10 +1997,18 @@
       },
       "IssueDetail": {
         "allOf": [ { "$ref": "#/components/schemas/Issue" } ],
-        "description": "Issue plus optional attachments: children (with ?include_children=1) and custom_values keyed by field id (with ?include_custom=1).",
+        "description": "Issue plus subtask_progress rollup and optional attachments: children (with ?include_children=1) and custom_values keyed by field id (with ?include_custom=1).",
         "properties": {
           "children": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } },
           "custom_values": { "type": "object", "additionalProperties": {}, "description": "Custom-field id → value" }
+        }
+      },
+      "SubtaskProgress": {
+        "type": "object",
+        "description": "Computed rollup of an issue's DIRECT children (C17T2): `total` children and how many sit in a 'completed'-group state (`done`). Always present on detail and list responses.",
+        "properties": {
+          "total": { "type": "integer", "description": "Number of direct (non-deleted) child issues" },
+          "done": { "type": "integer", "description": "Direct children in a 'completed'-group state" }
         }
       },
       "IssueVersion": {

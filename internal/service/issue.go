@@ -67,6 +67,15 @@ func (p *PatchField[T]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SubtaskProgress is the computed rollup of an issue's DIRECT children
+// (C17T2): total children and how many sit in a 'completed'-group state.
+// Populated by the detail and list queries as a single aggregate subquery
+// — never N+1. Nil on rows read through paths that don't select it.
+type SubtaskProgress struct {
+	Total int `json:"total"`
+	Done  int `json:"done"`
+}
+
 // Issue is a work item inside a project. DisplayID is derived
 // ({IDENTIFIER}-{sequence_id}, e.g. ENG-123) and never stored — the
 // per-project sequence counter is the source of truth.
@@ -89,6 +98,10 @@ type Issue struct {
 	CreatedBy       string          `json:"created_by"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+	// SubtaskProgress is populated only by the detail/list queries that
+	// select subtaskProgressAgg; omitempty keeps every other response
+	// shape byte-identical.
+	SubtaskProgress *SubtaskProgress `json:"subtask_progress,omitempty"`
 }
 
 // CreateIssueInput carries the fields for a new issue. Nil pointers mean
@@ -472,9 +485,9 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID string) (*IssueListItem, error) {
 	var item IssueListItem
 	var description []byte
-	var assigneesJSON, labelsJSON []byte
+	var assigneesJSON, labelsJSON, progressJSON []byte
 	err := q.QueryRow(ctx,
-		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+` FROM issues i
+		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+` FROM issues i
 		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
 		issueID, projectID).Scan(
 		&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
@@ -483,7 +496,7 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		&item.StartDate, &item.TargetDate, &item.EstimatePointID,
 		&item.IsDraft, &item.ArchivedAt,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-		&assigneesJSON, &labelsJSON,
+		&assigneesJSON, &labelsJSON, &progressJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -492,6 +505,9 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		item.Description = json.RawMessage(description)
 	}
 	if err := unmarshalRelations(assigneesJSON, labelsJSON, &item); err != nil {
+		return nil, err
+	}
+	if err := unmarshalSubtaskProgress(progressJSON, &item); err != nil {
 		return nil, err
 	}
 	item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
@@ -1946,6 +1962,20 @@ const labelsAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
 	FROM issue_labels il JOIN labels l ON l.id = il.label_id
 	WHERE il.issue_id = i.id)`
 
+// subtaskProgressAgg rolls up an issue's DIRECT children (C17T2): total
+// children and how many sit in a 'completed'-group state. Only direct
+// children count (parent_id = i.id, no recursion); soft-deleted children
+// are excluded. A single correlated aggregate subquery, so the detail and
+// list queries stay one round-trip with no per-row lookups — like
+// assigneesAgg/labelsAgg, the outer query must alias issues as i.
+// COUNT(*) can never return NULL, so the object is always present.
+const subtaskProgressAgg = `(SELECT json_build_object(
+		'total', COUNT(*),
+		'done', COUNT(*) FILTER (WHERE s."group" = 'completed'))
+	FROM issues c JOIN states s ON s.id = c.state_id
+	WHERE c.parent_id = i.id AND c.project_id = i.project_id
+	  AND c.deleted_at IS NULL)`
+
 // unmarshalRelations decodes the two aggregated JSONB columns into the
 // list item's Assignees/Labels slices.
 func unmarshalRelations(assigneesJSON, labelsJSON []byte, item *IssueListItem) error {
@@ -1957,6 +1987,19 @@ func unmarshalRelations(assigneesJSON, labelsJSON []byte, item *IssueListItem) e
 	if err := json.Unmarshal(labelsJSON, &item.Labels); err != nil {
 		return fmt.Errorf("service: decode labels: %w", err)
 	}
+	return nil
+}
+
+// unmarshalSubtaskProgress decodes the subtaskProgressAgg JSON object
+// into the list item. Callers that select the aggregate always get a
+// non-nil progress (COUNT(*) never yields NULL); a corrupt payload is a
+// real error, never silently swallowed.
+func unmarshalSubtaskProgress(progressJSON []byte, item *IssueListItem) error {
+	var p SubtaskProgress
+	if err := json.Unmarshal(progressJSON, &p); err != nil {
+		return fmt.Errorf("service: decode subtask progress: %w", err)
+	}
+	item.SubtaskProgress = &p
 	return nil
 }
 
@@ -2154,10 +2197,13 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		descCol = "i.description"
 	}
 
+	// C17T2: the subtask rollup rides along in the same query (one
+	// correlated aggregate per row, no extra round-trips) so list and
+	// board cards can render the compact progress bar.
 	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
 		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
-		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels`
+		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` + subtaskProgressAgg + ` AS subtask_progress`
 
 	var args []any
 	arg := func(v any) string {
@@ -2201,7 +2247,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	for rows.Next() {
 		var item IssueListItem
 		var desc []byte
-		var assigneesJSON, labelsJSON []byte
+		var assigneesJSON, labelsJSON, progressJSON []byte
 		if err := rows.Scan(
 			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
 			&desc,
@@ -2209,7 +2255,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 			&item.StartDate, &item.TargetDate, &item.EstimatePointID,
 			&item.IsDraft, &item.ArchivedAt,
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-			&assigneesJSON, &labelsJSON,
+			&assigneesJSON, &labelsJSON, &progressJSON,
 		); err != nil {
 			return nil, err
 		}
@@ -2217,6 +2263,9 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 			item.Description = json.RawMessage(desc)
 		}
 		if err := unmarshalRelations(assigneesJSON, labelsJSON, &item); err != nil {
+			return nil, err
+		}
+		if err := unmarshalSubtaskProgress(progressJSON, &item); err != nil {
 			return nil, err
 		}
 		item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)

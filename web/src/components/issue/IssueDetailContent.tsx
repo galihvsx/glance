@@ -56,6 +56,7 @@ import FavoriteStar from "../favorites/FavoriteStar";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
 import SubIssues, { ParentBreadcrumb } from "./SubIssues";
+import SubtaskProgressBar from "./SubtaskProgressBar";
 import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
 import BlockerConfirmDialog from "./BlockerConfirmDialog";
@@ -786,6 +787,12 @@ export default function IssueDetailContent({
             {stateById.get(issue.state_id) && (
               <StateBadge state={stateById.get(issue.state_id)!} />
             )}
+            {/* C17T2: subtask progress — renders only when there are
+                direct subtasks. */}
+            <SubtaskProgressBar
+              progress={issue.subtask_progress}
+              variant="detail"
+            />
             <span className="ml-auto flex items-center gap-1">
               {/* C7T4: star toggle for this issue. */}
               <FavoriteStar type="issue" id={uuid} />

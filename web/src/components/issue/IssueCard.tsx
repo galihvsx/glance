@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 import StateBadge from "./StateBadge";
+import SubtaskProgressBar from "./SubtaskProgressBar";
 import { useCloneIssue } from "./useCloneIssue";
 import {
   formatIssueDateRange,
@@ -133,6 +134,9 @@ export default function IssueCard({
           </p>
         )}
         <CardTitle className="text-base font-medium">{issue.name}</CardTitle>
+        {/* C17T2: compact subtask progress — renders only when the
+            issue has direct subtasks. */}
+        <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
         {((fields.labels && issue.labels.length > 0) ||
           (fields.assignees && issue.assignees.length > 0)) && (
           <div className="flex flex-wrap items-center gap-1.5">
