@@ -122,6 +122,15 @@ type CreateIssueInput struct {
 	// a pending intake_issues row is written in the same tx. Default false
 	// preserves the direct-to-backlog behavior.
 	Intake bool
+	// CustomValues carries optional initial custom-field values
+	// (field_id → raw JSON, same shape as the custom-values PUT body),
+	// written in the same tx as the issue (C18T1). On non-draft creates
+	// every required field of the project must arrive non-empty here —
+	// absent, null, and empty/whitespace-only strings count as missing
+	// (checkbox false counts as present); a violation is
+	// *CustomFieldRequiredError (400). Drafts are exempt: a draft is
+	// explicitly unfinished work.
+	CustomValues map[string]json.RawMessage
 }
 
 // IssuePatch is a partial issue update: nil / Set=false fields are left
@@ -412,6 +421,26 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	// atomically with the issue itself.
 	if in.Intake {
 		if err := addIntakeIssueTx(ctx, tx, projectID, iss.ID); err != nil {
+			return nil, err
+		}
+	}
+
+	// C18T1: initial custom values, written atomically with the issue.
+	// Required enforcement uses full-create semantics: every required
+	// field must arrive non-empty in the request. Drafts skip the
+	// required check (unfinished by definition) but still get their
+	// values type-checked and stored.
+	if !in.IsDraft {
+		required, err := requiredCustomFields(ctx, tx, projectID)
+		if err != nil {
+			return nil, err
+		}
+		if missing := checkRequiredCustomValues(required, in.CustomValues, nil, true); len(missing) > 0 {
+			return nil, &CustomFieldRequiredError{FieldNames: missing}
+		}
+	}
+	if len(in.CustomValues) > 0 {
+		if err := writeCustomValuesTx(ctx, tx, projectID, iss.ID, in.CustomValues); err != nil {
 			return nil, err
 		}
 	}

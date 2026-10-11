@@ -9,6 +9,7 @@ import {
   valueToDraft,
   type CustomField,
   type FieldDraft,
+  withCheckboxDefaults,
 } from "./customFields";
 
 function field(partial: Partial<CustomField>): CustomField {
@@ -279,5 +280,28 @@ describe("resolveVisibleCustomFields", () => {
         (f) => f.id,
       ),
     ).toEqual(["b", "a"]);
+  });
+});
+
+describe("withCheckboxDefaults", () => {
+  it("defaults untouched required checkboxes to false", () => {
+    const fields = [
+      field({ id: "c1", field_type: "checkbox", required: true }),
+      field({ id: "c2", field_type: "checkbox", required: true }),
+      field({ id: "t1", field_type: "text", required: true }),
+      field({ id: "c3", field_type: "checkbox", required: false }),
+    ];
+    expect(withCheckboxDefaults(fields, {})).toEqual({ c1: false, c2: false });
+  });
+
+  it("never overrides an explicit value", () => {
+    const fields = [field({ id: "c1", field_type: "checkbox", required: true })];
+    expect(withCheckboxDefaults(fields, { c1: true })).toEqual({ c1: true });
+    expect(withCheckboxDefaults(fields, { c1: false })).toEqual({ c1: false });
+  });
+
+  it("leaves non-checkbox fields alone", () => {
+    const fields = [field({ id: "t1", field_type: "text", required: true })];
+    expect(withCheckboxDefaults(fields, {})).toEqual({});
   });
 });

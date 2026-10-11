@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 
@@ -58,9 +59,28 @@ func customFieldError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid field id", nil)
 	case errors.Is(err, service.ErrCustomValuesEmpty):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "values is required", nil)
+	case errors.Is(err, service.ErrCustomFieldRequired):
+		return writeCustomFieldRequiredError(c, err)
 	default:
 		return issueError(c, err)
 	}
+}
+
+// writeCustomFieldRequiredError answers a *service.CustomFieldRequiredError
+// with the spec §5 400 envelope: the message names the missing required
+// fields and details carries them machine-readably as field_names.
+func writeCustomFieldRequiredError(c *echo.Context, err error) error {
+	var re *service.CustomFieldRequiredError
+	names := []string{}
+	if errors.As(err, &re) && re.FieldNames != nil {
+		names = re.FieldNames
+	}
+	msg := "missing required custom fields"
+	if len(names) > 0 {
+		msg += ": " + strings.Join(names, ", ")
+	}
+	return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg,
+		map[string]any{"field_names": names})
 }
 
 type customFieldBody struct {
@@ -185,7 +205,9 @@ type setCustomValuesBody struct {
 // Bulk-sets the issue's custom values: {values: {field_id: value}}.
 // Each value is type-checked against its field (400 with an honest
 // message on mismatch); a JSON null clears that field. Fields from
-// another project are 404. Responds with the issue's resulting values.
+// another project are 404. C18T1: required fields the update touches that
+// were previously empty must end up non-empty — otherwise 400 naming the
+// missing fields. Responds with the issue's resulting values.
 func (h *IssueHandler) setCustomValues(c *echo.Context) error {
 	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
 	if !ok {

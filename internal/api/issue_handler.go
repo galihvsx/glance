@@ -132,6 +132,9 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 	case errors.Is(err, service.ErrNothingToUpdate):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+	// C18T1: required custom fields missing on issue create.
+	case errors.Is(err, service.ErrCustomFieldRequired):
+		return writeCustomFieldRequiredError(c, err)
 	// Task 17: bulk errors.
 	case errors.Is(err, service.ErrBulkEmptyIDs):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "ids is required", nil)
@@ -190,6 +193,12 @@ type createIssueBody struct {
 	// Intake opts the new issue into the project's intake inbox as
 	// pending (Task 20). Default false: direct-to-backlog.
 	Intake bool `json:"intake"`
+	// CustomValues carries optional initial custom-field values
+	// (field_id → value, same shapes as the custom-values PUT body),
+	// written atomically with the issue (C18T1). On non-draft creates
+	// every required field of the project must arrive non-empty here,
+	// else 400 naming the missing fields.
+	CustomValues map[string]json.RawMessage `json:"custom_values"`
 }
 
 // parseDateBody parses an optional YYYY-MM-DD body field into a *time.Time.
@@ -210,7 +219,10 @@ func parseDateBody(field, v string) (*time.Time, error) {
 // creates the issue with the next atomic sequence_id (display ID
 // {IDENTIFIER}-{sequence_id}) and a _created activity row. 201 with the
 // issue JSON. Honors Idempotency-Key: a replayed key returns the stored
-// response byte-identical without creating a second issue.
+// response byte-identical without creating a second issue. C18T1: an
+// optional custom_values map is written atomically with the issue;
+// non-draft creates 400 (naming the missing fields) unless every
+// required field of the project arrives non-empty.
 func (h *IssueHandler) createIssue(c *echo.Context) error {
 	var body createIssueBody
 	if err := c.Bind(&body); err != nil {
@@ -238,6 +250,7 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 				EstimatePointID: body.EstimatePointID,
 				IsDraft:         body.IsDraft,
 				Intake:          body.Intake,
+				CustomValues:    body.CustomValues,
 			})
 		if err != nil {
 			return 0, nil, err

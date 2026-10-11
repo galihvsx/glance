@@ -81,6 +81,13 @@ import {
   type ExportFormat,
 } from "../lib/export";
 import { Checkbox } from "../components/ui/checkbox";
+import { RequiredCustomFieldsForm } from "../components/issue/IssueCustomFields";
+import {
+  customFieldKeys,
+  fetchCustomFields,
+  withCheckboxDefaults,
+  type CustomValueInput,
+} from "../lib/customFields";
 import { toast } from "../components/ui/toast";
 import { priorityLabel } from "../lib/types";
 import { useShortcutAction, isTypingTarget } from "../lib/shortcuts";
@@ -198,6 +205,11 @@ export default function Issues() {
   const [parentIssue, setParentIssue] = useState<Issue | null>(null);
   const [createMore, setCreateMore] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // C18T1: required custom-field values for the create form (field id →
+  // value), owned here and rendered by RequiredCustomFieldsForm.
+  const [customFieldValues, setCustomFieldValues] = useState<
+    Record<string, CustomValueInput>
+  >({});
   // C7T1: template picked from the dropdown + any note about dropped
   // defaults (stale refs, labels that can't be set at creation).
   const [appliedTemplate, setAppliedTemplate] = useState<IssueTemplate | null>(
@@ -240,6 +252,18 @@ export default function Issues() {
         .then((d) => d.labels),
     enabled: dialogOpen,
   });
+
+  // C18T1: required custom fields for the create form — fetched lazily
+  // with the dialog (shares the cache key with the issue-detail editors).
+  // The server 400s the create naming any required field left empty.
+  const customFieldsQuery = useQuery({
+    queryKey: customFieldKeys(slug, identifier).fields,
+    queryFn: () => fetchCustomFields(slug, identifier),
+    enabled: dialogOpen,
+  });
+  const requiredCustomFields = (customFieldsQuery.data ?? []).filter(
+    (f) => f.required,
+  );
 
   /**
    * Apply a template to the create form (C7T1). Explicit user action via the
@@ -365,6 +389,7 @@ export default function Issues() {
       estimate_point_id?: string;
       parent_id?: string;
       is_draft?: boolean;
+      custom_values?: Record<string, CustomValueInput>;
     }) => api.post<Issue>(`${base}/issues`, body),
     onSuccess: (issue) => {
       resetCreateForm();
@@ -400,6 +425,14 @@ export default function Issues() {
     setAiGenerated(false);
     setAppliedTemplate(null);
     setTemplateNote(null);
+    setCustomFieldValues({});
+  }
+
+  /** Custom-field values for the create body: untouched required
+   *  checkboxes default to false (unchecked IS the displayed state).
+   *  Empty when the project has no required fields / nothing filled. */
+  function createCustomValues(): Record<string, CustomValueInput> {
+    return withCheckboxDefaults(requiredCustomFields, customFieldValues);
   }
 
   /** Success toast for a created issue: display_id + Copy link / View. */
@@ -447,6 +480,7 @@ export default function Issues() {
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
+    const customValues = createCustomValues();
     createMutation.mutate({
       name: name.trim(),
       description: textToTipTapDoc(description) ?? undefined,
@@ -454,14 +488,21 @@ export default function Issues() {
       ...(newStateId ? { state_id: newStateId } : {}),
       ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
+      // C18T1: required custom fields ride along; the server 400s naming
+      // any left empty, surfaced inline via setFormError below.
+      ...(Object.keys(customValues).length > 0
+        ? { custom_values: customValues }
+        : {}),
     });
   }
 
   /** Save as draft (C6T4): same body plus is_draft — the issue lands in the
-   *  Drafts view instead of the working set. */
+   *  Drafts view instead of the working set. Drafts skip the required
+   *  check server-side, but filled values are still stored. */
   async function onSaveDraft(e: FormEvent) {
     e.preventDefault();
     setFormError(null);
+    const customValues = createCustomValues();
     createMutation.mutate({
       name: name.trim(),
       description: textToTipTapDoc(description) ?? undefined,
@@ -470,6 +511,9 @@ export default function Issues() {
       ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
       is_draft: true,
+      ...(Object.keys(customValues).length > 0
+        ? { custom_values: customValues }
+        : {}),
     });
   }
 
@@ -810,6 +854,18 @@ export default function Issues() {
                   disabled={createMutation.isPending}
                 />
               </div>
+              {/* C18T1: required custom fields — the server 400s the
+                  create naming any left empty (surfaced in formError). */}
+              {requiredCustomFields.length > 0 && (
+                <div className="space-y-2">
+                  <RequiredCustomFieldsForm
+                    fields={requiredCustomFields}
+                    values={customFieldValues}
+                    onChange={setCustomFieldValues}
+                    disabled={createMutation.isPending}
+                  />
+                </div>
+              )}
               {formError && (
                 <Alert variant="destructive">
                   <AlertDescription>{formError}</AlertDescription>

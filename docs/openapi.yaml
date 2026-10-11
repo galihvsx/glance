@@ -465,7 +465,7 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Create an issue",
-        "description": "Creates the issue with the next atomic sequence_id (display ID {IDENTIFIER}-{sequence_id}). Honors Idempotency-Key: a replayed key returns the stored response byte-identical without creating a second issue.",
+        "description": "Creates the issue with the next atomic sequence_id (display ID {IDENTIFIER}-{sequence_id}). Honors Idempotency-Key: a replayed key returns the stored response byte-identical without creating a second issue. C18T1: an optional custom_values map is written atomically with the issue; on a non-draft create every required custom field of the project must arrive non-empty (absent/null/empty count as missing, checkbox false counts as present) — otherwise 400 with code bad_request, the message naming the missing fields and details.field_names listing them. Drafts skip the required check.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueCreate" } } } },
         "responses": { "201": { "description": "Created issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
@@ -937,7 +937,7 @@
       "put": {
         "tags": ["custom-fields"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Set all custom-field values for an issue",
-        "description": "Replaces the issue's custom-value set in one call.",
+        "description": "Replaces the issue's custom-value set in one call. C18T1: required custom fields the update touches that were previously empty must end up non-empty (absent/null/empty count as missing, checkbox false counts as present) — otherwise 400 with code bad_request, the message naming the missing fields and details.field_names listing them.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "values": { "type": "object", "additionalProperties": {}, "description": "Map of custom-field id → value" } } } } } },
         "responses": { "200": { "description": "Updated values", "content": { "application/json": { "schema": { "type": "object" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
@@ -2029,7 +2029,8 @@
           "target_date": { "type": "string", "format": "date" },
           "estimate_point_id": { "type": "string", "format": "uuid" },
           "is_draft": { "type": "boolean" },
-          "intake": { "type": "boolean", "description": "Opt the new issue into the intake inbox as pending (default false: direct-to-backlog)" }
+          "intake": { "type": "boolean", "description": "Opt the new issue into the intake inbox as pending (default false: direct-to-backlog)" },
+          "custom_values": { "type": "object", "additionalProperties": {}, "description": "Initial custom-field values (field id → value), written atomically with the issue. On non-draft creates every required field of the project must arrive non-empty here — absent, null and empty strings count as missing (checkbox false counts as present); otherwise 400 naming the missing fields. Drafts skip the required check." }
         }
       },
       "IssuePatch": {

@@ -13,9 +13,10 @@
 //             keyed by field_id: {field_id: {field_id, name, field_type, value}}.
 //   Value shapes: text -> string, number -> JSON number, date -> "YYYY-MM-DD"
 //             string, select -> option string, checkbox -> boolean.
-//   `required` is stored and exposed so clients can render it, but it is
-//   NOT enforced server-side on value writes — render it as a visual
-//   indicator only.
+//   `required` is enforced server-side (C18T1): issue create demands a
+//   non-empty value for every required field (drafts exempt); custom-value
+//   updates enforce only touched fields that were previously empty.
+//   Render the * marker — the server 400 names the missing fields.
 // Reads: any member (guest 5+); mutations: member (15)+, server-gated.
 //
 // The pure helpers at the bottom (validateCustomValueInput, valueToDraft,
@@ -137,6 +138,25 @@ export function setCustomValues(
 }
 
 // ---------- pure helpers (vitest-covered) ----------
+
+/**
+ * C18T1: default untouched required checkboxes to false for a create
+ * body. An untouched checkbox renders unchecked, and false counts as an
+ * explicit present value server-side — defaulting keeps the submitted
+ * body honest about what the form displayed.
+ */
+export function withCheckboxDefaults(
+  fields: CustomField[],
+  values: Record<string, CustomValueInput>,
+): Record<string, CustomValueInput> {
+  const out = { ...values };
+  for (const f of fields) {
+    if (f.required && f.field_type === "checkbox" && out[f.id] === undefined) {
+      out[f.id] = false;
+    }
+  }
+  return out;
+}
 
 /**
  * Editable draft string for a field from its stored value. Checkbox is
