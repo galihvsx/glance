@@ -1949,6 +1949,12 @@ type ListIssuesInput struct {
 	// Archived includes archived issues. Default (false) excludes them:
 	// archived issues are out of the working set.
 	Archived bool
+	// IncludeProjectStructure attaches the cycle/module/release membership
+	// (?include_project_structure=1, C21T2) to every returned row in ONE
+	// batched query — the batched replacement for the spreadsheet's old
+	// per-row ?include_project_structure=1 detail fetches. False keeps the
+	// list response byte-identical (no new fields, no extra query).
+	IncludeProjectStructure bool
 	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
 	// default — drafts live in the Drafts view until published);
 	// true = drafts only; false = explicitly exclude drafts (same as
@@ -2221,6 +2227,12 @@ type IssueListItem struct {
 	// omitempty keeps their responses byte-identical. The detail response
 	// always embeds the array (empty when nothing is linked).
 	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
+	// ProjectStructure carries the cycle/module/release membership
+	// (C21T2). Populated only when ListIssuesInput.IncludeProjectStructure
+	// is set (?include_project_structure=1 on the list endpoint); nil
+	// otherwise, and omitempty keeps every existing list response
+	// byte-identical. Same shape as the detail endpoint's attachment.
+	ProjectStructure *IssueProjectStructure `json:"project_structure,omitempty"`
 }
 
 // ListIssuesResult is the paginated list envelope (spec §5).
@@ -2383,6 +2395,30 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		last := items[len(items)-1]
 		res.Issues = items
 		res.NextCursor = encodeListCursor(orderKey, listSortKey(ord, &last.Issue), last.ID)
+	}
+	// C21T2: ?include_project_structure=1 on the list endpoint attaches the
+	// cycle/module/release membership to every returned row in ONE batched
+	// query — never per-row. Off by default: no extra query, no new
+	// fields, byte-identical responses.
+	if in.IncludeProjectStructure && len(res.Issues) > 0 {
+		ids := make([]string, 0, len(res.Issues))
+		for i := range res.Issues {
+			ids = append(ids, res.Issues[i].ID)
+		}
+		structures, err := listIssueProjectStructures(ctx, pool, projectID, ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range res.Issues {
+			if s, ok := structures[res.Issues[i].ID]; ok {
+				res.Issues[i].ProjectStructure = s
+			} else {
+				// Defensive: the ids came from this project's list query,
+				// so every one should be in the map. An empty structure
+				// keeps the shape identical to the detail endpoint.
+				res.Issues[i].ProjectStructure = &IssueProjectStructure{Modules: []NamedRef{}}
+			}
+		}
 	}
 	return res, nil
 }

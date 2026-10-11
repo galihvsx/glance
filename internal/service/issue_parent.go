@@ -26,7 +26,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -340,4 +342,73 @@ func GetIssueProjectStructure(ctx context.Context, pool *pgxpool.Pool, wsSlug, i
 		out.Release = &rel
 	}
 	return out, nil
+}
+
+// listIssueProjectStructures fetches the cycle/module/release membership
+// for ALL of the given issues in ONE query — the batched consumption
+// contract behind ?include_project_structure=1 on the issue list endpoint
+// (C21T2). It mirrors GetIssueProjectStructure's semantics exactly: cycle
+// is the first membership by name (LIMIT 1 ORDER BY name — an issue is
+// normally in at most one cycle), modules are all memberships ordered by
+// name, release comes from the issue's own release_id. issueIDs must be
+// UUIDs of live issues in the given project (the list query already
+// guarantees this); unknown ids simply get no map entry. Every returned
+// structure carries a non-nil Modules slice so the JSON shape matches the
+// detail endpoint: {"cycle"?, "modules": [...], "release"?}.
+func listIssueProjectStructures(ctx context.Context, pool *pgxpool.Pool, projectID string, issueIDs []string) (map[string]*IssueProjectStructure, error) {
+	out := make(map[string]*IssueProjectStructure, len(issueIDs))
+	if len(issueIDs) == 0 {
+		return out, nil
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT i.id::text,
+			cyc.id::text, cyc.name,
+			COALESCE(mods.modules, '[]'::jsonb),
+			r.id::text, r.name
+		 FROM issues i
+		 LEFT JOIN LATERAL (
+			 SELECT c.id, c.name
+			 FROM cycle_issues ci
+			 JOIN cycles c ON c.id = ci.cycle_id
+			 WHERE ci.issue_id = i.id AND c.project_id = $1::uuid
+			 ORDER BY c.name ASC
+			 LIMIT 1
+		 ) cyc ON true
+		 LEFT JOIN LATERAL (
+			 SELECT json_agg(jsonb_build_object(
+						'id', m.id::text, 'name', m.name)
+						ORDER BY m.name)::jsonb AS modules
+			 FROM module_issues mi
+			 JOIN modules m ON m.id = mi.module_id
+			 WHERE mi.issue_id = i.id AND m.project_id = $1::uuid
+		 ) mods ON true
+		 LEFT JOIN releases r ON r.id = i.release_id
+		 WHERE i.id = ANY($2::uuid[]) AND i.project_id = $1::uuid AND i.deleted_at IS NULL`,
+		projectID, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var cycleID, cycleName *string
+		var modulesJSON []byte
+		var releaseID, releaseName *string
+		if err := rows.Scan(&id, &cycleID, &cycleName, &modulesJSON, &releaseID, &releaseName); err != nil {
+			return nil, err
+		}
+		modules := []NamedRef{}
+		if err := json.Unmarshal(modulesJSON, &modules); err != nil {
+			return nil, fmt.Errorf("service: decode batch project-structure modules: %w", err)
+		}
+		s := &IssueProjectStructure{Modules: modules}
+		if cycleID != nil && cycleName != nil {
+			s.Cycle = &NamedRef{ID: *cycleID, Name: *cycleName}
+		}
+		if releaseID != nil && releaseName != nil {
+			s.Release = &NamedRef{ID: *releaseID, Name: *releaseName}
+		}
+		out[id] = s
+	}
+	return out, rows.Err()
 }
