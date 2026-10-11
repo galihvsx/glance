@@ -40,6 +40,36 @@ export function monthGrid(year: number, month: number): Date[] {
   );
 }
 
+/** Monday (local midnight) of the week containing `d`. */
+export function startOfWeek(d: Date): Date {
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // Monday-first offset: JS getDay() is Sunday-first.
+  const lead = (out.getDay() + 6) % 7;
+  out.setDate(out.getDate() - lead);
+  return out;
+}
+
+/** 7 consecutive Monday-first days for the week containing `anchor`. */
+export function weekGrid(anchor: Date): Date[] {
+  const start = startOfWeek(anchor);
+  return Array.from(
+    { length: 7 },
+    (_, i) =>
+      new Date(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate() + i,
+      ),
+  );
+}
+
+/** Shift a date by whole weeks (positive or negative). */
+export function shiftWeek(d: Date, delta: number): Date {
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  out.setDate(out.getDate() + delta * 7);
+  return out;
+}
+
 /**
  * Merge due-dated + start-dated issues into per-day buckets.
  *

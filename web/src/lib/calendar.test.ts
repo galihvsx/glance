@@ -6,6 +6,9 @@ import {
   issueDay,
   monthGrid,
   shiftMonth,
+  shiftWeek,
+  startOfWeek,
+  weekGrid,
 } from "./calendar";
 import type { Issue } from "./types";
 
@@ -122,5 +125,41 @@ describe("firstOfMonth / shiftMonth", () => {
     expect(firstOfMonth(2026, 9)).toBe("2026-10-01");
     expect(shiftMonth(2026, 0, -1)).toEqual({ year: 2025, month: 11 });
     expect(shiftMonth(2026, 11, 1)).toEqual({ year: 2027, month: 0 });
+  });
+});
+
+describe("startOfWeek / weekGrid / shiftWeek", () => {
+  it("startOfWeek returns the Monday of the containing week", () => {
+    // Mon 2026-10-12 is a Monday -> itself.
+    expect(dayKey(startOfWeek(new Date(2026, 9, 12)))).toBe("2026-10-12");
+    // Sun 2026-10-18 -> Mon 2026-10-12.
+    expect(dayKey(startOfWeek(new Date(2026, 9, 18)))).toBe("2026-10-12");
+    // Wed 2026-10-14 -> Mon 2026-10-12.
+    expect(dayKey(startOfWeek(new Date(2026, 9, 14)))).toBe("2026-10-12");
+  });
+
+  it("startOfWeek crosses month and year boundaries", () => {
+    // Thu 2026-10-01 -> Mon 2026-09-28.
+    expect(dayKey(startOfWeek(new Date(2026, 9, 1)))).toBe("2026-09-28");
+    // Fri 2027-01-01 -> Mon 2026-12-28.
+    expect(dayKey(startOfWeek(new Date(2027, 0, 1)))).toBe("2026-12-28");
+  });
+
+  it("weekGrid returns 7 consecutive Monday-first days", () => {
+    const cells = weekGrid(new Date(2026, 9, 14)); // Wednesday
+    expect(cells).toHaveLength(7);
+    expect(dayKey(cells[0])).toBe("2026-10-12");
+    expect(dayKey(cells[6])).toBe("2026-10-18");
+    for (let i = 1; i < cells.length; i++) {
+      expect(cells[i].getTime() - cells[i - 1].getTime()).toBe(86_400_000);
+    }
+    expect(cells[0].getDay()).toBe(1); // Monday
+  });
+
+  it("shiftWeek moves by whole weeks across boundaries", () => {
+    expect(dayKey(shiftWeek(new Date(2026, 9, 12), 1))).toBe("2026-10-19");
+    expect(dayKey(shiftWeek(new Date(2026, 9, 12), -1))).toBe("2026-10-05");
+    // Across year boundary.
+    expect(dayKey(shiftWeek(new Date(2026, 11, 30), 1))).toBe("2027-01-06");
   });
 });

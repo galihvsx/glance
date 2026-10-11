@@ -19,10 +19,29 @@ import {
   firstOfMonth,
   monthGrid,
   shiftMonth,
+  shiftWeek,
+  startOfWeek,
+  weekGrid,
 } from "../lib/calendar";
 import { cn } from "../lib/utils";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+type CalendarView = "month" | "week";
+
+function viewStorageKey(slug: string, identifier: string): string {
+  return `glance:calendar-view:${slug}:${identifier}`;
+}
+
+function loadView(slug: string, identifier: string): CalendarView {
+  try {
+    const raw = localStorage.getItem(viewStorageKey(slug, identifier));
+    if (raw === "week" || raw === "month") return raw;
+  } catch {
+    // Private mode / storage unavailable — month default still applies.
+  }
+  return "month";
+}
 
 /** 28px toolbar button in the C19 token ramp (matches PageHeader controls). */
 const calControlClass =
@@ -79,29 +98,55 @@ export default function Calendar() {
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const { peekUuid, openPeek, closePeek } = usePeekParam();
 
-  const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth());
+  // Month/Week view preference, per-project localStorage (same pattern as
+  // the spreadsheet custom-column prefs). Adjust-during-render keeps it in
+  // sync when the route params change without a remount (project switcher).
+  const viewKey = `${slug}\0${identifier}`;
+  const [cachedView, setCachedView] = useState(() => ({
+    key: viewKey,
+    view: loadView(slug, identifier),
+  }));
+  if (cachedView.key !== viewKey) {
+    setCachedView({ key: viewKey, view: loadView(slug, identifier) });
+  }
+  const view = cachedView.view;
+  const setView = (next: CalendarView) => {
+    try {
+      localStorage.setItem(viewStorageKey(slug, identifier), next);
+    } catch {
+      // Storage full / private mode — still applies for the session.
+    }
+    setCachedView((prev) => ({ ...prev, view: next }));
+  };
+
+  // Anchor date drives both views: the month view uses its year/month, the
+  // week view uses the week containing it. Navigation preserves the anchor
+  // so switching Month <-> Week keeps the user's place.
+  const [anchor, setAnchor] = useState(() => new Date());
 
   const go = (delta: number) => {
-    const next = shiftMonth(year, month, delta);
-    setYear(next.year);
-    setMonth(next.month);
+    setAnchor((prev) => {
+      if (view === "week") return shiftWeek(prev, delta);
+      const next = shiftMonth(prev.getFullYear(), prev.getMonth(), delta);
+      return new Date(next.year, next.month, 1);
+    });
   };
-  const goToday = () => {
-    const t = new Date();
-    setYear(t.getFullYear());
-    setMonth(t.getMonth());
-  };
+  const goToday = () => setAnchor(new Date());
 
-  const { start, end } = useMemo(() => {
-    const n = shiftMonth(year, month, 1);
-    return { start: firstOfMonth(year, month), end: firstOfMonth(n.year, n.month) };
-  }, [year, month]);
-  const rfc = (day: string) => `${day}T00:00:00Z`;
-
-  // Three bounded queries per month view (no per-day requests):
+  // Bounded issue queries cover the visible range only (no per-day requests):
   // due-dated, start-dated, and undated (the "unscheduled" strip).
+  const { start, end } = useMemo(() => {
+    if (view === "week") {
+      const monday = startOfWeek(anchor);
+      return { start: dayKey(monday), end: dayKey(shiftWeek(monday, 1)) };
+    }
+    const n = shiftMonth(anchor.getFullYear(), anchor.getMonth(), 1);
+    return {
+      start: firstOfMonth(anchor.getFullYear(), anchor.getMonth()),
+      end: firstOfMonth(n.year, n.month),
+    };
+  }, [view, anchor]);
+  const rfc = (day: string) => `${day}T00:00:00Z`;
   const dueQuery = useQuery({
     queryKey: ["calendar", slug, identifier, "due", start],
     queryFn: () =>
@@ -132,7 +177,13 @@ export default function Calendar() {
     return m;
   }, [statesQuery.data]);
 
-  const cells = useMemo(() => monthGrid(year, month), [year, month]);
+  const cells = useMemo(
+    () =>
+      view === "week"
+        ? weekGrid(anchor)
+        : monthGrid(anchor.getFullYear(), anchor.getMonth()),
+    [view, anchor],
+  );
   const byDay = useMemo(
     () => bucketIssuesByDay(dueQuery.data ?? [], startQuery.data ?? []),
     [dueQuery.data, startQuery.data],
@@ -143,10 +194,30 @@ export default function Calendar() {
   const error = dueQuery.error ?? startQuery.error ?? undatedQuery.error;
 
   const todayKey = dayKey(new Date());
-  const monthLabel = new Date(year, month, 1).toLocaleDateString(undefined, {
+  const monthLabel = new Date(
+    anchor.getFullYear(),
+    anchor.getMonth(),
+    1,
+  ).toLocaleDateString(undefined, {
     month: "long",
     year: "numeric",
   });
+  // Week label: "Oct 12 – 18, 2026" (or "Sep 28 – Oct 4, 2026" across a
+  // month boundary).
+  const weekLabel = useMemo(() => {
+    if (view !== "week") return "";
+    const days = weekGrid(anchor);
+    const fmtDay = (d: Date) =>
+      d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const fmtEnd = (d: Date) =>
+      d.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    return `${fmtDay(days[0])} – ${fmtEnd(days[6])}`;
+  }, [view, anchor]);
+  const viewLabel = view === "week" ? weekLabel : monthLabel;
 
   // iCal subscription: the first click mints the user's feed token (if
   // none is active) and copies the subscription URL. A live token's
@@ -196,7 +267,7 @@ export default function Calendar() {
             type="button"
             onClick={() => go(-1)}
             className={cn(calControlClass, "px-1.5")}
-            aria-label="Previous month"
+            aria-label={view === "week" ? "Previous week" : "Previous month"}
           >
             <ChevronLeft className="h-3.5 w-3.5" />
           </button>
@@ -207,12 +278,39 @@ export default function Calendar() {
             type="button"
             onClick={() => go(1)}
             className={cn(calControlClass, "px-1.5")}
-            aria-label="Next month"
+            aria-label={view === "week" ? "Next week" : "Next month"}
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
+          {/* Month/Week switcher — PageHeader segmented language (C19T4). */}
+          <div
+            role="tablist"
+            aria-label="Calendar view"
+            className="flex h-[30px] items-center rounded-md border border-border bg-[#101012] p-[2px]"
+          >
+            {(["month", "week"] as const).map((v) => {
+              const active = view === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setView(v)}
+                  className={cn(
+                    "h-[24px] rounded px-2 text-[10px] font-medium transition-colors",
+                    active
+                      ? "bg-raised text-ink"
+                      : "text-ink-muted hover:text-ink-secondary",
+                  )}
+                >
+                  {v === "month" ? "Month" : "Week"}
+                </button>
+              );
+            })}
+          </div>
           <h2 className="ml-2 text-[13px] font-semibold text-ink">
-            {monthLabel}
+            {viewLabel}
           </h2>
           <button
             type="button"
@@ -252,57 +350,123 @@ export default function Calendar() {
           </p>
         ) : (
           <>
-            <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
-              {WEEKDAYS.map((d) => (
-                <div
-                  key={d}
-                  className="border-b border-border-hairline bg-raised px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline"
-                >
-                  {d}
+            {view === "week" ? (
+              // Week view: 7 day-columns, Mon–Sun, day granularity (issues
+              // carry dates, not times — no hour grid). Chips reuse the
+              // month-view IssueChip language.
+              <div className="overflow-hidden rounded-md border border-border">
+                <div className="grid grid-cols-7 border-b border-border-hairline bg-raised">
+                  {cells.map((date) => {
+                    const key = dayKey(date);
+                    const isToday = key === todayKey;
+                    return (
+                      <div
+                        key={key}
+                        className="flex items-center gap-1.5 px-2 py-1.5 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-r-border-hairline"
+                      >
+                        <span
+                          className={cn(
+                            "text-[10px] font-semibold uppercase tracking-[0.06em]",
+                            isToday ? "text-accent-blue" : "text-ink-muted",
+                          )}
+                        >
+                          {WEEKDAYS[(date.getDay() + 6) % 7]}
+                        </span>
+                        <span
+                          className={cn(
+                            "inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
+                            isToday
+                              ? "bg-accent-blue font-semibold text-white"
+                              : "text-ink-secondary",
+                          )}
+                        >
+                          {date.getDate()}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-              {cells.map((date) => {
-                const key = dayKey(date);
-                const issues = byDay.get(key) ?? [];
-                const isToday = key === todayKey;
-                const isOtherMonth = date.getMonth() !== month;
-                return (
+                <div className="grid grid-cols-7">
+                  {cells.map((date) => {
+                    const key = dayKey(date);
+                    const issues = byDay.get(key) ?? [];
+                    const isToday = key === todayKey;
+                    return (
+                      <div
+                        key={key}
+                        className={cn(
+                          "min-h-64 p-1 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-r-border-hairline",
+                          isToday && "bg-[rgba(79,142,247,0.05)]",
+                        )}
+                      >
+                        <div className="space-y-0.5">
+                          {issues.map((issue) => (
+                            <IssueChip
+                              key={issue.id}
+                              issue={issue}
+                              state={statesById.get(issue.state_id)}
+                              onOpen={() => openPeek(issue.id)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
+                {WEEKDAYS.map((d) => (
                   <div
-                    key={key}
-                    className={cn(
-                      "min-h-24 border-b border-border-hairline p-1 [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline",
-                      isOtherMonth && "opacity-40",
-                    )}
+                    key={d}
+                    className="border-b border-border-hairline bg-raised px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline"
                   >
+                    {d}
+                  </div>
+                ))}
+                {cells.map((date) => {
+                  const key = dayKey(date);
+                  const issues = byDay.get(key) ?? [];
+                  const isToday = key === todayKey;
+                  const isOtherMonth = date.getMonth() !== anchor.getMonth();
+                  return (
                     <div
+                      key={key}
                       className={cn(
-                        "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
-                        isToday
-                          ? "bg-accent-blue font-semibold text-white"
-                          : "text-ink-muted",
+                        "min-h-24 border-b border-border-hairline p-1 [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline",
+                        isOtherMonth && "opacity-40",
                       )}
                     >
-                      {date.getDate()}
+                      <div
+                        className={cn(
+                          "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
+                          isToday
+                            ? "bg-accent-blue font-semibold text-white"
+                            : "text-ink-muted",
+                        )}
+                      >
+                        {date.getDate()}
+                      </div>
+                      <div className="max-h-20 space-y-0.5 overflow-y-auto">
+                        {issues.map((issue) => (
+                          <IssueChip
+                            key={issue.id}
+                            issue={issue}
+                            state={statesById.get(issue.state_id)}
+                            onOpen={() => openPeek(issue.id)}
+                          />
+                        ))}
+                      </div>
                     </div>
-                    <div className="max-h-20 space-y-0.5 overflow-y-auto">
-                      {issues.map((issue) => (
-                        <IssueChip
-                          key={issue.id}
-                          issue={issue}
-                          state={statesById.get(issue.state_id)}
-                          onOpen={() => openPeek(issue.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
 
             {byDay.size === 0 && undated.length === 0 && (
               <p className="text-[13px] text-ink-muted">
-                No issues scheduled for {monthLabel}. Issues appear here once they
-                get a due or start date.
+                No issues scheduled for {viewLabel}. Issues appear here once
+                they get a due or start date.
               </p>
             )}
 
