@@ -66,10 +66,14 @@ export default function TimeTracker({
   slug,
   identifier,
   uuid,
+  /** C19T3: increment to open the "Log time" dialog from outside
+   *  (the activity tab bar's "Log work" button). */
+  logSignal,
 }: {
   slug: string;
   identifier: string;
   uuid: string;
+  logSignal?: number;
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -85,6 +89,11 @@ export default function TimeTracker({
   const [persisted, setPersisted] = useState<PersistedTimer | null>(() =>
     readPersisted(uuid),
   );
+
+  // C19T3: external "Log work" trigger.
+  useEffect(() => {
+    if (logSignal) setLogOpen(true);
+  }, [logSignal]);
 
   const timeQuery = useQuery({
     queryKey: timeKey,
@@ -355,4 +364,20 @@ export default function TimeTracker({
       </CardContent>
     </Card>
   );
+}
+
+/** Time summary for the Properties > Tracked time cell (C19T3): total
+ *  logged seconds (completed entries) for the issue. */
+export function useTimeSummary(
+  slug: string,
+  identifier: string,
+  uuid: string,
+): { totalSeconds: number; isPending: boolean } {
+  const timePath = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/time`;
+  const q = useQuery({
+    queryKey: ["time", slug, identifier, uuid],
+    queryFn: () =>
+      api.get<{ entries: TimeEntry[]; total_seconds: number }>(timePath),
+  });
+  return { totalSeconds: q.data?.total_seconds ?? 0, isPending: q.isPending };
 }

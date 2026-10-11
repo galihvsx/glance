@@ -1,23 +1,18 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
-  Bell,
-  BellOff,
-  Check,
-  Copy,
-  History as HistoryIcon,
+  ArrowRightLeft,
+  Link,
   Link2,
-  MoreVertical,
+  Paperclip,
   Pencil,
-  Share2,
+  Plus,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import type {
-  CommentNode,
-  HistoryEntry,
   Issue,
   IssueState,
   Label as ProjectLabel,
@@ -25,91 +20,60 @@ import type {
   Subscriber,
 } from "../../lib/types";
 import { textToTipTapDoc, tiptapText } from "../../lib/tiptap";
-import {
-  applyMention,
-  filterMentionMembers,
-  findMentionTrigger,
-  mentionLabel,
-  renderMentionSegments,
-  type MentionableMember,
-} from "../../lib/mentions";
 import { useProjectRealtime } from "../../lib/realtime";
 import { useRecordRecentIssue } from "./recents";
-import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Badge } from "../ui/badge";
+import { useIsStarred, useToggleFavorite } from "../../lib/favorites";
+import { copyText } from "../../lib/clipboard";
+import { toast } from "../ui/toast";
 import { Input } from "../ui/input";
-import { Label } from "../ui/label";
-import { Textarea } from "../ui/textarea";
 import { Skeleton } from "../ui/skeleton";
 import { Alert, AlertDescription } from "../ui/alert";
-import { Separator } from "../ui/separator";
-import StateBadge from "./StateBadge";
-import StatePicker from "./StatePicker";
-import PriorityPicker from "./PriorityPicker";
-import AssigneePicker from "./AssigneePicker";
 import ShareModal from "../ShareModal";
-import IssueCopyMenu from "./IssueCopyMenu";
-import LabelPicker from "./LabelPicker";
-import TimeTracker from "./TimeTracker";
-import Attachments from "./Attachments";
-import FavoriteStar from "../favorites/FavoriteStar";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
-import SubIssues, { ParentBreadcrumb } from "./SubIssues";
-import SubtaskProgressBar from "./SubtaskProgressBar";
+import SubIssues from "./SubIssues";
 import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
+import Attachments from "./Attachments";
 import BlockerConfirmDialog from "./BlockerConfirmDialog";
 import { useCloneIssue } from "./useCloneIssue";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu";
+import DetailToolbar from "./DetailToolbar";
+import PropertyStrip from "./PropertyStrip";
+import IssueProperties from "./IssueProperties";
+import ActivitySection, { type ActivityTab } from "./ActivitySection";
+import { useTimeSummary } from "./TimeTracker";
+import { cn } from "cn";
 
-function actorName(a: { name?: string | null; email: string }): string {
-  return a.name ?? a.email;
-}
-
-function fmtTime(iso: string): string {
+/** "Oct 10, 2026". */
+function fmtDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleString(undefined, {
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    year: "numeric",
   });
 }
 
-/** Human-friendly relative timestamp ("just now", "5m ago", "2h ago",
- *  "3d ago"); falls back to the absolute fmtTime for events older than
- *  30 days. */
-function timeAgo(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return fmtTime(iso);
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return fmtTime(iso);
+/** "Today at 11:18" / "Yesterday at 11:18" / "Oct 10, 11:18". */
+function fmtEdited(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const day = (x: Date) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`;
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (day(d) === day(now)) return `Today at ${hm}`;
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (day(d) === day(y)) return `Yesterday at ${hm}`;
+  return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${hm}`;
 }
 
-/** Human label for an activity field. */
-function fieldLabel(field: string): string {
-  if (field === "_created") return "created the issue";
-  if (field === "_deleted") return "deleted the issue";
-  return `changed ${field.replace(/_/g, " ")}`;
-}
+// ---------- Description ----------
 
-// ---------- Description editor ----------
+const DESC_COLLAPSE_CHARS = 600;
 
-function DescriptionEditor({
+function DescriptionSection({
   issue,
   slug,
   identifier,
@@ -123,8 +87,7 @@ function DescriptionEditor({
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  // C5T3: honest "AI-generated" flag — set on a Draft-with-AI insert,
-  // cleared when the user edits, saves, or cancels.
+  const [expanded, setExpanded] = useState(false);
   const [aiGenerated, setAiGenerated] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const editor = useEditor({
@@ -134,8 +97,6 @@ function DescriptionEditor({
     onUpdate: () => setAiGenerated(false),
   });
 
-  // Reset content when the issue changes (e.g. after a save) and toggle
-  // editability when edit mode changes.
   useEffect(() => {
     if (!editor) return;
     editor.setEditable(editing);
@@ -146,192 +107,143 @@ function DescriptionEditor({
     }
   }, [editor, editing, issue.description]);
 
-  const empty =
-    !issue.description || tiptapText(issue.description) === "";
+  const text = issue.description ? tiptapText(issue.description) : "";
+  const empty = text === "";
+  const long = text.length > DESC_COLLAPSE_CHARS;
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle className="text-base">Description</CardTitle>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setEditing((e) => !e)}
-          className="gap-2"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          {editing ? "Cancel" : empty ? "Add description" : "Edit"}
-        </Button>
-      </CardHeader>
-      <CardContent>
-        {editing ? (
-          <div className="space-y-3">
-            <div className="min-h-32 rounded-md border p-3 focus-within:ring-1 focus-within:ring-ring">
-              <EditorContent editor={editor} />
-            </div>
-            {aiGenerated && (
-              <p className="text-xs text-muted-foreground">
-                AI-generated — review before saving.
-              </p>
-            )}
-            {aiError && (
-              <p role="alert" className="text-xs text-destructive">
-                {aiError}
-              </p>
-            )}
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                disabled={saving}
-                onClick={() => {
-                  onSave(editor?.getJSON() ?? null);
-                  setEditing(false);
-                  setAiGenerated(false);
-                }}
-              >
-                {saving ? "Saving…" : "Save"}
-              </Button>
-              <DraftWithAI
-                slug={slug}
-                identifier={identifier}
-                title={issue.name}
-                context={tiptapText(issue.description)}
-                onDraft={(d) => {
-                  editor?.commands.setContent(
-                    textToTipTapDoc(d) as object,
-                  );
-                  setAiGenerated(true);
-                  setAiError(null);
-                }}
-                onError={setAiError}
-                disabled={saving}
-              />
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:text-destructive"
-                onClick={() => {
-                  onSave(null);
-                  setEditing(false);
-                  setAiGenerated(false);
-                  setAiError(null);
-                }}
-              >
-                Remove description
-              </Button>
-            </div>
-          </div>
-        ) : empty ? (
-          <p className="text-sm text-muted-foreground">
-            No description yet.
-          </p>
-        ) : (
-          <div className="prose prose-sm dark:prose-invert max-w-none">
+    <div className="py-[22px] pb-[13px]">
+      {editing ? (
+        <div className="space-y-3">
+          <div className="min-h-32 rounded-md border border-border p-3 focus-within:border-accent-blue">
             <EditorContent editor={editor} />
           </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------- Comments ----------
-
-/** Renders comment text with @-mention chips (C8T1). */
-function CommentBody({
-  text,
-  members,
-}: {
-  text: string;
-  members: MentionableMember[];
-}) {
-  const segments = renderMentionSegments(text, members);
-  return (
-    <>
-      {segments.map((s, i) =>
-        s.kind === "mention" ? (
-          <span
-            key={i}
-            className="rounded bg-primary/15 px-1 py-0.5 font-medium text-primary"
-          >
-            @{s.label}
-          </span>
-        ) : (
-          <span key={i}>{s.text}</span>
-        ),
-      )}
-    </>
-  );
-}
-
-function CommentItem({
-  comment,
-  onReply,
-  members,
-}: {
-  comment: CommentNode;
-  onReply: (parentId: string) => void;
-  members: MentionableMember[];
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="rounded-md border p-3">
-        <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">
-            {actorName(comment.actor)}
-          </span>
-          <span title={fmtTime(comment.created_at)}>
-            {timeAgo(comment.created_at)}
-          </span>
-          <button
-            className="ml-auto hover:underline"
-            onClick={() => onReply(comment.id)}
-          >
-            Reply
-          </button>
-        </div>
-        <p className="whitespace-pre-wrap text-sm">
-          <CommentBody text={tiptapText(comment.content)} members={members} />
-        </p>
-      </div>
-      {comment.replies.length > 0 && (
-        <div className="space-y-2 border-l-2 pl-4">
-          {comment.replies.map((r) => (
-            <CommentItem
-              key={r.id}
-              comment={r}
-              onReply={onReply}
-              members={members}
+          {aiGenerated && (
+            <p className="text-[10px] text-ink-muted">
+              AI-generated — review before saving.
+            </p>
+          )}
+          {aiError && (
+            <p role="alert" className="text-[10px] text-accent-red">
+              {aiError}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                onSave(editor?.getJSON() ?? null);
+                setEditing(false);
+                setAiGenerated(false);
+              }}
+              className="flex h-[26px] items-center rounded-[5px] bg-accent-blue px-3 text-[11px] font-medium text-white hover:bg-accent-blue-hover disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <DraftWithAI
+              slug={slug}
+              identifier={identifier}
+              title={issue.name}
+              context={text}
+              onDraft={(d) => {
+                editor?.commands.setContent(textToTipTapDoc(d) as object);
+                setAiGenerated(true);
+                setAiError(null);
+              }}
+              onError={setAiError}
+              disabled={saving}
             />
-          ))}
+            <button
+              type="button"
+              onClick={() => {
+                onSave(null);
+                setEditing(false);
+                setAiGenerated(false);
+                setAiError(null);
+              }}
+              className="flex h-[26px] items-center rounded-[5px] px-2 text-[11px] text-accent-red hover:bg-wash-hover"
+            >
+              Remove description
+            </button>
+          </div>
         </div>
+      ) : empty ? (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="flex items-center gap-1.5 rounded-[4px] px-1 py-1 text-[11px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
+        >
+          <Pencil className="h-3 w-3" />
+          Add description
+        </button>
+      ) : (
+        <>
+          <div
+            onClick={() => setEditing(true)}
+            title="Click to edit"
+            className={cn(
+              "cursor-text text-[13px] leading-[22px] text-[#d2d2d6] [&_.tiptap]:outline-none",
+              "[&_p]:mb-3 [&_p]:max-w-[72ch] [&_ul]:mb-3 [&_ol]:mb-3",
+              "[&_code]:rounded-[4px] [&_code]:border [&_code]:border-border [&_code]:bg-raised [&_code]:px-1 [&_code]:font-mono [&_code]:text-[11px]",
+              "[&_pre]:rounded-[6px] [&_pre]:border [&_pre]:border-border [&_pre]:bg-raised [&_pre]:p-3 [&_pre]:font-mono [&_pre]:text-[11px]",
+              "[&_h1]:text-[15px] [&_h1]:font-semibold [&_h2]:text-[14px] [&_h2]:font-semibold [&_h3]:text-[13px] [&_h3]:font-semibold",
+              !expanded && long && "max-h-[220px] overflow-hidden",
+            )}
+          >
+            <EditorContent editor={editor} />
+          </div>
+          <div className="mt-2 flex items-center gap-[10px]">
+            {long && (
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => !e)}
+                className="rounded-[4px] px-1 py-0.5 text-[10px] text-ink-secondary transition-colors hover:bg-wash-hover hover:text-ink"
+              >
+                {expanded ? "Show less" : "Show all"}
+              </button>
+            )}
+            <span className="text-[9px] text-ink-muted">
+              Last edited {fmtEdited(issue.updated_at)}
+            </span>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-// ---------- Reusable detail content ----------
+// ---------- Detail content ----------
 
 /**
  * The issue detail body, shared by the full page (IssueDetail) and the
- * peek drawer (PeekDrawer). Takes explicit ids instead of useParams so it
- * can render anywhere inside the project scope.
+ * peek drawer (PeekDrawer). Restructured per the cycle-19 prototype
+ * (Screen 3): 46px toolbar, ID chip, 25px title + char counter, inline
+ * property strip, description, action toolbar, Properties (Details +
+ * Project structure), meta rows, activity tabs, composer.
  *
- * `compact` stacks the sidebar below the main column (drawer width).
- * `headerActions` renders at the right of the display-id/state row.
+ * `onClose` wires the toolbar's close button (peek: close the drawer;
+ * full page: navigate back). `onOpenFull` wires "open full screen"
+ * (peek only — omitted on the full page, hiding the button).
+ * `fillHeight` makes the body a flex column with its own scroll area
+ * (peek panel); the full page lets the window scroll instead.
  */
 export default function IssueDetailContent({
   slug,
   identifier,
   uuid,
   compact = false,
-  headerActions,
+  onClose,
+  onOpenFull,
+  fillHeight = false,
 }: {
   slug: string;
   identifier: string;
   uuid: string;
   compact?: boolean;
-  headerActions?: ReactNode;
+  onClose?: () => void;
+  onOpenFull?: () => void;
+  fillHeight?: boolean;
 }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -340,50 +252,45 @@ export default function IssueDetailContent({
   const subscribersPath = `${issuePath}/subscribers`;
   const subscribersKey = ["subscribers", slug, identifier, uuid];
 
+  const [wide, setWide] = useState(false);
+  const [activityTab, setActivityTab] = useState<ActivityTab>("all");
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [commentDraft, setCommentDraft] = useState("");
-  const [replyTo, setReplyTo] = useState<string | null>(null);
-  // @-mention autocomplete state (C8T1).
-  const commentRef = useRef<HTMLTextAreaElement>(null);
-  const [mentionTrigger, setMentionTrigger] = useState<{
-    start: number;
-    query: string;
-  } | null>(null);
-  const [mentionActive, setMentionActive] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  // C16T3: pending open-blockers confirm — the state id the user picked
-  // plus the blocker display IDs from the 409 details.
   const [blockerConfirm, setBlockerConfirm] = useState<{
     stateId: string;
     blockers: string[];
   } | null>(null);
-  const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  // C8T4: clone action — POST .../issues/{uuid}/clone, then navigate to
-  // the new issue. Clone errors surface in the shared error alert below.
+  // C19T3: action-toolbar signals for the sub-sections below.
+  const [addSubSignal, setAddSubSignal] = useState(0);
+  const [linkSignal, setLinkSignal] = useState(0);
+  const [linkKind, setLinkKind] = useState<"blocks" | "relates_to">("blocks");
+  const [pickSignal, setPickSignal] = useState(0);
+
   const {
     cloneIssue,
     cloning,
     error: cloneError,
   } = useCloneIssue(slug, identifier);
+  const isFavorite = useIsStarred("issue", uuid);
+  const toggleFavorite = useToggleFavorite();
 
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
 
-  // Realtime: issue channel for this issue (comments, concurrent edits) on
-  // top of the project channel from ProjectScope. Resync-on-reconnect is
-  // owned by ProjectScope.
   useProjectRealtime({ slug, identifier, issueUuid: uuid });
 
   const issueQuery = useQuery({
     queryKey: issueKey,
-    // C5T5: ?include_children=1 attaches the child summaries for the
-    // Sub-issues section; C7T3: ?include_custom=1 attaches custom_values
-    // for the Custom fields section (detail only — the list query is
-    // untouched).
+    // C5T5: ?include_children=1 attaches child summaries; C7T3:
+    // ?include_custom=1 attaches custom values; C19T3:
+    // ?include_project_structure=1 attaches cycle/module/release
+    // membership (detail only — the list query is untouched).
     queryFn: () =>
-      api.get<Issue>(`${issuePath}?include_children=1&include_custom=1`),
+      api.get<Issue>(
+        `${issuePath}?include_children=1&include_custom=1&include_project_structure=1`,
+      ),
   });
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
@@ -404,20 +311,6 @@ export default function IssueDetailContent({
     queryFn: () =>
       api.get<{ labels: ProjectLabel[] }>(`${base}/labels`).then((d) => d.labels),
   });
-  const commentsQuery = useQuery({
-    queryKey: ["comments", slug, identifier, uuid],
-    queryFn: () =>
-      api
-        .get<{ comments: CommentNode[] }>(`${issuePath}/comments`)
-        .then((d) => d.comments),
-  });
-  const historyQuery = useQuery({
-    queryKey: ["history", slug, identifier, uuid],
-    queryFn: () =>
-      api
-        .get<{ history: HistoryEntry[] }>(`${issuePath}/history`)
-        .then((d) => d.history),
-  });
   const subscribersQuery = useQuery({
     queryKey: subscribersKey,
     queryFn: () =>
@@ -425,13 +318,21 @@ export default function IssueDetailContent({
         .get<{ subscribers: Subscriber[] }>(subscribersPath)
         .then((d) => d.subscribers),
   });
+  // Parent issue (for the Properties > Details > Parent cell).
+  const parentQuery = useQuery({
+    queryKey: ["issue", slug, identifier, issueQuery.data?.parent_id ?? "none"],
+    queryFn: () =>
+      api.get<Issue>(
+        `${base}/issues/${encodeURIComponent(issueQuery.data!.parent_id!)}`,
+      ),
+    enabled: !!issueQuery.data?.parent_id,
+    retry: false,
+  });
 
   const issue = issueQuery.data;
   const states = statesQuery.data ?? [];
-  const stateById = new Map(states.map((s) => [s.id, s]));
+  const { totalSeconds: trackedSeconds } = useTimeSummary(slug, identifier, uuid);
 
-  // Recents (localStorage): every opened issue — full page or peek drawer —
-  // lands here, feeding the dashboard's "Recents" section.
   useRecordRecentIssue(issue, slug, identifier);
 
   function invalidateIssue() {
@@ -459,6 +360,28 @@ export default function IssueDetailContent({
           ...(body.description !== undefined
             ? { description: body.description as unknown }
             : {}),
+          ...(body.start_date !== undefined
+            ? { start_date: body.start_date as string | null }
+            : {}),
+          ...(body.target_date !== undefined
+            ? { target_date: body.target_date as string | null }
+            : {}),
+          ...(body.release_id !== undefined
+            ? {
+                project_structure: {
+                  ...(prev.project_structure ?? { modules: [] }),
+                  release:
+                    body.release_id === null
+                      ? null
+                      : prev.project_structure?.release?.id === body.release_id
+                        ? prev.project_structure.release
+                        : { id: body.release_id as string, name: "…" },
+                },
+              }
+            : {}),
+          ...(body.parent_id !== undefined
+            ? { parent_id: body.parent_id as string | null }
+            : {}),
         });
       }
       return { prev };
@@ -468,9 +391,7 @@ export default function IssueDetailContent({
       // C16T3: the blocker guard rejected the move — show the confirm
       // dialog instead of the error banner.
       if (e instanceof ApiError && e.code === "open_blockers") {
-        const details = e.details as
-          | { blockers?: string[] }
-          | undefined;
+        const details = e.details as { blockers?: string[] } | undefined;
         const blockers = Array.isArray(details?.blockers)
           ? details.blockers.filter((b): b is string => typeof b === "string")
           : [];
@@ -480,9 +401,7 @@ export default function IssueDetailContent({
           return;
         }
       }
-      setError(
-        e instanceof ApiError ? e.message : "Failed to update issue",
-      );
+      setError(e instanceof ApiError ? e.message : "Failed to update issue");
     },
     onSettled: () => invalidateIssue(),
   });
@@ -528,38 +447,15 @@ export default function IssueDetailContent({
       () => invalidateIssue(),
       (e: unknown) => {
         if (prev) queryClient.setQueryData(issueKey, prev);
-        setError(
-          e instanceof ApiError ? e.message : "Failed to update",
-        );
+        setError(e instanceof ApiError ? e.message : "Failed to update");
       },
     );
   }
-
-  const commentMutation = useMutation({
-    mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
-      api.post<CommentNode>(`${issuePath}/comments`, body),
-    onSuccess: () => {
-      setCommentDraft("");
-      setReplyTo(null);
-      void queryClient.invalidateQueries({
-        queryKey: ["comments", slug, identifier, uuid],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["history", slug, identifier, uuid],
-      });
-    },
-    onError: (e) => {
-      setError(e instanceof ApiError ? e.message : "Failed to post comment");
-    },
-  });
 
   const subscribers = subscribersQuery.data ?? [];
   const subscribed =
     user !== null && subscribers.some((s) => s.user_id === user.id);
 
-  // Subscribe/unsubscribe the current user. Backend is idempotent
-  // (POST/DELETE .../subscribers → 204); optimistic so the button flips
-  // instantly, rolled back on error.
   const subscribeMutation = useMutation({
     mutationFn: (next: boolean) =>
       next ? api.post<void>(subscribersPath) : api.del<void>(subscribersPath),
@@ -597,112 +493,29 @@ export default function IssueDetailContent({
   function onCopyLink() {
     const url = `${window.location.origin}/w/${slug}/p/${identifier}/i/${uuid}`;
     const done = () => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      toast.add({ title: "Issue URL copied", description: url, type: "success" });
     };
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard
-        .writeText(url)
-        .then(done)
-        .catch(() => setError("Could not copy link to clipboard"));
-    } else {
-      // Non-secure context fallback.
-      const ta = document.createElement("textarea");
-      ta.value = url;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        if (document.execCommand("copy")) done();
-        else setError("Could not copy link to clipboard");
-      } catch {
-        setError("Could not copy link to clipboard");
-      }
-      document.body.removeChild(ta);
-    }
-  }
-
-  function onCommentSubmit(e: FormEvent) {
-    e.preventDefault();
-    setMentionTrigger(null);
-    const doc = textToTipTapDoc(commentDraft);
-    if (!doc) return;
-    commentMutation.mutate({
-      content: doc,
-      parent_id: replyTo,
+    void copyText(url).then((ok) => {
+      if (ok) done();
+      else setError("Could not copy link to clipboard");
     });
   }
 
-  /** @-mention autocomplete (C8T1): tracks the @-token before the caret. */
-  // The actor is excluded: self-mentions never notify (backend skips them).
-  const mentionMembers = (membersQuery.data ?? []).filter(
-    (m) => m.id !== user?.id,
-  );
-  const mentionList = mentionTrigger
-    ? filterMentionMembers(mentionMembers, mentionTrigger.query)
-    : [];
-
-  function syncMentionTrigger(value: string, caret: number) {
-    setMentionTrigger(findMentionTrigger(value, caret));
-    setMentionActive(0);
-  }
-
-  function onCommentChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    const v = e.target.value;
-    setCommentDraft(v);
-    syncMentionTrigger(v, e.target.selectionStart ?? v.length);
-  }
-
-  function onCommentSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
-    const el = e.currentTarget;
-    syncMentionTrigger(el.value, el.selectionStart ?? el.value.length);
-  }
-
-  function pickMention(m: MentionableMember) {
-    if (!mentionTrigger) return;
-    const el = commentRef.current;
-    const caret = el?.selectionStart ?? commentDraft.length;
-    const applied = applyMention(
-      commentDraft,
-      mentionTrigger.start,
-      caret,
-      m,
-    );
-    setCommentDraft(applied.text);
-    setMentionTrigger(null);
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(applied.caret, applied.caret);
+  function onCopyRef() {
+    if (!issue) return;
+    void copyText(issue.display_id).then((ok) => {
+      if (ok)
+        toast.add({
+          title: "Issue reference copied",
+          description: issue.display_id,
+          type: "success",
+        });
+      else setError("Could not copy reference to clipboard");
     });
-  }
-
-  function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (!mentionTrigger || mentionList.length === 0) return;
-    if (e.key === "Escape") {
-      setMentionTrigger(null);
-      return;
-    }
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setMentionActive((a) => (a + 1) % mentionList.length);
-      return;
-    }
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setMentionActive(
-        (a) => (a - 1 + mentionList.length) % mentionList.length,
-      );
-      return;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      pickMention(mentionList[mentionActive] ?? mentionList[0]);
-    }
   }
 
   function onTitleSave() {
-    const t = titleDraft.trim();
+    const t = titleDraft.trim().slice(0, 255);
     if (!t || t === issue?.name) {
       setTitleEditing(false);
       return;
@@ -711,202 +524,194 @@ export default function IssueDetailContent({
     setTitleEditing(false);
   }
 
-  const comments = commentsQuery.data ?? [];
-  const history = historyQuery.data ?? [];
+  const members = membersQuery.data ?? [];
+  const createdByName =
+    members.find((m) => m.id === issue?.created_by)?.name ??
+    members.find((m) => m.id === issue?.created_by)?.email ??
+    issue?.created_by;
 
-  /** Unified activity timeline: top-level comments + history (system)
-   *  events, interleaved newest-first. Replies stay nested under their
-   *  parent comment. Relations aren't rendered on the detail page (no
-   *  relations read here), so the timeline covers exactly what the page
-   *  already fetches — nothing invented. */
-  type TimelineItem =
-    | { kind: "comment"; at: string; comment: CommentNode }
-    | { kind: "event"; at: string; entry: HistoryEntry };
-  const timeline: TimelineItem[] = [
-    ...comments.map(
-      (comment): TimelineItem => ({
-        kind: "comment",
-        at: comment.created_at,
-        comment,
-      }),
-    ),
-    ...history.map(
-      (entry): TimelineItem => ({ kind: "event", at: entry.created_at, entry }),
-    ),
-  ].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  const actionBtn =
+    "flex h-7 items-center gap-[5px] rounded-[4px] px-2 text-[9px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink";
 
   return (
-    <div className="w-full">
-      {cloneError && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>{cloneError}</AlertDescription>
-        </Alert>
-      )}
-      {error && (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+    <div className={cn("flex w-full flex-col", fillHeight && "h-full min-h-0")}>
+      {onClose && issue && (
+        <DetailToolbar
+          slug={slug}
+          identifier={identifier}
+          uuid={uuid}
+          issue={issue}
+          onClose={onClose}
+          onOpenFull={onOpenFull ?? onClose}
+          wide={wide}
+          onToggleWide={() => setWide((w) => !w)}
+          subscribed={subscribed}
+          subscribePending={subscribeMutation.isPending}
+          canSubscribe={user !== null}
+          onSubscribeToggle={onSubscribeToggle}
+          isFavorite={isFavorite}
+          onToggleFavorite={() =>
+            toggleFavorite.mutate({ type: "issue", id: uuid, starred: isFavorite })
+          }
+          cloning={cloning}
+          onClone={() => void cloneIssue(uuid)}
+          onCopyLink={onCopyLink}
+          onShare={() => setShareOpen(true)}
+        />
       )}
 
-      {issueQuery.isPending ? (
-        <div className="mt-4 space-y-3">
-          <Skeleton className="h-10 w-2/3" />
-          <Skeleton className="h-40 w-full" />
-        </div>
-      ) : !issue ? (
-        <Alert variant="destructive" className="mt-4">
-          <AlertDescription>Issue not found.</AlertDescription>
-        </Alert>
-      ) : (
-        <div className="mt-2">
-          {/* C5T5: parent breadcrumb — "child of GLA-123". */}
-          {issue.parent_id && (
-            <ParentBreadcrumb
-              slug={slug}
-              identifier={identifier}
-              parentId={issue.parent_id}
-              compact={compact}
-            />
+      <div className={cn(fillHeight && "min-h-0 flex-1 overflow-y-auto")}>
+        <div
+          className={cn(
+            "px-[42px] pt-[27px] pb-[70px]",
+            !wide && "mx-auto max-w-[860px]",
           )}
-          <div className="mb-6 flex items-center gap-3">
-            <Badge variant="outline" className="font-mono">
-              {issue.display_id}
-            </Badge>
-            {stateById.get(issue.state_id) && (
-              <StateBadge state={stateById.get(issue.state_id)!} />
-            )}
-            {/* C17T2: subtask progress — renders only when there are
-                direct subtasks. */}
-            <SubtaskProgressBar
-              progress={issue.subtask_progress}
-              variant="detail"
-            />
-            <span className="ml-auto flex items-center gap-1">
-              {/* C7T4: star toggle for this issue. */}
-              <FavoriteStar type="issue" id={uuid} />
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5"
-                onClick={onSubscribeToggle}
-                disabled={!user || subscribeMutation.isPending}
-                title={
-                  subscribed
-                    ? "Stop receiving notifications for this issue"
-                    : "Get notified about updates to this issue"
-                }
-              >
-                {subscribed ? (
-                  <BellOff className="h-3.5 w-3.5" />
-                ) : (
-                  <Bell className="h-3.5 w-3.5" />
-                )}
-                {subscribed ? "Unsubscribe" : "Subscribe"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5"
-                onClick={onCopyLink}
-                title="Copy link to this issue"
-              >
-                {copied ? (
-                  <Check className="h-3.5 w-3.5" />
-                ) : (
-                  <Link2 className="h-3.5 w-3.5" />
-                )}
-                {copied ? "Copied" : "Copy link"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => setShareOpen(true)}
-                title="Share publicly"
-              >
-                <Share2 className="h-3.5 w-3.5" />
-                Share
-              </Button>
-              {/* C17T3: dev quick actions — a separate "Copy" cluster so it
-                  doesn't collide with the overflow menu or the subtask
-                  progress bar work in the same header row. */}
-              <IssueCopyMenu
-                slug={slug}
-                identifier={identifier}
-                uuid={uuid}
-                issue={issue}
-              />
-              {/* C8T4: overflow menu — currently just Clone; the home for
-                  future per-issue actions (delete, move, archive). */}
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
-                  title="More actions"
-                  aria-label="More issue actions"
-                >
-                  <MoreVertical className="h-4 w-4" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => void cloneIssue(uuid)}
-                    disabled={cloning || !issue}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    {cloning ? "Cloning…" : "Clone issue"}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              {headerActions}
-            </span>
-          </div>
+        >
+          {cloneError && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{cloneError}</AlertDescription>
+            </Alert>
+          )}
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
 
-          {titleEditing ? (
-            <div className="mb-6 flex gap-2">
-              <Input
-                value={titleDraft}
-                onChange={(e) => setTitleDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") onTitleSave();
-                  if (e.key === "Escape") {
-                    setTitleEditing(false);
-                    // Don't let the drawer's Escape-to-close fire when
-                    // just cancelling the title edit.
-                    e.stopPropagation();
-                  }
-                }}
-                autoFocus
-                className="text-2xl font-semibold"
-              />
-              <Button onClick={onTitleSave}>Save</Button>
+          {issueQuery.isPending ? (
+            <div className="space-y-3">
+              <Skeleton className="h-10 w-2/3" />
+              <Skeleton className="h-40 w-full" />
             </div>
+          ) : !issue ? (
+            <Alert variant="destructive">
+              <AlertDescription>Issue not found.</AlertDescription>
+            </Alert>
           ) : (
-            <h1
-              className="mb-6 cursor-pointer text-2xl font-semibold tracking-tight hover:underline"
-              title="Click to edit"
-              onClick={() => {
-                setTitleDraft(issue.name);
-                setTitleEditing(true);
-              }}
-            >
-              {issue.name}
-            </h1>
-          )}
+            <>
+              {/* ID chip */}
+              <button
+                type="button"
+                onClick={onCopyRef}
+                title="Copy issue reference"
+                className="flex h-[25px] items-center rounded-[5px] border border-border bg-surface px-[7px] font-mono text-[10px] text-ink-secondary transition-colors hover:text-ink"
+              >
+                {issue.display_id}
+              </button>
 
-          <div className={compact ? "grid gap-6" : "grid gap-6 md:grid-cols-3"}>
-            <div
-              className={compact ? "space-y-6" : "space-y-6 md:col-span-2"}
-            >
-              <DescriptionEditor
+              {/* Title block */}
+              <div className="relative mt-3">
+                {titleEditing ? (
+                  <div className="flex gap-2 pr-[62px]">
+                    <Input
+                      value={titleDraft}
+                      maxLength={255}
+                      onChange={(e) => setTitleDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") onTitleSave();
+                        if (e.key === "Escape") {
+                          setTitleEditing(false);
+                          e.stopPropagation();
+                        }
+                      }}
+                      autoFocus
+                      className="h-auto border-border bg-transparent py-0 text-[25px] leading-[34px] font-semibold tracking-[-0.025em]"
+                    />
+                    <button
+                      type="button"
+                      onClick={onTitleSave}
+                      className="flex h-[26px] shrink-0 items-center rounded-[5px] bg-accent-blue px-3 text-[11px] font-medium text-white hover:bg-accent-blue-hover"
+                    >
+                      Save
+                    </button>
+                  </div>
+                ) : (
+                  <h1
+                    className="cursor-text pr-[62px] text-[25px] leading-[34px] font-[660] tracking-[-0.025em] text-ink"
+                    title="Click to edit"
+                    onClick={() => {
+                      setTitleDraft(issue.name);
+                      setTitleEditing(true);
+                    }}
+                  >
+                    {issue.name}
+                  </h1>
+                )}
+                <span className="absolute right-0 bottom-1 font-mono text-[9px] text-ink-muted">
+                  {issue.name.length}/255
+                </span>
+              </div>
+
+              {/* Inline property strip */}
+              <PropertyStrip
+                issue={issue}
+                states={states}
+                members={membersQuery.data ?? null}
+                onPatch={(b) => patchMutation.mutate(b)}
+                onToggleAssignee={(id, cur) => toggleRelation("assignees", id, cur)}
+                disabled={patchMutation.isPending}
+              />
+
+              {/* Description */}
+              <DescriptionSection
                 issue={issue}
                 slug={slug}
                 identifier={identifier}
                 saving={patchMutation.isPending}
-                onSave={(doc) =>
-                  patchMutation.mutate({ description: doc })
-                }
+                onSave={(doc) => patchMutation.mutate({ description: doc })}
               />
 
-              {/* C5T5: sub-issues — child list, add, detach. */}
+              {/* Action toolbar */}
+              <div className="flex h-10 w-max max-w-full items-center gap-[3px] overflow-x-auto rounded-[7px] border border-border bg-surface px-[5px]">
+                <button
+                  type="button"
+                  className={actionBtn}
+                  onClick={() => setAddSubSignal((n) => n + 1)}
+                >
+                  <Plus className="h-[13px] w-[13px]" strokeWidth={1.8} />
+                  Add sub-work item
+                </button>
+                <button
+                  type="button"
+                  className={actionBtn}
+                  onClick={() => {
+                    setLinkKind("blocks");
+                    setLinkSignal((n) => n + 1);
+                  }}
+                >
+                  <ArrowRightLeft className="h-[13px] w-[13px]" strokeWidth={1.8} />
+                  Add dependency
+                </button>
+                <button
+                  type="button"
+                  className={actionBtn}
+                  onClick={() => {
+                    setLinkKind("relates_to");
+                    setLinkSignal((n) => n + 1);
+                  }}
+                >
+                  <Link2 className="h-[13px] w-[13px]" strokeWidth={1.8} />
+                  Add relation
+                </button>
+                <button
+                  type="button"
+                  className={actionBtn}
+                  onClick={() => setLinkSignal((n) => n + 1)}
+                >
+                  <Link className="h-[13px] w-[13px]" strokeWidth={1.8} />
+                  Add link
+                </button>
+                <button
+                  type="button"
+                  className={actionBtn}
+                  onClick={() => setPickSignal((n) => n + 1)}
+                >
+                  <Paperclip className="h-[13px] w-[13px]" strokeWidth={1.8} />
+                  Attach
+                </button>
+              </div>
+
+              {/* Sub-work items */}
               <SubIssues
                 slug={slug}
                 identifier={identifier}
@@ -914,10 +719,10 @@ export default function IssueDetailContent({
                 issueKey={issueKey}
                 compact={compact}
                 onError={setError}
+                addSignal={addSubSignal}
               />
 
-              {/* C8T0: issue links — directed dependency edges, grouped by
-                  type. Shares the detail/peek layout like SubIssues. */}
+              {/* Dependencies / relations */}
               <IssueLinks
                 slug={slug}
                 identifier={identifier}
@@ -925,220 +730,19 @@ export default function IssueDetailContent({
                 projectBase={base}
                 compact={compact}
                 onError={setError}
+                openSignal={linkSignal}
+                openKind={linkKind}
               />
 
-              {/* Activity: comments + system events, one timeline */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <HistoryIcon className="h-4 w-4" />
-                    Activity
-                    {timeline.length > 0 && (
-                      <span className="text-sm font-normal text-muted-foreground">
-                        {timeline.length}
-                      </span>
-                    )}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <form onSubmit={onCommentSubmit} className="space-y-2">
-                    {replyTo && (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>Replying to a comment</span>
-                        <button
-                          type="button"
-                          className="hover:underline"
-                          onClick={() => setReplyTo(null)}
-                        >
-                          Cancel reply
-                        </button>
-                      </div>
-                    )}
-                    <div className="relative">
-                      <Textarea
-                        ref={commentRef}
-                        value={commentDraft}
-                        onChange={onCommentChange}
-                        onSelect={onCommentSelect}
-                        onKeyDown={onComposerKeyDown}
-                        placeholder="Write a comment… (type @ to mention)"
-                        rows={3}
-                      />
-                      {mentionTrigger && mentionList.length > 0 && (
-                        <div
-                          className="absolute top-full left-0 z-10 mt-1 max-h-56 w-64 overflow-auto rounded-md border bg-popover shadow-md"
-                          role="listbox"
-                          aria-label="Mention a member"
-                        >
-                          {mentionList.map((m, i) => (
-                            <button
-                              key={m.id}
-                              type="button"
-                              role="option"
-                              aria-selected={i === mentionActive}
-                              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
-                                i === mentionActive
-                                  ? "bg-accent text-accent-foreground"
-                                  : ""
-                              }`}
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                pickMention(m);
-                              }}
-                              onMouseEnter={() => setMentionActive(i)}
-                            >
-                              <span className="font-medium">
-                                {mentionLabel(m)}
-                              </span>
-                              <span className="truncate text-xs text-muted-foreground">
-                                {m.email}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <Button
-                      type="submit"
-                      size="sm"
-                      disabled={
-                        commentMutation.isPending || !commentDraft.trim()
-                      }
-                    >
-                      {commentMutation.isPending ? "Posting…" : "Comment"}
-                    </Button>
-                  </form>
-                  {commentsQuery.isPending || historyQuery.isPending ? (
-                    <div className="space-y-2">
-                      <Skeleton className="h-16 w-full" />
-                      <Skeleton className="h-16 w-full" />
-                    </div>
-                  ) : timeline.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No activity yet.
-                    </p>
-                  ) : (
-                    <ul className="space-y-3">
-                      {timeline.map((item) =>
-                        item.kind === "comment" ? (
-                          <li key={item.comment.id}>
-                            <CommentItem
-                              comment={item.comment}
-                              onReply={(id) => setReplyTo(id)}
-                              members={mentionMembers}
-                            />
-                          </li>
-                        ) : (
-                          <li
-                            key={item.entry.id}
-                            className="flex items-start gap-2 text-sm"
-                          >
-                            <HistoryIcon
-                              className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                              aria-hidden
-                            />
-                            <div>
-                              <span className="font-medium">
-                                {actorName(item.entry.actor)}
-                              </span>{" "}
-                              <span className="text-muted-foreground">
-                                {fieldLabel(item.entry.field)}
-                              </span>
-                              <div
-                                className="text-xs text-muted-foreground"
-                                title={fmtTime(item.entry.created_at)}
-                              >
-                                {timeAgo(item.entry.created_at)}
-                              </div>
-                            </div>
-                          </li>
-                        ),
-                      )}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Sidebar */}
-            <div className="space-y-4">
-              <Card>
-                <CardContent className="space-y-4 pt-6">
-                  <div className="space-y-2">
-                    <Label>State</Label>
-                    <StatePicker
-                      states={states}
-                      value={issue.state_id}
-                      onChange={(stateId) =>
-                        patchMutation.mutate({ state_id: stateId })
-                      }
-                      disabled={patchMutation.isPending}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Priority</Label>
-                    <PriorityPicker
-                      value={issue.priority}
-                      onChange={(p) =>
-                        patchMutation.mutate({ priority: p })
-                      }
-                      disabled={patchMutation.isPending}
-                    />
-                  </div>
-                  <Separator />
-                  <div className="space-y-2">
-                    <Label>Assignees</Label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {issue.assignees.map((a) => (
-                        <Badge key={a.id} variant="secondary">
-                          {a.name}
-                        </Badge>
-                      ))}
-                    </div>
-                    <AssigneePicker
-                      members={membersQuery.data ?? null}
-                      assigned={issue.assignees}
-                      onToggle={(id, cur) =>
-                        toggleRelation("assignees", id, cur)
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Labels</Label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {issue.labels.map((l) => (
-                        <Badge
-                          key={l.id}
-                          variant="secondary"
-                          className="gap-1"
-                        >
-                          <span
-                            className="h-2 w-2 rounded-full"
-                            style={{ backgroundColor: l.color }}
-                            aria-hidden
-                          />
-                          {l.name}
-                        </Badge>
-                      ))}
-                    </div>
-                    <LabelPicker
-                      labels={labelsQuery.data ?? null}
-                      applied={issue.labels}
-                      onToggle={(id, cur) =>
-                        toggleRelation("labels", id, cur)
-                      }
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-              {/* C7T3: custom fields — typed per-issue values, inline edit. */}
-              <IssueCustomFields
+              {/* Attachments */}
+              <Attachments
                 slug={slug}
                 identifier={identifier}
-                issue={issue}
-                issueKey={issueKey}
+                uuid={uuid}
+                pickSignal={pickSignal}
               />
-              {/* C5T3: AI triage suggestions — one-click apply per row. */}
+
+              {/* AI triage suggestions */}
               <TriageSuggestions
                 slug={slug}
                 identifier={identifier}
@@ -1149,20 +753,76 @@ export default function IssueDetailContent({
                 onAddLabel={(id) => toggleRelation("labels", id, false)}
                 disabled={patchMutation.isPending}
               />
-              <TimeTracker slug={slug} identifier={identifier} uuid={uuid} />
-              <Attachments slug={slug} identifier={identifier} uuid={uuid} />
-            </div>
-          </div>
+
+              {/* Custom fields */}
+              <IssueCustomFields
+                slug={slug}
+                identifier={identifier}
+                issue={issue}
+                issueKey={issueKey}
+              />
+
+              {/* Properties */}
+              <IssueProperties
+                slug={slug}
+                identifier={identifier}
+                issue={issue}
+                parentIssue={issue.parent_id ? (parentQuery.data ?? null) : null}
+                labels={labelsQuery.data ?? []}
+                structure={issue.project_structure}
+                issueKey={issueKey}
+                onPatch={(b) => patchMutation.mutate(b)}
+                onToggleLabel={(id, cur) => toggleRelation("labels", id, cur)}
+                trackedSeconds={trackedSeconds}
+                onOpenWorklogs={() => setActivityTab("worklogs")}
+                onError={setError}
+                disabled={patchMutation.isPending}
+              />
+
+              {/* Meta rows */}
+              <div className="mt-[18px] grid grid-cols-3 gap-3 border-y border-border-hairline py-[10px]">
+                <div>
+                  <span className="block text-[9px] text-ink-muted">Created by</span>
+                  <span className="mt-[3px] block text-[10px] font-medium text-ink-secondary">
+                    {createdByName}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[9px] text-ink-muted">Created on</span>
+                  <span className="mt-[3px] block text-[10px] font-medium text-ink-secondary">
+                    {fmtDate(issue.created_at)}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-[9px] text-ink-muted">Updated on</span>
+                  <span className="mt-[3px] block text-[10px] font-medium text-ink-secondary">
+                    {fmtDate(issue.updated_at)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Activity */}
+              <ActivitySection
+                slug={slug}
+                identifier={identifier}
+                uuid={uuid}
+                userId={user?.id ?? null}
+                states={states}
+                activeTab={activityTab}
+                onTabChange={setActivityTab}
+                onError={setError}
+              />
+            </>
+          )}
         </div>
-      )}
+      </div>
+
       {shareOpen && (
         <ShareModal
           resource={`/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/share`}
           onClose={() => setShareOpen(false)}
         />
       )}
-      {/* C16T3: open-blockers confirm — retry the state move with
-          ignore_blockers=true. */}
       {blockerConfirm && (
         <BlockerConfirmDialog
           open={blockerConfirm !== null}

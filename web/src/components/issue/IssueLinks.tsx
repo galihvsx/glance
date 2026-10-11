@@ -4,7 +4,6 @@ import { Link2, Plus, X } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
 import type { Issue, IssueListResult } from "../../lib/types";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -140,6 +139,7 @@ function AddLinkDialog({
   currentId,
   projectBase,
   onError,
+  initialKind = "blocks",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -148,24 +148,29 @@ function AddLinkDialog({
   currentId: string;
   projectBase: string;
   onError: (msg: string | null) => void;
+  /** C19T3: preselected kind when opened from the action toolbar. */
+  initialKind?: IssueLinkKind;
 }) {
   const [input, setInput] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selected, setSelected] = useState<Issue | null>(null);
-  const [kind, setKind] = useState<IssueLinkKind>("blocks");
+  const [kind, setKind] = useState<IssueLinkKind>(initialKind);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const { addMutation } = useIssueLinks(slug, identifier, currentId);
 
-  // Reset the dialog state every time it closes.
+  // Reset the dialog state every time it opens/closes (kind follows the
+  // latest initialKind).
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setKind(initialKind);
+    } else {
       setInput("");
       setDebounced("");
       setSelected(null);
-      setKind("blocks");
+      setKind(initialKind);
       setDialogError(null);
     }
-  }, [open ]);
+  }, [open, initialKind]);
 
   useEffect(() => {
     const t = setTimeout(
@@ -348,6 +353,11 @@ export default function IssueLinks({
   projectBase,
   compact = false,
   onError,
+  /** C19T3: increment to open the add-link dialog from the detail action
+   *  toolbar. */
+  openSignal,
+  /** Preselects the link kind when opened via openSignal. */
+  openKind,
 }: {
   slug: string;
   identifier: string;
@@ -356,14 +366,25 @@ export default function IssueLinks({
   projectBase: string;
   compact?: boolean;
   onError: (msg: string | null) => void;
+  openSignal?: number;
+  openKind?: IssueLinkKind;
 }) {
   const openIssue = useOpenIssue(slug, identifier, compact);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogKind, setDialogKind] = useState<IssueLinkKind>("blocks");
   const { links, isLoading, isError, refetch, removeMutation } = useIssueLinks(
     slug,
     identifier,
     uuid,
   );
+
+  // C19T3: external "Add dependency / Add relation" trigger.
+  useEffect(() => {
+    if (openSignal) {
+      if (openKind) setDialogKind(openKind);
+      setDialogOpen(true);
+    }
+  }, [openSignal, openKind]);
 
   const groups = groupLinks(links, uuid);
 
@@ -386,14 +407,12 @@ export default function IssueLinks({
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Link2 className="h-4 w-4" />
-          {linksTitle(links.length)}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
+    <section aria-label="Linked issues" className="mt-[18px]">
+      <h2 className="mb-[9px] flex items-center gap-2 text-[12px] leading-[1.5] font-semibold text-ink">
+        <Link2 className="h-3.5 w-3.5 text-ink-muted" aria-hidden />
+        {linksTitle(links.length)}
+      </h2>
+      <div className="space-y-2">
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-8 w-full" />
@@ -401,19 +420,19 @@ export default function IssueLinks({
           </div>
         ) : isError ? (
           <div className="flex items-center gap-2">
-            <p className="text-sm text-destructive">
+            <p className="text-[10px] text-accent-red">
               Couldn't load linked issues.
             </p>
-            <Button
-              variant="ghost"
-              size="sm"
+            <button
+              type="button"
+              className="rounded-[4px] px-2 py-1 text-[10px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
               onClick={() => void refetch()}
             >
               Retry
-            </Button>
+            </button>
           </div>
         ) : groups.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-[10px] text-ink-muted">
             No linked issues yet. Link issues that block, relate to, or
             duplicate this one.
           </p>
@@ -422,7 +441,7 @@ export default function IssueLinks({
             <div key={group.key} className="pt-1 first:pt-0">
               <h4
                 className={cn(
-                  "px-2 pb-1 text-xs font-medium text-muted-foreground",
+                  "px-2 pb-1 text-[10px] font-medium text-ink-muted",
                 )}
               >
                 {group.label}
@@ -445,16 +464,15 @@ export default function IssueLinks({
             </div>
           ))
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="gap-1.5 text-muted-foreground"
+        <button
+          type="button"
           onClick={() => setDialogOpen(true)}
+          className="mt-1 flex items-center gap-1.5 rounded-[4px] px-1 py-1 text-[10px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-3 w-3" />
           Add link
-        </Button>
-      </CardContent>
+        </button>
+      </div>
       <AddLinkDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
@@ -463,7 +481,8 @@ export default function IssueLinks({
         currentId={uuid}
         projectBase={projectBase}
         onError={onError}
+        initialKind={dialogKind}
       />
-    </Card>
+    </section>
   );
 }

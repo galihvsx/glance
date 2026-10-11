@@ -23,6 +23,7 @@ export default function ParentPicker({
   value,
   onChange,
   disabled,
+  triggerClassName,
 }: {
   slug: string;
   identifier: string;
@@ -30,6 +31,9 @@ export default function ParentPicker({
   value: Issue | null;
   onChange: (issue: Issue | null) => void;
   disabled?: boolean;
+  /** Optional className override for the trigger button (C19T3: the
+   *  Properties cell renders a borderless trigger). */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -69,6 +73,7 @@ export default function ParentPicker({
         className={cn(
           buttonVariants({ variant: "outline", size: "sm" }),
           "w-full justify-between gap-2 font-normal",
+          triggerClassName,
         )}
       >
         {value ? (

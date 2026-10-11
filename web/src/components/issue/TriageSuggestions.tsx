@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import {
   isAINotConfigured,
@@ -107,12 +106,12 @@ export default function TriageSuggestions({
     : plan?.unmatchedStateName;
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle className="flex items-center gap-1.5 text-base">
+    <section aria-label="AI suggestions" className="mt-[18px]">
+      <div className="mb-[9px] flex items-center justify-between">
+        <h2 className="flex items-center gap-1.5 text-[12px] leading-[1.5] font-semibold text-ink">
           <Sparkles className="h-4 w-4" aria-hidden />
           Triage suggestions
-        </CardTitle>
+        </h2>
         {notConfigured ? (
           <span title={AI_NOT_CONFIGURED_TOOLTIP}>
             <Button
@@ -141,8 +140,8 @@ export default function TriageSuggestions({
             {pending ? "Suggesting…" : "Suggest"}
           </Button>
         )}
-      </CardHeader>
-      <CardContent className="space-y-3">
+      </div>
+      <div className="space-y-3">
         {error && (
           <p role="alert" className="text-sm text-destructive">
             {error}
@@ -249,7 +248,7 @@ export default function TriageSuggestions({
             </li>
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   );
 }

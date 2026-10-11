@@ -105,6 +105,9 @@ export interface Issue {
   /** Custom values keyed by field_id; present only on the detail endpoint
    *  fetched with ?include_custom=1 (C7T3). */
   custom_values?: Record<string, CustomValue>;
+  /** Project-structure membership; present only on the detail endpoint
+   *  fetched with ?include_project_structure=1 (C19T3). */
+  project_structure?: IssueProjectStructure;
   sort_order: number;
   start_date?: string | null;
   target_date?: string | null;
@@ -118,6 +121,22 @@ export interface Issue {
   labels: IssueLabel[];
   /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
   subtask_progress?: SubtaskProgress | null;
+}
+
+/** A minimal id+name reference (C19T3): one row of the
+ *  ?include_project_structure=1 attachment. */
+export interface NamedRef {
+  id: string;
+  name: string;
+}
+
+/** Cycle/module/release membership of an issue; present on the detail
+ *  endpoint only when fetched with ?include_project_structure=1 (C19T3).
+ *  Feeds the Properties > Project structure group in the peek panel. */
+export interface IssueProjectStructure {
+  cycle?: NamedRef | null;
+  modules: NamedRef[];
+  release?: NamedRef | null;
 }
 
 /** Subtask progress rollup (C17T2): DIRECT children only; `done` counts
@@ -218,6 +237,12 @@ export interface Subscriber {
   user_id: string;
   name?: string | null;
   email: string;
+}
+
+/** GET .../issues/{uuid}/votes response (C19T3). */
+export interface IssueVotes {
+  count: number;
+  voted: boolean;
 }
 
 /** Priority labels (0–4). */

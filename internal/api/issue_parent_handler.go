@@ -87,26 +87,31 @@ func (h *IssueHandler) clearIssueParent(c *echo.Context) error {
 }
 
 // issueDetailResponse is the GET issue detail shape with the optional
-// ?include_children=1 children attachment (C5T4) and the optional
-// ?include_custom=1 custom-values attachment (C7T2). The list query is
-// deliberately untouched (perf): both are fetched only on detail, in one
-// extra query each. custom_values is keyed by field id and omitted when
-// not requested (or when no values are set).
+// ?include_children=1 children attachment (C5T4), the optional
+// ?include_custom=1 custom-values attachment (C7T2), and the optional
+// ?include_project_structure=1 cycle/module/release membership attachment
+// (C19T3). The list query is deliberately untouched (perf): all three are
+// fetched only on detail, in one extra query each (structure: three small
+// queries). Attachments are keyed/omitted when not requested.
 type issueDetailResponse struct {
 	service.IssueListItem
-	Children     []service.IssueChild           `json:"children,omitempty"`
-	CustomValues map[string]service.CustomValue `json:"custom_values,omitempty"`
+	Children         []service.IssueChild           `json:"children,omitempty"`
+	CustomValues     map[string]service.CustomValue `json:"custom_values,omitempty"`
+	ProjectStructure *service.IssueProjectStructure `json:"project_structure,omitempty"`
 }
 
 // getIssueChildren decorates a fetched issue with its child summaries
-// when the caller passes ?include_children=1, and with its custom values
-// when the caller passes ?include_custom=1 (C7T2). Without either flag
-// the response is the bare IssueListItem, byte-identical to before.
+// when the caller passes ?include_children=1, with its custom values
+// when the caller passes ?include_custom=1 (C7T2), and with its
+// cycle/module/release membership when the caller passes
+// ?include_project_structure=1 (C19T3). Without any flag the response is
+// the bare IssueListItem, byte-identical to before.
 func (h *IssueHandler) getIssueChildren(c *echo.Context, iss *service.IssueListItem) error {
 	qp := c.QueryParams()
 	wantChildren := qp.Get("include_children") == "1" || qp.Get("include_children") == "true"
 	wantCustom := qp.Get("include_custom") == "1" || qp.Get("include_custom") == "true"
-	if !wantChildren && !wantCustom {
+	wantStructure := qp.Get("include_project_structure") == "1" || qp.Get("include_project_structure") == "true"
+	if !wantChildren && !wantCustom && !wantStructure {
 		return c.JSON(http.StatusOK, iss)
 	}
 	resp := issueDetailResponse{IssueListItem: *iss}
@@ -128,6 +133,14 @@ func (h *IssueHandler) getIssueChildren(c *echo.Context, iss *service.IssueListI
 			return customFieldError(c, err)
 		}
 		resp.CustomValues = values
+	}
+	if wantStructure {
+		structure, err := service.GetIssueProjectStructure(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), iss.ID, CurrentUser(c).ID)
+		if err != nil {
+			return parentError(c, err)
+		}
+		resp.ProjectStructure = structure
 	}
 	return c.JSON(http.StatusOK, resp)
 }

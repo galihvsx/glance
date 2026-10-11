@@ -1,13 +1,12 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { ListTree, Plus, X } from "lucide-react";
 import { api } from "../../lib/api";
 import type { Issue, IssueChild } from "../../lib/types";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
-import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
+import { Badge } from "../ui/badge";
 import { Skeleton } from "../ui/skeleton";
 import { usePeekParam } from "./usePeek";
 import { childRows, removeChildMessage, subIssuesTitle } from "./subIssues";
@@ -124,6 +123,9 @@ export default function SubIssues({
   issueKey,
   compact = false,
   onError,
+  /** C19T3: increment to open the add-sub-issue row from the detail
+   *  action toolbar. */
+  addSignal,
 }: {
   slug: string;
   identifier: string;
@@ -132,14 +134,24 @@ export default function SubIssues({
   issueKey: unknown[];
   compact?: boolean;
   onError: (msg: string | null) => void;
+  addSignal?: number;
 }) {
   const queryClient = useQueryClient();
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const openIssue = useOpenIssue(slug, identifier, compact);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const sectionRef = useRef<HTMLElement>(null);
   const children = childRows(issue.children);
   const issuesKey = ["issues", slug, identifier];
+
+  // C19T3: external "Add sub-work item" trigger from the action toolbar.
+  useEffect(() => {
+    if (addSignal) {
+      setAdding(true);
+      sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [addSignal]);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: issueKey });
@@ -186,31 +198,28 @@ export default function SubIssues({
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <ListTree className="h-4 w-4" />
-          {subIssuesTitle(children)}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {children.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No sub-issues yet. Add one below.
-          </p>
-        ) : (
-          <ul className="-mx-2">
-            {children.map((c) => (
-              <ChildRow
-                key={c.uuid}
-                child={c}
-                onOpen={openIssue}
-                onRemove={removeChild}
-                removing={removeMutation.isPending}
-              />
-            ))}
-          </ul>
-        )}
+    <section ref={sectionRef} aria-label="Sub-work items" className="mt-[18px]">
+      <h2 className="mb-[9px] flex items-center gap-2 text-[12px] leading-[1.5] font-semibold text-ink">
+        <ListTree className="h-3.5 w-3.5 text-ink-muted" aria-hidden />
+        {subIssuesTitle(children)}
+      </h2>
+      {children.length === 0 ? (
+        <p className="text-[10px] text-ink-muted">
+          No sub-work items yet. Add one below.
+        </p>
+      ) : (
+        <ul className="-mx-2">
+          {children.map((c) => (
+            <ChildRow
+              key={c.uuid}
+              child={c}
+              onOpen={openIssue}
+              onRemove={removeChild}
+              removing={removeMutation.isPending}
+            />
+          ))}
+        </ul>
+      )}
         {adding ? (
           <div className="flex gap-2 pt-1">
             <Input
@@ -238,17 +247,15 @@ export default function SubIssues({
             </Button>
           </div>
         ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-muted-foreground"
+          <button
+            type="button"
             onClick={() => setAdding(true)}
+            className="mt-1 flex items-center gap-1.5 rounded-[4px] px-1 py-1 text-[10px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
           >
-            <Plus className="h-3.5 w-3.5" />
-            Add sub-issue
-          </Button>
+            <Plus className="h-3 w-3" />
+            Add sub-work item
+          </button>
         )}
-      </CardContent>
-    </Card>
+    </section>
   );
 }
