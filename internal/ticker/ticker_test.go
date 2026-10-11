@@ -16,7 +16,6 @@ import (
 	"glance/internal/config"
 	"glance/internal/service"
 	"glance/internal/store"
-	migrations "glance/migrations"
 )
 
 var tickerTestSeq atomic.Int64
@@ -32,9 +31,8 @@ func tickerTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("NewPool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if err := store.Migrate(context.Background(), pool, migrations.FS); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	// The database arrives freshly migrated from testdb.Main; no per-test
+	// migrate call needed.
 	return pool
 }
 
