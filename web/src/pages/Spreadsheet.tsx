@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -12,6 +12,7 @@ import { api, ApiError } from "../lib/api";
 import type {
   Issue,
   IssueListResult,
+  IssueProjectStructure,
   IssueState,
   Project,
 } from "../lib/types";
@@ -101,7 +102,10 @@ type SortKey =
   | "start_date"
   | "target_date"
   | "created_at"
-  | "updated_at";
+  | "updated_at"
+  | "cycle"
+  | "module"
+  | "release";
 
 const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: "display_id", label: "ID", className: "w-28" },
@@ -114,6 +118,10 @@ const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: "target_date", label: "Target date", className: "w-32" },
   { key: "created_at", label: "Created", className: "w-32" },
   { key: "updated_at", label: "Updated", className: "w-32" },
+  // C20T2: cycle/module/release membership columns.
+  { key: "cycle", label: "Cycle", className: "min-w-36" },
+  { key: "module", label: "Module", className: "min-w-40" },
+  { key: "release", label: "Release", className: "min-w-32" },
 ];
 
 /** Raw comparable cell value; "" means "empty" and always sorts last. */
@@ -121,6 +129,7 @@ function cellValue(
   issue: Issue,
   key: SortKey,
   stateById: Map<string, IssueState>,
+  structure: IssueProjectStructure | undefined,
 ): string | number {
   switch (key) {
     case "display_id":
@@ -143,6 +152,17 @@ function cellValue(
       return issue.created_at;
     case "updated_at":
       return issue.updated_at;
+    // C20T2: membership comes from the per-row
+    // ?include_project_structure=1 fetch (structureByIssue), never from
+    // the list rows.
+    case "cycle":
+      return structure?.cycle?.name.toLowerCase() ?? "";
+    case "module": {
+      const names = (structure?.modules ?? []).map((m) => m.name.toLowerCase());
+      return names.length > 0 ? names.join(",") : "";
+    }
+    case "release":
+      return structure?.release?.name.toLowerCase() ?? "";
   }
 }
 
@@ -304,12 +324,51 @@ export default function Spreadsheet() {
       ),
     [issues, cfValueQueries],
   );
+
+  // C20T2: per-row cycle/module/release membership. The list endpoint
+  // deliberately never carries project_structure (C19T3 attached it to the
+  // issue detail endpoint only, keeping the list query untouched for perf),
+  // so each visible issue is fetched once via ?include_project_structure=1
+  // — the same per-row pattern C9T4 uses for custom values, and zero new
+  // backend surface. Cache key is distinct from the detail page's
+  // ["issue", ...] key (different data shape) with a 60s stale time.
+  const structureQueries = useQueries({
+    queries: issues.map((issue) => ({
+      queryKey: ["issue-project-structure", slug, identifier, issue.id],
+      queryFn: () =>
+        api
+          .get<Issue>(
+            `${base}/issues/${encodeURIComponent(issue.id)}?include_project_structure=1`,
+          )
+          .then((d) => d.project_structure ?? { modules: [] }),
+      staleTime: 60_000,
+    })),
+  });
+  const structureByIssue = useMemo(
+    () =>
+      new Map(
+        issues.map(
+          (issue, i) => [issue.id, structureQueries[i]?.data] as const,
+        ),
+      ),
+    [issues, structureQueries],
+  );
   const sortedIssues = useMemo(() => {
     if (!sortKey) return issues;
     const dir = sortDir === "asc" ? 1 : -1;
     return [...issues].sort((a, b) => {
-      const va = cellValue(a, sortKey, stateById);
-      const vb = cellValue(b, sortKey, stateById);
+      const va = cellValue(
+        a,
+        sortKey,
+        stateById,
+        structureByIssue.get(a.id),
+      );
+      const vb = cellValue(
+        b,
+        sortKey,
+        stateById,
+        structureByIssue.get(b.id),
+      );
       const aEmpty = va === "";
       const bEmpty = vb === "";
       if (aEmpty && bEmpty) return 0;
@@ -319,7 +378,7 @@ export default function Spreadsheet() {
         return (va - vb) * dir;
       return String(va).localeCompare(String(vb)) * dir;
     });
-  }, [issues, sortKey, sortDir, stateById]);
+  }, [issues, sortKey, sortDir, stateById, structureByIssue]);
 
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
@@ -573,6 +632,8 @@ export default function Spreadsheet() {
                 <tbody>
                   {sortedIssues.map((issue) => {
                     const state = stateById.get(issue.state_id);
+                    const structure = structureByIssue.get(issue.id);
+                    const modules = structure?.modules ?? [];
                     return (
                       <tr
                         key={issue.id}
@@ -668,6 +729,64 @@ export default function Spreadsheet() {
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
                           {dateOnly(issue.updated_at)}
+                        </td>
+                        {/* C20T2: cycle/module/release membership columns.
+                            Membership is wired via per-row
+                            ?include_project_structure=1 (structureByIssue)
+                            — no new backend surface. Read-only; inline
+                            editing is C20T3. */}
+                        <td className="px-3 py-2 align-middle">
+                          {structure?.cycle ? (
+                            <Badge
+                              variant="outline"
+                              className="text-xs font-normal"
+                              title={structure.cycle.name}
+                            >
+                              {structure.cycle.name}
+                            </Badge>
+                          ) : (
+                            <span className="text-[13px] text-ink-muted">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          {modules.length > 0 ? (
+                            <span className="flex flex-wrap items-center gap-1">
+                              {modules.map((m, i) => (
+                                <Fragment key={m.id}>
+                                  {i > 0 && (
+                                    <span
+                                      className="text-ink-muted"
+                                      aria-hidden="true"
+                                    >
+                                      ,
+                                    </span>
+                                  )}
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs font-normal"
+                                    title={m.name}
+                                  >
+                                    {m.name}
+                                  </Badge>
+                                </Fragment>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="text-[13px] text-ink-muted">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          {structure?.release ? (
+                            <Badge
+                              variant="outline"
+                              className="text-xs font-normal"
+                              title={structure.release.name}
+                            >
+                              {structure.release.name}
+                            </Badge>
+                          ) : (
+                            <span className="text-[13px] text-ink-muted">—</span>
+                          )}
                         </td>
                         {/*
                           C9T4: custom-field columns are READ-ONLY by design.
