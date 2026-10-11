@@ -36,7 +36,33 @@ var (
 	// strings, and non-emoji text are rejected; an empty string is
 	// normalized to NULL (unset) rather than rejected.
 	ErrInvalidIcon = errors.New("service: invalid project icon: must be a single emoji")
+	// ErrConfirmMismatch is returned by DeleteProject when the
+	// ?confirm= value does not match the project's identifier. The
+	// typed confirmation is a safety interlock, not authz: it is checked
+	// after the admin role gate.
+	ErrConfirmMismatch = errors.New("service: confirm does not match the project identifier")
+	// ErrProjectDeleteBlocked is returned by DeleteProject when the
+	// project still has non-archived issues and force is false. The
+	// concrete *DeleteBlockedError carries the count for the 409 details.
+	ErrProjectDeleteBlocked = errors.New("service: project has non-archived issues")
 )
+
+// DeleteBlockedError is the concrete ErrProjectDeleteBlocked: the delete
+// was refused because the project still has live issues. NonArchivedIssues
+// is the blocker count surfaced in the 409 details.
+type DeleteBlockedError struct {
+	NonArchivedIssues int
+}
+
+func (e *DeleteBlockedError) Error() string {
+	return fmt.Sprintf("service: project has %d non-archived issues", e.NonArchivedIssues)
+}
+
+// Is makes *DeleteBlockedError match the ErrProjectDeleteBlocked sentinel
+// via errors.Is, so handlers can map it without knowing the concrete type.
+func (e *DeleteBlockedError) Is(target error) bool {
+	return target == ErrProjectDeleteBlocked
+}
 
 // Project is an issue container inside a workspace, addressed by its
 // uppercase identifier (ENG-123 style display IDs build on it in Task 14).
@@ -57,9 +83,15 @@ type Project struct {
 	// in days (C13T0, migration 000039): NULL = unset = the 90-day
 	// default (service.DefaultAutomationRunRetentionDays), 0 = keep
 	// forever. Negative is rejected at write.
-	AutomationRunRetentionDays *int      `json:"automation_run_retention_days,omitempty"`
-	CreatedAt                  time.Time `json:"created_at"`
-	UpdatedAt                  time.Time `json:"updated_at"`
+	AutomationRunRetentionDays *int `json:"automation_run_retention_days,omitempty"`
+	// ArchivedAt is the project archive timestamp (C18T3, migration
+	// 000048): NULL = live. Archived projects are excluded from the
+	// project list, sidebar, and global search; archiving a project
+	// archives all its issues in the same transaction (reusing the
+	// issue archived_at semantics).
+	ArchivedAt *time.Time `json:"archived_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -205,7 +237,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -220,10 +252,10 @@ func scanProject(row pgx.Row) (*Project, error) {
 // (no table alias exists there); projectColumnsP is the same list with
 // the p. alias for SELECT ... FROM projects p.
 const projectColumns = `id::text, workspace_id::text, identifier, name, description,
-	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, created_at, updated_at`
+	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, created_at, updated_at`
 
 const projectColumnsP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.created_at, p.updated_at`
+	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.created_at, p.updated_at`
 
 // CreateProject inserts the project and seeds its default states in one
 // transaction. The caller must be a workspace member (15) or admin (20);
@@ -235,9 +267,11 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, nam
 	return CreateProjectWithTemplate(ctx, pool, wsSlug, actorID, name, identifier, nil, nil)
 }
 
-// ListProjects returns the workspace's projects ordered by name.
+// ListProjects returns the workspace's live projects ordered by name.
+// Archived projects are excluded unless includeArchived is true (C18T3:
+// the projects page renders them in a separate "Archived" section).
 // Non-members get ErrNotFound (see GetWorkspace).
-func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string) ([]Project, error) {
+func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, includeArchived bool) ([]Project, error) {
 	wsID, _, err := workspaceIDForActor(pool.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
@@ -248,11 +282,13 @@ func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID strin
 		return nil, err
 	}
 
-	rows, err := pool.Query(ctx,
-		`SELECT `+projectColumnsP+` FROM projects p
-		 WHERE p.workspace_id = $1::uuid
-		 ORDER BY p.name`,
-		wsID)
+	query := `SELECT ` + projectColumnsP + ` FROM projects p
+		 WHERE p.workspace_id = $1::uuid`
+	if !includeArchived {
+		query += ` AND p.archived_at IS NULL`
+	}
+	query += ` ORDER BY p.name`
+	rows, err := pool.Query(ctx, query, wsID)
 	if err != nil {
 		return nil, err
 	}
@@ -471,4 +507,206 @@ func ListStates(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// ArchiveProject archives (archived=true) or unarchives (archived=false)
+// a project. Admin (20) ONLY — members, viewers, and guests get
+// ErrForbidden; non-members get ErrNotFound (never 403: the workspace
+// existence must not leak to outsiders).
+//
+// Archiving sets projects.archived_at and, in the SAME transaction, sets
+// archived_at = now() on every live issue of the project — reusing the
+// issue archived_at semantics (archived issues drop out of default
+// lists, analytics, and automation). Unarchiving clears the project's
+// archived_at and clears archived_at on exactly the issues the archive
+// set: issues archived individually BEFORE the project archive carry an
+// earlier timestamp and are preserved. now() is the transaction start
+// timestamp, so the archive's issues all share archived_at ==
+// projects.archived_at at unarchive time.
+//
+// Both directions are idempotent: archiving an archived project (or
+// unarchiving a live one) is a no-op returning the current row. The
+// project row is locked FOR UPDATE so concurrent archive/unarchive/delete
+// calls serialize.
+func ArchiveProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, archived bool) (*Project, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
+		`SELECT w.id::text, m.role
+		 FROM workspaces w
+		 JOIN workspace_members m ON m.workspace_id = w.id
+		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+		wsSlug, actorID))
+	if err != nil {
+		return nil, err
+	}
+	if role != RoleAdmin {
+		return nil, ErrForbidden
+	}
+
+	var projectID string
+	var prevArchivedAt *time.Time
+	if err := tx.QueryRow(ctx,
+		`SELECT id::text, archived_at FROM projects
+		 WHERE workspace_id = $1::uuid AND identifier = $2
+		 FOR UPDATE`,
+		wsID, ident).Scan(&projectID, &prevArchivedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, err
+	}
+
+	isArchived := prevArchivedAt != nil
+	if archived == isArchived {
+		// Idempotent no-op: already in the desired state.
+		p, err := scanProject(tx.QueryRow(ctx,
+			`SELECT `+projectColumns+` FROM projects WHERE id = $1::uuid`, projectID))
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
+
+	if archived {
+		if _, err := tx.Exec(ctx,
+			`UPDATE projects SET archived_at = now(), updated_at = now()
+			 WHERE id = $1::uuid`, projectID); err != nil {
+			return nil, err
+		}
+		// All live issues of the project become archived in the same
+		// transaction. No per-issue activity rows or notifications: a
+		// project archive is one administrative act, not N issue
+		// updates, and N notifications would be a storm.
+		if _, err := tx.Exec(ctx,
+			`UPDATE issues SET archived_at = now(), updated_at = now()
+			 WHERE project_id = $1::uuid AND archived_at IS NULL AND deleted_at IS NULL`,
+			projectID); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`UPDATE projects SET archived_at = NULL, updated_at = now()
+			 WHERE id = $1::uuid`, projectID); err != nil {
+			return nil, err
+		}
+		// Restore only the issues this archive archived: they share the
+		// transaction-start timestamp with projects.archived_at.
+		// Issues archived individually before the project archive keep
+		// their earlier archived_at and stay archived.
+		if _, err := tx.Exec(ctx,
+			`UPDATE issues SET archived_at = NULL, updated_at = now()
+			 WHERE project_id = $1::uuid AND archived_at IS NOT NULL
+			   AND archived_at >= $2 AND deleted_at IS NULL`,
+			projectID, prevArchivedAt); err != nil {
+			return nil, err
+		}
+	}
+
+	p, err := scanProject(tx.QueryRow(ctx,
+		`SELECT `+projectColumns+` FROM projects WHERE id = $1::uuid`, projectID))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// DeleteProject hard-deletes a project and, via FK cascades, everything
+// under it (issues, cycles, modules, pages, views, links, ...). Admin
+// (20) ONLY; non-members get ErrNotFound.
+//
+// Safety interlocks, in order:
+//  1. Authz first: the role gate runs before any request validation, so
+//     a non-admin learns nothing beyond 403.
+//  2. confirm must equal the project identifier (normalized the same way
+//     inserts are), else ErrConfirmMismatch.
+//  3. A project with >0 non-archived issues refuses with
+//     *DeleteBlockedError (naming the blocker count) unless force is
+//     true — deleting a live project by accident must be a deliberate
+//     two-step act.
+//
+// The deletes run in one transaction with the project row locked FOR
+// UPDATE. Issues are deleted explicitly before the project row:
+// issues.state_id -> states(id) is NO ACTION, so a bare DELETE FROM
+// projects can hit the states cascade before the issues cascade and trip
+// the RESTRICT check; deleting issues first (their children cascade)
+// sidesteps the trigger ordering entirely.
+func DeleteProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, confirm string, force bool) error {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
+		`SELECT w.id::text, m.role
+		 FROM workspaces w
+		 JOIN workspace_members m ON m.workspace_id = w.id
+		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+		wsSlug, actorID))
+	if err != nil {
+		return err
+	}
+	if role != RoleAdmin {
+		return ErrForbidden
+	}
+
+	confirmIdent, err := normalizeIdentifier(confirm)
+	if err != nil || confirmIdent != ident {
+		return ErrConfirmMismatch
+	}
+
+	var projectID string
+	if err := tx.QueryRow(ctx,
+		`SELECT id::text FROM projects
+		 WHERE workspace_id = $1::uuid AND identifier = $2
+		 FOR UPDATE`,
+		wsID, ident).Scan(&projectID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrProjectNotFound
+		}
+		return err
+	}
+
+	var live int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM issues
+		 WHERE project_id = $1::uuid AND deleted_at IS NULL AND archived_at IS NULL`,
+		projectID).Scan(&live); err != nil {
+		return err
+	}
+	if live > 0 && !force {
+		return &DeleteBlockedError{NonArchivedIssues: live}
+	}
+
+	// Explicit first: see the state_id NO ACTION note above.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM issues WHERE project_id = $1::uuid`, projectID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM projects WHERE id = $1::uuid`, projectID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

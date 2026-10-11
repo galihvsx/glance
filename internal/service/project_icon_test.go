@@ -100,7 +100,7 @@ func TestProjectIconRoundTrip(t *testing.T) {
 	}
 
 	// List returns it.
-	list, err := ListProjects(ctx, pool, ws.Slug, creator)
+	list, err := ListProjects(ctx, pool, ws.Slug, creator, false)
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}

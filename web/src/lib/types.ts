@@ -22,6 +22,8 @@ export interface Project {
   description: string;
   /** Project emoji icon (C18T4); null/undefined = unset. */
   icon?: string | null;
+  /** Project archive timestamp (C18T3); null/undefined = live. */
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
 }

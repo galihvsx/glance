@@ -16,6 +16,7 @@ import TemplatesSection from "../components/settings/TemplatesSection";
 import CustomFieldsSection from "../components/settings/CustomFieldsSection";
 import ImportSection from "../components/settings/ImportSection";
 import AutomationsSection from "../components/settings/AutomationsSection";
+import DangerZoneSection from "../components/settings/DangerZoneSection";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 
@@ -44,6 +45,9 @@ export default function ProjectSettings() {
   }, [slug]);
 
   const canEdit = (role ?? 0) >= 15;
+  // C18T3: archive/restore + hard delete are admin (20) only; the server
+  // 403s anything else, and the tab is not rendered for non-admins.
+  const isAdmin = role === 20;
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-4">
@@ -62,6 +66,9 @@ export default function ProjectSettings() {
             <TabsTrigger value="custom-fields">Custom fields</TabsTrigger>
             <TabsTrigger value="automations">Automations</TabsTrigger>
             <TabsTrigger value="import">Import</TabsTrigger>
+            {isAdmin && (
+              <TabsTrigger value="danger">Danger zone</TabsTrigger>
+            )}
           </TabsList>
           <TabsContent value="general" className="mt-4">
             <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
@@ -107,6 +114,11 @@ export default function ProjectSettings() {
               canEdit={canEdit}
             />
           </TabsContent>
+          {isAdmin && (
+            <TabsContent value="danger" className="mt-4">
+              <DangerZoneSection slug={slug} identifier={identifier} />
+            </TabsContent>
+          )}
         </Tabs>
       )}
     </div>
