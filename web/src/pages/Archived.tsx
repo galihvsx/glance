@@ -18,11 +18,11 @@ import {
 } from "../lib/archived";
 import { relativeTime } from "../lib/relativeTime";
 import PageHeader from "../components/shell/PageHeader";
+import EmptyState from "../components/personal/EmptyState";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+import { Archive } from "lucide-react";
 
 function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -82,29 +82,36 @@ export default function Archived() {
         )}
 
         {archivedQuery.isLoading ? (
-          <Skeleton className="h-32 w-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-[47px] w-full" />
+            <Skeleton className="h-[47px] w-full" />
+          </div>
         ) : archived.length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-sm text-muted-foreground">
-              No archived issues. Issues archived out of the working set are
-              parked here.
-            </CardContent>
-          </Card>
+          <EmptyState icon={Archive} title="No archived issues">
+            <p>
+              Issues archived out of the working set are parked here.
+            </p>
+          </EmptyState>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
             {archived.map((a) => (
-              <li key={a.id} className="flex items-center gap-3 px-3 py-2.5">
-                <div className="flex-1">
+              <li
+                key={a.id}
+                className="flex min-h-[47px] items-center gap-3 px-3 py-2 transition-colors hover:bg-wash-hover"
+              >
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <Link
                       to={`/w/${slug}/p/${identifier}/i/${a.id}`}
-                      className="text-sm font-medium hover:underline"
+                      className="truncate text-[12px] text-ink hover:underline"
                     >
                       {a.name}
                     </Link>
-                    <Badge variant="secondary">Archived</Badge>
+                    <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] leading-none text-ink-secondary">
+                      Archived
+                    </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="mt-0.5 text-[10px] text-ink-muted">
                     <span className="font-mono">{a.display_id}</span> · archived{" "}
                     {a.archived_at ? relativeTime(a.archived_at) : "at an unknown time"}
                   </p>

@@ -17,11 +17,11 @@ import {
 } from "../lib/drafts";
 import { relativeTime } from "../lib/relativeTime";
 import PageHeader from "../components/shell/PageHeader";
+import EmptyState from "../components/personal/EmptyState";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button, buttonVariants } from "../components/ui/button";
-import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+import { FilePenLine } from "lucide-react";
 
 function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -81,29 +81,37 @@ export default function Drafts() {
         )}
 
         {draftsQuery.isLoading ? (
-          <Skeleton className="h-32 w-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-[47px] w-full" />
+            <Skeleton className="h-[47px] w-full" />
+          </div>
         ) : drafts.length === 0 ? (
-          <Card>
-            <CardContent className="p-6 text-sm text-muted-foreground">
-              No drafts. Start a new issue and choose “Save as draft” to park
+          <EmptyState icon={FilePenLine} title="No drafts">
+            <p>
+              Start a new issue and choose &ldquo;Save as draft&rdquo; to park
               an unfinished idea here.
-            </CardContent>
-          </Card>
+            </p>
+          </EmptyState>
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
             {drafts.map((d) => (
-              <li key={d.id} className="flex items-center gap-3 px-3 py-2.5">
-                <div className="flex-1">
+              <li
+                key={d.id}
+                className="flex min-h-[47px] items-center gap-3 px-3 py-2 transition-colors hover:bg-wash-hover"
+              >
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <Link
                       to={`/w/${slug}/p/${identifier}/i/${d.id}`}
-                      className="text-sm font-medium hover:underline"
+                      className="truncate text-[12px] text-ink hover:underline"
                     >
                       {d.name}
                     </Link>
-                    <Badge variant="secondary">Draft</Badge>
+                    <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] leading-none text-ink-secondary">
+                      Draft
+                    </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="mt-0.5 text-[10px] text-ink-muted">
                     <span className="font-mono">{d.display_id}</span> · updated{" "}
                     {relativeTime(d.updated_at)}
                   </p>

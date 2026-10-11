@@ -1,27 +1,28 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+// Home dashboard (C19T9 polish): greeting + overview stat band (prototype
+// SHELL CONTENT §3 language), "Your work" as dense 47px rows (C19T5 list
+// row language: display-id mono 10px muted, title 12px ink, priority
+// bars + 10px label), Recents + Quick links as dense hairline rows.
+// Section headers use the prototype "Recently updated" bar language
+// (35px, bottom hairline, 12px/600). Empty states in the token style.
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Clock, Inbox, Layers, Plus } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { Issue, IssueListResult, Project, Workspace } from "../lib/types";
-import IssueCard from "../components/issue/IssueCard";
-import { DEFAULT_DISPLAY_SETTINGS } from "../components/issue/useDisplaySettings";
+import { priorityLabel } from "../lib/types";
+import { relativeTime } from "../lib/relativeTime";
 import {
   readRecentIssues,
   type RecentIssue,
 } from "../components/issue/recents";
+import PriorityBars from "../components/issue/PriorityBars";
 import FavoritesSection from "../components/favorites/FavoritesSection";
 import RecentActivitySection from "../components/home/RecentActivitySection";
+import EmptyState from "../components/personal/EmptyState";
+import { SectionBar, StatBand } from "../components/personal/SectionBar";
 import { Button } from "../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../components/ui/card";
-import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 
@@ -92,20 +93,66 @@ async function fetchYourWork(userId: string): Promise<WorkRow[]> {
     .slice(0, MAX_YOUR_WORK);
 }
 
-function SectionTitle({
-  children,
-  action,
+function HomeWorkRow({ row, onOpen }: { row: WorkRow; onOpen: () => void }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="grid min-h-[47px] w-full grid-cols-[76px_minmax(0,1fr)_90px_70px] items-center gap-[10px] px-3 py-2 text-left transition-colors hover:bg-wash-hover"
+      >
+        <span className="truncate font-mono text-[10px] text-ink-muted">
+          {row.issue.display_id}
+        </span>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-[12px] text-ink">
+            {row.issue.name}
+          </span>
+          <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] leading-none text-ink-secondary">
+            {row.projectName}
+          </span>
+        </span>
+        <span className="flex min-w-0 items-center gap-[5px]">
+          {row.issue.priority > 0 ? (
+            <>
+              <PriorityBars priority={row.issue.priority} />
+              <span className="truncate text-[10px] text-ink-secondary">
+                {priorityLabel(row.issue.priority)}
+              </span>
+            </>
+          ) : null}
+        </span>
+        <span className="truncate text-[10px] text-ink-muted">
+          {relativeTime(row.issue.updated_at)}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function QuickLinkRow({
+  to,
+  icon,
+  label,
 }: {
-  children: ReactNode;
-  action?: ReactNode;
+  to: string;
+  icon?: React.ReactNode;
+  label: string;
 }) {
   return (
-    <div className="mb-3 flex items-center justify-between">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {children}
-      </h2>
-      {action}
-    </div>
+    <li>
+      <Link
+        to={to}
+        className="flex h-[34px] items-center gap-2 border-b border-border-hairline px-3 text-[12px] text-ink-secondary transition-colors last:border-b-0 hover:bg-wash-hover hover:text-ink"
+      >
+        {icon}
+        <span className="truncate">{label}</span>
+        <ChevronRight
+          className="ml-auto h-3.5 w-3.5 shrink-0 text-ink-muted"
+          aria-hidden="true"
+        />
+      </Link>
+    </li>
   );
 }
 
@@ -163,15 +210,19 @@ export default function Home() {
   }, [recents, yourWork]);
 
   const displayName = user?.name ?? user?.email ?? "there";
+  const yourWorkProjects = useMemo(
+    () => new Set((yourWork ?? []).map((r) => r.identifier)).size,
+    [yourWork],
+  );
 
   return (
     <div className="mx-auto w-full max-w-6xl p-6">
       {/* Greeting */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight">
+      <div className="mb-6">
+        <h1 className="text-[15px] font-semibold tracking-tight text-ink">
           {greeting(now)}, {displayName}
         </h1>
-        <p className="mt-1 text-sm text-muted-foreground">{longDate(now)}</p>
+        <p className="mt-0.5 text-xs text-ink-muted">{longDate(now)}</p>
       </div>
 
       {yourWorkQuery.isError && (
@@ -184,78 +235,91 @@ export default function Home() {
         </Alert>
       )}
 
+      {yourWork !== undefined && (
+        <div className="mb-6">
+          <StatBand
+            stats={[
+              {
+                label: "Assigned to you",
+                value: yourWork.length,
+                note: `${yourWorkProjects} project${yourWorkProjects === 1 ? "" : "s"}`,
+              },
+              {
+                label: "Recent issues",
+                value: recents.length,
+                note: "on this device",
+              },
+              {
+                label: "Workspaces",
+                value: workspaces?.length ?? 0,
+                note: "total",
+              },
+            ]}
+          />
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Your work */}
         <div className="lg:col-span-2">
-          <SectionTitle
+          <SectionBar
+            label="Your work"
+            count={yourWork?.length}
             action={
               activeProject && (
-                <Button
-                  variant="ghost"
-                  size="sm"
+                <button
+                  type="button"
                   onClick={() =>
                     navigate(
                       `/w/${activeProject.slug}/p/${activeProject.identifier}`,
                     )
                   }
+                  className="flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-ink-secondary transition-colors hover:bg-wash-hover hover:text-ink"
                 >
-                  View all <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                </Button>
+                  View all
+                  <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
               )
             }
-          >
-            Your work
-          </SectionTitle>
+          />
 
           {yourWorkQuery.isPending ? (
-            <div className="space-y-3">
-              <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-20 w-full" />
+            <div className="space-y-2 pt-2">
+              <Skeleton className="h-[47px] w-full" />
+              <Skeleton className="h-[47px] w-full" />
+              <Skeleton className="h-[47px] w-full" />
             </div>
           ) : !yourWork || yourWork.length === 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  Nothing assigned to you
-                </CardTitle>
-                <CardDescription>
+            <div className="pt-4">
+              <EmptyState icon={Inbox} title="Nothing assigned to you">
+                <p>
                   Issues assigned to you across all your projects will show
                   up here, freshest first.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button onClick={() => navigate("/w")}>
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => navigate("/w")}
+                >
                   <Layers className="mr-2 h-4 w-4" /> Browse projects
                 </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {yourWork.map((row) => (
-                <div key={row.issue.id} className="relative">
-                  <IssueCard
-                    issue={row.issue}
-                    state={undefined}
-                    fields={DEFAULT_DISPLAY_SETTINGS.fields}
-                    slug={row.slug}
-                    identifier={row.identifier}
-                    onOpen={(it) =>
-                      navigate(
-                        `/w/${row.slug}/p/${row.identifier}/i/${it.id}`,
-                      )
-                    }
-                  />
-                  {/* right-12 clears the card's row-menu trigger (C8T4). */}
-                  <Badge
-                    variant="secondary"
-                    className="absolute right-12 top-3 text-[11px]"
-                  >
-                    {row.projectName}
-                  </Badge>
-                </div>
-              ))}
+              </EmptyState>
             </div>
+          ) : (
+            <ul className="mt-2 divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
+              {yourWork.map((row) => (
+                <HomeWorkRow
+                  key={row.issue.id}
+                  row={row}
+                  onOpen={() =>
+                    navigate(
+                      `/w/${row.slug}/p/${row.identifier}/i/${row.issue.id}`,
+                    )
+                  }
+                />
+              ))}
+            </ul>
           )}
 
           {/* Recent activity (C17T4): workspace-wide feed under Your work. */}
@@ -263,125 +327,99 @@ export default function Home() {
         </div>
 
         {/* Right rail */}
-        <div className="space-y-8">
+        <div className="space-y-6">
           {/* Favorites (C7T4): starred issues/projects, click to navigate. */}
           <FavoritesSection />
+
           {/* Recents */}
           <div>
-            <SectionTitle>Recents</SectionTitle>
+            <SectionBar label="Recents" count={recents.length || undefined} />
             {recents.length === 0 ? (
-              <Card>
-                <CardContent className="pt-6">
-                  <div className="flex items-start gap-3">
-                    <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">No recent issues</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Issues you open will appear here for quick access.
-                      </p>
-                      <Link
-                        to="/w"
-                        className="mt-3 inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-                      >
-                        Browse projects
-                      </Link>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-2">
-                {recents.map((r) => (
-                  <Link
-                    key={r.id}
-                    to={`/w/${r.slug}/p/${r.identifier}/i/${r.id}`}
-                    className="block rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="font-mono text-[11px]">
-                        {r.display_id}
-                      </Badge>
-                      <span className="text-[11px] text-muted-foreground">
-                        {r.identifier}
-                      </span>
-                    </div>
-                    <p className="mt-1.5 truncate text-sm font-medium">
-                      {r.name}
-                    </p>
-                  </Link>
-                ))}
+              <div className="pt-4">
+                <EmptyState icon={Clock} title="No recent issues">
+                  <p>Issues you open will appear here for quick access.</p>
+                </EmptyState>
               </div>
+            ) : (
+              <ul className="mt-2 divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
+                {recents.map((r) => (
+                  <li key={r.id}>
+                    <Link
+                      to={`/w/${r.slug}/p/${r.identifier}/i/${r.id}`}
+                      className="flex min-h-[47px] flex-col justify-center gap-0.5 px-3 py-2 transition-colors hover:bg-wash-hover"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] text-ink-muted">
+                          {r.display_id}
+                        </span>
+                        <span className="text-[10px] text-ink-muted">
+                          {r.identifier}
+                        </span>
+                      </span>
+                      <span className="truncate text-[12px] text-ink">
+                        {r.name}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
 
           {/* Quick links */}
           <div>
-            <SectionTitle>Quick links</SectionTitle>
-            <Card>
-              <CardContent className="space-y-1 pt-6">
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start"
-                  onClick={() => navigate("/w")}
-                >
-                  <Layers className="mr-2 h-4 w-4" /> Workspaces
-                  <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
-                </Button>
-                {workspacesQuery.isPending ? (
-                  <Skeleton className="h-9 w-full" />
-                ) : workspaces && workspaces.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">
-                    No workspaces yet — create one to get started.
-                  </p>
-                ) : (
-                  activeProject && (
-                    <>
-                      <p className="px-3 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                        {activeProject.label}
-                      </p>
-                      {[
-                        {
-                          to: `/w/${activeProject.slug}/p/${activeProject.identifier}`,
-                          label: "Issues",
-                        },
-                        {
-                          to: `/w/${activeProject.slug}/p/${activeProject.identifier}/board`,
-                          label: "Board",
-                        },
-                        {
-                          to: `/w/${activeProject.slug}/p/${activeProject.identifier}/cycles`,
-                          label: "Cycles",
-                        },
-                        {
-                          to: `/w/${activeProject.slug}/p/${activeProject.identifier}/intake`,
-                          label: "Inbox",
-                          icon: <Inbox className="mr-2 h-4 w-4" />,
-                        },
-                      ].map((l) => (
-                        <Button
-                          key={l.to}
-                          variant="ghost"
-                          className="w-full justify-start"
-                          onClick={() => navigate(l.to)}
-                        >
-                          {l.icon}
-                          {l.label}
-                          <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
-                        </Button>
-                      ))}
-                    </>
-                  )
-                )}
-                {workspaces && workspaces.length === 0 && (
+            <SectionBar label="Quick links" />
+            {workspacesQuery.isPending ? (
+              <div className="pt-2">
+                <Skeleton className="h-9 w-full" />
+              </div>
+            ) : !workspaces || workspaces.length === 0 ? (
+              <div className="pt-4">
+                <EmptyState icon={Layers} title="No workspaces yet">
+                  <p>Create one to get started.</p>
                   <Button
-                    className="mt-2 w-full"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
                     onClick={() => navigate("/w")}
                   >
                     <Plus className="mr-2 h-4 w-4" /> New workspace
                   </Button>
+                </EmptyState>
+              </div>
+            ) : (
+              <ul className="mt-2 overflow-hidden rounded-md border border-border">
+                <QuickLinkRow
+                  to="/w"
+                  icon={<Layers className="h-3.5 w-3.5" aria-hidden="true" />}
+                  label="Workspaces"
+                />
+                {activeProject && (
+                  <>
+                    <li className="flex h-[28px] items-center border-b border-border-hairline bg-surface px-3 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                      {activeProject.label}
+                    </li>
+                    <QuickLinkRow
+                      to={`/w/${activeProject.slug}/p/${activeProject.identifier}`}
+                      label="Issues"
+                    />
+                    <QuickLinkRow
+                      to={`/w/${activeProject.slug}/p/${activeProject.identifier}/board`}
+                      label="Board"
+                    />
+                    <QuickLinkRow
+                      to={`/w/${activeProject.slug}/p/${activeProject.identifier}/cycles`}
+                      label="Cycles"
+                    />
+                    <QuickLinkRow
+                      to={`/w/${activeProject.slug}/p/${activeProject.identifier}/intake`}
+                      icon={<Inbox className="h-3.5 w-3.5" aria-hidden="true" />}
+                      label="Inbox"
+                    />
+                  </>
                 )}
-              </CardContent>
-            </Card>
+              </ul>
+            )}
           </div>
         </div>
       </div>
