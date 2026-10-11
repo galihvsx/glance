@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   useMutation,
@@ -26,11 +26,23 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
-import { Calendar } from "lucide-react";
+import { stateDotClass } from "../lib/stateDot";
+import {
+  Calendar,
+  Copy,
+  GitBranch,
+  Link2,
+  Maximize2,
+  MoreHorizontal,
+  Plus,
+  User,
+} from "lucide-react";
 import DisplayPanel from "../components/issue/DisplayPanel";
+import PriorityBars from "../components/issue/PriorityBars";
 import SubtaskProgressBar from "../components/issue/SubtaskProgressBar";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
+import { useCloneIssue } from "../components/issue/useCloneIssue";
 import { toApiParams, useIssueFilters } from "../lib/filters";
 import {
   formatIssueDateRange,
@@ -51,7 +63,12 @@ import PeekDrawer from "../components/issue/PeekDrawer";
 import BlockerConfirmDialog from "../components/issue/BlockerConfirmDialog";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Badge } from "../components/ui/badge";
-import { Card, CardContent } from "../components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 
@@ -60,13 +77,178 @@ function columnIssues(all: Issue[], stateId: string): Issue[] {
   return all.filter((i) => i.state_id === stateId);
 }
 
+/** Shared chip / mini-control / tool-button classes for the board
+ *  (prototype Screen 2: 22px chips, border, radius 4px, bg #111113,
+ *  9px secondary, padding 0 6px, gap 5px). */
+const boardChipClass =
+  "inline-flex h-[22px] items-center gap-[5px] rounded-[4px] border border-border bg-[#111113] px-[6px] text-[9px] text-ink-secondary";
+const boardMiniClass =
+  "inline-flex h-[22px] w-[22px] flex-none items-center justify-center rounded-[4px] border border-border bg-[#111113] text-ink-muted transition-colors hover:bg-raised hover:text-ink";
+const boardToolClass =
+  "inline-flex h-6 w-6 items-center justify-center rounded-[4px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50";
+
+/** "…" menu on a board card: copy the issue link, clone the issue.
+ *  Clicks and pointer-downs are stopped so the card neither opens the
+ *  peek drawer nor starts a drag. */
+function CardMoreMenu({ issue }: { issue: Issue }) {
+  const { slug = "", identifier = "" } = useParams<{
+    slug: string;
+    identifier: string;
+  }>();
+  const { cloneIssue, cloning } = useCloneIssue(slug, identifier);
+
+  function copyLink() {
+    const url = `${window.location.origin}/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}/i/${issue.id}`;
+    try {
+      void navigator.clipboard?.writeText(url);
+    } catch {
+      /* clipboard unavailable (insecure context) — stay silent */
+    }
+  }
+
+  return (
+    <span
+      className="ml-auto flex items-center"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          className="inline-flex h-[20px] w-[22px] items-center justify-center rounded-[4px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
+          title="Card actions"
+          aria-label={`Actions for ${issue.display_id}`}
+        >
+          <MoreHorizontal className="h-[13px] w-[13px]" aria-hidden />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={copyLink}>
+            <Link2 className="h-3.5 w-3.5" aria-hidden />
+            Copy link
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => void cloneIssue(issue.id)}
+            disabled={cloning}
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden />
+            {cloning ? "Cloning…" : "Clone issue"}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </span>
+  );
+}
+
+/** The card face shared by the sortable card and the drag overlay:
+ *  ID row → title → meta chip row (prototype Screen 2). The Display
+ *  panel still gates the priority chip and the assignee control; labels
+ *  and dates render as extra rows only when enabled (and present). */
+function BoardCardBody({
+  issue,
+  state,
+  fields,
+  menu,
+}: {
+  issue: Issue;
+  state: IssueState | undefined;
+  fields: DisplayFields;
+  /** Card actions menu; null for the drag-overlay ghost. */
+  menu: ReactNode;
+}) {
+  const dateRange = formatIssueDateRange(issue.start_date, issue.target_date);
+  return (
+    <>
+      <div className="flex items-center">
+        <span className="font-mono text-[10px] text-ink-muted">
+          {issue.display_id}
+        </span>
+        {menu}
+      </div>
+      <p className="mb-[10px] mt-[5px] text-[13px] font-[570] leading-[18px] tracking-[-0.008em] text-ink">
+        {issue.name}
+      </p>
+      <div className="flex flex-wrap gap-[4px]">
+        {state && (
+          <span className={boardChipClass}>
+            <span
+              className={`state-dot ${stateDotClass(state.group)}`}
+              aria-hidden="true"
+            />
+            {state.name}
+          </span>
+        )}
+        {fields.priority && (
+          <span className={boardChipClass}>
+            <PriorityBars priority={issue.priority} />
+            {priorityLabel(issue.priority)}
+          </span>
+        )}
+        {fields.assignees && (
+          <button
+            type="button"
+            className={boardMiniClass}
+            title="Assignees"
+            aria-label={`Assignees for ${issue.display_id}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <User className="h-3 w-3" aria-hidden />
+          </button>
+        )}
+        <button
+          type="button"
+          className={boardMiniClass}
+          title="Releases"
+          aria-label={`Releases for ${issue.display_id}`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <GitBranch className="h-3 w-3" aria-hidden />
+        </button>
+      </div>
+      {/* C17T2: compact subtask progress — renders only when the
+          issue has direct subtasks. */}
+      <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
+      {fields.labels && issue.labels.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {issue.labels.slice(0, 3).map((l) => (
+            <Badge
+              key={l.id}
+              variant="secondary"
+              className="gap-1 text-[11px] font-normal"
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: l.color }}
+                aria-hidden
+              />
+              {l.name}
+            </Badge>
+          ))}
+          {issue.labels.length > 3 && (
+            <Badge variant="secondary" className="text-[11px] font-normal">
+              +{issue.labels.length - 3}
+            </Badge>
+          )}
+        </div>
+      )}
+      {fields.dates && dateRange && (
+        <div className="mt-2 flex items-center gap-1 text-[11px] text-ink-muted">
+          <Calendar className="h-3 w-3" aria-hidden />
+          <span>{dateRange}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SortableCard({
   issue,
+  state,
   disabled,
   fields,
   onOpen,
 }: {
   issue: Issue;
+  state: IssueState | undefined;
   disabled: boolean;
   fields: DisplayFields;
   onOpen: (id: string) => void;
@@ -86,10 +268,8 @@ function SortableCard({
     onOpen(issue.id);
   }
 
-  const dateRange = formatIssueDateRange(issue.start_date, issue.target_date);
-
   return (
-    <Card
+    <div
       ref={setNodeRef}
       style={{
         transform: CSS.Transform.toString(transform),
@@ -106,62 +286,25 @@ function SortableCard({
           openIssue();
         }
       }}
-      className="cursor-grab touch-none active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      className="cursor-pointer touch-none rounded-[6px] border border-border bg-surface p-[10px] transition-[border-color,background-color] duration-150 hover:border-[#3f3f46] hover:bg-[#17171a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
       onClick={openIssue}
+      data-board-card={issue.id}
     >
-      <CardContent className="space-y-1.5 p-3">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="font-mono text-[11px]">
-            {issue.display_id}
-          </Badge>
-          {fields.priority && (
-            <span className="ml-auto text-[11px] text-muted-foreground">
-              {priorityLabel(issue.priority)}
-            </span>
-          )}
-        </div>
-        <p className="text-sm font-medium leading-snug">{issue.name}</p>
-        {/* C17T2: compact subtask progress — renders only when the
-            issue has direct subtasks. */}
-        <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
-        {fields.labels && issue.labels.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {issue.labels.slice(0, 3).map((l) => (
-              <Badge
-                key={l.id}
-                variant="secondary"
-                className="gap-1 text-[11px] font-normal"
-              >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: l.color }}
-                  aria-hidden
-                />
-                {l.name}
-              </Badge>
-            ))}
-            {issue.labels.length > 3 && (
-              <Badge variant="secondary" className="text-[11px] font-normal">
-                +{issue.labels.length - 3}
-              </Badge>
-            )}
-          </div>
-        )}
-        {fields.dates && dateRange && (
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-            <Calendar className="h-3 w-3" aria-hidden />
-            <span>{dateRange}</span>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      <BoardCardBody
+        issue={issue}
+        state={state}
+        fields={fields}
+        menu={<CardMoreMenu issue={issue} />}
+      />
+    </div>
   );
 }
 
 function BoardColumn({
   droppableId,
   title,
-  color,
+  state,
+  priority,
   issues,
   disabled,
   onQuickCreate,
@@ -171,7 +314,10 @@ function BoardColumn({
 }: {
   droppableId: string;
   title: string;
-  color?: string;
+  /** State for state-grouped columns (drives the header state-dot). */
+  state?: IssueState;
+  /** Priority for priority-grouped columns (header shows amber bars). */
+  priority?: number;
   issues: Issue[];
   disabled: boolean;
   onQuickCreate: (name: string) => Promise<void>;
@@ -180,52 +326,84 @@ function BoardColumn({
   onOpen: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
+  // Header expand tool: widen this column for a closer look.
+  const [expanded, setExpanded] = useState(false);
+  // Header "+" tool: opens this column's inline quick-add.
+  const [addSignal, setAddSignal] = useState(0);
+  const empty = issues.length === 0;
+
   return (
     <div
       ref={setNodeRef}
-      className={`flex w-72 shrink-0 flex-col rounded-lg border bg-muted/40 p-2 transition-colors ${
-        isOver ? "border-primary/60 bg-muted/70" : ""
-      }`}
+      className={`flex min-h-[420px] shrink-0 flex-col rounded-[7px] border bg-[#0f0f11] px-[8px] pb-[8px] transition-[width,border-color,background-color] duration-150 ${
+        expanded ? "w-[520px]" : "w-[325px]"
+      } ${isOver ? "border-accent-blue/70" : "border-border-hairline"}`}
     >
-      <div className="flex items-center gap-2 px-1 pb-2 pt-1">
-        {color && (
+      <div className="flex h-[42px] flex-none items-center gap-[7px] px-[4px]">
+        {state ? (
           <span
-            className="h-2.5 w-2.5 rounded-full"
-            style={{ backgroundColor: color }}
-            aria-hidden
+            className={`state-dot ${stateDotClass(state.group)}`}
+            aria-hidden="true"
           />
-        )}
-        <span className="text-sm font-medium">{title}</span>
-        <Badge variant="secondary" className="ml-auto text-[11px]">
+        ) : priority !== undefined ? (
+          <PriorityBars priority={priority} />
+        ) : null}
+        <span className="text-[11px] font-semibold text-ink">{title}</span>
+        <span className="font-mono text-[10px] text-ink-muted">
           {issues.length}
-        </Badge>
-      </div>
-      <SortableContext
-        items={issues.map((i) => i.id)}
-        strategy={verticalListSortingStrategy}
-      >
-        <div className="flex min-h-24 flex-col gap-2">
-          {issues.map((issue) => (
-            <SortableCard
-              key={issue.id}
-              issue={issue}
-              disabled={disabled}
-              fields={fields}
-              onOpen={onOpen}
-            />
-          ))}
-          {issues.length === 0 && (
-            <p className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-              Drop issues here
-            </p>
-          )}
+        </span>
+        <div className="ml-auto flex items-center">
+          <button
+            type="button"
+            className={boardToolClass}
+            title={expanded ? "Collapse column" : "Expand column"}
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${title} column`}
+            aria-pressed={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <Maximize2 className="h-[13px] w-[13px]" aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={boardToolClass}
+            title="Add work item"
+            aria-label={`Add work item to ${title}`}
+            disabled={disabled}
+            onClick={() => setAddSignal((n) => n + 1)}
+          >
+            <Plus className="h-[15px] w-[15px]" aria-hidden />
+          </button>
         </div>
-      </SortableContext>
-      <div className="mt-1">
+      </div>
+      {empty ? (
+        // Empty column: header + full-width new-item row only. The spacer
+        // pins the footer to the column bottom (min-height 420px).
+        <div className="min-h-[20px] flex-1" aria-hidden="true" />
+      ) : (
+        <SortableContext
+          items={issues.map((i) => i.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-[7px]">
+            {issues.map((issue) => (
+              <SortableCard
+                key={issue.id}
+                issue={issue}
+                state={state}
+                disabled={disabled}
+                fields={fields}
+                onOpen={onOpen}
+              />
+            ))}
+          </div>
+        </SortableContext>
+      )}
+      <div className={empty ? "mt-[8px]" : "mt-auto"}>
         <QuickAdd
           onCreate={onQuickCreate}
           onExpand={onQuickExpand}
           disabled={disabled}
+          startSignal={addSignal}
         />
       </div>
     </div>
@@ -302,6 +480,10 @@ export default function Board() {
     [statesQuery.data],
   );
   const stateIds = useMemo(() => new Set(states.map((s) => s.id)), [states]);
+  const stateById = useMemo(
+    () => new Map(states.map((s) => [s.id, s] as const)),
+    [states],
+  );
   // Stabilized so downstream memos (column grouping) don't re-evaluate
   // every render on a fresh [] identity while the query is pending.
   const issues = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
@@ -377,7 +559,10 @@ export default function Board() {
   interface BoardGroup {
     droppableId: string;
     title: string;
-    color?: string;
+    /** State for state-grouped columns (header dot + card state chips). */
+    state?: IssueState;
+    /** Priority for priority-grouped columns (header amber bars). */
+    priority?: number;
     issues: Issue[];
     /** State/priority stamped onto quick-added issues in this column. */
     newStateId?: string;
@@ -390,6 +575,7 @@ export default function Board() {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
         title: priorityLabel(p),
+        priority: p,
         issues: issues.filter((i) => i.priority === p),
         newStateId: states[0]?.id,
         newPriority: p,
@@ -398,7 +584,7 @@ export default function Board() {
       gs = states.map((s) => ({
         droppableId: s.id,
         title: s.name,
-        color: s.color,
+        state: s,
         issues: columnIssues(issues, s.id),
         newStateId: s.id,
       }));
@@ -637,11 +823,14 @@ export default function Board() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-x-auto px-[18px] pb-[18px] pt-[14px]">
+      <div className="min-h-0 flex-1 overflow-x-auto">
         {loading ? (
-          <div className="flex gap-3">
-            {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-96 w-72 shrink-0" />
+          <div className="flex gap-[28px] px-[18px] pb-[18px] pt-[14px]">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <Skeleton
+                key={i}
+                className="h-[420px] w-[325px] shrink-0 rounded-[7px]"
+              />
             ))}
           </div>
         ) : (
@@ -651,13 +840,14 @@ export default function Board() {
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}
           >
-            <div className="flex h-full items-start gap-3">
+            <div className="flex min-h-full items-stretch gap-[28px] px-[18px] pb-[18px] pt-[14px]">
               {groups.map((g) => (
                 <BoardColumn
                   key={g.droppableId}
                   droppableId={g.droppableId}
                   title={g.title}
-                  color={g.color}
+                  state={g.state}
+                  priority={g.priority}
                   issues={g.issues}
                   disabled={!canEdit}
                   onQuickCreate={(name) => quickCreate(g, name)}
@@ -669,16 +859,14 @@ export default function Board() {
             </div>
             <DragOverlay>
               {activeIssue ? (
-                <Card className="w-72 rotate-2 shadow-lg">
-                  <CardContent className="space-y-1.5 p-3">
-                    <Badge variant="outline" className="font-mono text-[11px]">
-                      {activeIssue.display_id}
-                    </Badge>
-                    <p className="text-sm font-medium leading-snug">
-                      {activeIssue.name}
-                    </p>
-                  </CardContent>
-                </Card>
+                <div className="w-[325px] rotate-2 rounded-[6px] border border-border bg-surface p-[10px] shadow-lg">
+                  <BoardCardBody
+                    issue={activeIssue}
+                    state={stateById.get(activeIssue.state_id)}
+                    fields={settings.fields}
+                    menu={null}
+                  />
+                </div>
               ) : null}
             </DragOverlay>
           </DndContext>
