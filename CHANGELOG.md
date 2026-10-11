@@ -619,6 +619,32 @@ queued onboarding follow-up (invites endpoint).
   (zero new backend surface); optimistic update with error rollback;
   Esc cancels, Enter/blur commits; row navigation suppressed while editing.
 
+**Cycle 22 — Hardening, proven**
+- `TestDispatcherSingleFlight` root-caused + fixed (C22T0): a test bug,
+  not a prod race — the shared outbox table plus `claimDue`'s 25-oldest
+  ordering meant a parallel-suite pass claimed foreign rows while the
+  test asserted on its own row (the `started` signal fired on a Send,
+  not on *which* row). Assertions now pin the guard contract with
+  explicit signals: recorded send count, second `Run` in a goroutine
+  with a 3s skip timeout (the old `elapsed > 5s` check could never fire —
+  the run would hang, not return slowly), `defer`-closed release so an
+  early `t.Fatal` can't wedge the pass. `go vet`/`-race`/5× full-suite
+  green; negative path verified (guard disabled → fails in ~3.0s).
+- Slowest-test sweep (C22T1): measured the suite (1020+ tests) and found
+  zero shippable real-time waits — no `time.Sleep` in test or production
+  code in scope; the slowest tests are real work over accumulated
+  shared-DB rows. Honest no-op: nothing changed. Noted for a future
+  cycle: the suite self-slows as `glance_test` accumulates rows
+  (test isolation — per-package DBs or fixture cleanup — is the real fix).
+- Flake watch codified (C22T2): `qa/flake-sweep.sh` runs the suite N
+  times with caching off, reports per-run wall times + failing tests,
+  exits non-zero on any failure (anchored to repo root); `docs/FLAKES.md`
+  is the durable register — `TestFindSimilarIssuesPerf` FIXED (C21),
+  `TestDispatcherSingleFlight` FIXED (C22), two new `suspected` rows
+  (`TestGetWorkspaceActivityAggregates` timestamp ordering under load,
+  `TestActivityHTTPLimit`/`TestActivityHTTPFeed` intermittent 401s);
+  standing rule: no cycle closes with an undocumented known flake.
+
 **Cycle 21 — Verification, durable**
 - Durable visual QA harness (C21T0): the cycle-19 screenshot harness
   (`qa/visual.sh` + Playwright scripts) promoted into the repo —
