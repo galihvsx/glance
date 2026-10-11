@@ -619,6 +619,25 @@ queued onboarding follow-up (invites endpoint).
   (zero new backend surface); optimistic update with error rollback;
   Esc cancels, Enter/blur commits; row navigation suppressed while editing.
 
+**Cycle 21 — Verification, durable**
+- Durable visual QA harness (C21T0): the cycle-19 screenshot harness
+  (`qa/visual.sh` + Playwright scripts) promoted into the repo —
+  `qa/README.md` docs, `qa/package.json`/`package-lock.json` pinned,
+  secrets scrubbed to `GLANCE_QA_DB_*` env vars, `qa/shots/` gitignored;
+  end-to-end proven from repo root.
+- `TestFindSimilarIssuesPerf` root-caused + fixed (C21T1): the planner
+  flattened the `similarity()` call into the `ORDER BY ... LIMIT` level,
+  evaluating trigram ops 3×/row instead of 2; a `MATERIALIZED` CTE fences
+  it to one eval per row, narrow `(id, sim)` ranking + PK fetch of the
+  final 5 — ~27% faster, ~3.4× headroom under the 50ms budget. No
+  migration, no API change.
+- Batched project structure on issue lists (C21T2): `?include_project_structure=1`
+  now supported on the issue list endpoint — cycle/module/release
+  membership resolved in ONE server-side query per list call (same shape
+  as the detail attachment; off by default, byte-identical responses).
+  The spreadsheet drops its per-row detail-fetch N+1; columns render
+  identically.
+
 ## [v0.2.0] - unreleased
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
