@@ -16,6 +16,7 @@ import {
   SHELL_TOGGLE_SIDEBAR,
 } from "../../lib/shell-events";
 import AppSidebar from "./AppSidebar";
+import CommandPalette from "../CommandPalette";
 import NotificationsSheet from "./NotificationsSheet";
 import TopBar from "./TopBar";
 
@@ -92,6 +93,9 @@ function ShellChrome() {
       <ShellEventBridge />
       <AppSidebar />
       <NotificationsSheet />
+      {/* C18T0: the command palette lives at shell level so it is
+          workspace-global, not per-project. */}
+      <CommandPalette />
       <SidebarInset className="max-h-svh overflow-y-auto">
         <TopBar />
         {/* T3 seam: ProjectNav portals its tab bar into this node via

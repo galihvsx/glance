@@ -141,6 +141,19 @@ export interface IssueListResult {
   next_cursor?: string;
 }
 
+/** One hit from GET /api/v1/search?q=: the issue plus the workspace and
+ *  project context needed to link to it from anywhere (C18T0). */
+export interface SearchIssueItem extends Issue {
+  workspace_slug: string;
+  project_identifier: string;
+}
+
+/** Search envelope: {"results": [...], "next_cursor"?: "..."}. */
+export interface SearchIssuesResult {
+  results: SearchIssueItem[];
+  next_cursor?: string;
+}
+
 /** A workspace member (for the assignee picker). */
 export interface Member {
   id: string;

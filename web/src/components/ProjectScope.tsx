@@ -1,14 +1,14 @@
 // ProjectScope (Task 25): layout for all /w/:slug/p/:identifier/* routes.
 // Owns the realtime connection for the project (single resync owner) and
-// mounts the command palette and connection status dot. The global
-// keyboard shortcuts are installed once app-wide by ShortcutsHost.
+// the connection status dot. The global command palette moved to the app
+// shell in C18T0 (workspace-global). The global keyboard shortcuts are
+// installed once app-wide by ShortcutsHost.
 
 import { useEffect } from "react";
 import { Outlet, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { getRealtimeClient } from "../lib/ws";
 import { resyncProject, useProjectRealtime } from "../lib/realtime";
-import CommandPalette from "./CommandPalette";
 import ConnectionDot from "./ConnectionDot";
 
 export default function ProjectScope() {
@@ -33,7 +33,6 @@ export default function ProjectScope() {
 
   return (
     <>
-      <CommandPalette slug={slug} identifier={identifier} />
       <ConnectionDot />
       <Outlet />
     </>
