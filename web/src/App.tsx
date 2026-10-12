@@ -33,6 +33,7 @@ import Modules from "./pages/Modules";
 import Initiatives from "./pages/Initiatives";
 import InitiativeDetail from "./pages/InitiativeDetail";
 import Releases from "./pages/Releases";
+import Schedules from "./pages/Schedules";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
 import PublicShare from "./pages/PublicShare";
@@ -128,6 +129,10 @@ export default function App() {
                   <Route
                     path="/w/:slug/p/:identifier/releases"
                     element={<Releases />}
+                  />
+                  <Route
+                    path="/w/:slug/p/:identifier/schedules"
+                    element={<Schedules />}
                   />
                   <Route
                     path="/w/:slug/p/:identifier/pages"
