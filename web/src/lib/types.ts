@@ -298,6 +298,21 @@ export interface IntakeInbox {
   snoozed: IntakeItem[];
 }
 
+/** POST .../intake/bulk-triage result envelope. The accepted / rejected /
+ *  skipped arrays hold intake row ids in request order; errors carries
+ *  the rows that could not be triaged with the reason. */
+export interface IntakeBulkTriageItemError {
+  intake_id: string;
+  error: string;
+}
+
+export interface IntakeBulkTriageResult {
+  accepted: string[];
+  rejected: string[];
+  skipped: string[];
+  errors: IntakeBulkTriageItemError[];
+}
+
 // ---------- Cycles (Task 22–23) ----------
 
 /** A cycle: start_date/end_date arrive as RFC3339 strings; the backend

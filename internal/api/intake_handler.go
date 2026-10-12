@@ -17,6 +17,7 @@ import (
 func RegisterIntakeRoutes(e *echo.Echo, h *IssueHandler) {
 	g := e.Group("/api/v1/workspaces/:slug/projects/:identifier/intake", RequireAuth(h.Pool))
 	g.GET("", h.getIntake)
+	g.POST("/bulk-triage", h.bulkTriageIntakeIssues)
 	g.POST("/issues/:uuid/accept", h.acceptIntakeIssue)
 	g.POST("/issues/:uuid/reject", h.rejectIntakeIssue)
 	g.POST("/issues/:uuid/snooze", h.snoozeIntakeIssue)
@@ -36,6 +37,12 @@ func intakeError(c *echo.Context, err error) (bool, error) {
 		return true, WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "snoozed_till must be in the future", nil)
 	case errors.Is(err, service.ErrDuplicateTargetInvalid):
 		return true, WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid duplicate_to_id: target must be a live issue in this project", nil)
+	case errors.Is(err, service.ErrInvalidTriageAction):
+		return true, WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, `action must be "accept" or "reject"`, nil)
+	case errors.Is(err, service.ErrBulkEmptyIDs):
+		return true, WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "intake_ids is required", nil)
+	case errors.Is(err, service.ErrBulkTooManyIDs):
+		return true, WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "too many intake_ids: max 100", nil)
 	}
 	return false, nil
 }
@@ -142,6 +149,39 @@ func (h *IssueHandler) snoozeIntakeIssue(c *echo.Context) error {
 
 type duplicateIntakeBody struct {
 	DuplicateToID *string `json:"duplicate_to_id"`
+}
+
+type bulkTriageIntakeBody struct {
+	IntakeIDs  []string `json:"intake_ids"`
+	Action     string   `json:"action"`
+	AssigneeID *string  `json:"assignee_id"`
+}
+
+// bulkTriageIntakeIssues implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/intake/bulk-triage:
+// triages many intake rows in one call — {intake_ids, action:
+// "accept"|"reject", assignee_id?} — reusing the per-item accept/reject
+// service logic with one transaction per item, so a failing item never
+// blocks the rest. 200 with
+// {accepted, rejected, skipped, errors:[{intake_id, error}]}; the four
+// buckets partition the request ids. Member (15)+; 400 on empty
+// intake_ids, a bad action, or a non-member assignee. assignee_id is
+// applied on accept only (ignored for reject, where the issue is
+// soft-deleted).
+func (h *IssueHandler) bulkTriageIntakeIssues(c *echo.Context) error {
+	var body bulkTriageIntakeBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	res, err := service.BulkTriageIntake(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"),
+		body.IntakeIDs, body.Action, body.AssigneeID, CurrentUser(c).ID)
+	if err != nil {
+		if handled, out := intakeError(c, err); handled {
+			return out
+		}
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, res)
 }
 
 // duplicateIntakeIssue implements POST .../intake/issues/{uuid}/duplicate.

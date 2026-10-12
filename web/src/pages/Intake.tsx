@@ -1,13 +1,23 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import PageHeader from "../components/shell/PageHeader";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { INTAKE_STATUS } from "../lib/types";
-import type { IntakeInbox, IntakeItem } from "../lib/types";
+import type {
+  IntakeBulkTriageResult,
+  IntakeInbox,
+  IntakeItem,
+  Member,
+} from "../lib/types";
 import type { IssueListResult } from "../lib/types";
 import { Inbox } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { Checkbox } from "../components/ui/checkbox";
+import { toast } from "../components/ui/toast";
+import IntakeBulkActionBar, {
+  type IntakeBulkApply,
+} from "../components/intake/IntakeBulkActionBar";
 import {
   Dialog,
   DialogContent,
@@ -83,6 +93,8 @@ function triageBtnClass(kind: "accept" | "outline" | "reject"): string {
  */
 function IntakeRow({
   item,
+  selected,
+  onToggleSelect,
   onAccept,
   onReject,
   onSnooze,
@@ -90,6 +102,8 @@ function IntakeRow({
   busy,
 }: {
   item: IntakeItem;
+  selected: boolean;
+  onToggleSelect: () => void;
   onAccept: () => void;
   onReject: () => void;
   onSnooze: () => void;
@@ -100,6 +114,14 @@ function IntakeRow({
     item.status === INTAKE_STATUS.snoozed && effectivePending(item);
   return (
     <div className="flex min-h-[47px] items-center gap-[10px] border-b border-border-hairline py-2 transition-colors hover:bg-wash-hover">
+      <Checkbox
+        checked={selected}
+        onCheckedChange={onToggleSelect}
+        aria-label={`Select ${
+          item.issue ? item.issue.display_id : item.issue_id
+        } for bulk triage`}
+        className="shrink-0"
+      />
       <div className="grid min-h-[27px] flex-1 grid-cols-[76px_minmax(0,1fr)_150px] items-center gap-[10px]">
         <span className="truncate font-mono text-[10px] text-ink-muted">
           {item.issue ? item.issue.display_id : `Issue ${item.issue_id}`}
@@ -197,6 +219,11 @@ export default function Intake() {
     queryFn: () => api.get<IntakeInbox>(`${base}/intake`),
   });
 
+  const data = inboxQuery.data;
+  const pendingItems = (data?.items ?? []).filter(effectivePending);
+  const snoozedItems = data?.snoozed ?? [];
+  const allItems = [...pendingItems, ...snoozedItems];
+
   // Remove an item from the cached inbox (optimistic triage).
   function removeFromCache(itemId: string) {
     queryClient.setQueryData<IntakeInbox>(inboxKey, (old) => {
@@ -254,11 +281,117 @@ export default function Intake() {
       api.post(`${base}/intake/issues/${item.issue_id}/duplicate`, vars),
   );
 
+  // ---- Bulk triage (C25T2) ----
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+  });
+
+  // Drop selections for rows that left the inbox (triaged or refetched).
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const visible = new Set(allItems.map((i) => i.id));
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [allItems]);
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  const allLoadedSelected =
+    allItems.length > 0 && allItems.every((i) => selectedIds.has(i.id));
+
+  function toggleSelectAll() {
+    if (allLoadedSelected) clearSelection();
+    else setSelectedIds(new Set(allItems.map((i) => i.id)));
+  }
+
+  interface BulkTriageVars extends IntakeBulkApply {
+    intake_ids: string[];
+    /** display id per intake row id, for the toast */
+    names: Record<string, string>;
+  }
+
+  const bulkTriageMutation = useMutation({
+    mutationFn: (vars: BulkTriageVars) =>
+      api.post<IntakeBulkTriageResult>(`${base}/intake/bulk-triage`, {
+        intake_ids: vars.intake_ids,
+        action: vars.action,
+        ...(vars.assignee_id ? { assignee_id: vars.assignee_id } : {}),
+      }),
+    onSuccess: (res, vars) => {
+      clearSelection();
+      setActionError(null);
+      void queryClient.invalidateQueries({ queryKey: inboxKey });
+      void queryClient.invalidateQueries({
+        queryKey: ["issues", slug, identifier],
+      });
+      const parts: string[] = [];
+      if (res.accepted.length) parts.push(`accepted ${res.accepted.length}`);
+      if (res.rejected.length) parts.push(`rejected ${res.rejected.length}`);
+      if (res.skipped.length) parts.push(`skipped ${res.skipped.length}`);
+      if (res.errors.length) parts.push(`${res.errors.length} failed`);
+      const displayOf = (intakeId: string) =>
+        vars.names[intakeId] ?? intakeId.slice(0, 8);
+      toast.add({
+        title: `Bulk triage: ${parts.join(" · ") || "no changes"}`,
+        description: res.errors.length
+          ? res.errors
+              .map((e) => `${displayOf(e.intake_id)}: ${e.error}`)
+              .join("; ")
+          : undefined,
+        type: res.errors.length ? "error" : "success",
+      });
+    },
+    onError: (e) => {
+      setActionError(
+        e instanceof ApiError ? e.message : "Bulk triage failed",
+      );
+    },
+  });
+
+  function applyBulkTriage(apply: IntakeBulkApply) {
+    if (selectedIds.size === 0 || bulkTriageMutation.isPending) return;
+    const names: Record<string, string> = {};
+    for (const item of allItems) {
+      if (selectedIds.has(item.id)) {
+        names[item.id] = item.issue
+          ? item.issue.display_id
+          : item.issue_id.slice(0, 8);
+      }
+    }
+    bulkTriageMutation.mutate({
+      ...apply,
+      intake_ids: [...selectedIds],
+      names,
+    });
+  }
+
   const busy =
     acceptMutation.isPending ||
     rejectMutation.isPending ||
     snoozeMutation.isPending ||
-    duplicateMutation.isPending;
+    duplicateMutation.isPending ||
+    bulkTriageMutation.isPending;
 
   function triage(item: IntakeItem, kind: "accept" | "reject") {
     const vars = { item, vars: {} as Record<string, never> };
@@ -348,9 +481,6 @@ export default function Intake() {
     });
   }
 
-  const data = inboxQuery.data;
-  const pendingItems = (data?.items ?? []).filter(effectivePending);
-  const snoozedItems = data?.snoozed ?? [];
   const nowLocal = toLocalInputValue(new Date(Date.now() + 60_000));
 
   return (
@@ -381,6 +511,19 @@ export default function Intake() {
           </div>
         ) : data ? (
           <>
+            {selectedIds.size > 0 && (
+              <IntakeBulkActionBar
+                selectedCount={selectedIds.size}
+                loadedCount={allItems.length}
+                allLoadedSelected={allLoadedSelected}
+                onToggleSelectAll={toggleSelectAll}
+                onClearSelection={clearSelection}
+                members={membersQuery.data ?? null}
+                onApply={applyBulkTriage}
+                applying={bulkTriageMutation.isPending}
+                error={bulkTriageMutation.isError ? actionError : null}
+              />
+            )}
             <section>
               <OrgSectionHead title="Needs triage" count={pendingItems.length} />
               {pendingItems.length === 0 ? (
@@ -399,6 +542,8 @@ export default function Intake() {
                     <IntakeRow
                       key={item.id}
                       item={item}
+                      selected={selectedIds.has(item.id)}
+                      onToggleSelect={() => toggleSelect(item.id)}
                       busy={busy}
                       onAccept={() => triage(item, "accept")}
                       onReject={() => triage(item, "reject")}
@@ -418,6 +563,8 @@ export default function Intake() {
                     <IntakeRow
                       key={item.id}
                       item={item}
+                      selected={selectedIds.has(item.id)}
+                      onToggleSelect={() => toggleSelect(item.id)}
                       busy={busy}
                       onAccept={() => triage(item, "accept")}
                       onReject={() => triage(item, "reject")}
