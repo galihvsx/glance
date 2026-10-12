@@ -3,9 +3,11 @@ module glance
 go 1.26.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/labstack/echo/v5 v5.4.0
 	golang.org/x/oauth2 v0.37.0
+	nhooyr.io/websocket v1.8.17
 )
 
 require (
@@ -14,5 +16,4 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	nhooyr.io/websocket v1.8.17 // indirect
 )
