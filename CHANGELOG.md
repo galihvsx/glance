@@ -619,6 +619,42 @@ queued onboarding follow-up (invites endpoint).
   (zero new backend surface); optimistic update with error rollback;
   Esc cancels, Enter/blur commits; row navigation suppressed while editing.
 
+**Cycle 25 — Triage & issue intelligence**
+- AI issue summary (C25T0, better-than-Plane): `POST /api/v1/ai/summarize`
+  `{workspace_slug, project_identifier, issue_uuid}` → `{summary}` —
+  TL;DR from title + TipTap description + last 20 comments + last 20
+  activity rows (What / Why / Current status / Open questions, ≤200
+  words), input capped at 12k chars. Follows the ai_handler contract
+  (503 `ai_not_configured`, 502 provider failure, member 15+ tenancy —
+  guests get 404, provider never called for outsiders). UI: "Summarize"
+  button below the description (detail + peek) with inline card +
+  regenerate, per-issue cache, honest disabled state when unconfigured.
+- AI sub-issue breakdown (C25T1, better-than-Plane): `POST
+  /api/v1/ai/subissues` `{workspace_slug, project_identifier,
+  issue_uuid, max?}` → `{suggestions: [{title, description?}]}` —
+  defensive JSON parsing (code-fence strip, empty-title drop, clamp
+  1..10, malformed → honest 502). UI: "Break down" button → dialog
+  with checkboxes (all checked, titles editable) → creates selected via
+  the existing sub-issue endpoint; partial-success-aware toast.
+- Intake bulk triage (C25T2): `POST .../intake/bulk-triage`
+  `{intake_ids, action: "accept"|"reject", assignee_id?}` → per-item
+  `{accepted, rejected, skipped, errors}` (buckets partition input
+  order) — reuses per-item triage logic, one tx per item, non-leaking
+  error messages, assignee validated up-front (accept only). UI:
+  checkboxes + bulk bar on the Intake page (Accept/Reject/Assign…).
+- Duplicate merge (C25T3): `POST .../issues/{uuid}/merge`
+  `{into_uuid}` — one transaction moves comments (threads intact),
+  attachment metadata, links (rewritten, self-loops/dupes dropped),
+  reactions/votes/subscribers (target dupes dropped), time entries
+  (colliding running timer stopped, never dropped). Source closes into
+  the project's first cancelled state; a `'duplicate'` row in
+  `issue_relations` records the survivor (doubles as idempotency key —
+  re-merge → `already_merged`); `_merged` activity both sides, version
+  snapshot, webhook + WS announces. Guards: self/cross-project/
+  descendant → 400, guest → 403, no cancelled state → 409. UI: "Mark as
+  duplicate…" in the … menu with similar-issues picker → toast with
+  "View ENG-45". Completes the duplicate-suggestions feature.
+
 **Cycle 24 — Workflow depth**
 - Move issue between projects (C24T0): `POST .../issues/{uuid}/move`
   `{target_project_identifier}` — one transaction, member (15+) on both
