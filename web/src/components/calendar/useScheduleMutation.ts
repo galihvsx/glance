@@ -44,11 +44,21 @@ export function useScheduleMutation(
       );
       const applyDates = (issue: Issue): Issue => ({
         ...issue,
-        ...(dates.start_date
-          ? { start_date: `${dates.start_date}T00:00:00Z` }
+        // The `in` check distinguishes "field omitted" from "explicitly
+        // cleared": a null date (C26T2 unschedule) becomes a null column.
+        ...("start_date" in dates
+          ? {
+              start_date: dates.start_date
+                ? `${dates.start_date}T00:00:00Z`
+                : null,
+            }
           : {}),
-        ...(dates.target_date
-          ? { target_date: `${dates.target_date}T00:00:00Z` }
+        ...("target_date" in dates
+          ? {
+              target_date: dates.target_date
+                ? `${dates.target_date}T00:00:00Z`
+                : null,
+            }
           : {}),
       });
       // A moved chip leaves caches it no longer belongs to: a due/start
@@ -66,6 +76,22 @@ export function useScheduleMutation(
             ?.map((i) => (i.id === uuid ? applyDates(i) : i))
             .filter((i) => keep(key, i)),
         );
+      }
+      // C26T2: an unscheduled chip optimistically joins the undated cache
+      // so it lands in the strip immediately — it was never fetched there,
+      // so the map/filter loop above can't move it. `prev` still holds the
+      // snapshots for rollback.
+      const source = prev
+        .flatMap(([, data]) => data ?? [])
+        .find((i) => i.id === uuid);
+      if (source && issueDay(applyDates(source)) === null) {
+        const applied = applyDates(source);
+        queryClient.setQueryData<Issue[]>(undatedKey, (old) => {
+          if (!old) return [applied];
+          return old.some((i) => i.id === uuid)
+            ? old.map((i) => (i.id === uuid ? applied : i))
+            : [...old, applied];
+        });
       }
       return { prev };
     },

@@ -13,16 +13,24 @@ export function DraggableIssueChip({
   state,
   onOpen,
   disabled,
+  fromStrip,
 }: {
   issue: Issue;
   state?: IssueState;
   onOpen: () => void;
   disabled: boolean;
+  /**
+   * C26T2: marks chips dragged out of the unscheduled strip so the
+   * drag-end handler schedules them onto the drop day (`fromStrip` is
+   * carried in the draggable's data; existing call sites don't pass it
+   * and keep the delta-move behavior).
+   */
+  fromStrip?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: issue.id,
-      data: { issue },
+      data: { issue, fromStrip },
       disabled,
     });
   return (

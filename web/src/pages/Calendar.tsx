@@ -11,6 +11,10 @@ import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
 import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
 import { DroppableWeekColumn } from "../components/calendar/DroppableWeekColumn";
 import { ScheduleDnd } from "../components/calendar/ScheduleDnd";
+import { UnscheduledStrip } from "../components/calendar/UnscheduledStrip";
+import {
+  UNSCHEDULED_STRIP_ID,
+} from "../components/calendar/DroppableUnscheduledStrip";
 import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
 import { api, ApiError } from "../lib/api";
 import {
@@ -18,7 +22,7 @@ import {
   fetchFeedTokenStatus,
   projectFeedURL,
 } from "../lib/calendarFeed";
-import { resolveScheduleDrop } from "../lib/calendar-dnd";
+import { resolveScheduleDrop, resolveUnscheduleDrop } from "../lib/calendar-dnd";
 import type { Issue, IssueListResult, IssueState, Workspace } from "../lib/types";
 import {
   bucketIssuesByDay,
@@ -196,10 +200,18 @@ export default function Calendar() {
     setActiveIssue(null);
     if (!canEdit) return;
     const issue = e.active.data.current?.issue as Issue | undefined;
+    if (issue == null) return;
+    const overId = e.over != null ? String(e.over.id) : null;
+    // C26T2: strip drops unschedule (PATCH clears the placing date);
+    // strip chips carry `fromStrip` so day drops schedule them.
     const resolved =
-      issue != null
-        ? resolveScheduleDrop(issue, e.over != null ? String(e.over.id) : null)
-        : null;
+      overId === UNSCHEDULED_STRIP_ID
+        ? resolveUnscheduleDrop(issue)
+        : resolveScheduleDrop(
+            issue,
+            overId,
+            e.active.data.current?.fromStrip === true,
+          );
     if (resolved == null) return; // no-op drop → no PATCH
     scheduleMutation.mutate(
       { uuid: resolved.uuid, dates: resolved.dates },
@@ -445,6 +457,14 @@ export default function Calendar() {
                   })}
                 </div>
               </div>
+              {/* C26T2: unscheduled strip — drop zone for unscheduling, drag
+                  source for scheduling (members). */}
+              <UnscheduledStrip
+                issues={undated}
+                statesById={statesById}
+                canEdit={canEdit}
+                onOpen={(issue) => openPeek(issue.id)}
+              />
               </ScheduleDnd>
             ) : (
               // C26T0: month grid is drag-reschedulable — day cells are
@@ -499,6 +519,14 @@ export default function Calendar() {
                   );
                 })}
               </div>
+              {/* C26T2: unscheduled strip — drop zone for unscheduling, drag
+                  source for scheduling (members). */}
+              <UnscheduledStrip
+                issues={undated}
+                statesById={statesById}
+                canEdit={canEdit}
+                onOpen={(issue) => openPeek(issue.id)}
+              />
               </ScheduleDnd>
             )}
 
@@ -512,25 +540,6 @@ export default function Calendar() {
                 No issues scheduled for {viewLabel}. Issues appear here once
                 they get a due or start date.
               </p>
-            )}
-
-            {undated.length > 0 && (
-              <section>
-                <h3 className="mb-2 text-[12px] font-medium text-ink-secondary">
-                  Unscheduled ({undated.length})
-                </h3>
-                <div className="flex flex-wrap gap-1 rounded-md border border-border bg-surface p-2">
-                  {undated.map((issue) => (
-                    <span key={issue.id} className="max-w-64">
-                      <IssueChip
-                        issue={issue}
-                        state={statesById.get(issue.state_id)}
-                        onOpen={() => openPeek(issue.id)}
-                      />
-                    </span>
-                  ))}
-                </div>
-              </section>
             )}
           </>
         )}
