@@ -71,6 +71,17 @@ const (
 	// (see defaultNotificationPref). It is never passed to notifyTx, so no
 	// per-event rows are ever emitted for this key.
 	NotifyDigestDaily = "digest.daily"
+	// NotifyCapacityOverloaded fires when the daily capacity pass (C29T2)
+	// sees a workspace member whose open estimate-point load exceeds
+	// their weekly capacity (weekly_capacity_points > 0), throttled to
+	// one notification per member per day. The dedupe key
+	// (workspace, user, day) is claimed in capacity_alerts before the
+	// notification rows are written. The recipient is the overloaded
+	// member themself — there is no actor, so notifyTx's self-exclusion
+	// stays inert (""). No migration needed: notification_prefs.event is
+	// unconstrained TEXT, so adding the key to AllNotifyEvents is enough
+	// for prefs to work (absent row = defaults: in_app on, email off).
+	NotifyCapacityOverloaded = "capacity.overloaded"
 )
 
 // AllNotifyEvents lists every event type users can set delivery prefs for.
@@ -86,6 +97,7 @@ var AllNotifyEvents = []string{
 	NotifyOverdue,
 	NotifyStale,
 	NotifyDigestDaily,
+	NotifyCapacityOverloaded,
 }
 
 var (
