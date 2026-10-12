@@ -42,6 +42,9 @@ func RegisterPageRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/:pageID/comments", h.createPageComment)
 	g.PATCH("/:pageID/comments/:commentID", h.updatePageComment)
 	g.DELETE("/:pageID/comments/:commentID", h.deletePageComment)
+	// C24T3: page reactions.
+	g.POST("/:pageID/reactions", h.addPageReaction)
+	g.DELETE("/:pageID/reactions", h.removePageReaction)
 }
 
 // pageError maps page sentinel errors to HTTP statuses, delegating the

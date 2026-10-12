@@ -1351,6 +1351,22 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/reactions": {
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a reaction to a page",
+        "description": "Idempotent add. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "emoji", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Emoji to react with (max 32 runes)" } ],
+        "responses": { "204": { "description": "Reaction added" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove my reaction from a page",
+        "description": "Idempotent remove. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "emoji", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Emoji to unreact" } ],
+        "responses": { "204": { "description": "Reaction removed" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/releases": {
       "get": {
         "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2167,6 +2183,15 @@
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
+      "ReactionGroup": {
+        "type": "object",
+        "description": "One emoji on a page: total count plus whether the caller reacted. Also the shape returned by GET issue reactions.",
+        "properties": {
+          "emoji": { "type": "string" },
+          "count": { "type": "integer" },
+          "reacted": { "type": "boolean" }
+        }
+      },
       "Vote": {
         "type": "object",
         "properties": {
@@ -2245,7 +2270,8 @@
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "position": { "type": "number" },
           "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "updated_at": { "type": "string", "format": "date-time" },
+          "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" }, "description": "Embedded on GET page detail only; reaction groups with counts and the caller's reacted state" }
         }
       },
       "PageRevision": {
