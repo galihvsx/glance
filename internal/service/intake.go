@@ -691,3 +691,173 @@ func addIntakeIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID string)
 		intakeID, issueID, IntakePending)
 	return err
 }
+
+// ErrInvalidTriageAction is returned by bulk intake triage when action is
+// not "accept" or "reject".
+var ErrInvalidTriageAction = errors.New("invalid triage action")
+
+// BulkTriageItemError is the per-item failure record of a bulk triage
+// call. The intake row id is echoed so the client can map failures back
+// to its selection.
+type BulkTriageItemError struct {
+	IntakeID string `json:"intake_id"`
+	Error    string `json:"error"`
+}
+
+// BulkTriageResult is the per-item outcome of an intake bulk triage
+// call. Accepted/Rejected/Skipped hold intake row ids (the id space the
+// request uses); Errors holds the rows that could not be triaged with
+// the reason. The four buckets partition the request ids in input
+// order, so the counts always add up to len(intake_ids).
+type BulkTriageResult struct {
+	Accepted []string              `json:"accepted"`
+	Rejected []string              `json:"rejected"`
+	Skipped  []string              `json:"skipped"`
+	Errors   []BulkTriageItemError `json:"errors"`
+}
+
+// intakeBulkErrMessage maps a per-item bulk triage failure to a
+// client-facing message. Unknown errors stay generic — no internals
+// leak through bulk results.
+func intakeBulkErrMessage(err error) string {
+	switch {
+	case errors.Is(err, ErrIntakeNotFound):
+		return "intake issue not found"
+	case errors.Is(err, ErrIntakeAlreadyTriaged):
+		return "intake issue already triaged"
+	case errors.Is(err, ErrIssueNotFound):
+		return "issue not found"
+	case errors.Is(err, ErrAssigneeNotMember):
+		return "assignee is not a workspace member"
+	default:
+		return "internal error"
+	}
+}
+
+// bulkTriageLookup resolves an intake row id to its issue uuid and
+// current status, scoped to this project. A malformed id and an id from
+// another project both read as not found — the row space is not
+// enumerable from the outside.
+func bulkTriageLookup(ctx context.Context, pool *pgxpool.Pool, projectID, intakeID string) (issueID string, status int16, err error) {
+	err = pool.QueryRow(ctx,
+		`SELECT ii.issue_id::text, ii.status FROM intake_issues ii
+		 JOIN intake t ON t.id = ii.intake_id AND t.project_id = $2::uuid
+		 WHERE ii.id = $1::uuid`,
+		intakeID, projectID).Scan(&issueID, &status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return "", 0, ErrIntakeNotFound
+		}
+		return "", 0, err
+	}
+	return issueID, status, nil
+}
+
+// BulkTriageIntake triages many intake rows in one call. Each row is
+// triaged through the same per-item service calls the single-item
+// endpoints use (AcceptIntakeIssue / RejectIntakeIssue) — one
+// transaction per item — so bulk triage never reimplements triage
+// semantics: accepts move the issue into the project's backlog state,
+// rejects soft-delete it, and the no-op/terminal-status rules apply
+// unchanged. A failing item is reported and the loop keeps going
+// (partial success); only request-wide problems (empty ids, bad
+// action, non-member actor, non-member assignee) abort the whole call.
+// Member (15)+; the role is checked once for the whole call.
+//
+// assigneeID is optional and applies to accept only: when set, every
+// accepted issue is assigned to that workspace member (validated
+// up-front, request-wide). It is ignored for reject — the issue is
+// soft-deleted there, so there is nothing to assign.
+func BulkTriageIntake(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier string, intakeIDs []string, action string, assigneeID *string, actorID string) (*BulkTriageResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if len(intakeIDs) == 0 {
+		return nil, ErrBulkEmptyIDs
+	}
+	if len(intakeIDs) > maxBulkItems {
+		return nil, ErrBulkTooManyIDs
+	}
+	if action != "accept" && action != "reject" {
+		return nil, ErrInvalidTriageAction
+	}
+
+	// Request-wide checks: project membership (Member+) and, for
+	// accept-with-assignee, that the assignee belongs to the workspace.
+	// Read-only — the pool itself satisfies queryRower.
+	wsID, projectID, role, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrForbidden
+	}
+	uid := ""
+	if action == "accept" && assigneeID != nil && strings.TrimSpace(*assigneeID) != "" {
+		uid = strings.ToLower(strings.TrimSpace(*assigneeID))
+		var one int
+		err := pool.QueryRow(ctx,
+			`SELECT 1 FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
+			wsID, uid).Scan(&one)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+				return nil, ErrAssigneeNotMember
+			}
+			return nil, err
+		}
+	}
+
+	res := &BulkTriageResult{
+		Accepted: []string{},
+		Rejected: []string{},
+		Skipped:  []string{},
+		Errors:   []BulkTriageItemError{},
+	}
+	for _, intakeID := range intakeIDs {
+		issueID, status, err := bulkTriageLookup(ctx, pool, projectID, intakeID)
+		if err != nil {
+			res.Errors = append(res.Errors, BulkTriageItemError{IntakeID: intakeID, Error: intakeBulkErrMessage(err)})
+			continue
+		}
+		switch action {
+		case "accept":
+			// Re-accepting is a no-op success per the single-item
+			// endpoint; in bulk it reports as skipped (nothing changed).
+			if status == IntakeAccepted {
+				res.Skipped = append(res.Skipped, intakeID)
+				continue
+			}
+			if _, err := AcceptIntakeIssue(ctx, pool, wsSlug, ident, issueID, actorID); err != nil {
+				res.Errors = append(res.Errors, BulkTriageItemError{IntakeID: intakeID, Error: intakeBulkErrMessage(err)})
+				continue
+			}
+			if uid != "" {
+				// The assignee was validated up-front; a failure here
+				// is a race (membership revoked mid-call). The accept
+				// already committed, so report it as an error needing
+				// attention rather than a silent half-success.
+				if err := AssignAssignee(ctx, pool, wsSlug, ident, issueID, uid, actorID); err != nil {
+					res.Errors = append(res.Errors, BulkTriageItemError{
+						IntakeID: intakeID,
+						Error:    "accepted, but assignment failed: " + intakeBulkErrMessage(err),
+					})
+					continue
+				}
+			}
+			res.Accepted = append(res.Accepted, intakeID)
+		case "reject":
+			// Same no-op→skipped rule as accept.
+			if status == IntakeRejected {
+				res.Skipped = append(res.Skipped, intakeID)
+				continue
+			}
+			if _, err := RejectIntakeIssue(ctx, pool, wsSlug, ident, issueID, actorID); err != nil {
+				res.Errors = append(res.Errors, BulkTriageItemError{IntakeID: intakeID, Error: intakeBulkErrMessage(err)})
+				continue
+			}
+			res.Rejected = append(res.Rejected, intakeID)
+		}
+	}
+	return res, nil
+}
