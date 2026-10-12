@@ -74,9 +74,14 @@ func recurringError(c *echo.Context, err error) error {
 
 // requireScheduleMember enforces member (15)+ on the workspace named by
 // :slug (slug or UUID, mirroring the service tenancy). A bad slug or a
-// non-member caller is a 404 (never a leak); a guest is a 403. nil
-// means the check passed.
-func requireScheduleMember(c *echo.Context, h *ProjectHandler) error {
+// non-member caller is a 404 (never a leak); a guest is a 403. true
+// means the check passed; false means the error response was already
+// written and the caller must return nil without touching the response
+// again (the decodeScheduleJSON pattern: WriteError answers with nil
+// on a successful write, so its return cannot double as an error
+// sentinel — returning it as error and testing err != nil lets the
+// handler fall through and write the response twice).
+func requireScheduleMember(c *echo.Context, h *ProjectHandler) bool {
 	var role int
 	err := h.Pool.QueryRow(c.Request().Context(),
 		`SELECT m.role
@@ -86,12 +91,14 @@ func requireScheduleMember(c *echo.Context, h *ProjectHandler) error {
 		    AND m.user_id = $2::uuid`,
 		c.Param("slug"), CurrentUser(c).ID).Scan(&role)
 	if err != nil {
-		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "workspace not found", nil)
+		WriteError(c, http.StatusNotFound, ErrCodeNotFound, "workspace not found", nil)
+		return false
 	}
 	if role < service.RoleMember {
-		return WriteError(c, http.StatusForbidden, ErrCodeForbidden, "forbidden", nil)
+		WriteError(c, http.StatusForbidden, ErrCodeForbidden, "forbidden", nil)
+		return false
 	}
-	return nil
+	return true
 }
 
 // ---------- list ----------
@@ -394,8 +401,8 @@ type scheduleRunNowResult struct {
 // CALLING user as the issue's actor. Member (15)+. An exhausted (zero
 // next_run_at) or inactive schedule is a 400.
 func (h *ProjectHandler) runScheduleNow(c *echo.Context) error {
-	if err := requireScheduleMember(c, h); err != nil {
-		return err
+	if !requireScheduleMember(c, h) {
+		return nil
 	}
 	ctx := c.Request().Context()
 	s, err := service.GetSchedule(ctx, h.Pool,
