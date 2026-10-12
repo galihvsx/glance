@@ -1184,6 +1184,80 @@
         "responses": { "200": { "description": "iCalendar feed", "content": { "text/calendar": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" } }
       }
     },
+    "/api/v1/workspaces/{slug}/initiatives": {
+      "get": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List initiatives",
+        "description": "Archived are excluded by default; ?include_archived=1 includes them.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Initiatives", "content": { "application/json": { "schema": { "type": "object", "properties": { "initiatives": { "type": "array", "items": { "$ref": "#/components/schemas/Initiative" } } } } } } } }
+      },
+      "post": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an initiative",
+        "description": "Member (15)+. Plane paywalls initiatives; glance ships them free.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string", "enum": ["active", "completed", "archived"] } } } } } },
+        "responses": { "201": { "description": "Created initiative", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Initiative" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}": {
+      "get": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get an initiative",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Initiative", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Initiative" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update an initiative",
+        "description": "Member (15)+. Partial semantics: missing keys untouched, \"\" clears description. Any status may move to any other (active/completed/archived).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "status": { "type": "string", "enum": ["active", "completed", "archived"] } } } } } },
+        "responses": { "200": { "description": "Updated initiative", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Initiative" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an initiative",
+        "description": "Member (15)+. Membership rows cascade; member projects and all issue data are untouched (initiatives own no issues).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/rollup": {
+      "get": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Initiative progress rollup",
+        "description": "Single aggregate query: issue counts by state group across all member projects, per-project breakdown, completion % = done-group (completed/cancelled) issues over total. Projects with zero issues appear with zero counts.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Rollup", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InitiativeRollup" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/projects": {
+      "get": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List an initiative's member projects",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Member projects", "content": { "application/json": { "schema": { "type": "object", "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/InitiativeProject" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a project to an initiative",
+        "description": "Member (15)+. Idempotent: repeat adds are no-ops. The project must belong to the same workspace.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["project_id"], "properties": { "project_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Added" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/projects/{projectID}": {
+      "delete": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a project from an initiative",
+        "description": "Member (15)+. Idempotent: removing a non-member is a no-op.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "projectID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Removed" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/modules": {
       "get": {
         "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2025,6 +2099,46 @@
         }
       },
       "Ok": { "type": "object", "properties": { "ok": { "type": "boolean", "example": true } } },
+      "Initiative": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "status": { "type": "string", "enum": ["active", "completed", "archived"] },
+          "created_by": { "type": "string", "format": "uuid", "nullable": true },
+          "project_count": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InitiativeProject": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "format": "uuid" },
+          "project_name": { "type": "string" },
+          "added_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InitiativeRollup": {
+        "type": "object",
+        "properties": {
+          "initiative_id": { "type": "string", "format": "uuid" },
+          "total": { "type": "integer", "description": "Live (non-deleted) issues across all member projects" },
+          "done_count": { "type": "integer", "description": "Issues in a done state group (completed/cancelled)" },
+          "completion_pct": { "type": "number", "description": "done_count / total * 100; 0 when total is 0" },
+          "by_group": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Issue counts by state group (triage/backlog/unstarted/started/completed/cancelled)" },
+          "projects": { "type": "array", "items": { "type": "object", "properties": {
+            "project_id": { "type": "string", "format": "uuid" },
+            "project_name": { "type": "string" },
+            "total": { "type": "integer" },
+            "done_count": { "type": "integer" },
+            "completion_pct": { "type": "number" },
+            "by_group": { "type": "object", "additionalProperties": { "type": "integer" } }
+          } } }
+        }
+      },
       "SimilarIssue": {
         "type": "object",
         "description": "One possible-duplicate hit from GET .../issues/similar (C8T7).",

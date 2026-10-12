@@ -292,6 +292,7 @@ func main() {
 	api.RegisterMyWorkRoutes(e, &api.MyWorkHandler{Pool: pool})
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
+	api.RegisterInitiativeRoutes(e, issueHandler)
 	api.RegisterPageRoutes(e, issueHandler)
 	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterTemplateRoutes(e, issueHandler)
