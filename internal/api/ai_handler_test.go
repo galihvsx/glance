@@ -5,6 +5,7 @@ package api
 // Real test database, no skips.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"glance/internal/config"
+	"glance/internal/service"
 )
 
 // aiProviderStub answers /chat/completions with canned content.
@@ -330,5 +332,162 @@ func TestAIStatusRequiresAuth(t *testing.T) {
 	e.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status: code = %d, want 401 without a session", rec.Code)
+	}
+}
+
+// ---------- C25T0: AI issue summary ----------
+
+// setupAISummarize mirrors setupAIHTTP but also returns the login
+// email so the test can resolve the user's id for service-layer issue
+// creation.
+func setupAISummarize(t *testing.T, e *echo.Echo, pool *pgxpool.Pool) (cookie *http.Cookie, slug, ident, email string) {
+	t.Helper()
+	email = uniqueEmail("ai-sum")
+	cookie = loginTestUser(t, e, pool, email, "ua", "10.9.1.5")
+	slug = uniqueSlug("ai-sum")
+	createWorkspaceHTTP(t, e, cookie, "AI Co", slug)
+	ident = uniqueProjectIdentifier("AIS")
+	createProjectHTTP(t, e, cookie, slug, "AI Proj", ident)
+	return cookie, slug, ident, email
+}
+
+// summarizeIssueHTTP creates an issue directly via the service layer and
+// returns its UUID.
+func summarizeIssueHTTP(t *testing.T, pool *pgxpool.Pool, slug, ident, email, name string) string {
+	t.Helper()
+	var actorID string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id::text FROM users WHERE email = $1`, strings.ToLower(email)).Scan(&actorID); err != nil {
+		t.Fatalf("resolve user id: %v", err)
+	}
+	iss, err := service.CreateIssue(context.Background(), pool, slug, ident, actorID,
+		service.CreateIssueInput{Name: name})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	return iss.ID
+}
+
+func TestAISummarizeHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	stub := newAIProviderStub(t)
+	stub.content = "## TL;DR\n\nWhat: broken login."
+	e := testAIServer(t, pool, stub.aiCfg())
+	cookie, slug, ident, email := setupAISummarize(t, e, pool)
+	issueID := summarizeIssueHTTP(t, pool, slug, ident, email, "Broken login")
+
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q,"issue_uuid":%q}`, slug, ident, issueID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summarize: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Summary != stub.content {
+		t.Errorf("summary = %q, want stub content", got.Summary)
+	}
+	if stub.gotAuth != "Bearer sk-handler-test-key" {
+		t.Errorf("provider Authorization = %q, want Bearer <redacted>", stub.gotAuth)
+	}
+}
+
+// TestAISummarizeUnconfigured503: the honest-unconfigured contract
+// extends to /summarize.
+func TestAISummarizeUnconfigured503(t *testing.T) {
+	pool := newTestPool(t)
+	e := testAIServer(t, pool, config.AIConfig{})
+	cookie, slug, ident, email := setupAISummarize(t, e, pool)
+	issueID := summarizeIssueHTTP(t, pool, slug, ident, email, "Broken login")
+
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q,"issue_uuid":%q}`, slug, ident, issueID))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("summarize: status = %d, want 503", rec.Code)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error.Code != "ai_not_configured" {
+		t.Errorf("code = %q, want ai_not_configured", env.Error.Code)
+	}
+}
+
+// TestAISummarizeProviderFailure502: provider failure surfaces as 502.
+func TestAISummarizeProviderFailure502(t *testing.T) {
+	pool := newTestPool(t)
+	stub := newAIProviderStub(t)
+	stub.status = http.StatusInternalServerError
+	e := testAIServer(t, pool, stub.aiCfg())
+	cookie, slug, ident, email := setupAISummarize(t, e, pool)
+	issueID := summarizeIssueHTTP(t, pool, slug, ident, email, "Broken login")
+
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q,"issue_uuid":%q}`, slug, ident, issueID))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("summarize: status = %d (body: %s), want 502", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAISummarizeValidation: missing issue_uuid / scope → 400.
+func TestAISummarizeValidation(t *testing.T) {
+	pool := newTestPool(t)
+	stub := newAIProviderStub(t)
+	e := testAIServer(t, pool, stub.aiCfg())
+	cookie, slug, ident := setupAIHTTP(t, e, pool)
+
+	// Missing issue_uuid → 400.
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q}`, slug, ident))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing issue_uuid: status = %d, want 400", rec.Code)
+	}
+	// Missing project scope → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie, `{"issue_uuid":"00000000-0000-0000-0000-000000000000"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing scope: status = %d, want 400", rec.Code)
+	}
+	// Malformed body → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie, `{"issue_uuid":`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: status = %d, want 400", rec.Code)
+	}
+	// Unknown issue UUID → 404 (not a 500, not a provider call).
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", cookie,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q,"issue_uuid":"00000000-0000-0000-0000-000000000000"}`, slug, ident))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown issue: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if stub.gotAuth != "" {
+		t.Error("provider called for missing issue; lookup must precede the provider call")
+	}
+}
+
+// TestAISummarizeNonMember404: outsiders get the tenancy-boundary 404
+// and the provider is never called.
+func TestAISummarizeNonMember404(t *testing.T) {
+	pool := newTestPool(t)
+	stub := newAIProviderStub(t)
+	stub.content = "x"
+	e := testAIServer(t, pool, stub.aiCfg())
+	_, slug, ident, email := setupAISummarize(t, e, pool)
+	issueID := summarizeIssueHTTP(t, pool, slug, ident, email, "Broken login")
+
+	outsider := loginTestUser(t, e, pool, uniqueEmail("ai-sum-out"), "ua", "10.9.1.3")
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/ai/summarize", outsider,
+		fmt.Sprintf(`{"workspace_slug":%q,"project_identifier":%q,"issue_uuid":%q}`, slug, ident, issueID))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("outsider summarize: status = %d, want 404", rec.Code)
+	}
+	if stub.gotAuth != "" {
+		t.Error("provider called for non-member; tenancy must resolve first")
 	}
 }

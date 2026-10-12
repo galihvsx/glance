@@ -32,6 +32,7 @@ func RegisterAIRoutes(e *echo.Echo, h *AIHandler) {
 	g.GET("/status", h.status)
 	g.POST("/draft", h.draft)
 	g.POST("/triage", h.triage)
+	g.POST("/summarize", h.summarize)
 }
 
 // aiError maps service sentinel errors to HTTP statuses. The API key
@@ -47,6 +48,10 @@ func aiError(c *echo.Context, err error) error {
 			"AI provider error", nil)
 	case errors.Is(err, service.ErrProjectNotFound), errors.Is(err, service.ErrNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "project not found", nil)
+	// A missing issue on a confirmed member path is its own 404 — never
+	// "project not found" (reserved for the actor-resolution path).
+	case errors.Is(err, service.ErrIssueNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "issue not found", nil)
 	default:
 		return WriteInternalError(c)
 	}
@@ -144,4 +149,41 @@ func (h *AIHandler) triage(c *echo.Context) error {
 		return aiError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+type aiSummarizeBody struct {
+	aiScope
+	IssueUUID string `json:"issue_uuid"`
+}
+
+type aiSummarizeResponse struct {
+	Summary string `json:"summary"`
+}
+
+// summarize implements POST /api/v1/ai/summarize: {workspace_slug,
+// project_identifier, issue_uuid} → {summary}. The member (15+) gate
+// and the issue lookup resolve before the provider is ever called, so
+// outsiders and bad UUIDs never burn provider budget.
+func (h *AIHandler) summarize(c *echo.Context) error {
+	var body aiSummarizeBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	if !body.valid() {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+			"workspace_slug and project_identifier are required", nil)
+	}
+	if body.IssueUUID == "" {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "issue_uuid is required", nil)
+	}
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	summary, err := service.SummarizeIssue(c.Request().Context(), h.Pool, h.AI,
+		body.WorkspaceSlug, body.ProjectIdentifier, body.IssueUUID, u.ID)
+	if err != nil {
+		return aiError(c, err)
+	}
+	return c.JSON(http.StatusOK, aiSummarizeResponse{Summary: summary})
 }

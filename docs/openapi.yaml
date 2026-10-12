@@ -1838,6 +1838,15 @@
         "responses": { "200": { "description": "Triage suggestions", "content": { "application/json": { "schema": { "type": "object", "properties": { "priority": { "type": "integer" }, "label_names": { "type": "array", "items": { "type": "string" } }, "state_name": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "503": { "description": "AI not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
+    "/api/v1/ai/summarize": {
+      "post": {
+        "tags": ["ai"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Summarize an issue with AI",
+        "description": "Concise TL;DR (what / why / current status / open questions) assembled from the issue's title, description, comments, and recent activity. Member (15+) only. 503 when the AI provider is not configured; 502 on provider failure.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["workspace_slug", "project_identifier", "issue_uuid"], "properties": { "workspace_slug": { "type": "string" }, "project_identifier": { "type": "string" }, "issue_uuid": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Issue summary", "content": { "application/json": { "schema": { "type": "object", "properties": { "summary": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "502": { "$ref": "#/components/responses/BadGateway" }, "503": { "description": "AI not configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
     "/api/v1/admin/stats": {
       "get": {
         "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
