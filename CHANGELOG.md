@@ -157,11 +157,39 @@ queued onboarding follow-up (invites endpoint).
   (name, cadence summary, next run, active toggle, run-now,
   edit/delete), builder dialog reusing existing pickers, honest empty
   state. Guests read; members edit.
-- Honest v1 limitations: hour is UTC (no per-workspace timezone yet),
-  template vars are `{{date}}` / `{{datetime}}` only, occurrences are
-  ordinary issues once created (no skip-next, no series editing), and a
-  schedule without `ends_on` runs until paused/deleted (surfaced in UI
-  copy).
+- (Recurring work) Honest v1 limitations: hour is UTC (no per-workspace
+  timezone yet), template vars are `{{date}}` / `{{datetime}}` only,
+  occurrences are ordinary issues once created (no skip-next, no series
+  editing), and a schedule without `ends_on` runs until paused/deleted
+  (surfaced in UI copy).
+
+**Workload & capacity (cycle 29)**
+- Workload backend (C29T0): migration 000052
+  (`workspace_members.weekly_capacity_points`, 0..999 CHECK), `GetWorkload`
+  aggregation (per-member open counts/points, overdue, priority buckets,
+  14d velocity, overloaded flag, unassigned per project — 3 queries, no
+  N+1), `GET /workspaces/:slug/workload` (`project=` repeatable filter),
+  `PUT /workspaces/:slug/members/:id/capacity` (member 15+), openapi.yaml.
+- Workload UI (C29T1): `/w/:slug/workload` page — per-member
+  load-vs-capacity bars (green → amber ≥80% → red overloaded, neutral
+  when unset), overdue/urgent flags, estimate-point load, 14d velocity,
+  project filter chips, drill-down to assignee-filtered issues,
+  unassigned-per-project triage section; sidebar "Workload" entry in the
+  Workspace section. 30 vitest.
+- Capacity alerts (C29T2): migration 000053 (`capacity_alerts`, PK =
+  member+day dedupe key), daily pass on the existing reminder ticker —
+  single batched cross-workspace scan, conditional claim
+  `ON CONFLICT DO NOTHING` per member, `capacity.overloaded`
+  notification to the overloaded member (once/day dedupe, prefs-aware);
+  weekly digests gain a "Capacity overloads" section; CapacityEditor
+  popover for `weekly_capacity_points` (member 15+); `docs/workload.md`.
+- Honest v1 limitations: capacity is estimate points, not hours;
+  overload notification fires once per member per day; velocity is a
+  simple 14d completed count, not cycle-normalized; per-day dedupe is
+  calendar-day based (a fresh day = a fresh alert).
+- Cycle 29 is the second deliberate beyond-Plane capability (Plane's
+  analytics have per-assignee stats but no weekly capacity planning or
+  overload signal); shipped free.
 
 **Modules**
 - Full-stack modules (Plane "modules" = epics): migration 000017
