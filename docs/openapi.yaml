@@ -615,6 +615,16 @@
         "responses": { "201": { "description": "Cloned issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/move": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Move an issue to another project",
+        "description": "Moves the issue (plus its whole sub-issue subtree) into another project of the same workspace in one transaction, and returns the move report. The issue keeps its UUID; each moved issue gets a fresh display ID from the target project's issue_sequences and a `_moved` activity entry. State is matched by name (case-insensitive) in the target project, else the target's default backlog state (state_remapped). Labels match by name; unmatched are dropped (labels_dropped). Estimate matches by value in the target scale, else nulled (estimate_dropped). Assignees, watchers, comments, attachments, links, relations, reactions, votes and time entries move with the issue. Cycle/module/release memberships and custom field values are project-scoped and dropped (reported). 400 when the target is the same project, the issue is still in the intake inbox, or the target identifier is missing/malformed; 404 when the issue or target project is missing. Member (15)+ on both projects; Idempotency-Key honored.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["target_project_identifier"], "properties": { "target_project_identifier": { "type": "string", "description": "Identifier of the destination project (case-insensitive)" } } } } } },
+        "responses": { "200": { "description": "Move report", "content": { "application/json": { "schema": { "type": "object", "properties": { "issue": { "$ref": "#/components/schemas/Issue" }, "new_display_id": { "type": "string" }, "state_remapped": { "type": "boolean" }, "labels_dropped": { "type": "array", "items": { "type": "string" } }, "estimate_dropped": { "type": "boolean" }, "memberships_dropped": { "type": "object", "properties": { "cycles": { "type": "integer" }, "modules": { "type": "integer" }, "releases": { "type": "integer" } } }, "custom_values_dropped": { "type": "integer" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/parent": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

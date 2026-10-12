@@ -3,6 +3,7 @@ import {
   BellOff,
   Copy,
   ExternalLink,
+  FolderInput,
   GitBranch,
   Hash,
   Link2,
@@ -76,6 +77,7 @@ export default function DetailToolbar({
   onToggleFavorite,
   cloning,
   onClone,
+  onMove,
   onCopyLink,
   onShare,
 }: {
@@ -96,6 +98,7 @@ export default function DetailToolbar({
   onToggleFavorite: () => void;
   cloning: boolean;
   onClone: () => void;
+  onMove: () => void;
   onCopyLink: () => void;
   onShare: () => void;
 }) {
@@ -199,6 +202,10 @@ export default function DetailToolbar({
             <DropdownMenuItem onClick={onClone} disabled={cloning}>
               <Copy className="h-3.5 w-3.5" />
               {cloning ? "Cloning…" : "Clone issue"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onMove}>
+              <FolderInput className="h-3.5 w-3.5" />
+              Move to project…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

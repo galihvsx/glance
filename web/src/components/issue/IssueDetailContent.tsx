@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -37,6 +38,8 @@ import IssueCustomFields from "./IssueCustomFields";
 import Attachments from "./Attachments";
 import BlockerConfirmDialog from "./BlockerConfirmDialog";
 import { useCloneIssue } from "./useCloneIssue";
+import { useMoveIssue } from "./useMoveIssue";
+import MoveIssueDialog from "./MoveIssueDialog";
 import DetailToolbar from "./DetailToolbar";
 import PropertyStrip from "./PropertyStrip";
 import IssueProperties from "./IssueProperties";
@@ -273,6 +276,13 @@ export default function IssueDetailContent({
     cloning,
     error: cloneError,
   } = useCloneIssue(slug, identifier);
+  const {
+    moveIssue,
+    moving: movePending,
+    error: moveError,
+  } = useMoveIssue(slug, identifier);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const navigate = useNavigate();
   const isFavorite = useIsStarred("issue", uuid);
   const toggleFavorite = useToggleFavorite();
 
@@ -501,6 +511,32 @@ export default function IssueDetailContent({
     });
   }
 
+  // C24T0: move the issue to another project. The dialog's preview is
+  // computed before confirm; here we run the move, toast the new
+  // display ID with a View action, and navigate to the moved issue.
+  async function confirmMove(targetIdentifier: string) {
+    const fromDisplay = issue?.display_id ?? uuid;
+    try {
+      const res = await moveIssue(uuid, targetIdentifier);
+      setMoveOpen(false);
+      const dest = `/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(targetIdentifier)}/i/${res.issue.id}`;
+      toast.add({
+        title: `Moved to ${res.new_display_id}`,
+        description: `${fromDisplay} → ${res.new_display_id}`,
+        type: "success",
+        actionProps: {
+          children: "View",
+          onClick: () => navigate(dest),
+        },
+      });
+      void queryClient.invalidateQueries({ queryKey: ["issues", slug, identifier] });
+      navigate(dest);
+    } catch {
+      // moveError (from the hook) is shown inside the dialog; keep it
+      // open so the user can retry or pick another project.
+    }
+  }
+
   function onCopyRef() {
     if (!issue) return;
     void copyText(issue.display_id).then((ok) => {
@@ -555,6 +591,7 @@ export default function IssueDetailContent({
           }
           cloning={cloning}
           onClone={() => void cloneIssue(uuid)}
+          onMove={() => setMoveOpen(true)}
           onCopyLink={onCopyLink}
           onShare={() => setShareOpen(true)}
         />
@@ -821,6 +858,19 @@ export default function IssueDetailContent({
         <ShareModal
           resource={`/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/share`}
           onClose={() => setShareOpen(false)}
+        />
+      )}
+      {issue && (
+        <MoveIssueDialog
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          slug={slug}
+          sourceIdentifier={identifier}
+          issue={issue}
+          sourceStates={states}
+          onConfirm={(t) => void confirmMove(t)}
+          confirming={movePending}
+          error={moveError}
         />
       )}
       {blockerConfirm && (

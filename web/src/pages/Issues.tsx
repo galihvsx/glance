@@ -40,6 +40,11 @@ import ParentPicker from "../components/issue/ParentPicker";
 import QuickAdd from "../components/issue/QuickAdd";
 import DraftWithAI from "../components/issue/DraftWithAI";
 import BulkActionBar from "../components/issue/BulkActionBar";
+import { BulkMoveDialog } from "../components/issue/MoveIssueDialog";
+import {
+  moveIssuePath,
+  type MoveIssueResult,
+} from "../components/issue/useMoveIssue";
 import {
   useBulkSelection,
   type BulkSetPayload,
@@ -393,6 +398,53 @@ export default function Issues() {
       setBulkError(e instanceof ApiError ? e.message : "Bulk update failed");
     },
   });
+
+  // C24T0 bulk move: sequential POST .../issues/{uuid}/move calls with a
+  // partial-success report (moved n, failed m with reasons).
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoving, setBulkMoving] = useState(false);
+
+  async function bulkMoveToProject(targetIdentifier: string) {
+    const ids = bulk.selectedIds;
+    if (ids.length === 0 || bulkMoving) return;
+    setBulkMoving(true);
+    const displayOf = (id: string) =>
+      issues.find((i) => i.id === id)?.display_id ?? id.slice(0, 8);
+    let moved = 0;
+    const failures: { display: string; reason: string }[] = [];
+    for (const id of ids) {
+      try {
+        await api.post<MoveIssueResult>(
+          moveIssuePath(slug, identifier, id),
+          { target_project_identifier: targetIdentifier },
+        );
+        moved++;
+      } catch (e) {
+        failures.push({
+          display: displayOf(id),
+          reason: e instanceof Error ? e.message : "failed",
+        });
+      }
+    }
+    setBulkMoving(false);
+    setBulkMoveOpen(false);
+    bulk.clear();
+    void queryClient.invalidateQueries({ queryKey: ["issues", slug, identifier] });
+    if (failures.length === 0) {
+      toast.add({
+        title: `Moved ${moved} issue${moved === 1 ? "" : "s"} to ${targetIdentifier}`,
+        type: "success",
+      });
+    } else {
+      toast.add({
+        title: `Moved ${moved} of ${ids.length} issues`,
+        description: failures
+          .map((f) => `${f.display}: ${f.reason}`)
+          .join("; "),
+        type: "error",
+      });
+    }
+  }
 
   const createMutation = useMutation({
     mutationFn: (body: {
@@ -1002,8 +1054,18 @@ export default function Issues() {
           onApply={(set) => bulkMutation.mutate(set)}
           applying={bulkMutation.isPending}
           error={bulkError}
+          onMoveToProject={() => setBulkMoveOpen(true)}
         />
       )}
+      <BulkMoveDialog
+        open={bulkMoveOpen}
+        onOpenChange={setBulkMoveOpen}
+        slug={slug}
+        sourceIdentifier={identifier}
+        count={bulk.count}
+        onConfirm={(t) => void bulkMoveToProject(t)}
+        confirming={bulkMoving}
+      />
 
       {issuesQuery.isPending ? (
         <div aria-hidden>

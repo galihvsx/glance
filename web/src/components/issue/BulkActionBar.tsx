@@ -34,6 +34,7 @@ export default function BulkActionBar({
   onApply,
   applying,
   error,
+  onMoveToProject,
 }: {
   states: IssueState[];
   members: Member[] | null;
@@ -46,6 +47,8 @@ export default function BulkActionBar({
   onApply: (set: BulkSetPayload) => void;
   applying: boolean;
   error: string | null;
+  /** C24T0: open the move-to-project picker for the current selection. */
+  onMoveToProject: () => void;
 }) {
   const [stateId, setStateId] = useState<string | null>(null);
   const [priority, setPriority] = useState<number | null>(null);
@@ -155,6 +158,14 @@ export default function BulkActionBar({
           />
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onMoveToProject}
+            disabled={applying}
+          >
+            Move to project
+          </Button>
           <Button
             variant="ghost"
             size="sm"

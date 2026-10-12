@@ -110,6 +110,28 @@ function EventCopy({
         <Strong>{actor}</Strong> deleted this work item
       </>
     );
+  } else if (entry.field === "_moved") {
+    // C24T0: cross-project move. new_value is {from, to} display IDs.
+    let from = "—";
+    let to = "—";
+    try {
+      const v =
+        typeof entry.new_value === "string"
+          ? (JSON.parse(entry.new_value) as { from?: unknown; to?: unknown })
+          : (entry.new_value as { from?: unknown; to?: unknown } | null);
+      if (v) {
+        from = String(v.from ?? "—");
+        to = String(v.to ?? "—");
+      }
+    } catch {
+      // keep the em-dash fallbacks
+    }
+    body = (
+      <>
+        <Strong>{actor}</Strong> moved this work item from <Strong>{from}</Strong>{" "}
+        to <Strong>{to}</Strong>
+      </>
+    );
   } else if (entry.field === "state_id") {
     const from = byId.get(jsonText(entry.old_value)) ?? "—";
     const to = byId.get(jsonText(entry.new_value)) ?? "—";
