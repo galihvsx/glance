@@ -31,6 +31,7 @@ import Archived from "./pages/Archived";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Initiatives from "./pages/Initiatives";
+import InitiativeDetail from "./pages/InitiativeDetail";
 import Releases from "./pages/Releases";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
@@ -72,6 +73,11 @@ export default function App() {
                 <Route
                   path="/w/:slug/initiatives"
                   element={<Initiatives />}
+                />
+                {/* C27T2: workspace-scoped initiative detail. */}
+                <Route
+                  path="/w/:slug/initiatives/:id"
+                  element={<InitiativeDetail />}
                 />
                 <Route element={<ProjectScope />}>
                   <Route path="/w/:slug/p/:identifier" element={<Issues />} />
