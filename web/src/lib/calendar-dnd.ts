@@ -13,10 +13,13 @@ import type { Issue } from "./types";
 
 const DAY_MS = 86_400_000;
 
-/** PATCH body for a schedule move: YYYY-MM-DD strings the server accepts. */
+/** PATCH body for a schedule move: YYYY-MM-DD strings the server accepts.
+ * An explicit null clears the column — `{"target_date": null}` is the
+ * tri-state clear the PATCH handler understands (nil = omitted, explicit
+ * null = Set with nil Value = NULL the column). */
 export interface ScheduleDates {
-  start_date?: string;
-  target_date?: string;
+  start_date?: string | null;
+  target_date?: string | null;
 }
 
 /** "YYYY-MM-DD" (or an RFC3339 prefix) → local-midnight Date. */
@@ -86,17 +89,54 @@ export function formatDropDay(dayKey: string): string {
  * Orchestrate a month-grid drop into a mutation call + announcement.
  * Returns null when the drop is a no-op (null `over`, or same-day), so the
  * caller skips the PATCH entirely.
+ *
+ * `fromStrip` marks chips dragged out of the unscheduled strip: they have
+ * no placing date, so scheduling them onto a day sets `target_date` (the
+ * calendar's placing rule) instead of delta-shifting.
  */
 export function resolveScheduleDrop(
   issue: Issue,
   overDayKey: string | null,
+  fromStrip = false,
 ): ResolvedScheduleDrop | null {
   if (!overDayKey) return null;
+  if (fromStrip) {
+    if (issue.target_date != null || issue.start_date != null) return null;
+    return {
+      uuid: issue.id,
+      dates: { target_date: overDayKey },
+      announcement: `${issue.display_id} scheduled for ${formatDropDay(overDayKey)}`,
+    };
+  }
   const dates = resolveDropDates(issue, overDayKey);
   if (!dates) return null;
   return {
     uuid: issue.id,
     dates,
     announcement: `${issue.display_id} moved to ${formatDropDay(overDayKey)}`,
+  };
+}
+
+/**
+ * Resolve dropping a dated chip onto the unscheduled strip (C26T2).
+ * Clears the chip's placing date — `target_date` when target-placed, else
+ * `start_date` (same placing rule as `issueDay` in ./calendar) — via an
+ * explicit null the PATCH handler treats as "clear the column".
+ * Returns null when the chip has no placing date (already unscheduled).
+ */
+export function resolveUnscheduleDrop(
+  issue: Pick<Issue, "id" | "display_id" | "start_date" | "target_date">,
+): ResolvedScheduleDrop | null {
+  const dates: ScheduleDates =
+    issue.target_date != null
+      ? { target_date: null }
+      : issue.start_date != null
+        ? { start_date: null }
+        : {};
+  if (Object.keys(dates).length === 0) return null;
+  return {
+    uuid: issue.id,
+    dates,
+    announcement: `${issue.display_id} unscheduled`,
   };
 }

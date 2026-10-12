@@ -58,6 +58,7 @@ function mkIssue(over: Partial<Issue> & { id: string }): Issue {
 const RANGE = { start: "2026-10-01", end: "2026-11-01" };
 const dueKey = ["calendar", "acme", "ENG", "due", RANGE.start];
 const startKey = ["calendar", "acme", "ENG", "start", RANGE.start];
+const undatedKey = ["calendar", "acme", "ENG", "undated"];
 
 function wrapper(client: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -179,5 +180,121 @@ describe("useScheduleMutation", () => {
     expect(cached?.[0].start_date).toBe("2026-10-14T00:00:00Z");
     expect(cached?.[0].target_date).toBeNull();
     expect(client.getQueryData(dueKey)).toBeUndefined();
+  });
+
+  it("PATCHes a null target_date to unschedule and optimistically lands the chip in the undated cache", async () => {
+    const client = freshClient();
+    const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
+    client.setQueryData(dueKey, [issue]);
+    client.setQueryData(undatedKey, []);
+    const { result } = renderHook(
+      () => useScheduleMutation("acme", "ENG", RANGE),
+      { wrapper: wrapper(client) },
+    );
+
+    mockPatch.mockResolvedValueOnce({ ...issue, target_date: null });
+    await act(async () => {
+      await result.current.mutateAsync({
+        uuid: "i1",
+        dates: { target_date: null },
+      });
+    });
+
+    // Explicit null goes out on the wire so the server clears the column.
+    expect(mockPatch).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/projects/ENG/issues/i1",
+      { target_date: null },
+    );
+    // Chip leaves the dated caches…
+    expect(client.getQueryData<Issue[]>(dueKey)).toHaveLength(0);
+    // …and appears in the undated cache with the date cleared.
+    const undated = client.getQueryData<Issue[]>(undatedKey);
+    expect(undated).toHaveLength(1);
+    expect(undated?.[0].target_date).toBeNull();
+    expect(mockToastAdd).not.toHaveBeenCalled();
+  });
+
+  it("PATCHes a null start_date to unschedule a start-placed chip", async () => {
+    const client = freshClient();
+    const issue = mkIssue({ id: "i1", start_date: "2026-10-10T00:00:00Z" });
+    client.setQueryData(startKey, [issue]);
+    client.setQueryData(undatedKey, []);
+    const { result } = renderHook(
+      () => useScheduleMutation("acme", "ENG", RANGE),
+      { wrapper: wrapper(client) },
+    );
+
+    mockPatch.mockResolvedValueOnce({ ...issue, start_date: null });
+    await act(async () => {
+      await result.current.mutateAsync({
+        uuid: "i1",
+        dates: { start_date: null },
+      });
+    });
+
+    expect(mockPatch).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/projects/ENG/issues/i1",
+      { start_date: null },
+    );
+    expect(client.getQueryData<Issue[]>(startKey)).toHaveLength(0);
+    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(1);
+  });
+
+  it("rolls back the undated optimistic add when the unschedule PATCH fails", async () => {
+    const client = freshClient();
+    const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
+    client.setQueryData(dueKey, [issue]);
+    client.setQueryData(undatedKey, []);
+    const { result } = renderHook(
+      () => useScheduleMutation("acme", "ENG", RANGE),
+      { wrapper: wrapper(client) },
+    );
+
+    mockPatch.mockRejectedValueOnce(new ApiError(403, "forbidden"));
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({
+          uuid: "i1",
+          dates: { target_date: null },
+        }),
+      ).rejects.toThrow();
+    });
+
+    // Dated cache restored, optimistic undated add reverted.
+    const due = client.getQueryData<Issue[]>(dueKey);
+    expect(due).toHaveLength(1);
+    expect(due?.[0].target_date).toBe("2026-10-10T00:00:00Z");
+    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(0);
+    expect(mockToastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "error", description: "forbidden" }),
+    );
+  });
+
+  it("PATCHes a target_date when a strip chip is scheduled onto a day", async () => {
+    const client = freshClient();
+    const issue = mkIssue({ id: "i1" });
+    client.setQueryData(undatedKey, [issue]);
+    const { result } = renderHook(
+      () => useScheduleMutation("acme", "ENG", RANGE),
+      { wrapper: wrapper(client) },
+    );
+
+    mockPatch.mockResolvedValueOnce({
+      ...issue,
+      target_date: "2026-10-14T00:00:00Z",
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        uuid: "i1",
+        dates: { target_date: "2026-10-14" },
+      });
+    });
+
+    expect(mockPatch).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/projects/ENG/issues/i1",
+      { target_date: "2026-10-14" },
+    );
+    // Chip leaves the undated cache (it reappears in the day cell on refetch).
+    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(0);
   });
 });

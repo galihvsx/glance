@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatDropDay, resolveDropDates, resolveScheduleDrop } from "./calendar-dnd";
+import {
+  formatDropDay,
+  resolveDropDates,
+  resolveScheduleDrop,
+  resolveUnscheduleDrop,
+} from "./calendar-dnd";
 import type { Issue } from "./types";
 
 function chip(
@@ -134,5 +139,56 @@ describe("resolveScheduleDrop", () => {
         year: "numeric",
       }),
     );
+  });
+
+  it("still returns null for a dateless chip without fromStrip", () => {
+    const issue = fullIssue({ id: "i1" });
+    expect(resolveScheduleDrop(issue, "2026-10-14")).toBeNull();
+  });
+
+  it("schedules a dateless strip chip (fromStrip) onto the drop day", () => {
+    const issue = fullIssue({ id: "i1" });
+    const out = resolveScheduleDrop(issue, "2026-10-14", true);
+    expect(out?.uuid).toBe("i1");
+    expect(out?.dates).toEqual({ target_date: "2026-10-14" });
+    expect(out?.announcement).toMatch(/^ENG-123 scheduled for /);
+  });
+
+  it("does not schedule a dateless chip when over is null, even with fromStrip", () => {
+    const issue = fullIssue({ id: "i1" });
+    expect(resolveScheduleDrop(issue, null, true)).toBeNull();
+  });
+});
+
+describe("resolveUnscheduleDrop", () => {
+  it("clears target_date (null) for a target-placed chip", () => {
+    const issue = fullIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
+    const out = resolveUnscheduleDrop(issue);
+    expect(out?.uuid).toBe("i1");
+    expect(out?.dates).toEqual({ target_date: null });
+    expect(out?.announcement).toBe("ENG-123 unscheduled");
+  });
+
+  it("clears start_date (null) for a start-placed chip", () => {
+    const issue = fullIssue({ id: "i1", start_date: "2026-10-10T00:00:00Z" });
+    const out = resolveUnscheduleDrop(issue);
+    expect(out?.dates).toEqual({ start_date: null });
+    expect(out?.announcement).toBe("ENG-123 unscheduled");
+  });
+
+  it("prefers clearing target_date when both dates are set (placing rule)", () => {
+    const issue = fullIssue({
+      id: "i1",
+      start_date: "2026-10-08T00:00:00Z",
+      target_date: "2026-10-10T00:00:00Z",
+    });
+    expect(resolveUnscheduleDrop(issue)?.dates).toEqual({
+      target_date: null,
+    });
+  });
+
+  it("returns null when the chip has no placing date (already unscheduled)", () => {
+    const issue = fullIssue({ id: "i1" });
+    expect(resolveUnscheduleDrop(issue)).toBeNull();
   });
 });
