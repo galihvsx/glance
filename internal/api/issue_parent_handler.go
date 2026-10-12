@@ -27,6 +27,10 @@ import (
 func registerIssueParentRoutes(g *echo.Group, h *IssueHandler) {
 	g.POST("/:uuid/parent", h.setIssueParent)
 	g.DELETE("/:uuid/parent", h.clearIssueParent)
+	// C24T1: convert issue <-> sub-issue. The static "convert" segment
+	// keeps this distinct from PATCH /:uuid by Echo's specificity rules
+	// (same pattern as /clone and /move).
+	g.POST("/:uuid/convert", h.convertIssue)
 }
 
 // parentError maps sub-issue sentinel errors to HTTP statuses,
@@ -47,6 +51,57 @@ func parentError(c *echo.Context, err error) error {
 
 type setIssueParentBody struct {
 	ParentIssueID string `json:"parent_issue_id"`
+}
+
+type convertIssueBody struct {
+	// Tri-state: a UUID demotes to a sub-issue of that parent, null (or
+	// absent/empty) promotes back to a standalone issue.
+	ParentUUID *string `json:"parent_uuid"`
+}
+
+// convertIssue implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/convert
+// (C24T1): converts the issue to a sub-issue of the given parent, or
+// back to a standalone issue when parent_uuid is null. 200 with
+// {"converted": bool, "issue": {...}} in both directions (converted=false
+// when already in the target state). 400 when the issue has sub-issues
+// of its own, the parent is itself a sub-issue, or the parent is in
+// another project; 409 on self-parent or a cycle; 404 on an unknown
+// issue or parent. Member (15)+.
+func (h *IssueHandler) convertIssue(c *echo.Context) error {
+	var body convertIssueBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	uuid, ok := requireUUIDParam(c, "uuid", "issue id")
+	if !ok {
+		return nil
+	}
+	res, err := service.ConvertIssue(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), uuid, CurrentUser(c).ID, body.ParentUUID)
+	if err != nil {
+		return convertError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"converted": res.Converted,
+		"issue":     res.Issue,
+	})
+}
+
+// convertError maps the C24T1 convert sentinels to HTTP statuses,
+// delegating everything else (including the shared SetParent sentinels)
+// to parentError.
+func convertError(c *echo.Context, err error) error {
+	switch {
+	case errors.Is(err, service.ErrConvertHasChildren):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "issue has sub-issues; detach or move them first", nil)
+	case errors.Is(err, service.ErrConvertParentIsSubIssue):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "parent issue is itself a sub-issue", nil)
+	case errors.Is(err, service.ErrConvertCrossProject):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "parent issue is in another project", nil)
+	default:
+		return parentError(c, err)
+	}
 }
 
 // setIssueParent implements POST

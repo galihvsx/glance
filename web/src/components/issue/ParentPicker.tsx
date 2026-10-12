@@ -24,6 +24,12 @@ export default function ParentPicker({
   onChange,
   disabled,
   triggerClassName,
+  /** C24T1: hide issues with these ids from the results (e.g. the issue
+   *  being converted — it can never be its own parent). */
+  excludeIds,
+  /** C24T1: hide the "No parent" row (convert dialogs always need a
+   *  concrete parent). */
+  hideNoneOption,
 }: {
   slug: string;
   identifier: string;
@@ -34,6 +40,8 @@ export default function ParentPicker({
   /** Optional className override for the trigger button (C19T3: the
    *  Properties cell renders a borderless trigger). */
   triggerClassName?: string;
+  excludeIds?: string[];
+  hideNoneOption?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -59,7 +67,9 @@ export default function ParentPicker({
     staleTime: 30_000,
   });
 
-  const results = searchQuery.data?.results ?? [];
+  const results = (searchQuery.data?.results ?? []).filter(
+    (issue) => !excludeIds?.includes(issue.id),
+  );
 
   function pick(issue: Issue | null) {
     onChange(issue);
@@ -131,18 +141,20 @@ export default function ParentPicker({
           </p>
         ) : (
           <ScrollArea className="max-h-64">
-            <button
-              type="button"
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
-                value === null && "bg-accent",
-              )}
-              onClick={() => pick(null)}
-            >
-              <span className="text-muted-foreground">
-                No parent (top-level)
-              </span>
-            </button>
+            {!hideNoneOption && (
+              <button
+                type="button"
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
+                  value === null && "bg-accent",
+                )}
+                onClick={() => pick(null)}
+              >
+                <span className="text-muted-foreground">
+                  No parent (top-level)
+                </span>
+              </button>
+            )}
             {results.map((issue) => (
               <button
                 key={issue.id}

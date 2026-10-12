@@ -625,6 +625,16 @@
         "responses": { "200": { "description": "Move report", "content": { "application/json": { "schema": { "type": "object", "properties": { "issue": { "$ref": "#/components/schemas/Issue" }, "new_display_id": { "type": "string" }, "state_remapped": { "type": "boolean" }, "labels_dropped": { "type": "array", "items": { "type": "string" } }, "estimate_dropped": { "type": "boolean" }, "memberships_dropped": { "type": "object", "properties": { "cycles": { "type": "integer" }, "modules": { "type": "integer" }, "releases": { "type": "integer" } } }, "custom_values_dropped": { "type": "integer" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/convert": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Convert an issue to a sub-issue (or back to a standalone issue)",
+        "description": "Demotes the issue to a sub-issue of the given parent, or promotes it back to a standalone issue when parent_uuid is null. Demote requires the parent to be a live issue in the same project that is not itself a sub-issue (max depth 1); the issue must have no sub-issues of its own. 400 when the issue has sub-issues, the parent is itself a sub-issue, or the parent is in another project; 409 on self-parent or a parent assignment that would close a cycle; 404 on an unknown issue or parent. 200 with {\"converted\": bool, \"issue\": {...}} — converted=false when already in the target state. Writes `_converted` activity entries on the issue and (on demote) the parent, plus the uniform parent_id field entry. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "parent_uuid": { "type": "string", "format": "uuid", "nullable": true, "description": "New parent issue UUID; null promotes the issue back to a standalone issue" } } } } } },
+        "responses": { "200": { "description": "Conversion result", "content": { "application/json": { "schema": { "type": "object", "properties": { "converted": { "type": "boolean" }, "issue": { "$ref": "#/components/schemas/Issue" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/parent": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

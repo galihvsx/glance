@@ -40,7 +40,19 @@ import BlockerConfirmDialog from "./BlockerConfirmDialog";
 import { useCloneIssue } from "./useCloneIssue";
 import { useMoveIssue } from "./useMoveIssue";
 import MoveIssueDialog from "./MoveIssueDialog";
+import { useConvertIssue } from "./useConvertIssue";
+import ConvertIssueDialog from "./ConvertIssueDialog";
 import DetailToolbar from "./DetailToolbar";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import PropertyStrip from "./PropertyStrip";
 import IssueProperties from "./IssueProperties";
 import ActivitySection, { type ActivityTab } from "./ActivitySection";
@@ -282,6 +294,14 @@ export default function IssueDetailContent({
     error: moveError,
   } = useMoveIssue(slug, identifier);
   const [moveOpen, setMoveOpen] = useState(false);
+  // C24T1: convert issue <-> sub-issue.
+  const {
+    convertIssue,
+    converting: convertPending,
+    error: convertError,
+  } = useConvertIssue(slug, identifier);
+  const [convertOpen, setConvertOpen] = useState(false);
+  const [promoteConfirm, setPromoteConfirm] = useState(false);
   const navigate = useNavigate();
   const isFavorite = useIsStarred("issue", uuid);
   const toggleFavorite = useToggleFavorite();
@@ -537,6 +557,52 @@ export default function IssueDetailContent({
     }
   }
 
+  // C24T1: convert the issue to a sub-issue of parentUuid, or back to a
+  // standalone issue when parentUuid is null. Toasts the outcome and
+  // refetches; the dialog's own error alert keeps failures visible for
+  // retry, and the promote confirm stays open on failure.
+  async function confirmConvert(parentUuid: string | null, parentDisplay?: string) {
+    const fromDisplay = issue?.display_id ?? uuid;
+    try {
+      const res = await convertIssue(uuid, parentUuid);
+      setConvertOpen(false);
+      setPromoteConfirm(false);
+      if (!res.converted) {
+        toast.add({
+          title: parentUuid
+            ? `${fromDisplay} is already a sub-issue of ${parentDisplay ?? ""}`
+            : `${fromDisplay} is already a standalone issue`,
+          type: "success",
+        });
+      } else {
+        toast.add({
+          title: parentUuid
+            ? `Converted to sub-issue of ${parentDisplay ?? res.issue.parent_id ?? ""}`
+            : "Converted to issue",
+          description: parentUuid
+            ? `${fromDisplay} is now a sub-issue`
+            : `${fromDisplay} is now a standalone issue`,
+          type: "success",
+        });
+      }
+      invalidateIssue();
+    } catch (e) {
+      // Demote failures surface in the dialog's error alert; keep it
+      // open for retry. Promote has no error slot, so toast it and
+      // close the confirm.
+      if (parentUuid === null) {
+        setPromoteConfirm(false);
+        toast.add({
+          title: "Could not convert to issue",
+          description: e instanceof Error ? e.message : "Conversion failed",
+          type: "error",
+        });
+      }
+      // convertError (from the hook) is shown inside the convert dialog;
+      // keep it open so the user can retry or pick another parent.
+    }
+  }
+
   function onCopyRef() {
     if (!issue) return;
     void copyText(issue.display_id).then((ok) => {
@@ -592,6 +658,11 @@ export default function IssueDetailContent({
           cloning={cloning}
           onClone={() => void cloneIssue(uuid)}
           onMove={() => setMoveOpen(true)}
+          hasParent={!!issue?.parent_id}
+          hasChildren={(issue?.children?.length ?? 0) > 0}
+          converting={convertPending}
+          onConvertToSubIssue={() => setConvertOpen(true)}
+          onConvertToIssue={() => setPromoteConfirm(true)}
           onCopyLink={onCopyLink}
           onShare={() => setShareOpen(true)}
         />
@@ -872,6 +943,49 @@ export default function IssueDetailContent({
           confirming={movePending}
           error={moveError}
         />
+      )}
+      {issue && (
+        <ConvertIssueDialog
+          open={convertOpen}
+          onOpenChange={setConvertOpen}
+          slug={slug}
+          identifier={identifier}
+          issue={issue}
+          onConfirm={(parent) => void confirmConvert(parent.id, parent.display_id)}
+          confirming={convertPending}
+          error={convertError}
+        />
+      )}
+      {promoteConfirm && issue && (
+        <AlertDialog
+          open={promoteConfirm}
+          onOpenChange={(o) => {
+            if (!o) setPromoteConfirm(false);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Convert to issue?</AlertDialogTitle>
+              <AlertDialogDescription>
+                <span className="font-mono font-medium text-foreground">
+                  {issue.display_id}
+                </span>{" "}
+                becomes a standalone issue.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={convertPending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={convertPending}
+                onClick={() => void confirmConvert(null)}
+              >
+                {convertPending ? "Converting…" : "Convert to issue"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
       {blockerConfirm && (
         <BlockerConfirmDialog
