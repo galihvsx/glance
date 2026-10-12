@@ -31,6 +31,8 @@ func registerIssueParentRoutes(g *echo.Group, h *IssueHandler) {
 	// keeps this distinct from PATCH /:uuid by Echo's specificity rules
 	// (same pattern as /clone and /move).
 	g.POST("/:uuid/convert", h.convertIssue)
+	// C25T3: duplicate merge. Same static-segment pattern as /convert.
+	g.POST("/:uuid/merge", h.mergeIssue)
 }
 
 // parentError maps sub-issue sentinel errors to HTTP statuses,

@@ -44,6 +44,9 @@ import { useMoveIssue } from "./useMoveIssue";
 import MoveIssueDialog from "./MoveIssueDialog";
 import { useConvertIssue } from "./useConvertIssue";
 import ConvertIssueDialog from "./ConvertIssueDialog";
+import { useMergeIssue } from "./useMergeIssue";
+import MergeDuplicateDialog from "./MergeDuplicateDialog";
+import type { SimilarIssue } from "../../lib/similar";
 import DetailToolbar from "./DetailToolbar";
 import {
   AlertDialog,
@@ -304,6 +307,13 @@ export default function IssueDetailContent({
   } = useConvertIssue(slug, identifier);
   const [convertOpen, setConvertOpen] = useState(false);
   const [promoteConfirm, setPromoteConfirm] = useState(false);
+  // C25T3: duplicate merge.
+  const {
+    mergeIssue,
+    merging: mergePending,
+    error: mergeError,
+  } = useMergeIssue(slug, identifier);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const navigate = useNavigate();
   const isFavorite = useIsStarred("issue", uuid);
   const toggleFavorite = useToggleFavorite();
@@ -605,6 +615,43 @@ export default function IssueDetailContent({
     }
   }
 
+  // C25T3: merge the issue as a duplicate of the picked target. Toasts
+  // the outcome with a View action that navigates to the surviving
+  // issue; failures surface in the dialog's error alert so the user can
+  // pick another target.
+  async function confirmMerge(target: SimilarIssue) {
+    const fromDisplay = issue?.display_id ?? uuid;
+    try {
+      const res = await mergeIssue(uuid, target.id);
+      setMergeOpen(false);
+      const dest = `/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}/i/${target.id}`;
+      if (res.already_merged) {
+        toast.add({
+          title: `${fromDisplay} is already merged into ${res.into_display_id}`,
+          type: "success",
+          actionProps: {
+            children: `View ${res.into_display_id}`,
+            onClick: () => navigate(dest),
+          },
+        });
+      } else {
+        toast.add({
+          title: `Merged into ${res.into_display_id} as duplicate`,
+          description: `${fromDisplay} → ${res.into_display_id}`,
+          type: "success",
+          actionProps: {
+            children: `View ${res.into_display_id}`,
+            onClick: () => navigate(dest),
+          },
+        });
+      }
+      invalidateIssue();
+    } catch {
+      // mergeError (from the hook) is shown inside the dialog; keep it
+      // open so the user can retry or pick another target.
+    }
+  }
+
   function onCopyRef() {
     if (!issue) return;
     void copyText(issue.display_id).then((ok) => {
@@ -665,6 +712,8 @@ export default function IssueDetailContent({
           converting={convertPending}
           onConvertToSubIssue={() => setConvertOpen(true)}
           onConvertToIssue={() => setPromoteConfirm(true)}
+          merging={mergePending}
+          onMarkDuplicate={() => setMergeOpen(true)}
           onCopyLink={onCopyLink}
           onShare={() => setShareOpen(true)}
         />
@@ -967,6 +1016,18 @@ export default function IssueDetailContent({
           onConfirm={(parent) => void confirmConvert(parent.id, parent.display_id)}
           confirming={convertPending}
           error={convertError}
+        />
+      )}
+      {issue && (
+        <MergeDuplicateDialog
+          open={mergeOpen}
+          onOpenChange={setMergeOpen}
+          slug={slug}
+          identifier={identifier}
+          issue={issue}
+          onConfirm={(target) => void confirmMerge(target)}
+          confirming={mergePending}
+          error={mergeError}
         />
       )}
       {promoteConfirm && issue && (

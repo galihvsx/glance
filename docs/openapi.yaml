@@ -635,6 +635,16 @@
         "responses": { "200": { "description": "Conversion result", "content": { "application/json": { "schema": { "type": "object", "properties": { "converted": { "type": "boolean" }, "issue": { "$ref": "#/components/schemas/Issue" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/merge": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Merge an issue as a duplicate into another issue",
+        "description": "Folds the issue into a surviving issue of the same project in one transaction: comments, attachment metadata, issue links, reactions, votes, time entries and subscribers move to the surviving issue; the source closes into the project's cancelled-group state; a 'duplicate' relation records the survivor; `_merged` activity entries are written on both issues (\"merged into ENG-45 as duplicate\" / \"absorbed duplicate ENG-44\"). 400 on self-merge, a cross-project target, merging into one of the issue's own sub-issues, or a missing into_uuid; 404 on an unknown issue or target; 409 when the project has no cancelled state. 200 with {\"merged\": bool, \"already_merged\": bool, \"issue\": {...}, \"into_display_id\": \"ENG-45\"} — already_merged=true when the source was already merged into the same target (idempotent, no new writes). Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["into_uuid"], "properties": { "into_uuid": { "type": "string", "format": "uuid", "description": "UUID of the surviving issue (same project)" } } } } } },
+        "responses": { "200": { "description": "Merge result", "content": { "application/json": { "schema": { "type": "object", "properties": { "merged": { "type": "boolean" }, "already_merged": { "type": "boolean" }, "issue": { "$ref": "#/components/schemas/Issue" }, "into_display_id": { "type": "string" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/parent": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
