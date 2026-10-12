@@ -195,13 +195,16 @@ export default function Issues() {
 
   // Opened from the command palette ("Create issue" action) or from the
   // board's inline quick-add expand button (prefills title + state, and
-  // priority when the board is grouped by priority).
+  // priority when the board is grouped by priority) — or from the
+  // calendar's day-cell quick-add (C26T3: prefills the target/due date).
   useEffect(() => {
     const st = location.state as {
       newIssue?: boolean;
       newIssueName?: string;
       newIssueStateId?: string;
       newIssuePriority?: number;
+      newIssueStartDate?: string;
+      newIssueTargetDate?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -209,6 +212,10 @@ export default function Issues() {
         setNewStateId(st.newIssueStateId);
       if (typeof st.newIssuePriority === "number")
         setNewPriority(st.newIssuePriority);
+      if (typeof st.newIssueStartDate === "string")
+        setNewStartDate(st.newIssueStartDate);
+      if (typeof st.newIssueTargetDate === "string")
+        setNewTargetDate(st.newIssueTargetDate);
       setDialogOpen(true);
       navigate(location.pathname, { replace: true });
     }
@@ -223,6 +230,10 @@ export default function Issues() {
   const [newPriority, setNewPriority] = useState(0);
   const [newStateId, setNewStateId] = useState("");
   const [newEstimatePointId, setNewEstimatePointId] = useState("");
+  // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
+  // calendar's day-cell quick-add via location.state.
+  const [newStartDate, setNewStartDate] = useState("");
+  const [newTargetDate, setNewTargetDate] = useState("");
   const [parentIssue, setParentIssue] = useState<Issue | null>(null);
   const [createMore, setCreateMore] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -527,6 +538,8 @@ export default function Issues() {
       state_id?: string;
       estimate_point_id?: string;
       parent_id?: string;
+      start_date?: string;
+      target_date?: string;
       is_draft?: boolean;
       custom_values?: Record<string, CustomValueInput>;
     }) => api.post<Issue>(`${base}/issues`, body),
@@ -537,6 +550,11 @@ export default function Issues() {
       if (!createMore) setDialogOpen(false);
       void queryClient.invalidateQueries({
         queryKey: ["issues", slug, identifier],
+      });
+      // C26T3: the calendar buckets by target/start date — a created
+      // issue must appear on its day without a manual refresh.
+      void queryClient.invalidateQueries({
+        queryKey: ["calendar", slug, identifier],
       });
       showCreatedToast(issue);
       if (issue.is_draft) {
@@ -559,6 +577,8 @@ export default function Issues() {
     setNewPriority(0);
     setNewStateId("");
     setNewEstimatePointId("");
+    setNewStartDate("");
+    setNewTargetDate("");
     setParentIssue(null);
     setFormError(null);
     setAiGenerated(false);
@@ -627,6 +647,10 @@ export default function Issues() {
       ...(newStateId ? { state_id: newStateId } : {}),
       ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
+      // C26T3: dates ride along when set (calendar quick-add prefills
+      // the due date); the server 400s an invalid range, surfaced below.
+      ...(newStartDate ? { start_date: newStartDate } : {}),
+      ...(newTargetDate ? { target_date: newTargetDate } : {}),
       // C18T1: required custom fields ride along; the server 400s naming
       // any left empty, surfaced inline via setFormError below.
       ...(Object.keys(customValues).length > 0
@@ -649,6 +673,8 @@ export default function Issues() {
       ...(newStateId ? { state_id: newStateId } : {}),
       ...(newEstimatePointId ? { estimate_point_id: newEstimatePointId } : {}),
       ...(parentIssue ? { parent_id: parentIssue.id } : {}),
+      ...(newStartDate ? { start_date: newStartDate } : {}),
+      ...(newTargetDate ? { target_date: newTargetDate } : {}),
       is_draft: true,
       ...(Object.keys(customValues).length > 0
         ? { custom_values: customValues }
@@ -988,6 +1014,26 @@ export default function Issues() {
                     estimates={estimatesQuery.data ?? []}
                     value={newEstimatePointId}
                     onChange={setNewEstimatePointId}
+                  />
+                </div>
+                {/* C26T3: start/due dates — the calendar's day-cell
+                    quick-add prefills the due date via location.state. */}
+                <div className="space-y-2">
+                  <Label htmlFor="i-start">Start date</Label>
+                  <Input
+                    id="i-start"
+                    type="date"
+                    value={newStartDate}
+                    onChange={(e) => setNewStartDate(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="i-target">Due date</Label>
+                  <Input
+                    id="i-target"
+                    type="date"
+                    value={newTargetDate}
+                    onChange={(e) => setNewTargetDate(e.target.value)}
                   />
                 </div>
               </div>

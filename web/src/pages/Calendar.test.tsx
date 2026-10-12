@@ -2,7 +2,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Calendar from "./Calendar";
 import { ApiError } from "../lib/api";
@@ -586,5 +586,117 @@ describe("Calendar week view drag-reschedule", () => {
     expect(chip).not.toHaveAttribute("aria-roledescription");
     // Click-to-peek still works for guests.
     expect(chip).toHaveAttribute("title", "ENG-2: Draft release notes");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C26T3: day-cell quick-add. The "+" on a day cell navigates to the issues
+// page, opening the EXISTING create dialog with the day prefilled as the
+// target (due) date — same location.state mechanism the board's
+// expand-quick-add uses.
+// ---------------------------------------------------------------------------
+
+let lastLocation: { pathname: string; state: unknown } | null = null;
+
+function LocationProbe() {
+  const loc = useLocation();
+  lastLocation = { pathname: loc.pathname, state: loc.state };
+  return null;
+}
+
+function renderCalendarWithIssuesRoute() {
+  lastLocation = null;
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <MemoryRouter initialEntries={["/w/acme/p/ENG/calendar"]}>
+      <QueryClientProvider client={client}>
+        <Routes>
+          <Route
+            path="/w/:slug/p/:identifier/calendar"
+            element={<Calendar />}
+          />
+          <Route path="/w/:slug/p/:identifier" element={<LocationProbe />} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("Calendar day-cell quick-add", () => {
+  it("shows a + affordance on every month day cell for members", async () => {
+    renderCalendarWithIssuesRoute();
+    // Wait for the month grid itself, not just the page header.
+    const btns = await screen.findAllByRole("button", { name: /Add issue on/ });
+    // Full 6-row month grid.
+    expect(btns.length).toBe(42);
+  });
+
+  it("clicking a day's + navigates to the issues page with the day as target_date", async () => {
+    const user = userEvent.setup();
+    renderCalendarWithIssuesRoute();
+    const btn = await screen.findByRole("button", {
+      name: `Add issue on ${todayKey}`,
+    });
+    await user.click(btn);
+    await waitFor(() => expect(lastLocation).not.toBeNull());
+    expect(lastLocation!.pathname).toBe("/w/acme/p/ENG");
+    expect(lastLocation!.state).toEqual({
+      newIssue: true,
+      newIssueTargetDate: todayKey,
+    });
+  });
+
+  it("Enter on the focused + opens the create flow for that day (keyboard)", async () => {
+    const user = userEvent.setup();
+    renderCalendarWithIssuesRoute();
+    const btn = await screen.findByRole("button", {
+      name: `Add issue on ${todayKey}`,
+    });
+    btn.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(lastLocation).not.toBeNull());
+    expect(lastLocation!.state).toEqual({
+      newIssue: true,
+      newIssueTargetDate: todayKey,
+    });
+  });
+
+  it("shows a + affordance on every week column for members", async () => {
+    renderCalendarWithIssuesRoute();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const btns = screen.getAllByRole("button", { name: /Add issue on/ });
+    expect(btns.length).toBe(7);
+  });
+
+  it("clicking a week column's + prefills that column's day", async () => {
+    const user = userEvent.setup();
+    renderCalendarWithIssuesRoute();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+    await user.click(
+      screen.getByRole("button", { name: `Add issue on ${keys[3]}` }),
+    );
+    await waitFor(() => expect(lastLocation).not.toBeNull());
+    expect(lastLocation!.state).toEqual({
+      newIssue: true,
+      newIssueTargetDate: keys[3],
+    });
+  });
+
+  it("hides every + affordance for guests (role < 15)", async () => {
+    mockState.role = 5;
+    renderCalendarWithIssuesRoute();
+    await screen.findByRole("heading");
+    expect(
+      screen.queryByRole("button", { name: /Add issue on/ }),
+    ).not.toBeInTheDocument();
+    await switchToWeek();
+    expect(
+      screen.queryByRole("button", { name: /Add issue on/ }),
+    ).not.toBeInTheDocument();
   });
 });

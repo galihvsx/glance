@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
@@ -78,6 +78,7 @@ export default function Calendar() {
     slug: string;
     identifier: string;
   }>();
+  const navigate = useNavigate();
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const { peekUuid, openPeek, closePeek } = usePeekParam();
 
@@ -162,6 +163,18 @@ export default function Calendar() {
       api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
   });
   const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
+
+  // C26T3: day-cell quick-add. Opens the EXISTING create-issue dialog on
+  // the issues page with the day prefilled as the target (due) date — the
+  // same location.state mechanism the board's expand-quick-add uses
+  // (Issues.tsx reads it on mount). The dialog's success flow invalidates
+  // the calendar caches, so the new chip appears on the day when the user
+  // comes back.
+  const quickAdd = (day: string) => {
+    navigate(`/w/${slug}/p/${identifier}`, {
+      state: { newIssue: true, newIssueTargetDate: day },
+    });
+  };
   const statesById = useMemo(() => {
     const m = new Map<string, IssueState>();
     for (const s of statesQuery.data ?? []) m.set(s.id, s);
@@ -440,6 +453,7 @@ export default function Calendar() {
                         key={key}
                         dayKey={key}
                         isToday={isToday}
+                        onQuickAdd={canEdit ? quickAdd : undefined}
                       >
                         <div className="space-y-0.5">
                           {issues.map((issue) => (
@@ -493,6 +507,7 @@ export default function Calendar() {
                       key={key}
                       dayKey={key}
                       isOtherMonth={isOtherMonth}
+                      onQuickAdd={canEdit ? quickAdd : undefined}
                     >
                       <div
                         className={cn(
