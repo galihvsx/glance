@@ -20,6 +20,7 @@ import {
   Briefcase,
   ChevronDown,
   FileText,
+  Gauge,
   Home,
   Inbox,
   Layers,
@@ -339,6 +340,9 @@ function WorkspaceSection() {
   const activeInitiatives = (initiativesQuery.data ?? []).filter(
     (i) => i.status !== "archived",
   ).length;
+  // C29T1: workload is workspace-scoped, so its entry lives here in the
+  // workspace section next to Initiatives.
+  const workloadHref = slug ? `/w/${encodeURIComponent(slug)}/workload` : "/";
 
   return (
     <section aria-label="Workspace">
@@ -366,6 +370,15 @@ function WorkspaceSection() {
             active={
               pathname === initiativesHref ||
               pathname.startsWith(`${initiativesHref}/`)
+            }
+          />
+          <NavRow
+            icon={Gauge}
+            label="Workload"
+            to={workloadHref}
+            active={
+              pathname === workloadHref ||
+              pathname.startsWith(`${workloadHref}/`)
             }
           />
         </div>
