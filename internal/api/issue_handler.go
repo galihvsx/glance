@@ -56,6 +56,10 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	// from PATCH /:uuid by Echo's specificity rules (kept adjacent for
 	// readability, same style as /export and /bulk).
 	g.POST("/:uuid/clone", h.cloneIssue)
+	// C24T0: move endpoint. The static "move" segment keeps this distinct
+	// from PATCH /:uuid by Echo's specificity rules (same pattern as
+	// /clone above).
+	g.POST("/:uuid/move", h.moveIssue)
 	// C5T4: sub-issue parent endpoints on the same group.
 	registerIssueParentRoutes(g, h)
 }
@@ -132,6 +136,11 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)
 	case errors.Is(err, service.ErrNothingToUpdate):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
+	// C24T0: cross-project move errors.
+	case errors.Is(err, service.ErrMoveSameProject):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "cannot move an issue into its own project", nil)
+	case errors.Is(err, service.ErrMoveIntakeIssue):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "intake issues cannot be moved between projects; triage them first", nil)
 	// C18T1: required custom fields missing on issue create.
 	case errors.Is(err, service.ErrCustomFieldRequired):
 		return writeCustomFieldRequiredError(c, err)
@@ -502,6 +511,41 @@ func (h *IssueHandler) cloneIssue(c *echo.Context) error {
 			return 0, nil, err
 		}
 		return http.StatusCreated, iss, nil
+	})
+}
+
+type moveIssueBody struct {
+	TargetProjectIdentifier string `json:"target_project_identifier"`
+}
+
+// moveIssue implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/move
+// (C24T0): moves the issue (plus its sub-issue subtree) into another
+// project of the same workspace via service.MoveIssue and returns the
+// move report with 200. Member (15)+ on both projects; 400 on
+// same-project, intake issues, or a bad target identifier; 404 when the
+// source issue or the target project is missing.
+func (h *IssueHandler) moveIssue(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	var body moveIssueBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	if strings.TrimSpace(body.TargetProjectIdentifier) == "" {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "target_project_identifier is required", nil)
+	}
+	// Idempotency-Key is honored exactly like the clone endpoint
+	// (opt-in via header); without it the POST is a plain move.
+	return withIdempotency(c, h.Pool, "POST /issues/:uuid/move", issueError, func() (int, any, error) {
+		res, err := service.MoveIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor,
+			service.MoveIssueInput{TargetProjectIdentifier: body.TargetProjectIdentifier})
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, res, nil
 	})
 }
 
