@@ -23,6 +23,7 @@
     { "name": "activity", "description": "Project and workspace activity feeds" },
     { "name": "analytics", "description": "Analytics summaries, burndown, trends" },
     { "name": "workload", "description": "Per-member workload report and weekly capacity" },
+    { "name": "risk", "description": "Per-project risk scores and contributing factors" },
     { "name": "time", "description": "Time tracking entries and summaries" },
     { "name": "templates", "description": "Issue templates" },
     { "name": "project-templates", "description": "Workspace project templates (blueprints applied at project creation)" },
@@ -279,6 +280,15 @@
           { "name": "project", "in": "query", "schema": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "description": "Repeatable: scope issue counting to these projects (default: all workspace projects). A malformed id is 400; a project of another workspace is 404." }
         ],
         "responses": { "200": { "description": "Workload report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkloadReport" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/risk": {
+      "get": {
+        "tags": ["risk"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Per-project risk report",
+        "description": "Aggregates, per workspace project: heuristic risk score (0-100), risk level (healthy/watch/at-risk/critical), and the top contributing factors (overdue, stalled, unassigned issues, overloaded members) with ratios and human-readable detail strings. Any workspace member (guest 5+) may read. Project-level aggregates only; no per-member data. Formula: round(35*overdue_ratio + 25*stalled_share + 20*unassigned_share + 20*overload_share). Overdue = target_date before today on an open issue; stalled = no activity in 7 days (activity log, issues.updated_at fallback); overload_share reuses the workload overloaded flag over all workspace members. Heuristic composite, not a prediction — see docs/risk.md.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Risk report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RiskReport" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/members/{userId}/capacity": {
@@ -2395,6 +2405,35 @@
         "properties": {
           "user_id": { "type": "string", "format": "uuid" },
           "weekly_capacity_points": { "type": "integer", "nullable": true }
+        }
+      },
+      "RiskReport": {
+        "type": "object",
+        "properties": {
+          "projects": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectRisk" } },
+          "generated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProjectRisk": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "format": "uuid" },
+          "identifier": { "type": "string" },
+          "name": { "type": "string" },
+          "open_count": { "type": "integer" },
+          "risk_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "risk_level": { "type": "string", "enum": ["healthy", "watch", "at-risk", "critical"] },
+          "factors": { "type": "array", "items": { "$ref": "#/components/schemas/RiskFactor" }, "description": "Top contributing factors, descending by score contribution; empty when nothing contributes" },
+          "generated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RiskFactor": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string", "enum": ["overdue", "stalled", "unassigned", "overload"] },
+          "label": { "type": "string" },
+          "value": { "type": "number", "minimum": 0, "maximum": 1, "description": "Share of open work (or of members for overload) covered by this factor, 0-1" },
+          "detail": { "type": "string", "description": "Human-readable breakdown, e.g. \"3 of 12 open issues overdue\"" }
         }
       },
       "Project": {

@@ -80,6 +80,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterOverviewRoutes(e, issueHandler)
 	// C29T0: keep in lockstep with cmd/glance/main.go.
 	RegisterWorkloadRoutes(e, &WorkloadHandler{})
+	// C30T1: keep in lockstep with cmd/glance/main.go.
+	RegisterRiskRoutes(e, &RiskHandler{})
 
 	RegisterFavoriteRoutes(e, &FavoriteHandler{})
 
