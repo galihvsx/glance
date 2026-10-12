@@ -165,7 +165,12 @@ func TestTimeUnknownIssue(t *testing.T) {
 func TestGetTimeSummary(t *testing.T) {
 	ctx, pool, slug, ident, actor, issueID := setupTimeTest(t)
 
-	now := time.Now().UTC()
+	// Noon UTC today: the "yesterday"/"today" entries below must not
+	// straddle a UTC day boundary. The old time.Now().UTC() flaked when
+	// the suite ran 00:00–02:00 UTC (the "today" entry spanned two days,
+	// yielding 3 non-zero buckets instead of 2). Documented in
+	// docs/FLAKES.md; fixed in cycle 24.
+	now := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
 	// 2h yesterday + 1h today by actor.
 	if _, err := LogTimeEntry(ctx, pool, slug, ident, issueID, actor,
 		now.Add(-26*time.Hour), now.Add(-24*time.Hour), "yesterday"); err != nil {
