@@ -63,6 +63,10 @@ type Page struct {
 	AuthorID  *string `json:"author_id,omitempty"`
 	CreatedAt string  `json:"created_at"`
 	UpdatedAt string  `json:"updated_at"`
+	// Reactions is the embedded reaction groups for GET page detail
+	// (C24T3): the same ReactionGroup shape as issue reactions.
+	// Nil on create/update/list responses; populated on detail.
+	Reactions []*ReactionGroup `json:"reactions,omitempty"`
 }
 
 // PageRevision is one content snapshot.
@@ -239,6 +243,15 @@ func GetPage(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorI
 	if err != nil {
 		return nil, err
 	}
+	// C24T3: embed the reaction groups on detail, same ReactionGroup
+	// shape as issue reactions. The detail's read surface is page read
+	// (workspace membership), so reactions ride along on it — same
+	// visibility as the page itself.
+	groups, err := listPageReactions(ctx, pool, p.ID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	p.Reactions = groups
 	return &p, nil
 }
 

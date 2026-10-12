@@ -74,6 +74,7 @@ const baseProps = {
   structureLoading: false,
   onAddToCycle: () => {},
   onAddToModule: () => {},
+  onMoveToProject: () => {},
   organizeApplying: false,
   organizeError: null,
 };

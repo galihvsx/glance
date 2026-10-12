@@ -18,6 +18,7 @@ import {
 import { api, ApiError } from "../lib/api";
 import { Markdown } from "../components/Markdown";
 import PageComments from "../components/page/PageComments";
+import PageReactions from "../components/page/PageReactions";
 import type { Page, PageRevision } from "../lib/types";
 import { cn } from "../lib/utils";
 import PageHeader from "../components/shell/PageHeader";
@@ -515,6 +516,14 @@ export default function Pages() {
                   )}
                 </CardContent>
               </Card>
+              {/* C24T3: page reactions row (optimistic) + comments thread. */}
+              <div className="mt-4">
+                <PageReactions
+                  slug={slug}
+                  identifier={identifier}
+                  pageId={selected.id}
+                />
+              </div>
               {/* C18T2: page comments thread + count badge. */}
               <div className="mt-4">
                 <PageComments

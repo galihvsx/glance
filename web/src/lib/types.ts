@@ -371,6 +371,16 @@ export interface Page {
   author_id?: string | null;
   created_at: string;
   updated_at: string;
+  /** Embedded on GET page detail (C24T3); omitted on list/create/update. */
+  reactions?: ReactionGroup[];
+}
+
+/** One reaction group (C24T3): an emoji, its total count, and whether
+ *  the caller reacted — the same shape as GET issue reactions. */
+export interface ReactionGroup {
+  emoji: string;
+  count: number;
+  reacted: boolean;
 }
 
 /** One content snapshot of a page (newest first from the API). */
