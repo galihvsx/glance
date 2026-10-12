@@ -313,6 +313,8 @@ func main() {
 	api.RegisterOverviewRoutes(e, issueHandler) // C8T5: project overview page
 	// C29T0: workload & capacity report + member capacity writes.
 	api.RegisterWorkloadRoutes(e, &api.WorkloadHandler{Pool: pool})
+	// C30T1: workspace project risk radar (heuristic health scores).
+	api.RegisterRiskRoutes(e, &api.RiskHandler{Pool: pool})
 
 	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
 	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})
