@@ -25,6 +25,9 @@ const (
 	ErrCodeGone            = "gone"
 	ErrCodePayloadTooLarge = "payload_too_large"
 	ErrCodeInternal        = "internal"
+	// ErrCodeScheduleNotFound is the 404 code (C28T2) for an unknown
+	// recurring schedule id within a confirmed project.
+	ErrCodeScheduleNotFound = "schedule_not_found"
 	// ErrCodeAINotConfigured is the 503 code for the AI assist endpoints
 	// when no provider key is configured (C5T2): an honest "not
 	// configured" rather than a fake error or a 500.
