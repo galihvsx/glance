@@ -225,6 +225,13 @@ func main() {
 		log.Printf("glance: scheduled automation triggers disabled (GLANCE_AUTOMATION_SCHEDULE_INTERVAL empty)")
 	}
 
+	// Recurring-schedule ticker (C28T1): creates issues for schedules
+	// whose next_run_at has arrived. Same in-process, one-instance design
+	// as the other tickers; the no-double-run guarantee lives in
+	// service.ExecuteSchedule's atomic claim, not in instance count.
+	recurringTicker := &ticker.RecurringTicker{Pool: pool, Interval: time.Minute}
+	recurringTicker.Start(ctx)
+
 	e := echo.New()
 
 	// C2T8: proxy headers (X-Forwarded-For) feed IP-keyed rate limits via

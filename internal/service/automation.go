@@ -1282,9 +1282,12 @@ func automationAddLabelTx(ctx context.Context, tx pgx.Tx, wsID, issueID, actorID
 	return nil
 }
 
-// automationCommentDoc builds the minimal TipTap doc the frontend's
-// tiptapText() renders: one paragraph per line of body text.
-func automationCommentDoc(body string) json.RawMessage {
+// TiptapDocFromText builds the minimal TipTap doc the frontend's
+// tiptapText() renders: one paragraph per line of body text. Exported so
+// the recurring-schedule executor (recurring_execute.go) and future
+// callers reuse the one canonical plain-text → TipTap conversion
+// instead of duplicating the builder.
+func TiptapDocFromText(body string) json.RawMessage {
 	var b strings.Builder
 	b.WriteString(`{"type":"doc","content":[`)
 	for i, p := range strings.Split(body, "\n") {
@@ -1309,7 +1312,7 @@ func automationAddCommentTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ide
 	if body == "" {
 		return nil, ErrInvalidAutomationAction
 	}
-	content := automationCommentDoc(body)
+	content := TiptapDocFromText(body)
 	var id string
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO comments (issue_id, actor_id, content)
