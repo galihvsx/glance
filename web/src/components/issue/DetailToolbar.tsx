@@ -2,6 +2,7 @@ import {
   Bell,
   BellOff,
   Copy,
+  CopyPlus,
   CornerDownRight,
   CornerUpLeft,
   ExternalLink,
@@ -85,6 +86,8 @@ export default function DetailToolbar({
   converting,
   onConvertToSubIssue,
   onConvertToIssue,
+  merging,
+  onMarkDuplicate,
   onCopyLink,
   onShare,
 }: {
@@ -113,6 +116,9 @@ export default function DetailToolbar({
   converting: boolean;
   onConvertToSubIssue: () => void;
   onConvertToIssue: () => void;
+  /** C25T3: duplicate merge. */
+  merging: boolean;
+  onMarkDuplicate: () => void;
   onCopyLink: () => void;
   onShare: () => void;
 }) {
@@ -240,6 +246,14 @@ export default function DetailToolbar({
                 Convert to issue
               </DropdownMenuItem>
             )}
+            <DropdownMenuItem
+              onClick={onMarkDuplicate}
+              disabled={merging}
+              title="Close as a duplicate of another issue"
+            >
+              <CopyPlus className="h-3.5 w-3.5" />
+              {merging ? "Merging…" : "Mark as duplicate…"}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
