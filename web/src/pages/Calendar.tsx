@@ -9,6 +9,7 @@ import { usePeekParam } from "../components/issue/usePeek";
 import { IssueChip } from "../components/calendar/IssueChip";
 import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
 import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
+import { DroppableWeekColumn } from "../components/calendar/DroppableWeekColumn";
 import { ScheduleDnd } from "../components/calendar/ScheduleDnd";
 import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
 import { api, ApiError } from "../lib/api";
@@ -270,6 +271,18 @@ export default function Calendar() {
     }
   }
 
+  // Shared by the month and week ScheduleDnd wrappers — the same drag
+  // language in both views (C26T0 month, C26T1 week).
+  const scheduleOverlay = activeIssue ? (
+    <div className="w-56 rotate-2 rounded-[6px] border border-border bg-surface p-1 shadow-lg">
+      <IssueChip
+        issue={activeIssue}
+        state={statesById.get(activeIssue.state_id)}
+        onOpen={() => undefined}
+      />
+    </div>
+  ) : undefined;
+
   return (
     <>
       {/* C19T4: shared page header replaces the per-page ProjectNav. */}
@@ -364,9 +377,15 @@ export default function Calendar() {
         ) : (
           <>
             {view === "week" ? (
-              // Week view: 7 day-columns, Mon–Sun, day granularity (issues
-              // carry dates, not times — no hour grid). Chips reuse the
-              // month-view IssueChip language.
+              // C26T1: week view is drag-reschedulable like the month grid —
+              // same ScheduleDnd wiring, handlers, mutation and
+              // announcements. Columns are tall with no internal scroll, so
+              // the whole column is the drop target.
+              <ScheduleDnd
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                overlay={scheduleOverlay}
+              >
               <div className="overflow-hidden rounded-md border border-border">
                 <div className="grid grid-cols-7 border-b border-border-hairline bg-raised">
                   {cells.map((date) => {
@@ -405,45 +424,35 @@ export default function Calendar() {
                     const issues = byDay.get(key) ?? [];
                     const isToday = key === todayKey;
                     return (
-                      <div
+                      <DroppableWeekColumn
                         key={key}
-                        className={cn(
-                          "min-h-64 p-1 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-r-border-hairline",
-                          isToday && "bg-[rgba(79,142,247,0.05)]",
-                        )}
+                        dayKey={key}
+                        isToday={isToday}
                       >
                         <div className="space-y-0.5">
                           {issues.map((issue) => (
-                            <IssueChip
+                            <DraggableIssueChip
                               key={issue.id}
                               issue={issue}
                               state={statesById.get(issue.state_id)}
                               onOpen={() => openPeek(issue.id)}
+                              disabled={!canEdit}
                             />
                           ))}
                         </div>
-                      </div>
+                      </DroppableWeekColumn>
                     );
                   })}
                 </div>
               </div>
+              </ScheduleDnd>
             ) : (
               // C26T0: month grid is drag-reschedulable — day cells are
               // droppables, chips are draggables (disabled for guests).
               <ScheduleDnd
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
-                overlay={
-                  activeIssue ? (
-                    <div className="w-56 rotate-2 rounded-[6px] border border-border bg-surface p-1 shadow-lg">
-                      <IssueChip
-                        issue={activeIssue}
-                        state={statesById.get(activeIssue.state_id)}
-                        onOpen={() => undefined}
-                      />
-                    </div>
-                  ) : undefined
-                }
+                overlay={scheduleOverlay}
               >
               <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
                 {WEEKDAYS.map((d) => (
