@@ -435,3 +435,46 @@ func TestExecuteScheduleNoDoubleRun(t *testing.T) {
 		t.Fatalf("issues = %d, want 1", n)
 	}
 }
+
+func TestExecuteScheduleActorOverride(t *testing.T) {
+	ctx, pool, slug, wsID, actor, projectID, _, _, _, overrider := executeTestSetup(t)
+
+	runAt := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	in := validScheduleInput()
+	in.Frequency = "daily"
+	in.DaysOfWeek = nil
+	s := mustDueSchedule(t, ctx, pool, slug, projectID, actor, in, runAt)
+
+	// run-now path: a different workspace member fires the occurrence;
+	// the issue is attributed to the caller, the schedule stays active.
+	iss, err := ExecuteSchedule(ctx, pool, wsID, projectID, s, runAt, overrider)
+	if err != nil || iss == nil {
+		t.Fatalf("override run: issue=%v err=%v", iss, err)
+	}
+	if iss.CreatedBy != overrider {
+		t.Fatalf("issue created_by = %q, want override %q", iss.CreatedBy, overrider)
+	}
+	if after := reloadSchedule(t, ctx, pool, slug, projectID, s.ID, actor); !after.Active {
+		t.Fatalf("override run deactivated the schedule")
+	}
+}
+
+func TestExecuteScheduleActorOverrideNonMember(t *testing.T) {
+	ctx, pool, slug, wsID, actor, projectID, _, _, _, _ := executeTestSetup(t)
+
+	runAt := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	in := validScheduleInput()
+	in.Frequency = "daily"
+	in.DaysOfWeek = nil
+	s := mustDueSchedule(t, ctx, pool, slug, projectID, actor, in, runAt)
+
+	// A non-member override is rejected without touching the schedule.
+	stranger := "00000000-0000-0000-0000-000000000000"
+	_, err := ExecuteSchedule(ctx, pool, wsID, projectID, s, runAt, stranger)
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden", err)
+	}
+	if after := reloadSchedule(t, ctx, pool, slug, projectID, s.ID, actor); !after.Active {
+		t.Fatalf("non-member override deactivated the schedule")
+	}
+}

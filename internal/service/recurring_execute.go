@@ -211,9 +211,13 @@ func resolveScheduleSlugs(ctx context.Context, q queryRower, wsID, projID string
 
 // ExecuteSchedule executes ONE occurrence of the schedule at runAt,
 // returning the created issue. The signature's wsID/projID are UUIDs
-// (matching RecurringSchedule.WorkspaceID/ProjectID); actorID is the
-// ticker-determined actor and must equal the schedule's creator —
-// attribution always stays with created_by.
+// (matching RecurringSchedule.WorkspaceID/ProjectID). actorID selects
+// attribution: "" (or the creator's id) attributes to the schedule's
+// creator — the ticker path, which re-validates creator membership and
+// deactivates on a stale actor; an explicit different id attributes to
+// that user — the HTTP run-now path, which requires the override to be
+// a workspace member (a non-member override is ErrForbidden, never a
+// silent misattribution, and never deactivates the schedule).
 //
 // Claim protocol (the no-double-run guarantee): the schedule row is
 // re-read FOR UPDATE in a tx; if the row is inactive, or its
@@ -278,12 +282,28 @@ func ExecuteSchedule(ctx context.Context, pool *pgxpool.Pool, wsID, projID strin
 		return nil, err
 	}
 	if actorID != "" && actorID != actor {
-		// The caller's actor must be the schedule's creator: silently
-		// substituting another user would misattribute the issue.
-		if cerr := tx.Commit(ctx); cerr != nil {
-			return nil, cerr
+		// Explicit actor override (the HTTP run-now action runs as the
+		// calling user): the override must be a workspace member —
+		// attributing to a stranger would be a silent misattribution.
+		// A non-member override is a client error, not a schedule
+		// defect, so the schedule is NOT deactivated.
+		if !isUUIDFormat(actorID) {
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return nil, cerr
+			}
+			return nil, ErrForbidden
 		}
-		return nil, staleRefError("actor", actorID)
+		var one int
+		if merr := tx.QueryRow(ctx,
+			`SELECT 1 FROM workspace_members
+			  WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
+			wsID, actorID).Scan(&one); merr != nil {
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return nil, cerr
+			}
+			return nil, ErrForbidden
+		}
+		actor = actorID
 	}
 
 	// Exhaustion: the due run itself falls past ends_on (ends_on was
