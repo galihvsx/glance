@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -643,5 +644,112 @@ func TestRecurringScheduleHTTPRunNowStaleLabel(t *testing.T) {
 	upd := decodeSchedule(t, rec.Body.Bytes())
 	if upd.Active {
 		t.Fatalf("stale-label schedule still active")
+	}
+}
+
+// singleWriteRecorder wraps httptest.ResponseRecorder and counts every
+// body Write at the underlying writer. Why not count WriteHeader: echo
+// guards the second WriteHeader itself ("response already written to
+// client") before it reaches the writer, so a counting WriteHeader
+// still reads 1 on the buggy code — but the second response body IS
+// appended to the wire bytes. One c.JSON = exactly one Write, so
+// bodyWrites == 1 means the pipeline produced exactly one response.
+type singleWriteRecorder struct {
+	*httptest.ResponseRecorder
+	bodyWrites int
+}
+
+func (w *singleWriteRecorder) Write(b []byte) (int, error) {
+	w.bodyWrites++
+	return w.ResponseRecorder.Write(b)
+}
+
+// TestRecurringScheduleGuestRunNowWritesOnce is the regression test for
+// the requireScheduleMember double-write: the old helper returned
+// WriteError(...) as its error value, and WriteError answers with nil
+// on a successful write, so the call site's err != nil check never
+// fired — the handler kept running after the 403 was already written.
+// On the old code the handler then falls through into GetSchedule and
+// ExecuteSchedule; the service layer happens to re-check the role and
+// answers 403 again, so the second WriteError produces a second body
+// write while echo swallows the second WriteHeader (logging "response
+// already written to client"). The client-facing status stays 403 —
+// which is why the old status-code-only tests passed — but the body is
+// two concatenated JSON envelopes, unparseable by a strict client.
+// This test FAILS on the old code (two body writes, corrupt envelope)
+// and PASSES on the fix.
+func TestRecurringScheduleGuestRunNowWritesOnce(t *testing.T) {
+	e, cookie, slug, _, base := setupRecurringHTTP(t)
+	pool := newTestPool(t)
+
+	s := createDailySchedule(t, e, base, cookie, "")
+	if !s.Active || s.NextRunAt == "" {
+		t.Fatalf("schedule must be active with a pending run: %+v", s)
+	}
+
+	// Guest (role 5) member.
+	guestCookie := loginTestUser(t, e, pool, uniqueEmail("h-rec-once"), "test-agent/1.0", uniqueIP())
+	guestID := authedUserID(t, e, guestCookie)
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", cookie,
+		fmt.Sprintf(`{"user_id":%q,"role":5}`, guestID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add guest: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var issuesBefore int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id
+		  JOIN workspaces w ON w.id = p.workspace_id WHERE w.slug = $1`,
+		slug).Scan(&issuesBefore); err != nil {
+		t.Fatalf("count issues before: %v", err)
+	}
+
+	// Serve the guest run-now through the single-write recorder.
+	req := httptest.NewRequest(http.MethodPost, base+"/"+s.ID+"/run-now", nil)
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	req.AddCookie(guestCookie)
+	cr := &singleWriteRecorder{ResponseRecorder: httptest.NewRecorder()}
+	e.ServeHTTP(cr, req)
+
+	if cr.bodyWrites != 1 {
+		t.Fatalf("run-now produced %d response body writes, want exactly 1 (status %d, body: %s)",
+			cr.bodyWrites, cr.Code, cr.Body.String())
+	}
+	if cr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body: %s)", cr.Code, cr.Body.String())
+	}
+	// A single, well-formed error envelope — the old code's double
+	// write leaves two concatenated JSON values here, which a strict
+	// client cannot parse.
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(cr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode 403 envelope: %v (body: %s)", err, cr.Body.String())
+	}
+	if env.Error.Code != ErrCodeForbidden || env.Error.Message == "" {
+		t.Fatalf("malformed 403 envelope: body=%s", cr.Body.String())
+	}
+	for _, leak := range []string{`"issue"`, `"schedule"`} {
+		if strings.Contains(cr.Body.String(), leak) {
+			t.Fatalf("body must not contain business payload key %s: %s", leak, cr.Body.String())
+		}
+	}
+
+	// No fall-through into business logic: the denied guest's run-now
+	// must not have created an issue.
+	var issuesAfter int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id
+		  JOIN workspaces w ON w.id = p.workspace_id WHERE w.slug = $1`,
+		slug).Scan(&issuesAfter); err != nil {
+		t.Fatalf("count issues after: %v", err)
+	}
+	if issuesAfter != issuesBefore {
+		t.Fatalf("issue count changed %d → %d: run-now business logic ran for a denied guest",
+			issuesBefore, issuesAfter)
 	}
 }
