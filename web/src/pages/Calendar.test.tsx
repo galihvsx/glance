@@ -59,6 +59,19 @@ vi.mock("../lib/api", () => ({
           workspaces: [{ slug: "acme", name: "Acme" }],
         });
       }
+      // C26T0: workspace role query (same as the board's) — member role so
+      // drag is enabled under test.
+      if (/^\/api\/v1\/workspaces\/[^/]+$/.test(path)) {
+        return Promise.resolve({
+          id: "w1",
+          slug: "acme",
+          name: "Acme",
+          role: 15,
+          slack_configured: false,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        });
+      }
       if (path.includes("/states")) {
         return Promise.resolve({ states: [] });
       }

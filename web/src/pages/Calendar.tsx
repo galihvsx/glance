@@ -1,18 +1,24 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
+import { IssueChip } from "../components/calendar/IssueChip";
+import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
+import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
+import { ScheduleDnd } from "../components/calendar/ScheduleDnd";
+import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
 import { api, ApiError } from "../lib/api";
-import { stateDotClass } from "../lib/stateDot";
 import {
   createFeedToken,
   fetchFeedTokenStatus,
   projectFeedURL,
 } from "../lib/calendarFeed";
-import type { Issue, IssueListResult, IssueState } from "../lib/types";
+import { resolveScheduleDrop } from "../lib/calendar-dnd";
+import type { Issue, IssueListResult, IssueState, Workspace } from "../lib/types";
 import {
   bucketIssuesByDay,
   dayKey,
@@ -60,34 +66,6 @@ async function fetchAllIssues(path: string): Promise<Issue[]> {
     cursor = res.next_cursor;
   } while (cursor);
   return out;
-}
-
-function IssueChip({
-  issue,
-  state,
-  onOpen,
-}: {
-  issue: Issue;
-  state?: IssueState;
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title={`${issue.display_id}: ${issue.name}`}
-      className="flex w-full items-center gap-1.5 rounded-[4px] px-1.5 py-[3px] text-left text-[11px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
-    >
-      <span
-        className={cn("state-dot", stateDotClass(state?.group))}
-        aria-hidden
-      />
-      <span className="shrink-0 font-mono text-[10px] text-ink-muted">
-        {issue.display_id}
-      </span>
-      <span className="truncate">{issue.name}</span>
-    </button>
-  );
 }
 
 export default function Calendar() {
@@ -171,6 +149,14 @@ export default function Calendar() {
     queryFn: () =>
       api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
   });
+  // C26T0: same workspace role gate as the board — drag is disabled for
+  // guests (role < 15); the server 403 stays the backstop.
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", slug],
+    queryFn: () =>
+      api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
+  });
+  const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
   const statesById = useMemo(() => {
     const m = new Map<string, IssueState>();
     for (const s of statesQuery.data ?? []) m.set(s.id, s);
@@ -192,6 +178,33 @@ export default function Calendar() {
 
   const loading = dueQuery.isLoading || startQuery.isLoading || undatedQuery.isLoading;
   const error = dueQuery.error ?? startQuery.error ?? undatedQuery.error;
+
+  // C26T0: month-grid drag-reschedule. The mutation optimistically updates
+  // the calendar caches; a failed PATCH rolls back and toasts the server
+  // message. No toast on success — the chip visibly moves.
+  const scheduleMutation = useScheduleMutation(slug, identifier, { start, end });
+  const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+
+  function handleDragStart(e: DragStartEvent) {
+    const issue = e.active.data.current?.issue as Issue | undefined;
+    setActiveIssue(issue ?? null);
+  }
+
+  function handleDragEnd(e: DragEndEvent) {
+    setActiveIssue(null);
+    if (!canEdit) return;
+    const issue = e.active.data.current?.issue as Issue | undefined;
+    const resolved =
+      issue != null
+        ? resolveScheduleDrop(issue, e.over != null ? String(e.over.id) : null)
+        : null;
+    if (resolved == null) return; // no-op drop → no PATCH
+    scheduleMutation.mutate(
+      { uuid: resolved.uuid, dates: resolved.dates },
+      { onSuccess: () => setAnnouncement(resolved.announcement) },
+    );
+  }
 
   const todayKey = dayKey(new Date());
   const monthLabel = new Date(
@@ -415,6 +428,23 @@ export default function Calendar() {
                 </div>
               </div>
             ) : (
+              // C26T0: month grid is drag-reschedulable — day cells are
+              // droppables, chips are draggables (disabled for guests).
+              <ScheduleDnd
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                overlay={
+                  activeIssue ? (
+                    <div className="w-56 rotate-2 rounded-[6px] border border-border bg-surface p-1 shadow-lg">
+                      <IssueChip
+                        issue={activeIssue}
+                        state={statesById.get(activeIssue.state_id)}
+                        onOpen={() => undefined}
+                      />
+                    </div>
+                  ) : undefined
+                }
+              >
               <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
                 {WEEKDAYS.map((d) => (
                   <div
@@ -430,12 +460,10 @@ export default function Calendar() {
                   const isToday = key === todayKey;
                   const isOtherMonth = date.getMonth() !== anchor.getMonth();
                   return (
-                    <div
+                    <DroppableDayCell
                       key={key}
-                      className={cn(
-                        "min-h-24 border-b border-border-hairline p-1 [&:not(:nth-child(7n))]:border-r [&:not(:nth-child(7n))]:border-r-border-hairline",
-                        isOtherMonth && "opacity-40",
-                      )}
+                      dayKey={key}
+                      isOtherMonth={isOtherMonth}
                     >
                       <div
                         className={cn(
@@ -449,19 +477,26 @@ export default function Calendar() {
                       </div>
                       <div className="max-h-20 space-y-0.5 overflow-y-auto">
                         {issues.map((issue) => (
-                          <IssueChip
+                          <DraggableIssueChip
                             key={issue.id}
                             issue={issue}
                             state={statesById.get(issue.state_id)}
                             onOpen={() => openPeek(issue.id)}
+                            disabled={!canEdit}
                           />
                         ))}
                       </div>
-                    </div>
+                    </DroppableDayCell>
                   );
                 })}
               </div>
+              </ScheduleDnd>
             )}
+
+            {/* C26T0: polite live region announces drag-reschedule drops. */}
+            <div aria-live="polite" className="sr-only">
+              {announcement}
+            </div>
 
             {byDay.size === 0 && undated.length === 0 && (
               <p className="text-[13px] text-ink-muted">

@@ -1,0 +1,91 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError } from "../../lib/api";
+import { issueDay } from "../../lib/calendar";
+import type { ScheduleDates } from "../../lib/calendar-dnd";
+import type { Issue } from "../../lib/types";
+import { toast } from "../ui/toast";
+
+/** Visible range as day keys ("YYYY-MM-DD"), matching the calendar queries. */
+export interface ScheduleRange {
+  start: string;
+  end: string;
+}
+
+function issuePath(slug: string, identifier: string, uuid: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}`;
+}
+
+/**
+ * PATCH an issue's start/target dates with optimistic updates of the
+ * calendar's `due` / `start` / `undated` caches. On failure the caches roll
+ * back and an error toast carries the server message; on success the
+ * caches are invalidated so the server stays the source of truth.
+ */
+export function useScheduleMutation(
+  slug: string,
+  identifier: string,
+  range: ScheduleRange,
+) {
+  const queryClient = useQueryClient();
+  const dueKey = ["calendar", slug, identifier, "due", range.start];
+  const startKey = ["calendar", slug, identifier, "start", range.start];
+  const undatedKey = ["calendar", slug, identifier, "undated"];
+  const keys = [dueKey, startKey, undatedKey];
+
+  return useMutation({
+    mutationFn: ({ uuid, dates }: { uuid: string; dates: ScheduleDates }) =>
+      api.patch<Issue>(issuePath(slug, identifier, uuid), dates),
+    onMutate: async ({ uuid, dates }) => {
+      await Promise.all(
+        keys.map((key) => queryClient.cancelQueries({ queryKey: key })),
+      );
+      const prev = keys.map(
+        (key) => [key, queryClient.getQueryData<Issue[]>(key)] as const,
+      );
+      const applyDates = (issue: Issue): Issue => ({
+        ...issue,
+        ...(dates.start_date
+          ? { start_date: `${dates.start_date}T00:00:00Z` }
+          : {}),
+        ...(dates.target_date
+          ? { target_date: `${dates.target_date}T00:00:00Z` }
+          : {}),
+      });
+      // A moved chip leaves caches it no longer belongs to: a due/start
+      // cache only holds issues placed inside the visible range, and the
+      // undated cache only holds dateless issues.
+      const keep = (key: readonly unknown[], issue: Issue): boolean => {
+        if (issue.id !== uuid) return true;
+        const day = issueDay(applyDates(issue));
+        if (key === undatedKey) return day === null;
+        return day !== null && day >= range.start && day < range.end;
+      };
+      for (const key of keys) {
+        queryClient.setQueryData<Issue[]>(key, (old) =>
+          old
+            ?.map((i) => (i.id === uuid ? applyDates(i) : i))
+            .filter((i) => keep(key, i)),
+        );
+      }
+      return { prev };
+    },
+    onError: (err, _vars, context) => {
+      for (const [key, data] of context?.prev ?? []) {
+        queryClient.setQueryData(key, data);
+      }
+      toast.add({
+        title: "Couldn't reschedule issue",
+        description:
+          err instanceof ApiError
+            ? err.message
+            : "The date change wasn't saved.",
+        type: "error",
+      });
+    },
+    onSettled: () => {
+      for (const key of keys) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+}
