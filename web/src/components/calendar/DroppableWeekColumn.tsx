@@ -33,7 +33,12 @@ export function DroppableWeekColumn({
       ref={setNodeRef}
       data-testid={`week-column-${dayKey}`}
       className={cn(
-        "relative min-h-64 p-1 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-r-border-hairline",
+        // C27T3: the bottom-border placeholder gives the drag-over
+        // highlight a border-width to tint — `border-accent-blue/70`
+        // alone renders no visible border. Invisible at rest
+        // (transparent), blue on hover, matching the month cell's
+        // language.
+        "relative min-h-64 border-b border-transparent p-1 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-r-border-hairline",
         onQuickAdd && "group",
         isToday && "bg-[rgba(79,142,247,0.05)]",
         isOver && "border-accent-blue/70 bg-[rgba(79,142,247,0.08)]",

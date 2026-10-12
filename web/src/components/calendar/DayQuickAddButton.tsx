@@ -1,4 +1,5 @@
 import { Plus } from "lucide-react";
+import { formatDropDay } from "../../lib/calendar-dnd";
 
 /**
  * Day-cell quick-add affordance (C26T3). A subtle "+" in the cell corner
@@ -19,6 +20,10 @@ export function DayQuickAddButton({
   dayKey: string;
   onQuickAdd: (dayKey: string) => void;
 }) {
+  // C27T3: accessible name (and tooltip) in the viewer's locale —
+  // formatDropDay is the calendar's established human-date formatter
+  // (also used for drag-drop announcements).
+  const label = `Add issue on ${formatDropDay(dayKey)}`;
   return (
     <button
       type="button"
@@ -30,8 +35,8 @@ export function DayQuickAddButton({
         onQuickAdd(dayKey);
       }}
       className="absolute right-1 top-1 inline-flex h-6 w-6 items-center justify-center rounded-[4px] text-ink-muted opacity-0 transition-opacity hover:bg-wash-hover hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-      title={`Add issue on ${dayKey}`}
-      aria-label={`Add issue on ${dayKey}`}
+      title={label}
+      aria-label={label}
     >
       <Plus className="h-[15px] w-[15px]" aria-hidden />
     </button>
