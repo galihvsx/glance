@@ -22,6 +22,7 @@
     { "name": "intake", "description": "Intake inbox triage" },
     { "name": "activity", "description": "Project and workspace activity feeds" },
     { "name": "analytics", "description": "Analytics summaries, burndown, trends" },
+    { "name": "workload", "description": "Per-member workload report and weekly capacity" },
     { "name": "time", "description": "Time tracking entries and summaries" },
     { "name": "templates", "description": "Issue templates" },
     { "name": "project-templates", "description": "Workspace project templates (blueprints applied at project creation)" },
@@ -266,6 +267,28 @@
         "description": "Admin only; removing the last admin is refused.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/workload": {
+      "get": {
+        "tags": ["workload"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Per-member workload report",
+        "description": "Aggregates, per workspace member: open assigned issue count, open estimate-point sum, overdue open count, open count by priority, issues completed in the last 14 days (velocity), weekly capacity, and an overloaded flag (capacity set, positive, and open points exceed it); plus per-project open unassigned counts. Any workspace member (guest 5+) may read. Estimates come from estimate_points.value (unestimated = 0); open = live (not deleted/archived) and not in a done state group; overdue = target_date before today.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "project", "in": "query", "schema": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "description": "Repeatable: scope issue counting to these projects (default: all workspace projects). A malformed id is 400; a project of another workspace is 404." }
+        ],
+        "responses": { "200": { "description": "Workload report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkloadReport" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/members/{userId}/capacity": {
+      "put": {
+        "tags": ["workload"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set a member's weekly capacity",
+        "description": "Member (15)+. Sets the member's weekly capacity in estimate points; explicit JSON null clears it back to NULL (unset members never trip the overloaded flag). Values must be 0..999. Idempotent: re-setting the same value is a no-op success.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "userId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["weekly_capacity_points"], "properties": { "weekly_capacity_points": { "type": "integer", "minimum": 0, "maximum": 999, "nullable": true, "description": "Weekly budget in estimate points; null clears" } } } } } },
+        "responses": { "200": { "description": "Capacity set", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CapacitySet" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/invites": {
@@ -2323,6 +2346,55 @@
         "properties": {
           "email": { "type": "string" },
           "status": { "type": "string", "enum": ["invited", "already-member", "not-registered", "invalid"] }
+        }
+      },
+      "WorkloadPriority": {
+        "type": "object",
+        "properties": {
+          "urgent": { "type": "integer" },
+          "high": { "type": "integer" },
+          "medium": { "type": "integer" },
+          "low": { "type": "integer" },
+          "none": { "type": "integer" }
+        }
+      },
+      "WorkloadMember": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "display_name": { "type": "string" },
+          "role": { "type": "integer", "description": "5 = guest, 10 = viewer (read-only), 15 = member, 20 = admin" },
+          "weekly_capacity_points": { "type": "integer", "nullable": true, "description": "Weekly budget in estimate points; null = unset" },
+          "open_count": { "type": "integer" },
+          "open_points": { "type": "integer", "description": "Sum of estimate_points.value over open assigned issues (unestimated = 0)" },
+          "overdue_count": { "type": "integer", "description": "Open assigned issues with target_date before today" },
+          "priority": { "$ref": "#/components/schemas/WorkloadPriority" },
+          "completed_14d": { "type": "integer", "description": "Assigned issues whose state transitioned into a done group in the last 14 days" },
+          "overloaded": { "type": "boolean", "description": "True when capacity is set, positive, and open_points exceeds it" },
+          "project_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Scoped projects holding the member's open issues (never null)" }
+        }
+      },
+      "WorkloadUnassigned": {
+        "type": "object",
+        "properties": {
+          "project_id": { "type": "string", "format": "uuid" },
+          "project_identifier": { "type": "string" },
+          "open_count": { "type": "integer", "description": "Open issues with no assignee" }
+        }
+      },
+      "WorkloadReport": {
+        "type": "object",
+        "properties": {
+          "members": { "type": "array", "items": { "$ref": "#/components/schemas/WorkloadMember" } },
+          "unassigned": { "type": "array", "items": { "$ref": "#/components/schemas/WorkloadUnassigned" } },
+          "generated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CapacitySet": {
+        "type": "object",
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "weekly_capacity_points": { "type": "integer", "nullable": true }
         }
       },
       "Project": {

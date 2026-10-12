@@ -311,6 +311,8 @@ func main() {
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
 	api.RegisterActivityRoutes(e, issueHandler)
 	api.RegisterOverviewRoutes(e, issueHandler) // C8T5: project overview page
+	// C29T0: workload & capacity report + member capacity writes.
+	api.RegisterWorkloadRoutes(e, &api.WorkloadHandler{Pool: pool})
 
 	// C7T4: favorites (star issues/projects) — auth-only, caller's own.
 	api.RegisterFavoriteRoutes(e, &api.FavoriteHandler{Pool: pool})
