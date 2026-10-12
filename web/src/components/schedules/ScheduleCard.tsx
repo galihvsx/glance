@@ -13,7 +13,7 @@ import {
   type RecurringSchedule,
 } from "../../lib/schedules";
 
-function absoluteTime(iso: string | null): string | null {
+function absoluteTime(iso: string | null | undefined): string | null {
   if (!iso || iso.startsWith("0001-01-01")) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
