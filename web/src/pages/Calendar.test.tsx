@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Calendar from "./Calendar";
 import { ApiError } from "../lib/api";
 import { dayKey, startOfWeek, weekGrid } from "../lib/calendar";
+import { formatDropDay } from "../lib/calendar-dnd";
 import type { Issue } from "../lib/types";
 
 // jsdom has no PointerEvent — the dnd-kit sensors need isPrimary/clientX.
@@ -637,7 +638,7 @@ describe("Calendar day-cell quick-add", () => {
     const user = userEvent.setup();
     renderCalendarWithIssuesRoute();
     const btn = await screen.findByRole("button", {
-      name: `Add issue on ${todayKey}`,
+      name: `Add issue on ${formatDropDay(todayKey)}`,
     });
     await user.click(btn);
     await waitFor(() => expect(lastLocation).not.toBeNull());
@@ -652,7 +653,7 @@ describe("Calendar day-cell quick-add", () => {
     const user = userEvent.setup();
     renderCalendarWithIssuesRoute();
     const btn = await screen.findByRole("button", {
-      name: `Add issue on ${todayKey}`,
+      name: `Add issue on ${formatDropDay(todayKey)}`,
     });
     btn.focus();
     await user.keyboard("{Enter}");
@@ -678,7 +679,7 @@ describe("Calendar day-cell quick-add", () => {
     await switchToWeek();
     const keys = weekDayKeys();
     await user.click(
-      screen.getByRole("button", { name: `Add issue on ${keys[3]}` }),
+      screen.getByRole("button", { name: `Add issue on ${formatDropDay(keys[3])}` }),
     );
     await waitFor(() => expect(lastLocation).not.toBeNull());
     expect(lastLocation!.state).toEqual({
