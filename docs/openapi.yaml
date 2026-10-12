@@ -473,6 +473,55 @@
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlaneImportReport" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "413": { "$ref": "#/components/responses/PayloadTooLarge" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/schedules": {
+      "get": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List recurring issue schedules",
+        "description": "The project's scheduled-issue rules ordered by creation. Any workspace member (guest 5+) may read. Beyond Plane: Plane has no native scheduled issue creation; glance ships it free.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Schedules (never null)", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/RecurringSchedule" } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a recurring issue schedule",
+        "description": "Member (15)+. A schedule is a cron-like recipe: every occurrence the ticker creates one issue from title_template/description_template rendered with the run time. All times are UTC in v1; hour is 0..23 UTC; starts_on/ends_on are YYYY-MM-DD dates. A schedule whose ends_on already exhausts it (no first run) is rejected with 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecurringScheduleCreate" } } } },
+        "responses": { "201": { "description": "Created schedule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecurringSchedule" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/schedules/{scheduleID}": {
+      "get": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a recurring schedule",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "scheduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Schedule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecurringSchedule" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a recurring schedule",
+        "description": "Member (15)+. Partial semantics with tri-state for the nullable fields (day_of_month, ends_on, description_template, state_id): an absent key is untouched, explicit null clears it, a value sets it. Cadence changes (frequency/interval/days/hour/starts/ends) recompute next_run_at. An empty patch is a 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "scheduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "active": { "type": "boolean" }, "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly"] }, "interval": { "type": "integer", "minimum": 1 }, "days_of_week": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "description": "0=Sunday..6=Saturday; weekly only" }, "day_of_month": { "type": "integer", "minimum": 1, "maximum": 31, "nullable": true, "description": "monthly only" }, "hour": { "type": "integer", "minimum": 0, "maximum": 23, "description": "UTC hour of day" }, "starts_on": { "type": "string", "format": "date" }, "ends_on": { "type": "string", "format": "date", "nullable": true }, "title_template": { "type": "string" }, "description_template": { "type": "string", "nullable": true }, "state_id": { "type": "string", "format": "uuid", "nullable": true, "description": "null = project backlog state at run time" }, "priority": { "type": "integer", "minimum": 0, "maximum": 4 }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "assignee_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Updated schedule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecurringSchedule" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a recurring schedule",
+        "description": "Member (15)+. Future runs stop; already-created issues are untouched (the schedule owns no issue rows).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "scheduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/schedules/{scheduleID}/run-now": {
+      "post": {
+        "tags": ["recurring"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Fire a schedule's next occurrence now",
+        "description": "Member (15)+. Manual fire for testing a rule: creates the issue for the schedule's pending next_run_at immediately (not at wall-clock now), with the CALLING user as the issue's actor, then advances the schedule exactly like the ticker would. An inactive or exhausted schedule is a 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "scheduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "The created issue and the updated schedule", "content": { "application/json": { "schema": { "type": "object", "properties": { "issue": { "$ref": "#/components/schemas/Issue" }, "schedule": { "$ref": "#/components/schemas/RecurringSchedule" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2099,6 +2148,56 @@
         }
       },
       "Ok": { "type": "object", "properties": { "ok": { "type": "boolean", "example": true } } },
+      "RecurringSchedule": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "active": { "type": "boolean" },
+          "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly"] },
+          "interval": { "type": "integer", "minimum": 1 },
+          "days_of_week": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "description": "0=Sunday..6=Saturday; weekly only" },
+          "day_of_month": { "type": "integer", "minimum": 1, "maximum": 31, "nullable": true, "description": "monthly only" },
+          "hour": { "type": "integer", "minimum": 0, "maximum": 23, "description": "UTC hour of day (v1 runs on UTC)" },
+          "starts_on": { "type": "string", "format": "date" },
+          "ends_on": { "type": "string", "format": "date", "nullable": true },
+          "next_run_at": { "type": "string", "format": "date-time" },
+          "last_run_at": { "type": "string", "format": "date-time", "nullable": true },
+          "run_count": { "type": "integer" },
+          "title_template": { "type": "string" },
+          "description_template": { "type": "string", "nullable": true },
+          "state_id": { "type": "string", "format": "uuid", "nullable": true, "description": "null = the project's backlog state at run time" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+          "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "assignee_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "created_by": { "type": "string", "format": "uuid", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "RecurringScheduleCreate": {
+        "type": "object",
+        "required": ["name", "frequency", "starts_on", "title_template"],
+        "properties": {
+          "name": { "type": "string" },
+          "active": { "type": "boolean", "default": true, "description": "false creates the schedule paused" },
+          "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly"] },
+          "interval": { "type": "integer", "minimum": 1, "default": 1, "description": "every N days/weeks/months" },
+          "days_of_week": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "description": "required for weekly; 0=Sunday..6=Saturday" },
+          "day_of_month": { "type": "integer", "minimum": 1, "maximum": 31, "description": "required for monthly; clamped to the month length at run time (31 in February runs on Feb 28/29)" },
+          "hour": { "type": "integer", "minimum": 0, "maximum": 23, "default": 9, "description": "UTC hour of day (v1 runs on UTC)" },
+          "starts_on": { "type": "string", "format": "date" },
+          "ends_on": { "type": "string", "format": "date", "description": "a schedule with no future run under ends_on is rejected" },
+          "title_template": { "type": "string", "description": "supports {{date}} (YYYY-MM-DD) and {{datetime}} (RFC3339) of the run time" },
+          "description_template": { "type": "string", "description": "same tokens as title_template" },
+          "state_id": { "type": "string", "format": "uuid", "description": "omit for the project's backlog state at run time" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4, "default": 0 },
+          "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+          "assignee_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+        }
+      },
       "Initiative": {
         "type": "object",
         "properties": {

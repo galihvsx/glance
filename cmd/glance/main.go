@@ -300,6 +300,8 @@ func main() {
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterInitiativeRoutes(e, issueHandler)
+	// C28T2: recurring issue schedules (scheduled issue creation).
+	api.RegisterRecurringRoutes(e, projectHandler)
 	api.RegisterPageRoutes(e, issueHandler)
 	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterTemplateRoutes(e, issueHandler)
