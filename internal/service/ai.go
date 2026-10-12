@@ -403,6 +403,173 @@ func stripCodeFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// ---------- AI sub-issue breakdown (C25T1) ----------
+
+const subIssuesSystemPrompt = `You are breaking a software issue into concrete sub-tasks for a busy engineer. ` +
+	`Respond with ONLY a JSON array — no code fences, no preamble, no commentary — of at most the requested number of items, each with a "title" and optionally a "description": ` +
+	`[{"title": "...", "description": "..."}, ...]. ` +
+	`Titles must be concrete and actionable (one clear deliverable each), no duplicates, and cover the whole issue without scope creep. ` +
+	`Descriptions are one or two sentences of acceptance context; omit a description only when the title is self-explanatory.`
+
+// aiSubIssuesMaxChars caps the breakdown prompt the same way the
+// summary prompt is capped (see aiSummarizeMaxChars).
+const aiSubIssuesMaxChars = 12000
+
+// subIssueMaxDefault / subIssueMaxCap are the default and hard clamp
+// for the per-request `max` the UI sends.
+const subIssueMaxDefault = 5
+const subIssueMaxCap = 10
+
+// SubIssueSuggestion is one AI-proposed sub-task: an actionable title
+// plus an optional one-to-two-sentence acceptance description.
+type SubIssueSuggestion struct {
+	Title       string  `json:"title"`
+	Description *string `json:"description,omitempty"`
+}
+
+// subIssuesInput is the assembled issue context for a breakdown
+// prompt. Comments reuse the summarize comment type and flattening.
+type subIssuesInput struct {
+	Title       string
+	Description string
+	Comments    []summarizeComment
+}
+
+// buildSubIssuesUserPrompt assembles the user turn for the breakdown
+// call and caps it at aiSubIssuesMaxChars with a truncation marker.
+// Pure: unit-testable without a DB or provider.
+func buildSubIssuesUserPrompt(in subIssuesInput, max int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Break the following issue into at most %d concrete sub-tasks.\n\n", max)
+	sb.WriteString("Issue: " + strings.TrimSpace(in.Title) + "\n\n")
+	sb.WriteString("Description:\n")
+	if d := strings.TrimSpace(in.Description); d != "" {
+		sb.WriteString(d)
+	} else {
+		sb.WriteString("(no description)")
+	}
+	sb.WriteString("\n\n")
+	if len(in.Comments) > 0 {
+		fmt.Fprintf(&sb, "Comments (%d, oldest first):\n", len(in.Comments))
+		for _, c := range in.Comments {
+			fmt.Fprintf(&sb, "- %s: %s\n", c.Actor, c.Text)
+		}
+	}
+	out := sb.String()
+	if len(out) > aiSubIssuesMaxChars {
+		out = out[:aiSubIssuesMaxChars] + "\n\n[…truncated to fit the AI context]"
+	}
+	return out
+}
+
+// clampSubIssueMax normalizes the request's max: absent/zero/negative
+// → default 5, beyond 10 → 10, otherwise as-is. Pure: unit-tested.
+func clampSubIssueMax(max int) int {
+	if max <= 0 {
+		return subIssueMaxDefault
+	}
+	if max > subIssueMaxCap {
+		return subIssueMaxCap
+	}
+	return max
+}
+
+// parseSubIssueSuggestions parses the provider's JSON-array answer
+// defensively: code fences stripped, prose tolerated around the array
+// (slice from the first '[' to the last ']'), titles trimmed with
+// empties dropped, descriptions trimmed with empties dropped, output
+// clamped to max. Anything else (object instead of array, truncated or
+// non-JSON content, zero usable titles) is a provider-shaped failure →
+// ErrAIProvider, never a crash. Pure: unit-tested.
+func parseSubIssueSuggestions(raw string, max int) ([]SubIssueSuggestion, error) {
+	bad := func() ([]SubIssueSuggestion, error) {
+		return nil, fmt.Errorf("%w: bad response", ErrAIProvider)
+	}
+	s := stripCodeFence(raw)
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start < 0 || end < 0 || end <= start {
+		return bad()
+	}
+	var items []SubIssueSuggestion
+	if err := json.Unmarshal([]byte(s[start:end+1]), &items); err != nil {
+		return bad()
+	}
+	out := make([]SubIssueSuggestion, 0, len(items))
+	for _, it := range items {
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			continue
+		}
+		var desc *string
+		if it.Description != nil {
+			if d := strings.TrimSpace(*it.Description); d != "" {
+				d := d
+				desc = &d
+			}
+		}
+		out = append(out, SubIssueSuggestion{Title: title, Description: desc})
+		if len(out) >= max {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return bad()
+	}
+	return out, nil
+}
+
+// SuggestSubIssues asks the provider to break an issue (title +
+// description + comments) into at most `max` concrete sub-tasks.
+// Member-scoped like SummarizeIssue: the actor must hold role >=
+// RoleMember (guests and non-members get ErrNotFound — the tenancy
+// boundary), a missing issue UUID surfaces ErrIssueNotFound, and the
+// provider is never called on either path. Malformed provider answers
+// surface ErrAIProvider with a generic, honest message.
+func SuggestSubIssues(ctx context.Context, pool *pgxpool.Pool, aiCfg config.AIConfig,
+	wsSlug, identifier, issueUUID, actorID string, max int) ([]SubIssueSuggestion, error) {
+	max = clampSubIssueMax(max)
+	if !aiCfg.Configured() {
+		return nil, ErrAINotConfigured
+	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	_, projectID, role, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrNotFound
+	}
+	item, err := getIssueRow(ctx, pool, ident, projectID, issueUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrIssueNotFound
+		}
+		return nil, err
+	}
+
+	comments, err := ListComments(ctx, pool, wsSlug, ident, issueUUID, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	in := subIssuesInput{
+		Title:       item.Name,
+		Description: tiptapPlainText(item.Description),
+		Comments:    flattenCommentTexts(comments),
+	}
+
+	content, err := newAIClient(aiCfg).complete(ctx, subIssuesSystemPrompt,
+		buildSubIssuesUserPrompt(in, max))
+	if err != nil {
+		return nil, err
+	}
+	return parseSubIssueSuggestions(content, max)
+}
+
 const draftSystemPrompt = `You are an assistant drafting issue descriptions for a software issue tracker. ` +
 	`Write a concise, clear issue description in Markdown based on the given title and optional context. ` +
 	`Use short sections (Summary, Steps to reproduce, Expected) only when the title implies a bug; ` +

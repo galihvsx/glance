@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
@@ -24,15 +24,20 @@ import { AI_NOT_CONFIGURED_TOOLTIP } from "./DraftWithAI";
  *   "AI not configured by administrator" (shared with DraftWithAI).
  * - Provider failure (502) → inline error in the card; cached summaries
  *   stay visible.
+ * - `actions`: extra buttons rendered next to Summarize/Regenerate in
+ *   both states (C25T1 slots the "Break down" button in here, so the
+ *   two AI buttons always sit side by side).
  */
 export default function IssueSummary({
   slug,
   identifier,
   issue,
+  actions,
 }: {
   slug: string;
   identifier: string;
   issue: Pick<Issue, "id">;
+  actions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const availability = useAIAvailable();
@@ -109,6 +114,7 @@ export default function IssueSummary({
       {!summary && (
         <div className="flex items-center gap-2">
           {summarizeButton("Summarize")}
+          {actions}
           <span className="text-[10px] text-ink-muted">
             AI TL;DR from title, description, comments and activity
           </span>
@@ -127,6 +133,7 @@ export default function IssueSummary({
               AI summary
             </h3>
             {summarizeButton("Regenerate")}
+            {actions}
           </div>
           <p className="text-[12px] leading-[20px] whitespace-pre-wrap text-ink-secondary">
             {summary}

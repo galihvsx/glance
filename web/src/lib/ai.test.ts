@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { ApiError, api } from "./api";
 import {
+  breakDownIssue,
   draftDescription,
   isAINotConfigured,
   isAIProviderFailure,
@@ -108,5 +109,32 @@ describe("probeAIAvailable", () => {
   it("resolves unknown (missing route / error) to enabled", async () => {
     get.mockRejectedValue(new ApiError(404, "not found"));
     await expect(probeAIAvailable()).resolves.toBe(true);
+  });
+});
+
+describe("breakDownIssue", () => {
+  it("posts the member-scoped body and returns the suggestions", async () => {
+    const suggestions = [
+      { title: "Add provider config", description: "Wire the endpoints." },
+      { title: "Swap middleware" },
+    ];
+    post.mockResolvedValue({ suggestions });
+    const got = await breakDownIssue("acme", "GLA", "uuid-1", 4);
+    expect(got).toEqual(suggestions);
+    expect(post).toHaveBeenCalledWith("/api/v1/ai/subissues", {
+      workspace_slug: "acme",
+      project_identifier: "GLA",
+      issue_uuid: "uuid-1",
+      max: 4,
+    });
+  });
+  it("omits a missing max", async () => {
+    post.mockResolvedValue({ suggestions: [] });
+    await breakDownIssue("acme", "GLA", "uuid-1");
+    expect(post).toHaveBeenCalledWith("/api/v1/ai/subissues", {
+      workspace_slug: "acme",
+      project_identifier: "GLA",
+      issue_uuid: "uuid-1",
+    });
   });
 });
