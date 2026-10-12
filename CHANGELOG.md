@@ -109,12 +109,11 @@ queued onboarding follow-up (invites endpoint).
   unknown emails stay as on-device "Pending" with honest copy.
 
 **Initiatives (cycle 27)**
-- Backend only (C27T0): workspace-scoped program containers that
-  group projects (Plane "initiatives", which Plane paywalls — glance
-  ships them free). Migration 000050 (`initiatives` +
-  `initiative_projects` junction; `created_by` is SET NULL so user
-  deletion never cascades). `POST/GET
-  /api/v1/workspaces/{slug}/initiatives` (archived excluded by
+- Workspace-scoped program containers that group projects (Plane
+  "initiatives", which Plane paywalls — glance ships them free). Backend
+  (C27T0): migration 000050 (`initiatives` + `initiative_projects`
+  junction; `created_by` is SET NULL so user deletion never cascades).
+  `POST/GET /api/v1/workspaces/{slug}/initiatives` (archived excluded by
   default, `?include_archived=1` to include), `GET/PATCH/DELETE
   .../{initiativeID}`, member-project endpoints (`POST` + `DELETE`
   `.../{initiativeID}/projects`, idempotent), and `GET
@@ -124,8 +123,15 @@ queued onboarding follow-up (invites endpoint).
   projects included with zero counts). Auth required; reads are
   member-scoped (guest 5+), writes need member (15)+; cross-workspace
   access is 404, not 403. Deletes cascade only membership rows —
-  initiatives own no issues, so issue data is never touched. UI
-  follows in the next task.
+  initiatives own no issues, so issue data is never touched.
+- List + create UI (C27T1): `/w/:slug/initiatives` page with progress
+  cards (rollup per card, skeleton loading), sidebar entry in the
+  Workspace section with active-count badge, create dialog with
+  member-project picker. Guests read; members create.
+- Detail UI (C27T2): `/w/:slug/initiatives/:id` with aggregate rollup
+  (stacked state-group segments), per-project breakdown bars,
+  member-project add/remove, status changer, delete-with-confirm.
+  Guests read-only.
 
 **Modules**
 - Full-stack modules (Plane "modules" = epics): migration 000017
