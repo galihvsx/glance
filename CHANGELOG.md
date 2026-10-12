@@ -655,6 +655,30 @@ queued onboarding follow-up (invites endpoint).
   duplicate…" in the … menu with similar-issues picker → toast with
   "View ENG-45". Completes the duplicate-suggestions feature.
 
+**Cycle 26 — Calendar scheduling (better-than-Plane)**
+- Drag-reschedule on month + week views (C26T0/C26T1): dnd-kit foundation
+  (`ScheduleDnd`, `DraggableIssueChip`, `DroppableDayCell`,
+  `DroppableWeekColumn`) mirroring the board's drag language
+  (PointerSensor + KeyboardSensor, distance-6 activation so click-to-peek
+  still works, drop wash highlight, DragOverlay ghost, aria-live
+  announcements). Move semantics are duration-preserving — the drop delta
+  shifts whichever of `start_date`/`target_date` are set, so the server's
+  start≤target invariant can never break; same-day drops are no-ops.
+  PATCHes the existing `.../issues/{uuid}` endpoint with optimistic
+  react-query updates, rollback + error toast on failure. Member (15+)
+  only; guests get static chips.
+- Unscheduled strip scheduling (C26T2): the "Unscheduled (N)" strip is now
+  a drop zone (always rendered for members, live count, empty-state hint)
+  — drag dated chips onto it to unschedule (PATCH clears the placing date
+  via the tri-state `null`), drag strip chips onto any day to schedule
+  (sets `target_date`). Zero new backend surface.
+- Day-cell quick-add (C26T3): hover/`+` affordance on month/week day cells
+  (members only) opens the existing create-issue dialog on the issues page
+  via the board's `location.state` prefill, with the day as the due date —
+  and the create dialog now has Start/Due date fields (Plane parity gap
+  closed: dates are settable at create). Created issues invalidate the
+  calendar caches so the chip appears on its day.
+
 **Cycle 24 — Workflow depth**
 - Move issue between projects (C24T0): `POST .../issues/{uuid}/move`
   `{target_project_identifier}` — one transaction, member (15+) on both
