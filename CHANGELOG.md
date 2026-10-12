@@ -619,6 +619,33 @@ queued onboarding follow-up (invites endpoint).
   (zero new backend surface); optimistic update with error rollback;
   Esc cancels, Enter/blur commits; row navigation suppressed while editing.
 
+**Cycle 24 — Workflow depth**
+- Move issue between projects (C24T0): `POST .../issues/{uuid}/move`
+  `{target_project_identifier}` — one transaction, member (15+) on both
+  projects. The issue keeps its UUID (comments, attachments, links,
+  reactions, votes, time entries move untouched); fresh display IDs from
+  the target project's sequence; whole sub-issue subtree moves
+  recursively. State matched by name (case-insensitive) else target
+  backlog (`state_remapped`); labels re-linked by name (workspace-scoped);
+  estimate matched by value else nulled. Cycle/module/release memberships
+  and custom values are project-scoped — dropped and reported. 400 on
+  same-project or intake-inbox issues. UI: "Move to project…" in the issue
+  … menu with remap preview dialog (landing state, drops) + bulk-bar move
+  with partial-success report.
+- Convert issue ↔ sub-issue (C24T1, Plane parity): `POST
+  .../issues/{uuid}/convert` `{parent_uuid}` — demote/promote with the
+  existing cycle-guard, children-block (400), max depth 1, same-project
+  only; idempotent no-ops; `_converted` activity entries both sides.
+  UI: "Convert to sub-issue…" / "Convert to issue" in the … menu
+  (disabled with "Detach sub-issues first" tooltip when it has children).
+- Bulk organize (C24T2): bulk bar gains "Add to cycle…" / "Add to module…"
+  → existing idempotent membership endpoints; UI-only, no backend.
+- Page reactions (C24T3): `POST`/`DELETE .../pages/{pageID}/reactions`,
+  embedded `reactions[]` on GET page detail, optimistic toggle UI —
+  completes glance's reactions feature (issues + comments already had it).
+- Test hygiene (coordinator fixup): `TestGetTimeSummary` time-of-day flake
+  fixed (test clock pinned to noon UTC) and documented in FLAKES.md.
+
 **Cycle 23 — Test isolation**
 - Per-package test databases (C23T0): new `internal/testdb` — each
   DB-touching test package gets a fresh, private database
