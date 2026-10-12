@@ -228,7 +228,7 @@ describe("projects section", () => {
     return { capture, container: result.container };
   }
 
-  it("expands the current project with the 8 sub-links", () => {
+  it("expands the current project with the 9 sub-links", () => {
     const { container } = renderProjects("/w/acme/p/ENG", "/w/:slug/p/:identifier");
     // Scope to the Projects section ("Views" also lives in Workspace).
     const section = within(
@@ -242,6 +242,7 @@ describe("projects section", () => {
       "Cycles",
       "Modules",
       "Releases",
+      "Schedules",
       "Views",
       "Pages",
       "Intake",

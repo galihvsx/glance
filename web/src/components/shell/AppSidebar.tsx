@@ -438,6 +438,11 @@ const SUB_LINKS: SubLink[] = [
     activeOn: (rest) => rest === "/releases",
   },
   {
+    label: "Schedules",
+    suffix: "/schedules",
+    activeOn: (rest) => rest === "/schedules",
+  },
+  {
     label: "Views",
     suffix: "",
     // Saved views live on the work-items page; never takes the active
