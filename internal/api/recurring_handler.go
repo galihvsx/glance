@@ -50,7 +50,10 @@ func RegisterRecurringRoutes(e *echo.Echo, h *ProjectHandler) {
 }
 
 // recurringError maps schedule sentinel errors to HTTP statuses,
-// delegating the shared tenancy sentinels to projectError.
+// delegating the shared tenancy sentinels to projectError. A
+// *service.ScheduleStaleRef means ExecuteSchedule deactivated the
+// schedule (stale label/assignee/actor) — a 400 naming the cause,
+// never a 500.
 func recurringError(c *echo.Context, err error) error {
 	switch {
 	case errors.Is(err, service.ErrScheduleNotFound):
@@ -60,6 +63,11 @@ func recurringError(c *echo.Context, err error) error {
 		errors.Is(err, service.ErrNothingToUpdate):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
 	default:
+		var stale *service.ScheduleStaleRef
+		if errors.As(err, &stale) {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+				"schedule paused: "+stale.Error(), nil)
+		}
 		return projectError(c, err)
 	}
 }
@@ -407,6 +415,13 @@ func (h *ProjectHandler) runScheduleNow(c *echo.Context) error {
 		s.WorkspaceID, s.ProjectID, s, s.NextRunAt, CurrentUser(c).ID)
 	if err != nil {
 		return recurringError(c, err)
+	}
+	if iss == nil {
+		// Lost a race: the ticker claimed the occurrence (or the
+		// schedule exhausted) between the check above and the
+		// execution. Nothing was created; the client can retry.
+		return WriteError(c, http.StatusConflict, ErrCodeConflict,
+			"occurrence already claimed; reload the schedule and retry", nil)
 	}
 	updated, err := service.GetSchedule(ctx, h.Pool,
 		c.Param("slug"), c.Param("identifier"), c.Param("scheduleID"), CurrentUser(c).ID)

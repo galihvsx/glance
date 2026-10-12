@@ -448,12 +448,12 @@ func TestRecurringScheduleHTTPRunNow(t *testing.T) {
 		t.Fatalf("decode run-now: %v", err)
 	}
 	var issue struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		DisplayID   string `json:"display_id"`
-		Priority    int    `json:"priority"`
-		CreatedBy   string `json:"created_by"`
-		Description string `json:"description"`
+		ID          string          `json:"id"`
+		Name        string          `json:"name"`
+		DisplayID   string          `json:"display_id"`
+		Priority    int             `json:"priority"`
+		CreatedBy   string          `json:"created_by"`
+		Description json.RawMessage `json:"description"`
 	}
 	if err := json.Unmarshal(fired.Issue, &issue); err != nil {
 		t.Fatalf("decode issue: %v", err)
@@ -471,6 +471,28 @@ func TestRecurringScheduleHTTPRunNow(t *testing.T) {
 	if issue.DisplayID == "" || issue.CreatedBy != actorID || issue.Priority != 2 {
 		t.Fatalf("issue = %+v", issue)
 	}
+	// The description is a real TipTap doc (paragraph per line), not a
+	// JSON string — the frontend renders {type:"doc",...}.
+	var descDoc struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(issue.Description, &descDoc); err != nil {
+		t.Fatalf("description doc decode: %v", err)
+	}
+	if descDoc.Type != "doc" || len(descDoc.Content) == 0 || len(descDoc.Content[0].Content) == 0 {
+		t.Fatalf("description not a TipTap doc: %s", string(issue.Description))
+	}
+	wantDescDate := runAtDate.Format(time.RFC3339)
+	if !strings.Contains(descDoc.Content[0].Content[0].Text, wantDescDate) {
+		t.Fatalf("description text = %q, want rendered datetime %q",
+			descDoc.Content[0].Content[0].Text, wantDescDate)
+	}
 	// The label and assignee really landed on the issue.
 	var n int
 	if err := pool.QueryRow(context.Background(),
@@ -483,9 +505,10 @@ func TestRecurringScheduleHTTPRunNow(t *testing.T) {
 		issue.ID, actorID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("assignee attached: n=%d err=%v", n, err)
 	}
-	// The _created activity row carries the calling user's attribution.
+	// The _schedule_created activity row carries the calling user's
+	// attribution and names the schedule.
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM issue_activities WHERE issue_id = $1::uuid AND field = '_created' AND actor_id = $2::uuid`,
+		`SELECT count(*) FROM issue_activities WHERE issue_id = $1::uuid AND field = '_schedule_created' AND actor_id = $2::uuid`,
 		issue.ID, actorID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("activity attribution: n=%d err=%v", n, err)
 	}
@@ -561,5 +584,64 @@ func TestRecurringScheduleHTTPRunNowExhausts(t *testing.T) {
 	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+s.ID+"/run-now", cookie, ``)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("second fire: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecurringScheduleHTTPRunNowStaleLabel: a label deleted after the
+// schedule was saved pauses the schedule on run-now with a 400 naming
+// the cause (not a 500), and no issue is created.
+func TestRecurringScheduleHTTPRunNowStaleLabel(t *testing.T) {
+	e, cookie, slug, _, base := setupRecurringHTTP(t)
+	pool := newTestPool(t)
+
+	rec := postAuthedJSON(t, e, http.MethodPost,
+		strings.TrimSuffix(base, "/schedules")+"/labels", cookie, `{"name":"doomed"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var label struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &label); err != nil {
+		t.Fatalf("decode label: %v", err)
+	}
+
+	s := createDailySchedule(t, e, base, cookie,
+		fmt.Sprintf(`,"label_ids":[%q]`, label.ID))
+
+	// Delete the label out from under the schedule.
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM labels WHERE id = $1::uuid`, label.ID); err != nil {
+		t.Fatalf("delete label: %v", err)
+	}
+
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+s.ID+"/run-now", cookie, ``)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("run-now stale label: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var apiErr struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if apiErr.Error.Code != "bad_request" || !strings.Contains(apiErr.Error.Message, "label") {
+		t.Fatalf("error = %+v, want bad_request naming the label", apiErr)
+	}
+
+	// No issue was created and the schedule shows as paused.
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id
+		  JOIN workspaces w ON w.id = p.workspace_id WHERE w.slug = $1`, slug).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("issues created = %d, want 0", n)
+	}
+	rec = postAuthedJSON(t, e, http.MethodGet, base+"/"+s.ID, cookie, ``)
+	upd := decodeSchedule(t, rec.Body.Bytes())
+	if upd.Active {
+		t.Fatalf("stale-label schedule still active")
 	}
 }
