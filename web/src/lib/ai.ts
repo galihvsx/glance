@@ -21,6 +21,10 @@ export interface AITriageResult {
   state_name?: string | null;
 }
 
+export interface AISummarizeResponse {
+  summary: string;
+}
+
 export interface AIStatusResponse {
   configured: boolean;
 }
@@ -64,6 +68,20 @@ export async function triageIssue(
     title,
     ...(description && description.trim() ? { description } : {}),
   });
+}
+
+/** POST /api/v1/ai/summarize → the provider's TL;DR for one issue. */
+export async function summarizeIssue(
+  slug: string,
+  identifier: string,
+  issueUUID: string,
+): Promise<string> {
+  const res = await api.post<AISummarizeResponse>("/api/v1/ai/summarize", {
+    workspace_slug: slug,
+    project_identifier: identifier,
+    issue_uuid: issueUUID,
+  });
+  return res.summary;
 }
 
 /**

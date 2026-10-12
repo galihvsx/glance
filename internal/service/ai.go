@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"glance/internal/config"
@@ -141,6 +142,246 @@ func (c *aiClient) complete(ctx context.Context, system, user string) (string, e
 		return "", fmt.Errorf("%w: empty response", ErrAIProvider)
 	}
 	return out.Choices[0].Message.Content, nil
+}
+
+// ---------- issue summary (C25T0) ----------
+
+const summarizeSystemPrompt = `You are summarizing a software issue for a busy engineer who has not read it. ` +
+	`Use the title, description, comments, and recent activity provided. ` +
+	`Respond with a concise Markdown summary using exactly these four sections — ` +
+	`omit a section only when there is genuinely nothing to say:\n\n` +
+	`- What: what the issue is about (one or two sentences).\n` +
+	`- Why: why it matters — the problem, motivation, or impact.\n` +
+	`- Current status: where things stand — progress, blockers, decisions made.\n` +
+	`- Open questions: what is still unresolved or needs an answer.\n\n` +
+	`Keep the whole summary under 200 words. Respond with ONLY the summary — no code fences, no preamble, no commentary.`
+
+// aiSummarizeMaxChars caps the user prompt at roughly 3k tokens so a
+// long comment thread or description cannot blow the provider's context
+// (or the server's memory budget).
+const aiSummarizeMaxChars = 12000
+
+// aiSummarizeMaxComments caps how many comments (oldest-thread tail =
+// most recent) feed the prompt.
+const aiSummarizeMaxComments = 20
+
+// aiSummarizeMaxHistory caps how many recent activity rows feed the
+// prompt (chronological tail = most recent).
+const aiSummarizeMaxHistory = 20
+
+// summarizeComment is one comment rendered into the summary prompt.
+type summarizeComment struct {
+	Actor string
+	Text  string
+}
+
+// summarizeActivityLine is one recent activity row rendered into the
+// summary prompt.
+type summarizeActivityLine struct {
+	Actor string
+	Field string
+	Old   string
+	New   string
+}
+
+// summarizeInput is the assembled issue context for a summary prompt.
+// buildSummarizeUserPrompt is a pure function so the prompt assembly
+// (sections + input cap) is unit-testable without a DB or provider.
+type summarizeInput struct {
+	Title       string
+	Description string
+	Comments    []summarizeComment
+	History     []summarizeActivityLine
+}
+
+// buildSummarizeUserPrompt assembles the user turn for the summarize
+// call and caps it at aiSummarizeMaxChars with a truncation marker.
+func buildSummarizeUserPrompt(in summarizeInput) string {
+	var sb strings.Builder
+	sb.WriteString("Issue: " + strings.TrimSpace(in.Title) + "\n\n")
+	sb.WriteString("Description:\n")
+	if d := strings.TrimSpace(in.Description); d != "" {
+		sb.WriteString(d)
+	} else {
+		sb.WriteString("(no description)")
+	}
+	sb.WriteString("\n\n")
+	if len(in.Comments) > 0 {
+		fmt.Fprintf(&sb, "Comments (%d, oldest first):\n", len(in.Comments))
+		for _, c := range in.Comments {
+			fmt.Fprintf(&sb, "- %s: %s\n", c.Actor, c.Text)
+		}
+		sb.WriteString("\n")
+	}
+	if len(in.History) > 0 {
+		fmt.Fprintf(&sb, "Recent activity (%d, oldest first):\n", len(in.History))
+		for _, h := range in.History {
+			fmt.Fprintf(&sb, "- %s changed %s: %s → %s\n", h.Actor, h.Field, h.Old, h.New)
+		}
+	}
+	out := sb.String()
+	if len(out) > aiSummarizeMaxChars {
+		out = out[:aiSummarizeMaxChars] + "\n\n[…truncated to fit the AI context]"
+	}
+	return out
+}
+
+// tiptapPlainText extracts plain text from a TipTap JSON doc by
+// collecting every text node, one per line. Non-JSON or malformed
+// content falls back to the raw string — prompt material is never an
+// error path.
+func tiptapPlainText(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return s
+	}
+	var texts []string
+	var walk func(x any)
+	walk = func(x any) {
+		switch t := x.(type) {
+		case map[string]any:
+			if txt, ok := t["text"].(string); ok {
+				texts = append(texts, txt)
+			}
+			if content, ok := t["content"].([]any); ok {
+				for _, c := range content {
+					walk(c)
+				}
+			}
+		case []any:
+			for _, c := range t {
+				walk(c)
+			}
+		case string:
+			texts = append(texts, t)
+		}
+	}
+	walk(v)
+	return strings.Join(texts, "\n")
+}
+
+// shortJSONValue renders a raw JSON value as a one-line prompt token:
+// strings unquoted, everything else compacted, long values truncated.
+func shortJSONValue(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" {
+		return "—"
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err == nil {
+		if str, ok := v.(string); ok {
+			s = str
+		} else if b, err := json.Marshal(v); err == nil {
+			s = string(b)
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 120 {
+		s = s[:117] + "…"
+	}
+	return s
+}
+
+// actorRefName renders an ActorRef's name for prompts, falling back
+// to the email when the name is unset.
+func actorRefName(a ActorRef) string {
+	if a.Name != nil && strings.TrimSpace(*a.Name) != "" {
+		return *a.Name
+	}
+	return a.Email
+}
+
+// flattenCommentTexts flattens a comment tree depth-first (oldest
+// first, replies nested after their parent) into prompt comments,
+// keeping only the most recent aiSummarizeMaxComments.
+func flattenCommentTexts(nodes []*CommentNode) []summarizeComment {
+	var all []summarizeComment
+	var walk func(n *CommentNode)
+	walk = func(n *CommentNode) {
+		text := tiptapPlainText(n.Content)
+		if len(text) > 800 {
+			text = text[:797] + "…"
+		}
+		all = append(all, summarizeComment{Actor: actorRefName(n.Actor), Text: text})
+		for _, r := range n.Replies {
+			walk(r)
+		}
+	}
+	for _, n := range nodes {
+		walk(n)
+	}
+	if len(all) > aiSummarizeMaxComments {
+		all = all[len(all)-aiSummarizeMaxComments:]
+	}
+	return all
+}
+
+// SummarizeIssue asks the provider to write a TL;DR of an existing
+// issue from its title, description, comments, and recent activity.
+// Member-scoped: the actor must hold role >= RoleMember (guests read but
+// may not spend AI budget); non-members and guests get ErrNotFound —
+// the tenancy boundary — and the provider is never called. A missing
+// issue UUID surfaces ErrIssueNotFound.
+func SummarizeIssue(ctx context.Context, pool *pgxpool.Pool, aiCfg config.AIConfig,
+	wsSlug, identifier, issueUUID, actorID string) (string, error) {
+	if !aiCfg.Configured() {
+		return "", ErrAINotConfigured
+	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return "", err
+	}
+	_, projectID, role, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return "", err
+	}
+	if role < RoleMember {
+		return "", ErrNotFound
+	}
+	item, err := getIssueRow(ctx, pool, ident, projectID, issueUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return "", ErrIssueNotFound
+		}
+		return "", err
+	}
+
+	comments, err := ListComments(ctx, pool, wsSlug, ident, issueUUID, actorID)
+	if err != nil {
+		return "", err
+	}
+	history, err := GetIssueHistory(ctx, pool, wsSlug, ident, issueUUID, actorID)
+	if err != nil {
+		return "", err
+	}
+
+	in := summarizeInput{
+		Title:       item.Name,
+		Description: tiptapPlainText(item.Description),
+		Comments:    flattenCommentTexts(comments),
+	}
+	if len(history) > aiSummarizeMaxHistory {
+		history = history[len(history)-aiSummarizeMaxHistory:]
+	}
+	for _, h := range history {
+		in.History = append(in.History, summarizeActivityLine{
+			Actor: actorRefName(h.Actor),
+			Field: h.Field,
+			Old:   shortJSONValue(h.OldValue),
+			New:   shortJSONValue(h.NewValue),
+		})
+	}
+
+	content, err := newAIClient(aiCfg).complete(ctx, summarizeSystemPrompt,
+		buildSummarizeUserPrompt(in))
+	if err != nil {
+		return "", err
+	}
+	return stripCodeFence(content), nil
 }
 
 // stripCodeFence removes a wrapping markdown code fence, which chat

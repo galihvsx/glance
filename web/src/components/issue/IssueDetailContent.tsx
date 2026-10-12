@@ -32,6 +32,7 @@ import { Alert, AlertDescription } from "../ui/alert";
 import ShareModal from "../ShareModal";
 import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
+import IssueSummary from "./IssueSummary";
 import SubIssues from "./SubIssues";
 import IssueLinks from "./IssueLinks";
 import IssueCustomFields from "./IssueCustomFields";
@@ -768,6 +769,9 @@ export default function IssueDetailContent({
                 saving={patchMutation.isPending}
                 onSave={(doc) => patchMutation.mutate({ description: doc })}
               />
+
+              {/* AI summary (C25T0) — just below the description block */}
+              <IssueSummary slug={slug} identifier={identifier} issue={issue} />
 
               {/* Action toolbar */}
               <div className="flex h-10 w-max max-w-full items-center gap-[3px] overflow-x-auto rounded-[7px] border border-border bg-surface px-[5px]">

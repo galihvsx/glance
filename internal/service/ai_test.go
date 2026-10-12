@@ -337,3 +337,230 @@ func TestAIKeyNeverLogged(t *testing.T) {
 		t.Fatalf("expected 2 error paths, got %d", len(errs))
 	}
 }
+
+// ---------- C25T0: AI issue summary ----------
+
+func tiptapDocForTest(texts ...string) json.RawMessage {
+	parts := make([]string, 0, len(texts))
+	for _, t := range texts {
+		raw, _ := json.Marshal(t)
+		parts = append(parts, `{"type":"paragraph","content":[{"type":"text","text":`+string(raw)+`}]}`)
+	}
+	return json.RawMessage(`{"type":"doc","content":[` + strings.Join(parts, ",") + `]}`)
+}
+
+func setupSummaryIssue(t *testing.T, pool *pgxpool.Pool) (wsSlug, ident, actorID, issueID string) {
+	t.Helper()
+	ctx := context.Background()
+	wsSlug, ident, actorID = setupAIProject(t, pool)
+	iss := createTestIssue(t, pool, wsSlug, ident, actorID, "Login button broken")
+	issueID = iss.ID
+	// Rich prompt material: a description, two comments, and a priority
+	// change activity.
+	desc := tiptapDocForTest("The button does nothing on Safari.", "Console shows no errors.")
+	if _, err := UpdateIssue(ctx, pool, wsSlug, ident, issueID, actorID,
+		IssuePatch{Description: PatchField[json.RawMessage]{Set: true, Value: &desc}}); err != nil {
+		t.Fatalf("UpdateIssue description: %v", err)
+	}
+	for _, text := range []string{"Reproduced on Safari 26.", "Suspect the click handler was removed in #123."} {
+		if _, err := CreateComment(ctx, pool, wsSlug, ident, issueID, actorID, tiptapDocForTest(text), nil); err != nil {
+			t.Fatalf("CreateComment: %v", err)
+		}
+	}
+	if _, err := UpdateIssue(ctx, pool, wsSlug, ident, issueID, actorID,
+		IssuePatch{Priority: intPtr(3)}); err != nil {
+		t.Fatalf("UpdateIssue priority: %v", err)
+	}
+	return wsSlug, ident, actorID, issueID
+}
+
+func TestSummarizeIssue_Parses(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSummaryIssue(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = "## TL;DR\n\nWhat: broken login button on Safari."
+	cfg := stub.cfg(aiTestKey)
+
+	got, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID)
+	if err != nil {
+		t.Fatalf("SummarizeIssue: %v", err)
+	}
+	if got != stub.content {
+		t.Errorf("summary = %q, want stub content verbatim", got)
+	}
+	if stub.requestN != 1 {
+		t.Fatalf("provider hit %d times, want 1", stub.requestN)
+	}
+	if stub.gotAuth != "Bearer "+aiTestKey {
+		t.Errorf("Authorization header = %q, want Bearer <key>", stub.gotAuth)
+	}
+	// The prompt must assemble the full issue context: title,
+	// description, comments, and recent activity.
+	for _, want := range []string{
+		"Login button broken",     // title
+		"does nothing on Safari",  // description text
+		"Reproduced on Safari 26", // comment text
+		"priority",                // activity line
+	} {
+		if !strings.Contains(stub.gotUser, want) {
+			t.Errorf("user prompt missing %q:\n%s", want, stub.gotUser)
+		}
+	}
+	// The system prompt pins the TL;DR shape.
+	for _, want := range []string{"What", "Why", "Current status", "Open questions"} {
+		if !strings.Contains(stub.gotSystem, want) {
+			t.Errorf("system prompt missing %q:\n%s", want, stub.gotSystem)
+		}
+	}
+}
+
+func TestSummarizeIssue_StripsCodeFence(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSummaryIssue(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = "```markdown\nA tidy summary.\n```"
+	cfg := stub.cfg(aiTestKey)
+
+	got, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID)
+	if err != nil {
+		t.Fatalf("SummarizeIssue: %v", err)
+	}
+	if got != "A tidy summary." {
+		t.Errorf("fence not stripped: %q", got)
+	}
+}
+
+func TestSummarizeIssue_NotConfigured(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSummaryIssue(t, pool)
+
+	_, err := SummarizeIssue(context.Background(), pool, config.AIConfig{}, wsSlug, ident, issueID, actorID)
+	if !errors.Is(err, ErrAINotConfigured) {
+		t.Fatalf("err = %v, want ErrAINotConfigured", err)
+	}
+}
+
+func TestSummarizeIssue_NonMemberNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, _, issueID := setupSummaryIssue(t, pool)
+	outsider := createTestUser(t, pool, uniqueTestEmail("ai-sum-outsider"))
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, issueID, outsider)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound (tenancy boundary)", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for non-member; tenancy must resolve before any provider call")
+	}
+}
+
+// Summarize is member (15+)-gated: a guest can read the issue but may not
+// spend AI budget. Guests get the same tenancy-boundary 404.
+func TestSummarizeIssue_GuestForbidden(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSummaryIssue(t, pool)
+	guest := createTestUser(t, pool, uniqueTestEmail("ai-sum-guest"))
+	if err := UpsertMember(context.Background(), pool, wsSlug, actorID, guest, RoleGuest); err != nil {
+		t.Fatalf("UpsertMember guest: %v", err)
+	}
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, issueID, guest)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound for guest (member-only endpoint)", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for guest; member gate must fire first")
+	}
+}
+
+func TestSummarizeIssue_IssueNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, _ := setupSummaryIssue(t, pool)
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, "00000000-0000-0000-0000-000000000000", actorID)
+	if !errors.Is(err, ErrIssueNotFound) {
+		t.Fatalf("err = %v, want ErrIssueNotFound", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for missing issue")
+	}
+}
+
+func TestSummarizeIssue_Provider500(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSummaryIssue(t, pool)
+
+	stub := newAIStub(t)
+	stub.status = http.StatusInternalServerError
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SummarizeIssue(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID)
+	if !errors.Is(err, ErrAIProvider) {
+		t.Fatalf("err = %v, want ErrAIProvider", err)
+	}
+}
+
+// buildSummarizeUserPrompt is a pure function: unit-test the prompt
+// assembly (sections + input token cap) without DB or provider.
+func TestBuildSummarizeUserPrompt_Sections(t *testing.T) {
+	prompt := buildSummarizeUserPrompt(summarizeInput{
+		Title:       "Broken login",
+		Description: "Button does nothing.",
+		Comments: []summarizeComment{
+			{Actor: "Ada", Text: "Reproduced."},
+		},
+		History: []summarizeActivityLine{
+			{Actor: "Ada", Field: "priority", Old: "1", New: "3"},
+		},
+	})
+	for _, want := range []string{
+		"Broken login", "Button does nothing.", "Ada", "Reproduced.", "priority", "1", "3",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if len(prompt) > aiSummarizeMaxChars {
+		t.Errorf("prompt length %d exceeds cap %d", len(prompt), aiSummarizeMaxChars)
+	}
+}
+
+func TestBuildSummarizeUserPrompt_CapsInput(t *testing.T) {
+	big := strings.Repeat("x", aiSummarizeMaxChars*2)
+	prompt := buildSummarizeUserPrompt(summarizeInput{Title: "t", Description: big})
+	if len(prompt) > aiSummarizeMaxChars+100 {
+		t.Errorf("prompt not capped: len %d", len(prompt))
+	}
+	if !strings.Contains(prompt, "truncated to fit the AI context") {
+		t.Errorf("capped prompt must carry a truncation marker:\n%s", prompt[len(prompt)-200:])
+	}
+}
+
+func TestTiptapPlainText(t *testing.T) {
+	got := tiptapPlainText(tiptapDocForTest("hello", "world"))
+	if got != "hello\nworld" {
+		t.Errorf("tiptapPlainText = %q, want %q", got, "hello\nworld")
+	}
+	if tiptapPlainText(nil) != "" {
+		t.Errorf("nil doc must yield empty string")
+	}
+	// Non-JSON content falls back to the raw string (never an error).
+	if got := tiptapPlainText(json.RawMessage("just text")); got != "just text" {
+		t.Errorf("plain fallback = %q, want %q", got, "just text")
+	}
+	// Malformed JSON is returned raw, not dropped.
+	if got := tiptapPlainText(json.RawMessage("{oops")); got != "{oops" {
+		t.Errorf("malformed fallback = %q, want %q", got, "{oops")
+	}
+}
