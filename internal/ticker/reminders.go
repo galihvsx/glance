@@ -9,10 +9,15 @@
 // broadcasts post-commit, so overlapping passes converge instead of
 // double-notifying.
 //
+// The same daily pass also runs the capacity-overload alerts (C29T2,
+// service.RunCapacityAlerts): one capacity.overloaded notification per
+// overloaded workspace member per day, deduped via capacity_alerts.
+// Delivery prefs default to in_app on / email off; users opt into
+// reminder email via the notifications preferences (due_soon / overdue /
+// capacity.overloaded event keys).
+//
 // In-process by design (same known limitation as the cycle ticker, spec
-// §3): one instance only in v1. Delivery prefs default to in_app on /
-// email off; users opt into reminder email via the notifications
-// preferences (due_soon / overdue event keys).
+// §3): one instance only in v1.
 package ticker
 
 import (
@@ -32,9 +37,14 @@ type ReminderTicker struct {
 	Interval time.Duration
 }
 
-// RunOnce performs one reminder pass against the live clock.
+// RunOnce performs one reminder pass against the live clock, then one
+// capacity-overload pass (C29T2). A failure in either pass surfaces as
+// the run's error.
 func (t *ReminderTicker) RunOnce(ctx context.Context) error {
-	return service.RunReminders(ctx, t.Pool, time.Now())
+	if err := service.RunReminders(ctx, t.Pool, time.Now()); err != nil {
+		return err
+	}
+	return service.RunCapacityAlerts(ctx, t.Pool, time.Now())
 }
 
 // Start launches the interval loop in a goroutine; it stops when ctx is

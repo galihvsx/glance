@@ -105,8 +105,28 @@ func digestWindowPhrase(frequency string) string {
 	return "past 24 hours"
 }
 
-// digestEventTypes are the notification types aggregated into the digest.
+// digestEventTypes are the notification types aggregated into the
+// digest. Weekly digests also aggregate capacity.overloaded (C29T2):
+// capacity-load is a weekly-planning signal, so a daily cadence would
+// re-surface the same per-day alert the member already got in-app. The
+// capacity-overload alert enters the weekly digest as its notification
+// row (the activity entry) — no extra email plumbing: the digest's
+// existing "email.digest" outbox row carries the section.
 var digestEventTypes = []string{NotifyIssueAssigned, NotifyMention, NotifyStateChanged}
+
+// digestWeeklyEventTypes is the weekly superset: everything the daily
+// digest aggregates plus the capacity-overload alerts from the trailing
+// 7 days.
+var digestWeeklyEventTypes = []string{NotifyIssueAssigned, NotifyMention, NotifyStateChanged, NotifyCapacityOverloaded}
+
+// digestEventsFor returns the digest-worthy event types for one digest
+// frequency.
+func digestEventsFor(frequency string) []string {
+	if frequency == DigestFrequencyWeekly {
+		return digestWeeklyEventTypes
+	}
+	return digestEventTypes
+}
 
 // digestSection renders one digest section header for an event type.
 func digestSection(eventType string) string {
@@ -117,6 +137,8 @@ func digestSection(eventType string) string {
 		return "Mentions"
 	case NotifyStateChanged:
 		return "State changes"
+	case NotifyCapacityOverloaded:
+		return "Capacity overloads"
 	default:
 		return eventType
 	}
@@ -229,6 +251,9 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	if err != nil {
 		return err
 	}
+	// Weekly digests aggregate capacity-overload alerts as well (C29T2);
+	// daily digests keep the three per-event types only.
+	eventTypes := digestEventsFor(u.schedule.Frequency)
 	rows, err := pool.Query(ctx,
 		`SELECT type, title FROM notifications
 		  WHERE user_id = $1::uuid
@@ -236,7 +261,7 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 		    AND created_at > $3
 		    AND created_at <= $4
 		  ORDER BY created_at`,
-		u.id, digestEventTypes, since, now)
+		u.id, eventTypes, since, now)
 	if err != nil {
 		return err
 	}
@@ -294,7 +319,7 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	if err := mail.Enqueue(ctx, tx, "email.digest", mail.Message{
 		To:      u.email,
 		Subject: fmt.Sprintf("Your %s digest — %s", freqWord, window),
-		Body:    buildDigestBody(u.name, window, events),
+		Body:    buildDigestBody(u.name, window, events, eventTypes),
 	}); err != nil {
 		return err
 	}
@@ -365,11 +390,13 @@ func claimDigestDay(ctx context.Context, tx pgx.Tx, userID string, loc *time.Loc
 // buildDigestBody renders the digest email: one section per event type,
 // one bullet per event. Event titles are the human-readable titles
 // written by notifyTx at event time. window is the honest aggregation
-// window label ("past 7 days" / "past 24 hours").
-func buildDigestBody(name, window string, events []digestEvent) string {
+// window label ("past 7 days" / "past 24 hours"). eventTypes is the
+// frequency-appropriate section list (digestEventsFor), so the weekly
+// capacity-overload section never renders on a daily digest.
+func buildDigestBody(name, window string, events []digestEvent, eventTypes []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hi %s,\n\nHere's what happened in the %s:\n", name, window)
-	for _, et := range digestEventTypes {
+	for _, et := range eventTypes {
 		var titles []string
 		for _, e := range events {
 			if e.eventType == et {
