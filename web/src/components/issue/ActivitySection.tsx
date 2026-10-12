@@ -132,6 +132,47 @@ function EventCopy({
         to <Strong>{to}</Strong>
       </>
     );
+  } else if (entry.field === "_converted") {
+    // C24T1: convert issue <-> sub-issue. new_value is
+    // {action:"to_sub_issue", parent:"ENG-12"} on the demoted issue,
+    // {action:"child_added", child:"ENG-13"} on the new parent, or
+    // {action:"promoted"} on a promoted issue.
+    let action = "";
+    let ref = "";
+    try {
+      const v =
+        typeof entry.new_value === "string"
+          ? (JSON.parse(entry.new_value) as { action?: unknown; parent?: unknown; child?: unknown })
+          : (entry.new_value as { action?: unknown; parent?: unknown; child?: unknown } | null);
+      if (v) {
+        action = String(v.action ?? "");
+        ref = String(v.parent ?? v.child ?? "");
+      }
+    } catch {
+      // keep the fallbacks
+    }
+    if (action === "child_added") {
+      body = (
+        <>
+          <Strong>{actor}</Strong> converted <Strong>{ref || "—"}</Strong>{" "}
+          to a sub-issue
+        </>
+      );
+    } else if (action === "promoted") {
+      body = (
+        <>
+          <Strong>{actor}</Strong> promoted this work item to a standalone
+          issue
+        </>
+      );
+    } else {
+      body = (
+        <>
+          <Strong>{actor}</Strong> converted this work item to a sub-issue
+          of <Strong>{ref || "—"}</Strong>
+        </>
+      );
+    }
   } else if (entry.field === "state_id") {
     const from = byId.get(jsonText(entry.old_value)) ?? "—";
     const to = byId.get(jsonText(entry.new_value)) ?? "—";

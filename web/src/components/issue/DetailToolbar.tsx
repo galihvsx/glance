@@ -2,6 +2,8 @@ import {
   Bell,
   BellOff,
   Copy,
+  CornerDownRight,
+  CornerUpLeft,
   ExternalLink,
   FolderInput,
   GitBranch,
@@ -78,6 +80,11 @@ export default function DetailToolbar({
   cloning,
   onClone,
   onMove,
+  hasParent,
+  hasChildren,
+  converting,
+  onConvertToSubIssue,
+  onConvertToIssue,
   onCopyLink,
   onShare,
 }: {
@@ -99,6 +106,13 @@ export default function DetailToolbar({
   cloning: boolean;
   onClone: () => void;
   onMove: () => void;
+  /** C24T1: convert menu. hasChildren disables the demote item (the
+   *  backend 400s when the issue has sub-issues of its own). */
+  hasParent: boolean;
+  hasChildren: boolean;
+  converting: boolean;
+  onConvertToSubIssue: () => void;
+  onConvertToIssue: () => void;
   onCopyLink: () => void;
   onShare: () => void;
 }) {
@@ -207,6 +221,25 @@ export default function DetailToolbar({
               <FolderInput className="h-3.5 w-3.5" />
               Move to project…
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={onConvertToSubIssue}
+              disabled={hasChildren || converting}
+              title={
+                hasChildren ? "Detach sub-issues first" : "Convert to sub-issue…"
+              }
+            >
+              <CornerDownRight className="h-3.5 w-3.5" />
+              Convert to sub-issue…
+            </DropdownMenuItem>
+            {hasParent && (
+              <DropdownMenuItem
+                onClick={onConvertToIssue}
+                disabled={converting}
+              >
+                <CornerUpLeft className="h-3.5 w-3.5" />
+                Convert to issue
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
