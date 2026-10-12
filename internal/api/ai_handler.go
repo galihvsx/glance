@@ -33,6 +33,7 @@ func RegisterAIRoutes(e *echo.Echo, h *AIHandler) {
 	g.POST("/draft", h.draft)
 	g.POST("/triage", h.triage)
 	g.POST("/summarize", h.summarize)
+	g.POST("/subissues", h.subissues)
 }
 
 // aiError maps service sentinel errors to HTTP statuses. The API key
@@ -186,4 +187,56 @@ func (h *AIHandler) summarize(c *echo.Context) error {
 		return aiError(c, err)
 	}
 	return c.JSON(http.StatusOK, aiSummarizeResponse{Summary: summary})
+}
+
+type aiSubIssuesBody struct {
+	aiScope
+	IssueUUID string `json:"issue_uuid"`
+	// Max caps the suggestions (default 5, clamp 1..10 in the service).
+	Max *int `json:"max"`
+}
+
+type aiSubIssueSuggestion struct {
+	Title       string  `json:"title"`
+	Description *string `json:"description,omitempty"`
+}
+
+type aiSubIssuesResponse struct {
+	Suggestions []aiSubIssueSuggestion `json:"suggestions"`
+}
+
+// subissues implements POST /api/v1/ai/subissues: {workspace_slug,
+// project_identifier, issue_uuid, max?} → {suggestions: [{title,
+// description?}]}. Same member (15+) gate and issue lookup as
+// /summarize: the provider is never called for outsiders or bad UUIDs.
+func (h *AIHandler) subissues(c *echo.Context) error {
+	var body aiSubIssuesBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	if !body.valid() {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+			"workspace_slug and project_identifier are required", nil)
+	}
+	if body.IssueUUID == "" {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "issue_uuid is required", nil)
+	}
+	max := 0
+	if body.Max != nil {
+		max = *body.Max
+	}
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	suggestions, err := service.SuggestSubIssues(c.Request().Context(), h.Pool, h.AI,
+		body.WorkspaceSlug, body.ProjectIdentifier, body.IssueUUID, u.ID, max)
+	if err != nil {
+		return aiError(c, err)
+	}
+	out := make([]aiSubIssueSuggestion, 0, len(suggestions))
+	for _, s := range suggestions {
+		out = append(out, aiSubIssueSuggestion{Title: s.Title, Description: s.Description})
+	}
+	return c.JSON(http.StatusOK, aiSubIssuesResponse{Suggestions: out})
 }

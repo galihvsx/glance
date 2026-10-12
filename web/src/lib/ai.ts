@@ -1,6 +1,7 @@
-// AI assist client (C5T3). Backend contract: POST /api/v1/ai/draft and
-// POST /api/v1/ai/triage (internal/api/ai_handler.go), plus the cheap
-// availability probe GET /api/v1/ai/status → {configured}.
+// AI assist client (C5T3, C25T0, C25T1). Backend contract: POST
+// /api/v1/ai/draft, /triage, /summarize and /subissues
+// (internal/api/ai_handler.go), plus the cheap availability probe
+// GET /api/v1/ai/status → {configured}.
 //
 // Error taxonomy (from the backend §5 envelope):
 // - 503 ai_not_configured → the UI renders AI buttons DISABLED with a
@@ -23,6 +24,16 @@ export interface AITriageResult {
 
 export interface AISummarizeResponse {
   summary: string;
+}
+
+/** One AI-proposed sub-task from POST /api/v1/ai/subissues (C25T1). */
+export interface AISubIssueSuggestion {
+  title: string;
+  description?: string | null;
+}
+
+export interface AISubIssuesResponse {
+  suggestions: AISubIssueSuggestion[];
 }
 
 export interface AIStatusResponse {
@@ -82,6 +93,22 @@ export async function summarizeIssue(
     issue_uuid: issueUUID,
   });
   return res.summary;
+}
+
+/** POST /api/v1/ai/subissues → the provider's sub-task breakdown. */
+export async function breakDownIssue(
+  slug: string,
+  identifier: string,
+  issueUUID: string,
+  max?: number,
+): Promise<AISubIssueSuggestion[]> {
+  const res = await api.post<AISubIssuesResponse>("/api/v1/ai/subissues", {
+    workspace_slug: slug,
+    project_identifier: identifier,
+    issue_uuid: issueUUID,
+    ...(max != null ? { max } : {}),
+  });
+  return res.suggestions;
 }
 
 /**

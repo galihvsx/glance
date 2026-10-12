@@ -564,3 +564,286 @@ func TestTiptapPlainText(t *testing.T) {
 		t.Errorf("malformed fallback = %q, want %q", got, "{oops")
 	}
 }
+
+// ---------- C25T1: AI sub-issue breakdown ----------
+
+func setupSubIssueBreakdown(t *testing.T, pool *pgxpool.Pool) (wsSlug, ident, actorID, issueID string) {
+	t.Helper()
+	ctx := context.Background()
+	wsSlug, ident, actorID = setupAIProject(t, pool)
+	iss := createTestIssue(t, pool, wsSlug, ident, actorID, "Migrate auth to OAuth2")
+	issueID = iss.ID
+	desc := tiptapDocForTest("The current session auth is custom and flaky.", "We should adopt OAuth2 for all clients.")
+	if _, err := UpdateIssue(ctx, pool, wsSlug, ident, issueID, actorID,
+		IssuePatch{Description: PatchField[json.RawMessage]{Set: true, Value: &desc}}); err != nil {
+		t.Fatalf("UpdateIssue description: %v", err)
+	}
+	return wsSlug, ident, actorID, issueID
+}
+
+func TestBreakDownIssue_Parses(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = `[{"title":"Add OAuth2 provider config","description":"Wire the provider endpoints into the auth config."},{"title":"Swap session middleware"},{"title":"  "}]`
+	cfg := stub.cfg(aiTestKey)
+
+	got, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID, 5)
+	if err != nil {
+		t.Fatalf("SuggestSubIssues: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(suggestions) = %d, want 2 (empty titles dropped)", len(got))
+	}
+	if got[0].Title != "Add OAuth2 provider config" {
+		t.Errorf("suggestions[0].Title = %q", got[0].Title)
+	}
+	if got[0].Description == nil || *got[0].Description != "Wire the provider endpoints into the auth config." {
+		t.Errorf("suggestions[0].Description = %+v", got[0].Description)
+	}
+	if got[1].Description != nil {
+		t.Errorf("suggestions[1].Description = %+v, want nil (absent)", got[1].Description)
+	}
+	if stub.requestN != 1 {
+		t.Fatalf("provider hit %d times, want 1", stub.requestN)
+	}
+	// Prompt carries the issue context and the max bound.
+	for _, want := range []string{"Migrate auth to OAuth2", "session auth is custom", "at most 5"} {
+		if !strings.Contains(stub.gotUser, want) {
+			t.Errorf("user prompt missing %q:\n%s", want, stub.gotUser)
+		}
+	}
+}
+
+func TestBreakDownIssue_StripsCodeFence(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = "```json\n[{\"title\":\"Fenced task\"}]\n```"
+	cfg := stub.cfg(aiTestKey)
+
+	got, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID, 5)
+	if err != nil {
+		t.Fatalf("SuggestSubIssues: %v", err)
+	}
+	if len(got) != 1 || got[0].Title != "Fenced task" {
+		t.Fatalf("fenced JSON not parsed: %+v", got)
+	}
+}
+
+func TestBreakDownIssue_MalformedJSON(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = `[{"title":"Unfinished task",]` // truncated, unparseable
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID, 5)
+	if !errors.Is(err, ErrAIProvider) {
+		t.Fatalf("err = %v, want ErrAIProvider for malformed provider JSON", err)
+	}
+}
+
+func TestBreakDownIssue_NonArrayJSON(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	stub.content = `{"title":"an object, not an array"}`
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID, 5)
+	if !errors.Is(err, ErrAIProvider) {
+		t.Fatalf("err = %v, want ErrAIProvider for non-array provider JSON", err)
+	}
+}
+
+func TestBreakDownIssue_NotConfigured(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	_, err := SuggestSubIssues(context.Background(), pool, config.AIConfig{}, wsSlug, ident, issueID, actorID, 5)
+	if !errors.Is(err, ErrAINotConfigured) {
+		t.Fatalf("err = %v, want ErrAINotConfigured", err)
+	}
+}
+
+func TestBreakDownIssue_NonMemberNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, _, issueID := setupSubIssueBreakdown(t, pool)
+	outsider := createTestUser(t, pool, uniqueTestEmail("ai-sub-outsider"))
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, outsider, 5)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound (tenancy boundary)", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for non-member; tenancy must resolve before any provider call")
+	}
+}
+
+func TestBreakDownIssue_GuestForbidden(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+	guest := createTestUser(t, pool, uniqueTestEmail("ai-sub-guest"))
+	if err := UpsertMember(context.Background(), pool, wsSlug, actorID, guest, RoleGuest); err != nil {
+		t.Fatalf("UpsertMember guest: %v", err)
+	}
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, guest, 5)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound for guest (member-only endpoint)", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for guest; member gate must fire first")
+	}
+}
+
+func TestBreakDownIssue_IssueNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, _ := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident,
+		"00000000-0000-0000-0000-000000000000", actorID, 5)
+	if !errors.Is(err, ErrIssueNotFound) {
+		t.Fatalf("err = %v, want ErrIssueNotFound", err)
+	}
+	if stub.requestN != 0 {
+		t.Error("provider hit for missing issue")
+	}
+}
+
+func TestBreakDownIssue_Provider500(t *testing.T) {
+	pool := newTestPool(t)
+	wsSlug, ident, actorID, issueID := setupSubIssueBreakdown(t, pool)
+
+	stub := newAIStub(t)
+	stub.status = http.StatusInternalServerError
+	cfg := stub.cfg(aiTestKey)
+
+	_, err := SuggestSubIssues(context.Background(), pool, cfg, wsSlug, ident, issueID, actorID, 5)
+	if !errors.Is(err, ErrAIProvider) {
+		t.Fatalf("err = %v, want ErrAIProvider", err)
+	}
+}
+
+// parseSubIssueSuggestions is pure: unit-test the JSON tolerance matrix
+// without DB or provider.
+func TestParseSubIssueSuggestions_Matrix(t *testing.T) {
+	str := func(s string) *string { return &s }
+	cases := []struct {
+		name    string
+		raw     string
+		max     int
+		want    []SubIssueSuggestion
+		wantErr bool
+	}{
+		{"plain array", `[{"title":"A","description":"d"},{"title":"B"}]`, 5,
+			[]SubIssueSuggestion{{Title: "A", Description: str("d")}, {Title: "B"}}, false},
+		{"fence stripped", "```json\n[{\"title\":\"A\"}]\n```", 5,
+			[]SubIssueSuggestion{{Title: "A"}}, false},
+		{"prose around array", "Here you go:\n[{\"title\":\"A\"}]\nGood luck!", 5,
+			[]SubIssueSuggestion{{Title: "A"}}, false},
+		{"empty titles dropped", `[{"title":"  "},{"title":"A"}]`, 5,
+			[]SubIssueSuggestion{{Title: "A"}}, false},
+		{"titles trimmed", `[{"title":"  A  "}]`, 5,
+			[]SubIssueSuggestion{{Title: "A"}}, false},
+		{"clamped to max", `[{"title":"A"},{"title":"B"},{"title":"C"}]`, 2,
+			[]SubIssueSuggestion{{Title: "A"}, {Title: "B"}}, false},
+		{"descriptions trimmed", `[{"title":"A","description":"  d  "}]`, 5,
+			[]SubIssueSuggestion{{Title: "A", Description: str("d")}}, false},
+		{"empty description dropped", `[{"title":"A","description":"  "}]`, 5,
+			[]SubIssueSuggestion{{Title: "A"}}, false},
+		{"no titles at all", `[{"description":"d"}]`, 5, nil, true},
+		{"empty array", `[]`, 5, nil, true},
+		{"object not array", `{"title":"A"}`, 5, nil, true},
+		{"truncated json", `[{"title":"A",]`, 5, nil, true},
+		{"not json at all", "Sorry, I cannot help with that.", 5, nil, true},
+		{"empty string", ``, 5, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSubIssueSuggestions(tc.raw, tc.max)
+			if tc.wantErr {
+				if !errors.Is(err, ErrAIProvider) {
+					t.Fatalf("err = %v, want ErrAIProvider", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSubIssueSuggestions: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i].Title != tc.want[i].Title {
+					t.Errorf("[%d].Title = %q, want %q", i, got[i].Title, tc.want[i].Title)
+				}
+				var g, w string
+				if got[i].Description != nil {
+					g = *got[i].Description
+				}
+				if tc.want[i].Description != nil {
+					w = *tc.want[i].Description
+				}
+				if g != w {
+					t.Errorf("[%d].Description = %q, want %q", i, g, w)
+				}
+			}
+		})
+	}
+}
+
+// clampSubIssueMax is pure: 0 → default 5, out-of-range → clamp 1..10.
+func TestClampSubIssueMax(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, 5}, {-3, 5}, {5, 5}, {1, 1}, {10, 10}, {11, 10}, {99, 10},
+	} {
+		if got := clampSubIssueMax(tc.in); got != tc.want {
+			t.Errorf("clampSubIssueMax(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// buildSubIssuesUserPrompt is pure: unit-test prompt assembly (context
+// + input cap) without DB or provider.
+func TestBuildSubIssuesUserPrompt_Sections(t *testing.T) {
+	in := subIssuesInput{
+		Title:       "Migrate auth",
+		Description: "Custom auth is flaky.",
+		Comments:    []summarizeComment{{Actor: "Galih", Text: "Saw the flake in prod."}},
+	}
+	out := buildSubIssuesUserPrompt(in, 4)
+	for _, want := range []string{"Migrate auth", "Custom auth is flaky", "Galih: Saw the flake", "at most 4"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildSubIssuesUserPrompt_CapsInput(t *testing.T) {
+	in := subIssuesInput{
+		Title:       "x",
+		Description: strings.Repeat("d", aiSubIssuesMaxChars+5000),
+	}
+	out := buildSubIssuesUserPrompt(in, 5)
+	if len(out) > aiSubIssuesMaxChars+100 {
+		t.Errorf("prompt not capped: len = %d", len(out))
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Error("capped prompt missing the truncation marker")
+	}
+}
