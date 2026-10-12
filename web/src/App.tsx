@@ -10,6 +10,7 @@ import Onboarding from "./pages/Onboarding";
 import Home from "./pages/Home";
 import Workspaces from "./pages/Workspaces";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
+import Workload from "./pages/Workload";
 import MyWork from "./pages/MyWork";
 import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
@@ -80,6 +81,8 @@ export default function App() {
                   path="/w/:slug/initiatives/:id"
                   element={<InitiativeDetail />}
                 />
+                {/* C29T1: workspace-level workload & capacity. */}
+                <Route path="/w/:slug/workload" element={<Workload />} />
                 <Route element={<ProjectScope />}>
                   <Route path="/w/:slug/p/:identifier" element={<Issues />} />
                   <Route
