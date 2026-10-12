@@ -1,19 +1,29 @@
 import { useState } from "react";
+import { Boxes, Repeat } from "lucide-react";
 import StatePicker from "./StatePicker";
 import PriorityPicker from "./PriorityPicker";
 import LabelPicker from "./LabelPicker";
 import AssigneePicker from "./AssigneePicker";
+import BulkOrganizeDialog, { type OrganizeItem } from "./BulkOrganizeDialog";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import type {
   IssueState,
   Label as ProjectLabel,
   Member,
+  Cycle,
+  Module,
 } from "../../lib/types";
 import {
   buildBulkSetPayload,
   type BulkSetPayload,
 } from "./bulkSelection";
+
+/** Filter for the "Add to cycle…" dialog (C24T2): only upcoming and
+ *  current cycles are addable; completed cycles are history. */
+export function addableCycles(cycles: Cycle[] | null): Cycle[] {
+  return (cycles ?? []).filter((c) => c.status !== "completed");
+}
 
 /** Bulk action bar (C5T8): appears above the issues list when at least
  *  one issue is selected. Stages one `set` (state / priority / labels /
@@ -21,7 +31,10 @@ import {
  *  PATCH /issues/bulk call. Untouched controls are omitted from the
  *  payload — "Labels" starts empty (untouched); toggling a label stages
  *  a full replacement, "Assignee" picks exactly one member (unchecking
- *  them stages an explicit clear). List view only. */
+ *  them stages an explicit clear). C24T2 adds "Add to cycle…" /
+ *  "Add to module…" actions: each opens a picker dialog and POSTs the
+ *  selected issue UUIDs to the membership endpoint (idempotent — the
+ *  server skips already-members and returns {added: n}). List view only. */
 export default function BulkActionBar({
   states,
   members,
@@ -34,6 +47,13 @@ export default function BulkActionBar({
   onApply,
   applying,
   error,
+  cycles,
+  modules,
+  structureLoading,
+  onAddToCycle,
+  onAddToModule,
+  organizeApplying,
+  organizeError,
 }: {
   states: IssueState[];
   members: Member[] | null;
@@ -46,6 +66,15 @@ export default function BulkActionBar({
   onApply: (set: BulkSetPayload) => void;
   applying: boolean;
   error: string | null;
+  /** Project cycles/modules for the organize dialogs; null = not loaded. */
+  cycles: Cycle[] | null;
+  modules: Module[] | null;
+  structureLoading: boolean;
+  onAddToCycle: (cycleId: string) => void;
+  onAddToModule: (moduleId: string) => void;
+  /** True while a membership POST is in flight. */
+  organizeApplying: boolean;
+  organizeError: string | null;
 }) {
   const [stateId, setStateId] = useState<string | null>(null);
   const [priority, setPriority] = useState<number | null>(null);
@@ -53,6 +82,8 @@ export default function BulkActionBar({
   const [assigneeId, setAssigneeId] = useState<string | null | undefined>(
     undefined,
   );
+  const [cycleOpen, setCycleOpen] = useState(false);
+  const [moduleOpen, setModuleOpen] = useState(false);
 
   const payload = buildBulkSetPayload({
     stateId,
@@ -93,6 +124,20 @@ export default function BulkActionBar({
   const assignedAssignees = assigneeId
     ? [{ id: assigneeId, name: assigneeMember?.name ?? assigneeMember?.email ?? assigneeId }]
     : [];
+
+  const busy = applying || organizeApplying;
+  const issueNoun = selectedCount === 1 ? "issue" : "issues";
+
+  const cycleItems: OrganizeItem[] = addableCycles(cycles).map((c) => ({
+    id: c.id,
+    name: c.name,
+    meta: `${c.status === "current" ? "Active" : "Upcoming"} · ${c.start_date} → ${c.end_date}`,
+  }));
+  const moduleItems: OrganizeItem[] = (modules ?? []).map((m) => ({
+    id: m.id,
+    name: m.name,
+    meta: `${m.status} · ${m.issue_count} ${m.issue_count === 1 ? "issue" : "issues"}`,
+  }));
 
   return (
     <div
@@ -154,6 +199,28 @@ export default function BulkActionBar({
             disabled={applying}
           />
         </span>
+        <div
+          className="mx-1 hidden h-6 w-px bg-border sm:block"
+          aria-hidden
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setCycleOpen(true)}
+          disabled={busy}
+        >
+          <Repeat className="mr-1 h-3.5 w-3.5" aria-hidden />
+          Add to cycle…
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setModuleOpen(true)}
+          disabled={busy}
+        >
+          <Boxes className="mr-1 h-3.5 w-3.5" aria-hidden />
+          Add to module…
+        </Button>
         <div className="ml-auto flex items-center gap-2">
           <Button
             variant="ghost"
@@ -174,11 +241,39 @@ export default function BulkActionBar({
           </Button>
         </div>
       </div>
-      {error && (
+      {(error || organizeError) && (
         <p className="mt-2 text-sm text-destructive" role="alert">
-          {error}
+          {error ?? organizeError}
         </p>
       )}
+      <BulkOrganizeDialog
+        open={cycleOpen}
+        onOpenChange={setCycleOpen}
+        title="Add to cycle"
+        description={`Add ${selectedCount} selected ${issueNoun} to a cycle. Issues already in the cycle are skipped.`}
+        items={cycleItems}
+        loading={structureLoading}
+        emptyText="No upcoming or active cycles in this project."
+        confirmLabel={`Add ${selectedCount} ${issueNoun}`}
+        onConfirm={(id) => {
+          setCycleOpen(false);
+          onAddToCycle(id);
+        }}
+      />
+      <BulkOrganizeDialog
+        open={moduleOpen}
+        onOpenChange={setModuleOpen}
+        title="Add to module"
+        description={`Add ${selectedCount} selected ${issueNoun} to a module. Issues already in the module are skipped.`}
+        items={moduleItems}
+        loading={structureLoading}
+        emptyText="No modules in this project."
+        confirmLabel={`Add ${selectedCount} ${issueNoun}`}
+        onConfirm={(id) => {
+          setModuleOpen(false);
+          onAddToModule(id);
+        }}
+      />
     </div>
   );
 }

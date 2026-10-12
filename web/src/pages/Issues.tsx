@@ -9,11 +9,13 @@ import {
 import { Download, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type {
+  Cycle,
   Issue,
   IssueListResult,
   IssueState,
   Label as ProjectLabel,
   Member,
+  Module,
   Project,
 } from "../lib/types";
 import { Button } from "../components/ui/button";
@@ -354,6 +356,7 @@ export default function Issues() {
   // and labels are fetched lazily — only once something is selected.
   const bulk = useBulkSelection();
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [membershipError, setMembershipError] = useState<string | null>(null);
   const membersQuery = useQuery({
     queryKey: ["members", slug],
     queryFn: () =>
@@ -370,6 +373,18 @@ export default function Issues() {
       api
         .get<{ labels: ProjectLabel[] }>(`${base}/labels`)
         .then((d) => d.labels),
+    enabled: bulk.count > 0,
+  });
+  const cyclesQuery = useQuery({
+    queryKey: ["cycles", slug, identifier],
+    queryFn: () =>
+      api.get<{ cycles: Cycle[] }>(`${base}/cycles`).then((d) => d.cycles),
+    enabled: bulk.count > 0,
+  });
+  const modulesQuery = useQuery({
+    queryKey: ["modules", slug, identifier],
+    queryFn: () =>
+      api.get<{ modules: Module[] }>(`${base}/modules`).then((d) => d.modules),
     enabled: bulk.count > 0,
   });
   const bulkMutation = useMutation({
@@ -391,6 +406,64 @@ export default function Issues() {
     },
     onError: (e) => {
       setBulkError(e instanceof ApiError ? e.message : "Bulk update failed");
+    },
+  });
+
+  /** C24T2: bulk "add to cycle / module". Membership POSTs are idempotent
+   *  — the server skips already-members and returns {added: n}. On
+   *  success the selection clears (like the bulk PATCH), the issue list
+   *  revalidates (existing bulk pattern), and the cycle/module lists
+   *  revalidate so their issue counts stay fresh. */
+  function onMembershipAdded(
+    kind: "cycle" | "module",
+    targetId: string,
+    added: number,
+  ) {
+    const name =
+      kind === "cycle"
+        ? cyclesQuery.data?.find((c) => c.id === targetId)?.name
+        : modulesQuery.data?.find((m) => m.id === targetId)?.name;
+    bulk.clear();
+    setMembershipError(null);
+    void queryClient.invalidateQueries({
+      queryKey: ["issues", slug, identifier],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: [kind === "cycle" ? "cycles" : "modules", slug, identifier],
+    });
+    toast.add({
+      title: `Added ${added} issue${added === 1 ? "" : "s"} to ${kind}`,
+      description: name,
+      type: "success",
+    });
+  }
+
+  const bulkCycleMutation = useMutation({
+    mutationFn: (cycleId: string) =>
+      api.post<{ added: number }>(
+        `${base}/cycles/${encodeURIComponent(cycleId)}/issues`,
+        { issue_ids: bulk.selectedIds },
+      ),
+    onSuccess: (res, cycleId) => onMembershipAdded("cycle", cycleId, res.added),
+    onError: (e) => {
+      setMembershipError(
+        e instanceof ApiError ? e.message : "Failed to add issues to cycle",
+      );
+    },
+  });
+
+  const bulkModuleMutation = useMutation({
+    mutationFn: (moduleId: string) =>
+      api.post<{ added: number }>(
+        `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+        { issue_ids: bulk.selectedIds },
+      ),
+    onSuccess: (res, moduleId) =>
+      onMembershipAdded("module", moduleId, res.added),
+    onError: (e) => {
+      setMembershipError(
+        e instanceof ApiError ? e.message : "Failed to add issues to module",
+      );
     },
   });
 
@@ -1002,6 +1075,15 @@ export default function Issues() {
           onApply={(set) => bulkMutation.mutate(set)}
           applying={bulkMutation.isPending}
           error={bulkError}
+          cycles={cyclesQuery.data ?? null}
+          modules={modulesQuery.data ?? null}
+          structureLoading={cyclesQuery.isPending || modulesQuery.isPending}
+          onAddToCycle={(id) => bulkCycleMutation.mutate(id)}
+          onAddToModule={(id) => bulkModuleMutation.mutate(id)}
+          organizeApplying={
+            bulkCycleMutation.isPending || bulkModuleMutation.isPending
+          }
+          organizeError={membershipError}
         />
       )}
 
