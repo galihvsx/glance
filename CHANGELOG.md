@@ -133,6 +133,36 @@ queued onboarding follow-up (invites endpoint).
   member-project add/remove, status changer, delete-with-confirm.
   Guests read-only.
 
+**Recurring work (cycle 28)**
+- Scheduled issue creation on a daily/weekly/monthly cadence (standups,
+  weekly reports, sprint rituals) — the first deliberate beyond-Plane
+  capability (Plane has no native recurring issues; glance ships it
+  free). Backend (C28T0): migration 000051 (`issue_schedules`, workspace
+  + project tenanted, read any member / mutate member+), schedule CRUD
+  service with pure next-occurrence math (daily/weekly/monthly ×
+  interval, weekday sets, day-of-month clamp incl. leap, ends_on
+  inclusive, hour in UTC).
+- Ticker execution (C28T1): 1-min ticker claiming due schedules
+  `FOR UPDATE SKIP LOCKED`; each occurrence created through the normal
+  `CreateIssue` path so automations, webhooks, Slack and assignee
+  notifications apply exactly as for manual issues; activity entry
+  "Created by schedule '<name>'"; stale label/state/assignee refs
+  deactivate the schedule instead of failing forever; per-occurrence
+  atomicity (row lock + fresh re-read + advance), no double-run.
+- HTTP surface (C28T2): schedule CRUD + `POST .../schedules/:id/run-now`
+  (calling user as actor, must be workspace member; stale refs → 400,
+  no-op → 409), list with next run, `docs/openapi.yaml` updates,
+  `docs/recurring-work.md`.
+- Schedules UI (C28T3): project sub-nav "Schedules" page — rules table
+  (name, cadence summary, next run, active toggle, run-now,
+  edit/delete), builder dialog reusing existing pickers, honest empty
+  state. Guests read; members edit.
+- Honest v1 limitations: hour is UTC (no per-workspace timezone yet),
+  template vars are `{{date}}` / `{{datetime}}` only, occurrences are
+  ordinary issues once created (no skip-next, no series editing), and a
+  schedule without `ends_on` runs until paused/deleted (surfaced in UI
+  copy).
+
 **Modules**
 - Full-stack modules (Plane "modules" = epics): migration 000017
   (dates; tables shipped in 000012), CRUD + issue assignment via the
