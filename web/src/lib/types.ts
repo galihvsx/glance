@@ -365,6 +365,55 @@ export interface BurndownDay {
   ideal: number;
 }
 
+// ---------- Initiatives (C27) ----------
+
+/** A workspace-scoped initiative (program) grouping projects.
+ *  Unlike cycles/modules it is workspace-scoped: member projects live
+ *  in other workspaces is impossible; initiatives own no issues. */
+export interface Initiative {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description?: string | null;
+  status: "active" | "completed" | "archived";
+  created_by?: string | null;
+  /** Number of member projects (shipped by the list endpoint). */
+  project_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One member project of an initiative. */
+export interface InitiativeProject {
+  project_id: string;
+  project_name: string;
+  added_at: string;
+}
+
+/** Per-project slice of an initiative rollup. */
+export interface InitiativeRollupProject {
+  project_id: string;
+  project_name: string;
+  total: number;
+  done_count: number;
+  completion_pct: number;
+  by_group: Record<string, number>;
+}
+
+/** Progress rollup for an initiative (C27T0): one aggregate query on
+ *  the backend — issue counts by state group across all member
+ *  projects plus a per-project breakdown. completion_pct is
+ *  done-group (completed/cancelled) issues over total, 0 when total
+ *  is 0. */
+export interface InitiativeRollup {
+  initiative_id: string;
+  total: number;
+  done_count: number;
+  completion_pct: number;
+  by_group: Record<string, number>;
+  projects: InitiativeRollupProject[];
+}
+
 /** GET .../cycles/{id}/burndown response. */
 export interface CycleBurndown {
   cycle_id: string;

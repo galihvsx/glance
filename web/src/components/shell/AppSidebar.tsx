@@ -27,13 +27,14 @@ import {
   PanelLeftClose,
   Plus,
   StickyNote,
+  Target,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api } from "../../lib/api";
 import { draftsKey, fetchDrafts } from "../../lib/drafts";
 import { useUnreadCount } from "../../lib/notifications";
 import { emitShortcutAction } from "../../lib/shortcuts";
-import type { Project } from "../../lib/types";
+import type { Initiative, Project } from "../../lib/types";
 import { useShell } from "./shell-context";
 import { toast } from "../ui/toast";
 import {
@@ -292,6 +293,7 @@ function SectionTitle({
 }
 
 function WorkspaceSection() {
+  const { pathname } = useLocation();
   const { slug: routeSlug, identifier: routeIdentifier } = useParams<{
     slug: string;
     identifier: string;
@@ -318,6 +320,25 @@ function WorkspaceSection() {
       : slug
         ? `/w/${encodeURIComponent(slug)}`
         : "/";
+  // C27T1: initiatives are workspace-scoped, so their entry lives here in
+  // the workspace section (badge = non-archived count, same NavRow
+  // icon/badge style as Inbox).
+  const initiativesHref = slug
+    ? `/w/${encodeURIComponent(slug)}/initiatives`
+    : "/";
+  const initiativesQuery = useQuery({
+    queryKey: ["initiatives", slug ?? ""],
+    queryFn: () =>
+      api
+        .get<{ initiatives: Initiative[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug ?? "")}/initiatives`,
+        )
+        .then((d) => d.initiatives),
+    enabled: !!slug,
+  });
+  const activeInitiatives = (initiativesQuery.data ?? []).filter(
+    (i) => i.status !== "archived",
+  ).length;
 
   return (
     <section aria-label="Workspace">
@@ -337,6 +358,16 @@ function WorkspaceSection() {
             onClick={() => setNotificationsOpen(true)}
           />
           <NavRow icon={Layers} label="Views" to={viewsHref} />
+          <NavRow
+            icon={Target}
+            label="Initiatives"
+            to={initiativesHref}
+            count={activeInitiatives}
+            active={
+              pathname === initiativesHref ||
+              pathname.startsWith(`${initiativesHref}/`)
+            }
+          />
         </div>
       )}
     </section>

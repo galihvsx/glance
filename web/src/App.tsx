@@ -30,6 +30,7 @@ import Drafts from "./pages/Drafts";
 import Archived from "./pages/Archived";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
+import Initiatives from "./pages/Initiatives";
 import Releases from "./pages/Releases";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
@@ -68,6 +69,10 @@ export default function App() {
                   element={<WorkspaceSettings />}
                 />
                 <Route path="/w/:slug/my-work" element={<MyWork />} />
+                <Route
+                  path="/w/:slug/initiatives"
+                  element={<Initiatives />}
+                />
                 <Route element={<ProjectScope />}>
                   <Route path="/w/:slug/p/:identifier" element={<Issues />} />
                   <Route
