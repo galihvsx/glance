@@ -108,6 +108,25 @@ queued onboarding follow-up (invites endpoint).
   step 3 now calls it — registered teammates join immediately,
   unknown emails stay as on-device "Pending" with honest copy.
 
+**Initiatives (cycle 27)**
+- Backend only (C27T0): workspace-scoped program containers that
+  group projects (Plane "initiatives", which Plane paywalls — glance
+  ships them free). Migration 000050 (`initiatives` +
+  `initiative_projects` junction; `created_by` is SET NULL so user
+  deletion never cascades). `POST/GET
+  /api/v1/workspaces/{slug}/initiatives` (archived excluded by
+  default, `?include_archived=1` to include), `GET/PATCH/DELETE
+  .../{initiativeID}`, member-project endpoints (`POST` + `DELETE`
+  `.../{initiativeID}/projects`, idempotent), and `GET
+  .../{initiativeID}/rollup` — one aggregate query returning issue
+  counts by state group across all member projects, a per-project
+  breakdown, and completion % (done-group issues / total; zero-issue
+  projects included with zero counts). Auth required; reads are
+  member-scoped (guest 5+), writes need member (15)+; cross-workspace
+  access is 404, not 403. Deletes cascade only membership rows —
+  initiatives own no issues, so issue data is never touched. UI
+  follows in the next task.
+
 **Modules**
 - Full-stack modules (Plane "modules" = epics): migration 000017
   (dates; tables shipped in 000012), CRUD + issue assignment via the

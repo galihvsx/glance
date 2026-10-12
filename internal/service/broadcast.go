@@ -31,6 +31,7 @@ const (
 	EventTemplateUpdated     = "template.updated"
 	EventCustomFieldUpdated  = "custom_field.updated"
 	EventIntakeUpdated       = "intake.updated"
+	EventInitiativeUpdated   = "initiative.updated"
 	EventNotificationCreated = "notification.created"
 )
 

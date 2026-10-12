@@ -65,6 +65,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterMyWorkRoutes(e, &MyWorkHandler{})
 	RegisterCycleRoutes(e, issueHandler)
 	RegisterModuleRoutes(e, issueHandler)
+	// C27T0: keep in lockstep with cmd/glance/main.go.
+	RegisterInitiativeRoutes(e, issueHandler)
 	RegisterPageRoutes(e, issueHandler)
 	RegisterReleaseRoutes(e, issueHandler)
 	RegisterTemplateRoutes(e, issueHandler)
