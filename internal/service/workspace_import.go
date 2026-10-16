@@ -1433,14 +1433,50 @@ func (imp *archiveImporter) importComment(is *exportIssue, c *exportComment) err
 			fmt.Sprintf("comment skipped: actor %q has no user in this instance", c.ActorEmail))
 		return nil
 	}
+	// Resolution round-trips (C32T0): restore resolved_at/resolved_by
+	// on thread roots only — a reply carrying resolution in a
+	// hand-crafted archive is imported unresolved, keeping the
+	// root-only invariant. The resolver maps like the actor (members
+	// section first, then direct UUID); when the UUID is unmapped the
+	// archived email is tried, matching the members-by-email rule.
+	// An unmapped resolver degrades to unresolved, reported like a
+	// dropped assignee — the comment itself still imports.
+	var resolvedAt any
+	var resolvedBy any
+	if c.ResolvedAt != nil && c.ParentID == nil {
+		resolvedAt = c.ResolvedAt
+		if c.ResolvedBy != nil {
+			if resolver, ok, err := imp.resolveUser(*c.ResolvedBy); err != nil {
+				return err
+			} else if ok {
+				resolvedBy = resolver
+			}
+		}
+		if resolvedBy == nil && c.ResolvedByEmail != nil {
+			var byEmail string
+			err := imp.tx.QueryRow(imp.ctx,
+				`SELECT id::text FROM users WHERE email = $1`, *c.ResolvedByEmail).Scan(&byEmail)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				resolvedBy = byEmail
+			}
+		}
+		if resolvedBy == nil {
+			resolvedAt = nil
+			imp.skip("comments", c.ID,
+				"comment resolution dropped: resolver has no user in this instance (comment imported unresolved)")
+		}
+	}
 	finalID, inserted, err := imp.insertWithFallback(imp.comments, "comments", c.ID,
 		func(id string) error {
 			// parent_id applied after the section (replies may
 			// stream before their parent).
 			_, err := imp.tx.Exec(imp.ctx,
-				`INSERT INTO comments (id, issue_id, actor_id, content, created_at, updated_at)
-				 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb, $5, $6)`,
-				id, imp.resolveID(is.ID), actor, rawJSONB(c.Content, "{}"), c.CreatedAt, c.UpdatedAt)
+				`INSERT INTO comments (id, issue_id, actor_id, content, created_at, updated_at, resolved_at, resolved_by)
+				 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::jsonb, $5, $6, $7, $8::uuid)`,
+				id, imp.resolveID(is.ID), actor, rawJSONB(c.Content, "{}"), c.CreatedAt, c.UpdatedAt, resolvedAt, resolvedBy)
 			return err
 		})
 	if err != nil {

@@ -410,14 +410,19 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 // ---------- comments ----------
 
 // Comment is one comment row with its actor denormalized.
+// ResolvedAt/ResolvedBy are the thread-resolution state (C32T0): only
+// thread roots (ParentID == nil) ever carry non-nil values; replies
+// always read nil.
 type Comment struct {
-	ID        string          `json:"id"`
-	IssueID   string          `json:"issue_id"`
-	ParentID  *string         `json:"parent_id,omitempty"`
-	Actor     ActorRef        `json:"actor"`
-	Content   json.RawMessage `json:"content"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID         string          `json:"id"`
+	IssueID    string          `json:"issue_id"`
+	ParentID   *string         `json:"parent_id,omitempty"`
+	Actor      ActorRef        `json:"actor"`
+	Content    json.RawMessage `json:"content"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	ResolvedAt *time.Time      `json:"resolved_at"`
+	ResolvedBy *ActorRef       `json:"resolved_by"`
 }
 
 // CommentNode is a comment with its nested replies.
@@ -427,18 +432,29 @@ type CommentNode struct {
 }
 
 const commentColumns = `c.id::text, c.issue_id::text, c.parent_id::text,
-	c.actor_id::text, u.name, u.email, c.content, c.created_at, c.updated_at`
+	c.actor_id::text, u.name, u.email, c.content, c.created_at, c.updated_at,
+	c.resolved_at, r.id::text, r.name, r.email`
 
 func scanComment(row pgx.Row) (*Comment, error) {
 	var c Comment
 	var content []byte
+	var resolvedByID, resolvedByEmail *string
+	var resolvedByName *string
 	err := row.Scan(&c.ID, &c.IssueID, &c.ParentID,
 		&c.Actor.ID, &c.Actor.Name, &c.Actor.Email,
-		&content, &c.CreatedAt, &c.UpdatedAt)
+		&content, &c.CreatedAt, &c.UpdatedAt,
+		&c.ResolvedAt, &resolvedByID, &resolvedByName, &resolvedByEmail)
 	if err != nil {
 		return nil, err
 	}
 	c.Content = json.RawMessage(content)
+	if resolvedByID != nil {
+		email := ""
+		if resolvedByEmail != nil {
+			email = *resolvedByEmail
+		}
+		c.ResolvedBy = &ActorRef{ID: *resolvedByID, Name: resolvedByName, Email: email}
+	}
 	return &c, nil
 }
 
@@ -446,6 +462,7 @@ func getComment(ctx context.Context, q queryRower, issueID, commentID string) (*
 	c, err := scanComment(q.QueryRow(ctx,
 		`SELECT `+commentColumns+`
 		 FROM comments c JOIN users u ON u.id = c.actor_id
+		 LEFT JOIN users r ON r.id = c.resolved_by
 		 WHERE c.id = $1::uuid AND c.issue_id = $2::uuid AND c.deleted_at IS NULL`,
 		commentID, issueID))
 	if err != nil {
@@ -601,14 +618,30 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 
 // ListComments returns the issue's comments as a nested tree, oldest
 // first. Replies whose parent was soft-deleted surface as roots. Any
-// member may read.
+// member may read. Unfiltered: every root passes (resolved=all).
 func ListComments(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) ([]*CommentNode, error) {
+	return ListCommentsFiltered(ctx, pool, wsSlug, identifier, issueID, actorID, "all")
+}
+
+// ListCommentsFiltered is ListComments with a resolved filter on the
+// thread ROOTS: "all" (default, empty means all) passes every root,
+// "open" keeps roots with resolved_at NULL, "resolved" keeps roots with
+// resolved_at set. A root that passes carries its whole reply subtree —
+// a resolved root's replies are still returned, so the thread reads as
+// one conversation. Any other value is ErrInvalidComment (400).
+func ListCommentsFiltered(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, resolved string) ([]*CommentNode, error) {
+	switch resolved {
+	case "", "all", "open", "resolved":
+	default:
+		return nil, ErrInvalidComment
+	}
 	if _, _, _, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID); err != nil {
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,
 		`SELECT `+commentColumns+`
 		 FROM comments c JOIN users u ON u.id = c.actor_id
+		 LEFT JOIN users r ON r.id = c.resolved_by
 		 WHERE c.issue_id = $1::uuid AND c.deleted_at IS NULL
 		 ORDER BY c.created_at ASC, c.id ASC`,
 		issueID)
@@ -640,6 +673,24 @@ func ListComments(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, i
 			}
 		}
 		roots = append(roots, node)
+	}
+	switch resolved {
+	case "open":
+		kept := roots[:0]
+		for _, root := range roots {
+			if root.ResolvedAt == nil {
+				kept = append(kept, root)
+			}
+		}
+		roots = kept
+	case "resolved":
+		kept := roots[:0]
+		for _, root := range roots {
+			if root.ResolvedAt != nil {
+				kept = append(kept, root)
+			}
+		}
+		roots = kept
 	}
 	return roots, nil
 }
@@ -758,6 +809,83 @@ func DeleteComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return ErrCommentNotFound
 	}
 	return nil
+}
+
+// ResolveComment marks a thread root resolved: resolved_at = now(),
+// resolved_by = actor, plus a `_comment_resolved` activity entry
+// carrying {"comment_id": "<uuid>"}. Any workspace member (15)+ may
+// resolve any thread — NOT author-only, NOT admin-only (GitHub/Linear
+// convention). Resolving an already-resolved thread is a no-op: 200
+// with the current state, no new activity entry, timestamps unchanged.
+// Resolve/reopen on a reply is ErrInvalidComment (400 — the comment
+// exists, it just cannot resolve). Deleted comments stay 404.
+func ResolveComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string) (*Comment, error) {
+	return setCommentResolution(ctx, pool, wsSlug, identifier, issueID, commentID, actorID, true)
+}
+
+// ReopenComment clears a thread root's resolution (both columns back to
+// NULL) plus a `_comment_reopened` activity entry. Same permission and
+// root-only rules as ResolveComment; reopening an already-open thread
+// is a no-op with no activity entry.
+func ReopenComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string) (*Comment, error) {
+	return setCommentResolution(ctx, pool, wsSlug, identifier, issueID, commentID, actorID, false)
+}
+
+func setCommentResolution(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string, resolve bool) (*Comment, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, _, role, err := resolveSatelliteIssue(ctx, tx, wsSlug, identifier, issueID, actorID); err != nil {
+		return nil, err
+	} else if err := requireSatelliteWriter(role); err != nil {
+		return nil, err
+	}
+	c, err := getComment(ctx, tx, issueID, commentID)
+	if err != nil {
+		return nil, err
+	}
+	if c.ParentID != nil {
+		return nil, ErrInvalidComment
+	}
+	if resolve && c.ResolvedAt != nil {
+		return c, nil
+	}
+	if !resolve && c.ResolvedAt == nil {
+		return c, nil
+	}
+	field := "_comment_reopened"
+	if resolve {
+		_, err = tx.Exec(ctx,
+			`UPDATE comments SET resolved_at = now(), resolved_by = $1::uuid, updated_at = now()
+			 WHERE id = $2::uuid AND issue_id = $3::uuid AND deleted_at IS NULL`,
+			actorID, commentID, issueID)
+		field = "_comment_resolved"
+	} else {
+		_, err = tx.Exec(ctx,
+			`UPDATE comments SET resolved_at = NULL, resolved_by = NULL, updated_at = now()
+			 WHERE id = $1::uuid AND issue_id = $2::uuid AND deleted_at IS NULL`,
+			commentID, issueID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	newVal, err := json.Marshal(map[string]any{"comment_id": commentID})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, new_value)
+		 VALUES ($1::uuid, $2::uuid, $3, $4::jsonb)`,
+		issueID, actorID, field, string(newVal)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return getComment(ctx, pool, issueID, commentID)
 }
 
 // ---------- reactions ----------
