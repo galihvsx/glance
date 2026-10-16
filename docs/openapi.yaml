@@ -1514,9 +1514,9 @@
       "patch": {
         "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a key result",
-        "description": "Member (15)+. Partial semantics. Kind is immutable: a present kind key → 400. Metric-only fields on an issue KR → 400. target_value == start_value → 400.",
+        "description": "Member (15)+. Partial semantics. Kind is immutable: a present kind key → 400. Metric-only fields on an issue KR → 400. target_value == start_value → 400. When current_value changes on a metric KR, a check-in row is recorded with checkin_note (trimmed, empty → NULL, max 1000 chars → 400 when longer); no-op value updates, title/unit/target-only changes, and issue KRs record nothing.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "unit": { "type": "string" }, "target_value": { "type": "number" }, "current_value": { "type": "number" }, "kind": { "type": "string", "description": "Immutable — any present value is rejected with 400." } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "unit": { "type": "string" }, "target_value": { "type": "number" }, "current_value": { "type": "number" }, "kind": { "type": "string", "description": "Immutable — any present value is rejected with 400." }, "checkin_note": { "type": "string", "description": "Optional note attached to the check-in row recorded when current_value changes. Trimmed, empty → NULL, max 1000 chars (longer → 400). Ignored when no check-in row is recorded." } } } } } },
         "responses": { "200": { "description": "Updated key result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/KeyResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -1525,6 +1525,15 @@
         "description": "Member (15)+. Issue links cascade; linked issues are untouched.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results/{krID}/check-ins": {
+      "get": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List a key result's check-in history",
+        "description": "Member (15)+. Check-in history, newest first, capped at 100. Metric KRs always have at least the seed entry written at creation (previous_value null). Issue KRs return {\"check_ins\": []}. Author is null when the author's user row was deleted.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Check-in history", "content": { "application/json": { "schema": { "type": "object", "properties": { "check_ins": { "type": "array", "items": { "$ref": "#/components/schemas/KeyResultCheckin" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results/{krID}/issues": {
@@ -2583,6 +2592,27 @@
           "display_id": { "type": "string", "description": "e.g. ENG-7" },
           "title": { "type": "string" },
           "state_group": { "type": "string", "description": "State group (triage/backlog/unstarted/started/completed/cancelled); empty when the issue has no state" }
+        }
+      },
+      "KeyResultCheckin": {
+        "type": "object",
+        "description": "One append-only check-in entry: a metric KR's current_value moving from previous_value to new_value, with the actor and an optional note. previous_value is null on the seed entry written at KR creation. Author is null when the author's user row was deleted. There is no update/delete path.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "key_result_id": { "type": "string", "format": "uuid" },
+          "author": { "$ref": "#/components/schemas/CheckinAuthor", "nullable": true },
+          "previous_value": { "type": "number", "nullable": true, "description": "Null on the seed entry written at KR creation" },
+          "new_value": { "type": "number" },
+          "note": { "type": "string", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CheckinAuthor": {
+        "type": "object",
+        "description": "Author of a check-in entry: id + display name (users.name falling back to users.email).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "display_name": { "type": "string" }
         }
       },
       "ActorRef": {

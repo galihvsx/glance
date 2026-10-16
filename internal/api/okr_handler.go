@@ -28,6 +28,7 @@ func RegisterObjectiveRoutes(e *echo.Echo, h *IssueHandler) {
 	g.DELETE("/:objectiveID", h.deleteObjective)
 	g.POST("/:objectiveID/key-results", h.createKeyResult)
 	g.PATCH("/:objectiveID/key-results/:krID", h.updateKeyResult)
+	g.GET("/:objectiveID/key-results/:krID/check-ins", h.listKeyResultCheckins)
 	g.DELETE("/:objectiveID/key-results/:krID", h.deleteKeyResult)
 	g.POST("/:objectiveID/key-results/:krID/issues", h.linkIssueToKeyResult)
 	g.DELETE("/:objectiveID/key-results/:krID/issues/:issueID", h.unlinkIssueFromKeyResult)
@@ -48,7 +49,7 @@ func okrError(c *echo.Context, err error) error {
 	case errors.Is(err, service.ErrKeyResultNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "key result not found", nil)
 	case errors.Is(err, service.ErrInvalidKeyResult):
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid key result: bad kind, zero-span target, kind change, metric-only field on an issue KR, or issue link to a metric KR", nil)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid key result: bad kind, zero-span target, kind change, metric-only field on an issue KR, issue link to a metric KR, or check-in note over 1000 chars", nil)
 	default:
 		return issueError(c, err)
 	}
@@ -206,11 +207,14 @@ type patchKeyResultBody struct {
 	TargetValue  *float64 `json:"target_value"`
 	CurrentValue *float64 `json:"current_value"`
 	Kind         *string  `json:"kind"`
+	CheckinNote  *string  `json:"checkin_note"`
 }
 
 // updateKeyResult implements PATCH
 // .../objectives/{objectiveID}/key-results/{krID}. Kind is immutable:
-// a present kind key is 400. Member (15)+.
+// a present kind key is 400. Member (15)+. When current_value changes
+// on a metric KR, a check-in row is recorded with checkin_note
+// (trimmed, empty → NULL, max 1000 chars → 400 when longer).
 func (h *IssueHandler) updateKeyResult(c *echo.Context) error {
 	var body patchKeyResultBody
 	if err := c.Bind(&body); err != nil {
@@ -232,11 +236,33 @@ func (h *IssueHandler) updateKeyResult(c *echo.Context) error {
 			TargetValue:  body.TargetValue,
 			CurrentValue: body.CurrentValue,
 			Kind:         body.Kind,
+			CheckinNote:  body.CheckinNote,
 		})
 	if err != nil {
 		return okrError(c, err)
 	}
 	return c.JSON(http.StatusOK, kr)
+}
+
+// listKeyResultCheckins implements GET
+// .../objectives/{objectiveID}/key-results/{krID}/check-ins: the KR's
+// check-in history, newest first, capped at 100. Member (15)+.
+// Issue KRs return {"check_ins": []}.
+func (h *IssueHandler) listKeyResultCheckins(c *echo.Context) error {
+	objectiveID, ok := requireUUIDParam(c, "objectiveID", "objective id")
+	if !ok {
+		return nil
+	}
+	krID, ok := requireUUIDParam(c, "krID", "key result id")
+	if !ok {
+		return nil
+	}
+	checkins, err := service.ListKeyResultCheckins(c.Request().Context(), h.Pool,
+		c.Param("slug"), CurrentUser(c).ID, objectiveID, krID)
+	if err != nil {
+		return okrError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"check_ins": checkins})
 }
 
 // deleteKeyResult implements DELETE
