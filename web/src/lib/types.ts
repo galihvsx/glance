@@ -231,6 +231,22 @@ export interface PageComment {
   updated_at: string;
 }
 
+/** Health indicator on a project status update (C34T0). */
+export type ProjectUpdateStatus = "on_track" | "at_risk" | "off_track";
+
+/** One project status update (C34T0): flat timeline per project.
+ *  The body is plain text (NOT markdown) in v1. The author is null
+ *  when the author's user row was deleted. */
+export interface ProjectUpdate {
+  id: string;
+  project_id: string;
+  author: ActorRef | null;
+  status: ProjectUpdateStatus;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** One issue_activities row. */
 export interface HistoryEntry {
   id: string;

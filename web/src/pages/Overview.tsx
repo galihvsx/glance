@@ -12,6 +12,7 @@ import { Textarea } from "../components/ui/textarea";
 import { api } from "../lib/api";
 import { describeChange, type ActivityEntry } from "../lib/activity";
 import { Markdown } from "../components/Markdown";
+import ProjectUpdates from "../components/project/ProjectUpdates";
 import {
   completionStats,
   cyclePercent,
@@ -353,6 +354,13 @@ export default function Overview() {
                   sub="past target date, not done"
                 />
               </div>
+
+              {/* C34T1: project status updates timeline on Overview. */}
+              <ProjectUpdates
+                slug={slug}
+                identifier={identifier}
+                role={data.role}
+              />
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="rounded-lg border-border-hairline">
