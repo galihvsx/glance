@@ -28,7 +28,15 @@ package service
 //   - comments    ← fetched per issue (paginated, capped — see
 //     githubMaxCommentsPerIssue) and inserted as attributed plain-text
 //     comments with their original created_at.
-//   - milestones  ← SKIPPED and counted (glance has no milestones).
+//   - milestones  ← mapped to releases (a glance Release IS a project
+//    milestone): each distinct milestone title in the import becomes a
+//    release in the target project (name = title, release_date =
+//    milestone due_on when present, status planned when the milestone is
+//    open / released when closed); each imported issue is assigned to
+//    its milestone's release. Duplicate titles map to ONE release; a
+//    release that already exists in the project is reused untouched.
+//    Only unmappable milestones (empty title) are counted in
+//    milestones_skipped.
 //   - pull requests ← excluded (they appear in the /issues endpoint).
 //
 // Dedupe / idempotency (no migration — deliberate): every imported issue
@@ -381,6 +389,11 @@ type githubUserRef struct {
 
 type githubMilestone struct {
 	Title string `json:"title"`
+	// DueOn is the milestone's due date (ISO 8601) or null. It becomes
+	// the release's release_date (UTC calendar date); null → NULL.
+	DueOn *time.Time `json:"due_on"`
+	// State is "open" | "closed" → release status planned | released.
+	State string `json:"state"`
 }
 
 type githubIssue struct {
@@ -579,6 +592,14 @@ type githubMappedIssue struct {
 	labelNames  []string // for label creation bookkeeping
 	assigneeID  *string
 	comments    []githubComment
+	// milestoneTitle is the trimmed milestone title ("" = no milestone
+	// or an unmappable empty title). milestoneDueOn/milestoneClosed
+	// carry the release attributes for the title's release; releaseID
+	// is filled in Phase 2 once the release exists.
+	milestoneTitle  string
+	milestoneDueOn  *time.Time
+	milestoneClosed bool
+	releaseID       *string
 }
 
 // assigneeCacheEntry memoizes one login's profile lookup for the run.
@@ -681,6 +702,15 @@ func (r *githubImportRun) mapGitHubIssue(ctx context.Context, gh githubIssue) *g
 	} else {
 		m.stateID = r.openState
 	}
+	if gh.Milestone != nil {
+		// Empty title = unmappable (release name is required): leave
+		// milestoneTitle "" so Phase 1 counts it as skipped.
+		if t := strings.TrimSpace(gh.Milestone.Title); t != "" {
+			m.milestoneTitle = t
+			m.milestoneDueOn = gh.Milestone.DueOn
+			m.milestoneClosed = strings.EqualFold(gh.Milestone.State, "closed")
+		}
+	}
 	seen := map[string]bool{}
 	for _, l := range gh.Labels {
 		nm := normalizeGitHubLabelName(l.Name)
@@ -747,6 +777,7 @@ type GitHubImportResult struct {
 	LabelsCreated     []string         `json:"labels_created"`
 	AssigneeMisses    int              `json:"assignee_misses"`
 	MilestonesSkipped int              `json:"milestones_skipped"`
+	ReleasesCreated   int              `json:"releases_created"`
 	Errors            []ImportRowError `json:"errors"`
 }
 
@@ -916,7 +947,10 @@ func ImportGitHubIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, clien
 			res.Errors = append(res.Errors, ImportRowError{Row: gh.Number, Message: "issue has no title"})
 			continue
 		}
-		if m.gh.Milestone != nil {
+		// Only unmappable milestones are counted: a milestone with an
+		// empty title cannot become a release (name is required); a
+		// mappable milestone maps, it is not skipped.
+		if m.gh.Milestone != nil && m.milestoneTitle == "" {
 			res.MilestonesSkipped++
 		}
 		if gh.Comments > 0 {
@@ -1009,6 +1043,72 @@ func ImportGitHubIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, clien
 		}
 	}
 
+	// Milestones → releases: one release per distinct milestone title
+	// in the batch. A release that already exists in the project is
+	// reused untouched — the import never overwrites its status or
+	// release_date. First-seen title attributes win when one import
+	// carries the same title with conflicting due_on/state (GitHub
+	// titles are unique per repo, so this is defensive only). A failed
+	// release create fails the whole import, same as a failed
+	// label/issue insert above: it must never silently drop the issue.
+	// (Concurrent-import race note: two runs racing on the same new
+	// title can both count it as created; the ON CONFLICT guard keeps
+	// the row itself to one.)
+	releaseIDs := map[string]string{} // trimmed title -> release id
+	releasesCreated := 0
+	for _, m := range valid {
+		if m.milestoneTitle == "" {
+			continue
+		}
+		if _, ok := releaseIDs[m.milestoneTitle]; ok {
+			continue
+		}
+		var existing string
+		err := tx.QueryRow(ctx,
+			`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = $2`,
+			r.lu.projectID, m.milestoneTitle).Scan(&existing)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			releaseIDs[m.milestoneTitle] = existing
+			continue
+		}
+		status := "planned"
+		if m.milestoneClosed {
+			status = "released"
+		}
+		// release_date takes the UTC calendar date of due_on; null
+		// stays NULL (never fabricate a zero date). A "YYYY-MM-DD"
+		// literal with ::date is timezone-independent, unlike a
+		// timestamptz cast of the raw due_on timestamp.
+		var relDate any
+		if m.milestoneDueOn != nil {
+			relDate = m.milestoneDueOn.UTC().Format("2006-01-02")
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO releases (project_id, name, description, status, release_date)
+			 VALUES ($1::uuid, $2, '', $3, $4::date)
+			 ON CONFLICT (project_id, name) DO NOTHING`,
+			r.lu.projectID, m.milestoneTitle, status, relDate); err != nil {
+			return nil, err
+		}
+		var id string
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = $2`,
+			r.lu.projectID, m.milestoneTitle).Scan(&id); err != nil {
+			return nil, err
+		}
+		releaseIDs[m.milestoneTitle] = id
+		releasesCreated++
+	}
+	for _, m := range valid {
+		if id, ok := releaseIDs[m.milestoneTitle]; ok {
+			rid := id
+			m.releaseID = &rid
+		}
+	}
+
 	for _, m := range valid {
 		var seq int
 		if err := tx.QueryRow(ctx,
@@ -1019,13 +1119,17 @@ func ImportGitHubIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, clien
 			return nil, fmt.Errorf("service: increment issue sequence: %w", err)
 		}
 		var issueID string
+		var relID any
+		if m.releaseID != nil {
+			relID = *m.releaseID
+		}
 		err = tx.QueryRow(ctx,
 			`INSERT INTO issues (project_id, sequence_id, name, description, priority,
-				state_id, created_by)
-			 VALUES ($1::uuid, $2, $3, $4::jsonb, 0, $5::uuid, $6::uuid)
+				state_id, created_by, release_id)
+			 VALUES ($1::uuid, $2, $3, $4::jsonb, 0, $5::uuid, $6::uuid, $7::uuid)
 			 RETURNING id::text`,
 			r.lu.projectID, seq, m.name, strconv.Quote(m.description),
-			m.stateID, actorID).Scan(&issueID)
+			m.stateID, actorID, relID).Scan(&issueID)
 		if err != nil {
 			return nil, err
 		}
@@ -1080,5 +1184,6 @@ func ImportGitHubIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, clien
 	}
 	res.AssigneeMisses = r.assigneeMisses
 	res.LabelsCreated = r.labelsCreated
+	res.ReleasesCreated = releasesCreated
 	return res, nil
 }
