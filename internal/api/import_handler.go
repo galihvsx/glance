@@ -51,6 +51,9 @@ func RegisterImportRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.POST("/jira", h.importJiraIssues)
 	g.POST("/trello/preview", h.previewTrelloImport)
 	g.POST("/trello", h.importTrelloCards)
+	g.POST("/linear/teams", h.listLinearTeams)
+	g.POST("/linear/preview", h.previewLinearImport)
+	g.POST("/linear", h.importLinearIssues)
 	g.POST("/plane-import/analyze", h.analyzePlaneImport)
 	g.POST("/plane-import/execute", h.executePlaneImport)
 }
@@ -320,6 +323,143 @@ func (h *ProjectHandler) importJiraIssues(c *echo.Context) error {
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
 	if err != nil {
 		return jiraImportError(c, err)
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+// ---------- Linear importer (C31T0) ----------
+//
+//   POST .../imports/linear/teams — JSON {api_key}: list the Linear
+//     teams the key can see (picker data). No writes. Member (15)+.
+//   POST .../imports/linear/preview — JSON {api_key, team_id, max?}:
+//     fetch from Linear's GraphQL API, report how the first 10 issues
+//     would map. No writes. Member (15)+.
+//   POST .../imports/linear — same inputs: import the issues.
+//
+// Linear has no self-hosted edition: the host is fixed to
+// https://api.linear.app (pinned, https only, no redirects).
+//
+// The API key travels in the JSON body only: it is forwarded to
+// api.linear.app as a Bearer header and is never stored, never logged,
+// and never echoed in error messages (pinned by
+// TestLinearTokenNeverPersisted).
+//
+// Error honesty: bad key / Linear 401 → 502 with a GENERIC message
+// (never the key, never Linear's message), Linear GraphQL errors[] →
+// 502, team not found → 400, rate-limit exhaustion 429 with
+// Retry-After (never retried silently).
+
+// linearImportMaxBody caps the Linear import JSON body: 1MB is generous
+// for api_key/team_id/max fields (no files ride this endpoint).
+const linearImportMaxBody = 1 << 20
+
+// linearTeamsBody is the JSON body of the linear teams endpoint.
+type linearTeamsBody struct {
+	APIKey string `json:"api_key"`
+}
+
+// linearImportBody is the JSON body of the linear preview/import
+// endpoints.
+type linearImportBody struct {
+	APIKey string `json:"api_key"`
+	TeamID string `json:"team_id"`
+	Max    int    `json:"max"`
+}
+
+// linearImportError maps the linear importer service errors to HTTP
+// statuses. The key is never part of any message: unauthorized maps to
+// a FIXED generic string, and the service never puts the key into its
+// errors.
+func linearImportError(c *echo.Context, err error) error {
+	var rl *service.LinearRateLimitError
+	switch {
+	case errors.As(err, &rl):
+		c.Response().Header().Set("Retry-After", strconv.Itoa(rl.RetryAfter))
+		return WriteError(c, http.StatusTooManyRequests, ErrCodeRateLimited,
+			"linear rate limit exceeded: "+rl.Message,
+			map[string]any{"retry_after": rl.RetryAfter})
+	case errors.Is(err, service.ErrLinearTeamNotFound):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	case errors.Is(err, service.ErrLinearUnauthorized):
+		return WriteError(c, http.StatusBadGateway, ErrCodeBadGateway,
+			"linear authentication failed", nil)
+	case errors.Is(err, service.ErrLinearUpstream):
+		return WriteError(c, http.StatusBadGateway, ErrCodeBadGateway, err.Error(), nil)
+	case errors.Is(err, service.ErrLinearBadInput):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	default:
+		return projectError(c, err)
+	}
+}
+
+// decodeLinearTeamsBody reads the JSON teams body under the size cap.
+func decodeLinearTeamsBody(c *echo.Context) (string, bool) {
+	r := c.Request()
+	r.Body = http.MaxBytesReader(c.Response(), r.Body, linearImportMaxBody)
+	var b linearTeamsBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+			"request body must be JSON {api_key}", nil)
+		return "", false
+	}
+	return b.APIKey, true
+}
+
+// decodeLinearImportBody reads the JSON import body under the size cap.
+func decodeLinearImportBody(c *echo.Context) (service.LinearImportInput, bool) {
+	r := c.Request()
+	r.Body = http.MaxBytesReader(c.Response(), r.Body, linearImportMaxBody)
+	var b linearImportBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		WriteError(c, http.StatusBadRequest, ErrCodeBadRequest,
+			"request body must be JSON {api_key, team_id, max?}", nil)
+		return service.LinearImportInput{}, false
+	}
+	return service.LinearImportInput{
+		APIKey: b.APIKey,
+		TeamID: b.TeamID,
+		Max:    b.Max,
+	}, true
+}
+
+// listLinearTeams implements POST .../imports/linear/teams.
+func (h *ProjectHandler) listLinearTeams(c *echo.Context) error {
+	apiKey, ok := decodeLinearTeamsBody(c)
+	if !ok {
+		return nil
+	}
+	res, err := service.ListLinearTeams(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, apiKey)
+	if err != nil {
+		return linearImportError(c, err)
+	}
+	return c.JSON(http.StatusOK, res)
+}
+
+// previewLinearImport implements POST .../imports/linear/preview.
+func (h *ProjectHandler) previewLinearImport(c *echo.Context) error {
+	in, ok := decodeLinearImportBody(c)
+	if !ok {
+		return nil
+	}
+	prev, err := service.PreviewLinearImport(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
+	if err != nil {
+		return linearImportError(c, err)
+	}
+	return c.JSON(http.StatusOK, prev)
+}
+
+// importLinearIssues implements POST .../imports/linear.
+func (h *ProjectHandler) importLinearIssues(c *echo.Context) error {
+	in, ok := decodeLinearImportBody(c)
+	if !ok {
+		return nil
+	}
+	res, err := service.ImportLinearIssues(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
+	if err != nil {
+		return linearImportError(c, err)
 	}
 	return c.JSON(http.StatusOK, res)
 }
