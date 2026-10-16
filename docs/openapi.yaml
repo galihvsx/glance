@@ -1422,6 +1422,93 @@
         "responses": { "200": { "description": "Removed" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/objectives": {
+      "get": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List objectives",
+        "description": "Each objective carries computed progress (mean of KR progress, 0 when no KRs) and key_result_count.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Objectives", "content": { "application/json": { "schema": { "type": "object", "properties": { "objectives": { "type": "array", "items": { "$ref": "#/components/schemas/Objective" } } } } } } } }
+      },
+      "post": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an objective",
+        "description": "Member (15)+. Default status active. Duplicate title in the workspace → 409.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title"], "properties": { "title": { "type": "string" }, "description": { "type": "string" }, "owner_id": { "type": "string", "format": "uuid" }, "start_date": { "type": "string", "format": "date" }, "target_date": { "type": "string", "format": "date" }, "status": { "type": "string", "enum": ["active", "completed", "archived"] } } } } } },
+        "responses": { "201": { "description": "Created objective", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Objective" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}": {
+      "get": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get an objective",
+        "description": "With key_results: each with computed progress; issue KRs carry linked_issues.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Objective", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Objective" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update an objective",
+        "description": "Member (15)+. Partial semantics: missing keys untouched, \"\" clears description / owner / dates.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "description": { "type": "string" }, "owner_id": { "type": "string", "format": "uuid" }, "start_date": { "type": "string", "format": "date" }, "target_date": { "type": "string", "format": "date" }, "status": { "type": "string", "enum": ["active", "completed", "archived"] } } } } } },
+        "responses": { "200": { "description": "Updated objective", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Objective" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an objective",
+        "description": "Member (15)+. KRs + links cascade; linked issues are untouched.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results": {
+      "post": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a key result",
+        "description": "Member (15)+. Kind is immutable after create. target_value is required and must differ from start_value (zero-span rejected). Metric-only fields (unit, current_value) on an issue KR → 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title", "kind", "target_value"], "properties": { "title": { "type": "string" }, "kind": { "type": "string", "enum": ["metric", "issue"] }, "unit": { "type": "string" }, "start_value": { "type": "number" }, "target_value": { "type": "number" }, "current_value": { "type": "number" } } } } } },
+        "responses": { "201": { "description": "Created key result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/KeyResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results/{krID}": {
+      "patch": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a key result",
+        "description": "Member (15)+. Partial semantics. Kind is immutable: a present kind key → 400. Metric-only fields on an issue KR → 400. target_value == start_value → 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string" }, "unit": { "type": "string" }, "target_value": { "type": "number" }, "current_value": { "type": "number" }, "kind": { "type": "string", "description": "Immutable — any present value is rejected with 400." } } } } } },
+        "responses": { "200": { "description": "Updated key result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/KeyResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a key result",
+        "description": "Member (15)+. Issue links cascade; linked issues are untouched.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results/{krID}/issues": {
+      "post": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link an issue to a key result",
+        "description": "Member (15)+. Idempotent: repeats are no-ops. Issue KRs only (metric KR → 400). The issue must belong to the same workspace (else 404).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_id"], "properties": { "issue_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "201": { "description": "Linked", "content": { "application/json": { "schema": { "type": "object", "properties": { "linked": { "type": "string", "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/objectives/{objectiveID}/key-results/{krID}/issues/{issueID}": {
+      "delete": {
+        "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unlink an issue from a key result",
+        "description": "Member (15)+. Idempotent: removing a non-link is a no-op.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "objectiveID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "krID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "issueID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Unlinked" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/modules": {
       "get": {
         "tags": ["modules"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2360,6 +2447,62 @@
             "completion_pct": { "type": "number" },
             "by_group": { "type": "object", "additionalProperties": { "type": "integer" } }
           } } }
+        }
+      },
+      "Objective": {
+        "type": "object",
+        "description": "Workspace-scoped goal. Progress is computed (mean of KR progress, 0 when no KRs), never stored. key_results is populated only by GET .../objectives/{objectiveID}.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "owner": { "$ref": "#/components/schemas/ActorRef" },
+          "start_date": { "type": "string", "format": "date", "nullable": true },
+          "target_date": { "type": "string", "format": "date", "nullable": true },
+          "status": { "type": "string", "enum": ["active", "completed", "archived"] },
+          "progress": { "type": "number", "description": "Mean of KR progress in [0, 1]; 0 when no KRs" },
+          "key_result_count": { "type": "integer" },
+          "key_results": { "type": "array", "items": { "$ref": "#/components/schemas/KeyResult" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "KeyResult": {
+        "type": "object",
+        "description": "Measurable result under an objective. Metric KR progress = clamp((current-start)/(target-start), 0, 1); issue KR progress = done-group linked issues ÷ linked issues (0 when no links). linked_issues is populated only by GET .../objectives/{objectiveID}, for issue KRs.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "objective_id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "kind": { "type": "string", "enum": ["metric", "issue"], "description": "Immutable after create" },
+          "unit": { "type": "string", "nullable": true, "description": "Metric KRs only" },
+          "start_value": { "type": "number" },
+          "target_value": { "type": "number", "description": "Must differ from start_value" },
+          "current_value": { "type": "number", "description": "Metric KRs only; ignored for issue KRs" },
+          "progress": { "type": "number", "description": "Computed progress in [0, 1]" },
+          "linked_issues": { "type": "array", "items": { "$ref": "#/components/schemas/LinkedIssue" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "LinkedIssue": {
+        "type": "object",
+        "description": "A live issue linked to an issue KR.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "display_id": { "type": "string", "description": "e.g. ENG-7" },
+          "title": { "type": "string" },
+          "state_group": { "type": "string", "description": "State group (triage/backlog/unstarted/started/completed/cancelled); empty when the issue has no state" }
+        }
+      },
+      "ActorRef": {
+        "type": "object",
+        "description": "Denormalized actor embedded in responses (id, name, email).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "nullable": true },
+          "email": { "type": "string", "format": "email" }
         }
       },
       "SimilarIssue": {

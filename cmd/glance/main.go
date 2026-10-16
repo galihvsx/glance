@@ -300,6 +300,8 @@ func main() {
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
 	api.RegisterInitiativeRoutes(e, issueHandler)
+	// C35T0: OKRs — objectives + key results.
+	api.RegisterObjectiveRoutes(e, issueHandler)
 	// C28T2: recurring issue schedules (scheduled issue creation).
 	api.RegisterRecurringRoutes(e, projectHandler)
 	api.RegisterPageRoutes(e, issueHandler)
