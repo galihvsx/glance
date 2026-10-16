@@ -714,3 +714,251 @@ func TestJiraImportErrorMapping(t *testing.T) {
 }
 
 var _ = pgxpool.Pool{}
+
+// ---------- fixVersions → releases (C39T0) ----------
+
+// jiraIssueJSONWithFixVersions injects a fixVersions array into a
+// jiraIssueJSON-built issue (the base builder has no version param;
+// adding one would churn every existing call site).
+func jiraIssueJSONWithFixVersions(base string, versions []map[string]any) string {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(base), &doc); err != nil {
+		panic(err)
+	}
+	fields, ok := doc["fields"].(map[string]any)
+	if !ok {
+		panic("jira issue fixture has no fields object")
+	}
+	fields["fixVersions"] = versions
+	out, err := json.Marshal(doc)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
+}
+
+// jiraVersionFixture builds one fixVersion payload: name, released /
+// archived flags, and an optional releaseDate ("" = omitted, like a
+// version with no release date set).
+func jiraVersionFixture(name string, released, archived bool, releaseDate string) map[string]any {
+	v := map[string]any{"name": name, "released": released, "archived": archived}
+	if releaseDate != "" {
+		v["releaseDate"] = releaseDate
+	}
+	return v
+}
+
+// TestImportJiraFixVersionsMapToReleases pins the C39T0 mapping:
+// distinct fixVersion names become releases (unreleased → planned with
+// the releaseDate, released OR archived → released, missing /
+// unparseable releaseDate → NULL, never a fabricated date), duplicate
+// names map to ONE release shared by both issues, multi-version issues
+// take the FIRST fixVersion, version-less and empty-name issues stay
+// unassigned, and an empty-name version is counted in
+// versions_skipped. A second import carrying a new issue for a
+// pre-existing release reuses that release untouched (status/date NOT
+// overwritten) and creates nothing. The search request itself must ask
+// for fixVersions — without it Jira omits versions entirely.
+func TestImportJiraFixVersionsMapToReleases(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	actorID, _, wsSlug, ident, projectID := jiraImportFixture(t, pool)
+
+	v2 := jiraVersionFixture("v2.0", false, false, "2026-12-01")
+	versioned := func(key, title, status string, versions []map[string]any) string {
+		return jiraIssueJSONWithFixVersions(
+			jiraIssueJSON(key, title, status, "new", "", "", []string{}, 0, ""), versions)
+	}
+	stub, srv := newJiraStub(t, "nobody@example.com")
+	stub.issues = []string{
+		versioned("PROJ-10", "v2 issue", "To Do", []map[string]any{v2}),
+		versioned("PROJ-11", "another v2", "To Do", []map[string]any{v2}),
+		versioned("PROJ-12", "released version", "Done", []map[string]any{
+			jiraVersionFixture("v1.0", true, false, "2026-01-15"),
+		}),
+		versioned("PROJ-13", "archived version", "Done", []map[string]any{
+			jiraVersionFixture("v0.9", false, true, ""),
+		}),
+		jiraIssueJSON("PROJ-14", "no version", "Done", "done", "", "", []string{}, 0, ""),
+		versioned("PROJ-15", "empty version", "Done", []map[string]any{
+			jiraVersionFixture("   ", false, false, ""),
+		}),
+		versioned("PROJ-16", "multi version", "Done", []map[string]any{
+			jiraVersionFixture("v3.0", false, false, ""),
+			jiraVersionFixture("v2.0", false, false, "2026-12-01"),
+		}),
+		versioned("PROJ-17", "bad date version", "Done", []map[string]any{
+			jiraVersionFixture("v4.0", false, false, "not-a-date"),
+		}),
+	}
+	var requestedFields []string
+	stub.searchHandler = func(w http.ResponseWriter, r *http.Request) {
+		stub.record(r) // consumes + restores the body
+		var body struct {
+			Fields []string `json:"fields"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		_ = json.Unmarshal(raw, &body)
+		requestedFields = body.Fields
+		stub.defaultSearch(w, r)
+	}
+	client := jiraTestClient(t, stub, srv, jiraTestInput())
+
+	res, err := ImportJiraIssuesWithClient(ctx, pool, client, wsSlug, ident, actorID, jiraTestInput())
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if res.Created != 8 {
+		t.Errorf("created = %d, want 8", res.Created)
+	}
+	if res.ReleasesCreated != 5 {
+		t.Errorf("releases_created = %d, want 5 (v2.0, v1.0, v0.9, v3.0, v4.0)", res.ReleasesCreated)
+	}
+	if res.VersionsSkipped != 1 {
+		t.Errorf("versions_skipped = %d, want 1 (empty name only)", res.VersionsSkipped)
+	}
+	if res.Failed != 0 || len(res.Errors) != 0 {
+		t.Errorf("failed = %d errors = %v, want clean run", res.Failed, res.Errors)
+	}
+	found := false
+	for _, f := range requestedFields {
+		if f == "fixVersions" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("search requested fields = %v, want fixVersions among them", requestedFields)
+	}
+
+	// Release attributes: unreleased + releaseDate → planned + date;
+	// released → released + date; archived → released + NULL;
+	// unparseable releaseDate → planned + NULL (no fabrication).
+	type releaseRow struct {
+		name, status string
+		date         *string
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT name, status, release_date::text FROM releases WHERE project_id = $1::uuid ORDER BY name`, projectID)
+	if err != nil {
+		t.Fatalf("list releases: %v", err)
+	}
+	got := map[string]releaseRow{}
+	for rows.Next() {
+		var rr releaseRow
+		if err := rows.Scan(&rr.name, &rr.status, &rr.date); err != nil {
+			t.Fatalf("scan release: %v", err)
+		}
+		got[rr.name] = rr
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("releases = %+v, want exactly v0.9 + v1.0 + v2.0 + v3.0 + v4.0", got)
+	}
+	check := func(name, status string, date *string) {
+		t.Helper()
+		v, ok := got[name]
+		if !ok {
+			t.Errorf("missing release %q", name)
+			return
+		}
+		if v.status != status {
+			t.Errorf("%s status = %q, want %q", name, v.status, status)
+		}
+		if date == nil && v.date != nil {
+			t.Errorf("%s date = %q, want NULL", name, *v.date)
+		}
+		if date != nil && (v.date == nil || *v.date != *date) {
+			t.Errorf("%s date = %v, want %s", name, v.date, *date)
+		}
+	}
+	strptr := func(s string) *string { return &s }
+	check("v2.0", "planned", strptr("2026-12-01"))
+	check("v1.0", "released", strptr("2026-01-15"))
+	check("v0.9", "released", nil)
+	check("v3.0", "planned", nil)
+	check("v4.0", "planned", nil)
+
+	// Issue → release assignment: duplicate names share ONE release;
+	// multi-version takes the FIRST; version-less and empty-name stay
+	// unassigned.
+	issueRelease := func(name string) *string {
+		t.Helper()
+		var rel *string
+		if err := pool.QueryRow(ctx,
+			`SELECT release_id::text FROM issues
+			  WHERE project_id = $1::uuid AND name = $2 AND deleted_at IS NULL`,
+			projectID, name).Scan(&rel); err != nil {
+			t.Fatalf("read %s release: %v", name, err)
+		}
+		return rel
+	}
+	rel10, rel11 := issueRelease("v2 issue"), issueRelease("another v2")
+	if rel10 == nil || rel11 == nil || *rel10 != *rel11 {
+		t.Errorf("duplicate-version issues share release: %v vs %v, want equal non-NULL", rel10, rel11)
+	}
+	var v2ID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = 'v2.0'`, projectID).Scan(&v2ID); err != nil {
+		t.Fatalf("read v2.0 id: %v", err)
+	}
+	if rel10 == nil || *rel10 != v2ID {
+		t.Errorf("v2 issues release = %v, want %s", rel10, v2ID)
+	}
+	var v3ID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = 'v3.0'`, projectID).Scan(&v3ID); err != nil {
+		t.Fatalf("read v3.0 id: %v", err)
+	}
+	if rel := issueRelease("multi version"); rel == nil || *rel != v3ID {
+		t.Errorf("multi-version issue release = %v, want the v3.0 release %s", rel, v3ID)
+	}
+	if rel := issueRelease("no version"); rel != nil {
+		t.Errorf("version-less issue release = %q, want NULL", *rel)
+	}
+	if rel := issueRelease("empty version"); rel != nil {
+		t.Errorf("empty-name-version issue release = %q, want NULL", *rel)
+	}
+
+	// Second import: a NEW issue for the pre-existing v2.0 version,
+	// this time released with a different releaseDate. The release is
+	// reused untouched (still planned, still 2026-12-01) and nothing
+	// new is created.
+	late := versioned("PROJ-18", "late v2", "Done", []map[string]any{
+		jiraVersionFixture("v2.0", true, false, "2027-01-01"),
+	})
+	stub.searchHandler = func(w http.ResponseWriter, r *http.Request) {
+		stub.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issues":[%s],"isLast":true}`, late)
+	}
+	res2, err := ImportJiraIssuesWithClient(ctx, pool, client, wsSlug, ident, actorID, jiraTestInput())
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if res2.Created != 1 {
+		t.Errorf("second import created = %d, want 1", res2.Created)
+	}
+	if res2.ReleasesCreated != 0 {
+		t.Errorf("second import releases_created = %d, want 0 (v2.0 reused)", res2.ReleasesCreated)
+	}
+	if res2.VersionsSkipped != 0 {
+		t.Errorf("second import versions_skipped = %d, want 0", res2.VersionsSkipped)
+	}
+	var status2 string
+	var date2 *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, release_date::text FROM releases WHERE project_id = $1::uuid AND name = 'v2.0'`, projectID).Scan(&status2, &date2); err != nil {
+		t.Fatalf("re-read v2.0: %v", err)
+	}
+	if status2 != "planned" || date2 == nil || *date2 != "2026-12-01" {
+		t.Errorf("v2.0 after reuse = (%q, %v), want (planned, 2026-12-01)", status2, date2)
+	}
+	if rel := issueRelease("late v2"); rel == nil || *rel != v2ID {
+		t.Errorf("late v2 issue release = %v, want the reused v2.0 release %s", rel, v2ID)
+	}
+}
