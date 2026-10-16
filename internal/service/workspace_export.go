@@ -26,6 +26,8 @@ package service
 //	  "modules": [{"id","project_id","name","description","status","lead_id","issue_ids":[]}],
 //	  "pages": [{"id","project_id","parent_id","title","content","position",
 //	             "author_id","created_at","updated_at"}],
+//	  "project_updates": [{"id","project_id","author_id","author_email",
+//	             "status","body","created_at","updated_at"}],
 //	  "issues": [{"id","project_id","display_id","sequence_id","name","description",
 //	              "priority","state_id","parent_id","start_date","target_date",
 //	              "estimate_point_id","is_draft","archived_at","created_by",
@@ -88,9 +90,10 @@ const ExportFormatVersion = "glance-export/1"
 // human- and machine-readable contract a future importer builds against.
 const exportSchemaNote = "glance workspace data archive, format glance-export/1. " +
 	"Single JSON document; sections stream in the order: workspace, members, projects, states, " +
-	"labels, estimates, custom_fields, cycles, modules, pages, issues. " +
+	"labels, estimates, custom_fields, cycles, modules, pages, project_updates, issues. " +
 	"Empty sections are []. UUIDs are stable identity for re-linking on import; display_id is " +
 	"informational only. Issues nest comments, custom_values, assignees, labels and attachments. " +
+	"Project updates carry id, project_id, author_id, author_email, status, body, created_at, updated_at. " +
 	"Draft issues are included; soft-deleted issues and comments are excluded. " +
 	"Attachments carry metadata only (filename, content_type, size_bytes, uploaded_by, timestamps): " +
 	"binaries are NOT included and the server-side stored_path is never exported. " +
@@ -280,6 +283,23 @@ type exportPage struct {
 	AuthorID  *string   `json:"author_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// exportProjectUpdate is one project status update (C34T2). The author
+// is carried as id + email, the same field discipline as issue
+// comments (actor_id + actor_email): the importer resolves the author
+// by email and skips the update — never invents an author — when the
+// author is unmapped. author_id/author_email are null when the
+// author's user row was deleted (ON DELETE SET NULL).
+type exportProjectUpdate struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"project_id"`
+	AuthorID    *string   `json:"author_id"`
+	AuthorEmail *string   `json:"author_email"`
+	Status      string    `json:"status"`
+	Body        string    `json:"body"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type exportAssignee struct {
@@ -574,6 +594,27 @@ func exportWorkspaceArchive(ctx context.Context, tx pgx.Tx, wsID string, w io.Wr
 			err := r.Scan(&p.ID, &p.ProjectID, &p.ParentID, &p.Title,
 				&p.Content, &p.Position, &p.AuthorID, &p.CreatedAt, &p.UpdatedAt)
 			return p, err
+		}); err != nil {
+		return err
+	}
+
+	if err := ew.raw(`,"project_updates":`); err != nil {
+		return err
+	}
+	if err := streamArray(ctx, ew, tx,
+		`SELECT pu.id::text, pu.project_id::text, pu.author_id::text, u.email::text,
+		        pu.status, pu.body, pu.created_at, pu.updated_at
+		 FROM project_updates pu
+		 JOIN projects p ON p.id = pu.project_id
+		 LEFT JOIN users u ON u.id = pu.author_id
+		 WHERE p.workspace_id = $1::uuid
+		 ORDER BY pu.project_id, pu.created_at`,
+		[]any{wsID},
+		func(r pgx.Row) (exportProjectUpdate, error) {
+			var u exportProjectUpdate
+			err := r.Scan(&u.ID, &u.ProjectID, &u.AuthorID, &u.AuthorEmail,
+				&u.Status, &u.Body, &u.CreatedAt, &u.UpdatedAt)
+			return u, err
 		}); err != nil {
 		return err
 	}
