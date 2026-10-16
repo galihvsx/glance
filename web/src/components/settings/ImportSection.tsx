@@ -381,8 +381,8 @@ function GitHubPreviewTable({ preview }: { preview: GitHubImportPreview }) {
             <TableCell className="font-mono">{r.comments}</TableCell>
             <TableCell>
               {r.milestone ? (
-                <Badge variant="outline" title="Milestones are not imported">
-                  {r.milestone} (skipped)
+                <Badge variant="outline" title="Milestone becomes a release on import">
+                  {r.milestone} (→ release)
                 </Badge>
               ) : (
                 <span className="text-muted-foreground">—</span>
@@ -526,8 +526,12 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
             Pull requests are excluded. Labels are created when missing.
             Comments are imported with attribution. Assignees are matched
             best-effort by public email — misses are reported, never fatal.
-            Milestones are skipped (glance has none). Re-running is safe:
-            already-imported issues are skipped.
+            Milestones become releases: each distinct milestone title
+            creates a release (open → planned, closed → released, due
+            date → release date) and its issues are assigned to it.
+            Milestones with an empty title can&apos;t map and are counted
+            as skipped. Re-running is safe: already-imported issues are
+            skipped.
           </p>
         </div>
       </div>
@@ -594,7 +598,7 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
                 }
               />
               <Stat label="Assignee misses" value={result.assignee_misses} />
-              <Stat label="Milestones skipped" value={result.milestones_skipped} />
+              <Stat label="Milestones skipped (unmappable)" value={result.milestones_skipped} />
             </div>
             {result.labels_created.length > 0 && (
               <div className="flex flex-wrap gap-1">

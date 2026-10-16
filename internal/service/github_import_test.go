@@ -259,8 +259,8 @@ func assertTokenAbsentFromDB(t *testing.T, pool *pgxpool.Pool, token string) {
 
 // TestImportGitHubIssuesEndToEnd is the full pipeline: 2-page fetch, PR
 // exclusion, label creation with GitHub colors, comment import with
-// attribution, assignee match + miss, milestone skip, closed→Done state,
-// and rerun dedupe.
+// attribution, assignee match + miss, milestone → release mapping,
+// closed→Done state, and rerun dedupe.
 func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -285,8 +285,13 @@ func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 	if res.Skipped != 0 {
 		t.Errorf("skipped = %d, want 0 on first run", res.Skipped)
 	}
-	if res.MilestonesSkipped != 1 {
-		t.Errorf("milestones_skipped = %d, want 1", res.MilestonesSkipped)
+	// Issue #3's milestone "v1.0" maps to a release (no due_on/state in
+	// the fixture → planned, NULL release_date), so nothing is skipped.
+	if res.MilestonesSkipped != 0 {
+		t.Errorf("milestones_skipped = %d, want 0 (v1.0 maps to a release)", res.MilestonesSkipped)
+	}
+	if res.ReleasesCreated != 1 {
+		t.Errorf("releases_created = %d, want 1 (v1.0)", res.ReleasesCreated)
 	}
 	if res.AssigneeMisses != 1 {
 		t.Errorf("assignee_misses = %d, want 1 (ghost has a private email)", res.AssigneeMisses)
@@ -369,6 +374,40 @@ func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 		t.Errorf("closed issue state = %q, want Done", state3)
 	}
 
+	// Issue #3's milestone became release "v1.0" (planned, NULL
+	// release_date — the fixture carries no due_on/state) and the
+	// issue is assigned to it. Milestone-less issue #1 is unassigned.
+	var relName, relStatus string
+	var relDate *string
+	if err := pool.QueryRow(ctx,
+		`SELECT r.name, r.status, r.release_date::text FROM releases r
+		  JOIN projects p ON p.id = r.project_id
+		 WHERE p.identifier = $1`, ident).Scan(&relName, &relStatus, &relDate); err != nil {
+		t.Fatalf("read release: %v", err)
+	}
+	if relName != "v1.0" || relStatus != "planned" || relDate != nil {
+		t.Errorf("release = (%q, %q, %v), want (v1.0, planned, NULL)", relName, relStatus, relDate)
+	}
+	var issue3Release, issue1Release *string
+	if err := pool.QueryRow(ctx,
+		`SELECT i.release_id::text FROM issues i JOIN projects p ON p.id = i.project_id
+		  WHERE p.identifier = $1 AND i.name = 'Old crash' AND i.deleted_at IS NULL`,
+		ident).Scan(&issue3Release); err != nil {
+		t.Fatalf("read issue 3 release: %v", err)
+	}
+	if issue3Release == nil {
+		t.Errorf("issue 3 release_id = NULL, want the v1.0 release")
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT i.release_id::text FROM issues i JOIN projects p ON p.id = i.project_id
+		  WHERE p.identifier = $1 AND i.name = 'First bug' AND i.deleted_at IS NULL`,
+		ident).Scan(&issue1Release); err != nil {
+		t.Fatalf("read issue 1 release: %v", err)
+	}
+	if issue1Release != nil {
+		t.Errorf("milestone-less issue 1 release_id = %q, want NULL", *issue1Release)
+	}
+
 	// The token must not be persisted anywhere.
 	assertTokenAbsentFromDB(t, pool, githubTestToken)
 
@@ -383,7 +422,184 @@ func TestImportGitHubIssuesEndToEnd(t *testing.T) {
 	if res2.Skipped != 3 {
 		t.Errorf("rerun skipped = %d, want 3", res2.Skipped)
 	}
+	if res2.ReleasesCreated != 0 {
+		t.Errorf("rerun releases_created = %d, want 0 (all deduped)", res2.ReleasesCreated)
+	}
 	assertTokenAbsentFromDB(t, pool, githubTestToken)
+}
+
+// TestImportGitHubMilestonesMapToReleases pins the C38T2 mapping:
+// distinct milestone titles become releases (open → planned with the
+// due_on date, closed → released with NULL date when due_on is null),
+// duplicate titles map to ONE release shared by both issues,
+// milestone-less issues stay unassigned, and an empty-title milestone
+// is counted in milestones_skipped. A second import carrying a new
+// issue for a pre-existing release reuses that release untouched
+// (status/date NOT overwritten) and creates nothing.
+func TestImportGitHubMilestonesMapToReleases(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	actorID, _, _, wsSlug, ident := githubImportFixture(t, pool)
+
+	milestoneIssue := func(num int, title, state, milestone string) string {
+		return fmt.Sprintf(
+			`{"number":%d,"title":%q,"body":null,"state":%q,`+
+				`"html_url":"https://github.com/acme/widgets/issues/%d",`+
+				`"labels":[],"assignees":[],"milestone":%s,"comments":0,`+
+				`"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+			num, title, state, num, milestone)
+	}
+	firstBatch := "[" + strings.Join([]string{
+		milestoneIssue(10, "Open milestone issue", "open",
+			`{"title":"v2.0","due_on":"2026-06-01T00:00:00Z","state":"open"}`),
+		milestoneIssue(11, "Another v2 issue", "open",
+			`{"title":"v2.0","due_on":"2026-06-01T00:00:00Z","state":"open"}`),
+		milestoneIssue(12, "Closed milestone issue", "closed",
+			`{"title":"v1.0","due_on":null,"state":"closed"}`),
+		milestoneIssue(13, "No milestone", "open", `null`),
+		milestoneIssue(14, "Empty title milestone", "open",
+			`{"title":"   ","due_on":null,"state":"open"}`),
+	}, ",") + "]"
+
+	stub, srv := newGitHubStub(t)
+	stub.issuesHandler = func(w http.ResponseWriter, r *http.Request) {
+		stub.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, firstBatch)
+	}
+	client := newGitHubTestClient(githubTestToken, srv.URL)
+
+	res, err := ImportGitHubIssuesWithClient(ctx, pool, client, wsSlug, ident, actorID, githubTestInput())
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if res.Created != 5 {
+		t.Errorf("created = %d, want 5", res.Created)
+	}
+	if res.ReleasesCreated != 2 {
+		t.Errorf("releases_created = %d, want 2 (v2.0, v1.0)", res.ReleasesCreated)
+	}
+	if res.MilestonesSkipped != 1 {
+		t.Errorf("milestones_skipped = %d, want 1 (empty title only)", res.MilestonesSkipped)
+	}
+	if res.Failed != 0 || len(res.Errors) != 0 {
+		t.Errorf("failed = %d errors = %v, want clean run", res.Failed, res.Errors)
+	}
+
+	// Release attributes: open + due_on → planned + date; closed +
+	// null due_on → released + NULL (no zero-date fabrication).
+	type releaseRow struct {
+		name, status string
+		date         *string
+	}
+	var releases []releaseRow
+	rows, err := pool.Query(ctx,
+		`SELECT r.name, r.status, r.release_date::text FROM releases r
+		  JOIN projects p ON p.id = r.project_id
+		  WHERE p.identifier = $1 ORDER BY r.name`, ident)
+	if err != nil {
+		t.Fatalf("list releases: %v", err)
+	}
+	for rows.Next() {
+		var rr releaseRow
+		if err := rows.Scan(&rr.name, &rr.status, &rr.date); err != nil {
+			t.Fatalf("scan release: %v", err)
+		}
+		releases = append(releases, rr)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if len(releases) != 2 {
+		t.Fatalf("releases = %+v, want exactly v1.0 + v2.0", releases)
+	}
+	got := map[string]releaseRow{}
+	for _, rr := range releases {
+		got[rr.name] = rr
+	}
+	if v, ok := got["v2.0"]; !ok || v.status != "planned" || v.date == nil || *v.date != "2026-06-01" {
+		t.Errorf("v2.0 = %+v, want (planned, 2026-06-01)", v)
+	}
+	if v, ok := got["v1.0"]; !ok || v.status != "released" || v.date != nil {
+		t.Errorf("v1.0 = %+v, want (released, NULL)", v)
+	}
+
+	// Issue → release assignment: duplicate titles share ONE release;
+	// milestone-less and empty-title issues stay unassigned.
+	issueRelease := func(name string) *string {
+		t.Helper()
+		var rel *string
+		if err := pool.QueryRow(ctx,
+			`SELECT i.release_id::text FROM issues i
+			  JOIN projects p ON p.id = i.project_id
+			  WHERE p.identifier = $1 AND i.name = $2 AND i.deleted_at IS NULL`,
+			ident, name).Scan(&rel); err != nil {
+			t.Fatalf("read %s release: %v", name, err)
+		}
+		return rel
+	}
+	rel10, rel11, rel12 := issueRelease("Open milestone issue"), issueRelease("Another v2 issue"), issueRelease("Closed milestone issue")
+	if rel10 == nil || rel11 == nil || *rel10 != *rel11 {
+		t.Errorf("duplicate-title issues share release: %v vs %v, want equal non-NULL", rel10, rel11)
+	}
+	if rel12 == nil {
+		t.Errorf("closed-milestone issue release = NULL, want the v1.0 release")
+	}
+	if rel := issueRelease("No milestone"); rel != nil {
+		t.Errorf("milestone-less issue release = %q, want NULL", *rel)
+	}
+	if rel := issueRelease("Empty title milestone"); rel != nil {
+		t.Errorf("empty-title-milestone issue release = %q, want NULL", *rel)
+	}
+	// The shared v2.0 release id matches the releases row.
+	var v2ID string
+	if err := pool.QueryRow(ctx,
+		`SELECT r.id::text FROM releases r JOIN projects p ON p.id = r.project_id
+		  WHERE p.identifier = $1 AND r.name = 'v2.0'`, ident).Scan(&v2ID); err != nil {
+		t.Fatalf("read v2.0 id: %v", err)
+	}
+	if rel10 == nil || *rel10 != v2ID {
+		t.Errorf("v2.0 issues release = %v, want %s", rel10, v2ID)
+	}
+
+	// Second import: a NEW issue for the pre-existing v2.0 milestone,
+	// this time closed with a different due_on. The release is reused
+	// untouched (still planned, still 2026-06-01) and nothing new is
+	// created.
+	stub.issuesHandler = func(w http.ResponseWriter, r *http.Request) {
+		stub.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "["+milestoneIssue(15, "Late v2 issue", "open",
+			`{"title":"v2.0","due_on":"2027-01-01T00:00:00Z","state":"closed"}`)+"]")
+	}
+	res2, err := ImportGitHubIssuesWithClient(ctx, pool, client, wsSlug, ident, actorID, githubTestInput())
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if res2.Created != 1 {
+		t.Errorf("second import created = %d, want 1", res2.Created)
+	}
+	if res2.ReleasesCreated != 0 {
+		t.Errorf("second import releases_created = %d, want 0 (v2.0 reused)", res2.ReleasesCreated)
+	}
+	if res2.MilestonesSkipped != 0 {
+		t.Errorf("second import milestones_skipped = %d, want 0", res2.MilestonesSkipped)
+	}
+	var status2 string
+	var date2 *string
+	if err := pool.QueryRow(ctx,
+		`SELECT r.status, r.release_date::text FROM releases r
+		  JOIN projects p ON p.id = r.project_id
+		  WHERE p.identifier = $1 AND r.name = 'v2.0'`, ident).Scan(&status2, &date2); err != nil {
+		t.Fatalf("reread v2.0: %v", err)
+	}
+	if status2 != "planned" || date2 == nil || *date2 != "2026-06-01" {
+		t.Errorf("reused v2.0 = (%q, %v), want (planned, 2026-06-01) — import must not overwrite", status2, date2)
+	}
+	if rel := issueRelease("Late v2 issue"); rel == nil || *rel != v2ID {
+		t.Errorf("late v2 issue release = %v, want %s", rel, v2ID)
+	}
 }
 
 // TestPreviewGitHubImport pins the preview shape: totals, first-10 rows,
