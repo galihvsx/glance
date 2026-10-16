@@ -284,6 +284,8 @@ export interface JiraImportPreviewRow {
   assignee_matched: boolean;
   comments: number;
   issue_type: string;
+  /** First fixVersion — becomes a release on import (mirrors GitHub milestone). */
+  milestone?: string | null;
   already_imported: boolean;
 }
 

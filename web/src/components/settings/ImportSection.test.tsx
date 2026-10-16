@@ -9,6 +9,7 @@ import ImportSection from "./ImportSection";
 import { ApiError } from "../../lib/api";
 import {
   fetchLinearTeams,
+  previewJiraImport,
   previewLinearImport,
   runGitHubImport,
   runLinearImport,
@@ -23,6 +24,8 @@ vi.mock("../../lib/import", async (importOriginal) => {
     runLinearImport: vi.fn(),
     previewGitHubImport: vi.fn(),
     runGitHubImport: vi.fn(),
+    previewJiraImport: vi.fn(),
+    runJiraImport: vi.fn(),
   };
 });
 
@@ -30,6 +33,7 @@ const teamsMock = fetchLinearTeams as unknown as Mock;
 const previewMock = previewLinearImport as unknown as Mock;
 const runMock = runLinearImport as unknown as Mock;
 const ghRunMock = runGitHubImport as unknown as Mock;
+const jiraPreviewMock = previewJiraImport as unknown as Mock;
 
 const TEAMS = [
   { id: "team-1", key: "ENG", name: "Engineering" },
@@ -222,5 +226,71 @@ describe("GitHub importer result (C38T1 follow-up)", () => {
     expect(
       screen.getByText("Milestones skipped (unmappable)"),
     ).toBeTruthy();
+  });
+});
+
+describe("Jira preview Milestone column (C41T1)", () => {
+  const JIRA_PREVIEW = {
+    source: "acme/PROJ",
+    total: 2,
+    rows: [
+      {
+        key: "PROJ-20",
+        title: "Multi version",
+        status: "To Do",
+        state: "Todo",
+        state_is_new: false,
+        labels: [],
+        new_labels: [],
+        priority: 3,
+        assignee: null,
+        assignee_matched: false,
+        comments: 0,
+        issue_type: "Bug",
+        milestone: "v3.0",
+        already_imported: false,
+      },
+      {
+        key: "PROJ-21",
+        title: "No version",
+        status: "Done",
+        state: "Done",
+        state_is_new: false,
+        labels: [],
+        new_labels: [],
+        priority: 1,
+        assignee: null,
+        assignee_matched: false,
+        comments: 0,
+        issue_type: "Task",
+        milestone: null,
+        already_imported: false,
+      },
+    ],
+  };
+
+  it("renders the milestone badge when present and — when absent", async () => {
+    render(<ImportSection slug="acme" identifier="ENG" canEdit />);
+    fireEvent.click(screen.getByRole("button", { name: /Jira/ }));
+    fireEvent.change(screen.getByLabelText(/Site/), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText(/Email/), {
+      target: { value: "bot@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/Project key/), {
+      target: { value: "PROJ" },
+    });
+    jiraPreviewMock.mockResolvedValue(JIRA_PREVIEW);
+    fireEvent.click(screen.getByRole("button", { name: /^Preview$/ }));
+    await waitFor(() => expect(jiraPreviewMock).toHaveBeenCalled());
+    expect(screen.getByText("Milestone")).toBeTruthy();
+    // Same badge copy as the GitHub table.
+    const badge = screen.getByTitle("Milestone becomes a release on import");
+    expect(badge.textContent).toContain("v3.0 (→ release)");
+    // Exactly one milestone badge — the version-less row renders —, not a badge.
+    expect(
+      screen.getAllByTitle("Milestone becomes a release on import"),
+    ).toHaveLength(1);
+    expect(screen.getByText("PROJ-20")).toBeTruthy();
+    expect(screen.getByText("PROJ-21")).toBeTruthy();
   });
 });

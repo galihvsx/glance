@@ -635,6 +635,7 @@ function JiraPreviewTable({ preview }: { preview: JiraImportPreview }) {
           <TableHead>Assignee</TableHead>
           <TableHead>Comments</TableHead>
           <TableHead>Type</TableHead>
+          <TableHead>Milestone</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -701,6 +702,15 @@ function JiraPreviewTable({ preview }: { preview: JiraImportPreview }) {
             <TableCell className="font-mono">{r.comments}</TableCell>
             <TableCell>
               <Badge variant="outline">{r.issue_type || "—"}</Badge>
+            </TableCell>
+            <TableCell>
+              {r.milestone ? (
+                <Badge variant="outline" title="Milestone becomes a release on import">
+                  {r.milestone} (→ release)
+                </Badge>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
             </TableCell>
           </TableRow>
         ))}

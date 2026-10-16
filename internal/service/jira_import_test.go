@@ -501,6 +501,73 @@ func TestPreviewJiraImport(t *testing.T) {
 	stub.authOK(t, in.Email, in.APIToken)
 }
 
+// TestPreviewJiraImportMilestone pins the C41T1 preview column: the
+// preview row carries the issue's FIRST fixVersion as milestone (the
+// same value the import maps to a release), an issue with no
+// fixVersions has an empty milestone omitted from the JSON, and an
+// empty-name first version is unmappable (milestone stays empty).
+func TestPreviewJiraImportMilestone(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	actorID, _, wsSlug, ident, _ := jiraImportFixture(t, pool)
+
+	versioned := func(key, title, status string, versions []map[string]any) string {
+		return jiraIssueJSONWithFixVersions(
+			jiraIssueJSON(key, title, status, "new", "", "", []string{}, 0, ""), versions)
+	}
+	stub, srv := newJiraStub(t, "nobody@example.com")
+	stub.issues = []string{
+		versioned("PROJ-20", "multi version", "To Do", []map[string]any{
+			jiraVersionFixture("v3.0", false, false, ""),
+			jiraVersionFixture("v2.0", false, false, "2026-12-01"),
+		}),
+		jiraIssueJSON("PROJ-21", "no version", "Done", "done", "", "", []string{}, 0, ""),
+		versioned("PROJ-22", "empty version", "Done", []map[string]any{
+			jiraVersionFixture("   ", false, false, ""),
+		}),
+	}
+	in := jiraTestInput()
+	client := jiraTestClient(t, stub, srv, in)
+
+	prev, err := PreviewJiraImportWithClient(ctx, pool, client, wsSlug, ident, actorID, in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(prev.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(prev.Rows))
+	}
+	byKey := map[string]JiraImportPreviewRow{}
+	for _, r := range prev.Rows {
+		byKey[r.Key] = r
+	}
+	if r := byKey["PROJ-20"]; r.Milestone != "v3.0" {
+		t.Errorf("PROJ-20 milestone = %q, want v3.0 (first fixVersion)", r.Milestone)
+	}
+	if r := byKey["PROJ-21"]; r.Milestone != "" {
+		t.Errorf("PROJ-21 milestone = %q, want empty (no fixVersions)", r.Milestone)
+	}
+	if r := byKey["PROJ-22"]; r.Milestone != "" {
+		t.Errorf("PROJ-22 milestone = %q, want empty (empty-name first version)", r.Milestone)
+	}
+	// omitempty: the no-version row must not serialize a milestone key.
+	raw, err := json.Marshal(byKey["PROJ-21"])
+	if err != nil {
+		t.Fatalf("marshal row: %v", err)
+	}
+	if strings.Contains(string(raw), "milestone") {
+		t.Errorf("no-version row JSON contains milestone: %s", raw)
+	}
+	raw, err = json.Marshal(byKey["PROJ-20"])
+	if err != nil {
+		t.Fatalf("marshal row: %v", err)
+	}
+	if !strings.Contains(string(raw), `"milestone":"v3.0"`) {
+		t.Errorf("multi-version row JSON missing milestone v3.0: %s", raw)
+	}
+
+	stub.authOK(t, in.Email, in.APIToken)
+}
+
 // ---------- end-to-end import ----------
 
 // TestImportJiraIssuesEndToEnd is the full pipeline: token pagination,
