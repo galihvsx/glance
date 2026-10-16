@@ -11,7 +11,7 @@ package service
 // Design — v1 "restore-by-UUID" with deterministic clone remap:
 //   - Sections are processed in dependency order (members, projects,
 //     states, labels, estimates, custom_fields, cycles, modules, pages,
-//     project_updates, issues, objectives). The archive streams via json.Decoder: memory stays O(one
+//     project_updates, issues, page_issue_links, objectives). The archive streams via json.Decoder: memory stays O(one
 //     row) — the only in-memory growth is the small UUID bookkeeping
 //     sets, the archived→final UUID remap, plus deferred cross-section
 //     links (pairs of UUID strings, the same granularity the exporter
@@ -69,8 +69,21 @@ package service
 //     merges KRs into an unrelated objective.
 //     only (binaries were never exported). Each one is counted in the
 //     report — never silently dropped.
+//   - Page-issue links (C36T2) restore after the issues section:
+//     the page resolves by id-then-title (the archived page UUID
+//     through the remap first, else a title lookup within the link's
+//     project) and the issue by project identifier + display_id (the
+//     stable cross-archive key, immune to the UUID clone remap). An
+//     unresolvable side skips the link with a note naming the link —
+//     never dropped silently, never a fabricated page/issue. A link
+//     whose page and issue land in different projects skips: a
+//     hand-crafted archive must not smuggle in a cross-project link
+//     the service could never have created. The creator resolves like
+//     a page author (unmapped → null, with a note). Re-import is
+//     idempotent via ON CONFLICT (page_id, issue_id) DO NOTHING —
+//     the duplicate is a skip, not an error.
 //   - NOT imported (never exported either): Slack webhook URL (secret),
-//     activity history, reactions, votes, issue links, intake items,
+//     activity history, reactions, votes, issue links (issue↔issue), intake items,
 //     webhooks config, notification prefs, API tokens, page revisions,
 //     sessions/OTP.
 //   - Unique-name conflicts (a DIFFERENT row already owns the archived
@@ -204,6 +217,7 @@ var archiveImportSections = []string{
 	"estimate_points", "custom_fields", "cycles", "cycle_issues",
 	"modules", "module_issues", "pages", "project_updates", "issues", "issue_assignees",
 	"issue_labels", "issue_custom_values", "comments", "attachments",
+	"page_issue_links",
 	"objectives", "key_results", "key_result_issue_links",
 }
 
@@ -554,6 +568,10 @@ func (imp *archiveImporter) decode(r io.Reader) error {
 			}
 		case "issues":
 			if err := decodeArchiveSection(dec, imp.importIssue); err != nil {
+				return err
+			}
+		case "page_issue_links":
+			if err := decodeArchiveSection(dec, imp.importPageIssueLink); err != nil {
 				return err
 			}
 		case "objectives":
@@ -1832,6 +1850,135 @@ func (imp *archiveImporter) importKRLink(kr *exportKeyResult, l *exportKRLink) e
 	} else {
 		imp.skip("key_result_issue_links", kr.Title,
 			fmt.Sprintf("key result %q: link to %q skipped: already linked", kr.Title, l.IssueDisplayID))
+	}
+	return nil
+}
+
+// importPageIssueLink restores one page↔issue link (C36T2). The page
+// resolves by id-then-title: the archived page UUID through the
+// remap first, else a title lookup within the link's project (a
+// page restored under a different UUID by another path still
+// re-links). The issue resolves by project identifier + display_id,
+// the stable cross-archive key (the same discipline as KR links).
+// An unresolvable side skips the link with a note naming the link —
+// never dropped silently, never a fabricated page/issue. A link
+// whose page and issue land in different projects skips: the service
+// never creates cross-project links. Re-import hits ON CONFLICT
+// (page_id, issue_id) DO NOTHING and counts as an "already linked"
+// skip — idempotent, never a duplicate, never an error.
+func (imp *archiveImporter) importPageIssueLink(l *exportPageIssueLink) error {
+	linkID := l.IssueDisplayID
+	if linkID == "" {
+		linkID = l.ID
+	}
+	if strings.TrimSpace(l.ProjectIdentifier) == "" || strings.TrimSpace(l.PageTitle) == "" ||
+		strings.TrimSpace(l.IssueDisplayID) == "" {
+		imp.skip("page_issue_links", linkID,
+			"page-issue link skipped: missing project identifier, page title, or issue display id")
+		return nil
+	}
+	// Page: archived UUID through the remap first, then title.
+	var pageID, pageProjectID string
+	if validArchiveUUID(l.PageID) {
+		if resolved := imp.resolveID(l.PageID); imp.pages[resolved] {
+			pageID = resolved
+		}
+	}
+	if pageID == "" {
+		err := imp.tx.QueryRow(imp.ctx,
+			`SELECT pg.id::text, pg.project_id::text
+			 FROM pages pg JOIN projects p ON p.id = pg.project_id
+			 WHERE p.workspace_id = $1::uuid AND p.identifier = $2 AND pg.title = $3
+			 ORDER BY pg.created_at, pg.id LIMIT 1`,
+			imp.wsID, l.ProjectIdentifier, l.PageTitle).Scan(&pageID, &pageProjectID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				imp.skip("page_issue_links", linkID,
+					fmt.Sprintf("page-issue link to %q skipped: page %q not found in project %q (page imported with no link)",
+						l.IssueDisplayID, l.PageTitle, l.ProjectIdentifier))
+				return nil
+			}
+			return err
+		}
+	} else {
+		// The UUID-resolved page still needs its project for the
+		// same-project check below.
+		if err := imp.tx.QueryRow(imp.ctx,
+			`SELECT project_id::text FROM pages WHERE id = $1::uuid`, pageID).Scan(&pageProjectID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				imp.skip("page_issue_links", linkID,
+					fmt.Sprintf("page-issue link to %q skipped: page %q not found in this workspace (page imported with no link)",
+						l.IssueDisplayID, l.PageTitle))
+				return nil
+			}
+			return err
+		}
+	}
+	// Issue: display_id must match the link's project (same prefix
+	// check as KR links), then resolve by identifier + sequence.
+	prefix := l.ProjectIdentifier + "-"
+	if !strings.HasPrefix(l.IssueDisplayID, prefix) {
+		imp.skip("page_issue_links", linkID,
+			fmt.Sprintf("page-issue link for page %q skipped: display id %q does not match project %q",
+				l.PageTitle, l.IssueDisplayID, l.ProjectIdentifier))
+		return nil
+	}
+	seq, err := strconv.Atoi(strings.TrimPrefix(l.IssueDisplayID, prefix))
+	if err != nil || seq < 0 {
+		imp.skip("page_issue_links", linkID,
+			fmt.Sprintf("page-issue link for page %q skipped: unparseable display id %q",
+				l.PageTitle, l.IssueDisplayID))
+		return nil
+	}
+	var issueID, issueProjectID string
+	err = imp.tx.QueryRow(imp.ctx,
+		`SELECT i.id::text, i.project_id::text
+		 FROM issues i JOIN projects p ON p.id = i.project_id
+		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2
+		   AND i.sequence_id = $3 AND i.deleted_at IS NULL`,
+		imp.wsID, l.ProjectIdentifier, seq).Scan(&issueID, &issueProjectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			imp.skip("page_issue_links", linkID,
+				fmt.Sprintf("page-issue link for page %q skipped: issue %q not found in this workspace (page imported with no link)",
+					l.PageTitle, l.IssueDisplayID))
+			return nil
+		}
+		return err
+	}
+	if pageProjectID != issueProjectID {
+		imp.skip("page_issue_links", linkID,
+			fmt.Sprintf("page-issue link for page %q to %q skipped: page and issue are in different projects",
+				l.PageTitle, l.IssueDisplayID))
+		return nil
+	}
+	// Creator resolves like a page author: unmapped → null, noted.
+	var createdBy any
+	if l.CreatedBy != nil {
+		creator, ok, err := imp.resolveUser(*l.CreatedBy)
+		if err != nil {
+			return err
+		}
+		if ok {
+			createdBy = creator
+		} else {
+			imp.skip("page_issue_links", linkID,
+				"page-issue link creator skipped: no instance user matches the archived creator (creator left empty)")
+		}
+	}
+	tag, err := imp.tx.Exec(imp.ctx,
+		`INSERT INTO page_issue_links (page_id, issue_id, created_by, created_at)
+		 VALUES ($1::uuid, $2::uuid, $3::uuid, $4)
+		 ON CONFLICT (page_id, issue_id) DO NOTHING`,
+		pageID, issueID, createdBy, l.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		imp.rep.Imported["page_issue_links"]++
+	} else {
+		imp.skip("page_issue_links", linkID,
+			fmt.Sprintf("page-issue link for page %q to %q skipped: already linked", l.PageTitle, l.IssueDisplayID))
 	}
 	return nil
 }
