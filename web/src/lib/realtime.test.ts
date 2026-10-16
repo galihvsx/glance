@@ -12,10 +12,13 @@ import { createElement, type ReactNode } from "react";
 import {
   handleRealtimeEvent,
   handleReconnect,
+  registerGlobalReconnect,
   registerProjectReconnect,
   registerWorkspaceReconnect,
+  resyncNotifications,
   resyncProject,
   resyncWorkspace,
+  useGlobalRealtime,
   useProjectRealtime,
   useWorkspaceRealtime,
 } from "./realtime";
@@ -474,6 +477,56 @@ describe("resyncWorkspace (C43T0)", () => {
   });
 });
 
+describe("useGlobalRealtime subscription set (C44T0)", () => {
+  afterEach(() => {
+    wsMock.subscriptions.clear();
+    vi.clearAllMocks();
+  });
+
+  function mountHook(opts: { userId?: string }) {
+    const qc = new QueryClient();
+    const keys: unknown[][] = [];
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (o) => {
+      keys.push(o?.queryKey as unknown[]);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+    const { unmount } = renderHook(() => useGlobalRealtime(opts), {
+      wrapper,
+    });
+    return { qc, keys, unmount };
+  }
+
+  it("subscribes ONLY to the user channel and notification.created there invalidates notifications", () => {
+    const { keys, unmount } = mountHook({ userId: "u-1" });
+    try {
+      expect([...wsMock.subscriptions.keys()]).toEqual(["user:u-1"]);
+      wsMock.subscriptions
+        .get("user:u-1")![0](frame("notification.created", { id: "n1" }));
+      expect(keys).toEqual([["notifications"]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("does NOT subscribe to any channel when userId is omitted (auth loading / logged out)", () => {
+    const { unmount } = mountHook({});
+    try {
+      expect([...wsMock.subscriptions.keys()]).toHaveLength(0);
+    } finally {
+      unmount();
+    }
+  });
+});
+
+describe("resyncNotifications (C44T0)", () => {
+  it("invalidates ONLY the notifications prefix", async () => {
+    const { qc, keys } = spiedClient();
+    await resyncNotifications(qc);
+    expect(keys).toEqual([["notifications"]]);
+  });
+});
+
 describe("handleReconnect dispatch (C43T0 review fix)", () => {
   it("workspace-only registration resyncs workspace keys, never project keys", async () => {
     const { qc, keys } = spiedClient();
@@ -539,6 +592,71 @@ describe("handleReconnect dispatch (C43T0 review fix)", () => {
       queryClient: qc,
       slug: "acme",
     });
+    unregister();
+    await handleReconnect(null);
+    expect(keys).toHaveLength(0);
+  });
+
+  it("C44T0: global-only registration resyncs ONLY the notifications keys", async () => {
+    const { qc, keys } = spiedClient();
+    const unregister = registerGlobalReconnect({ queryClient: qc });
+    try {
+      await handleReconnect(null);
+      expect(keys).toEqual([["notifications"]]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("C44T0: global + workspace + project registrations compose — all three key sets resync", async () => {
+    // Regression guard for the C43T0 dispatcher fix, extended to the
+    // global callback: one stable handleReconnect must run every
+    // registered resync, regardless of mount order.
+    const { qc, keys } = spiedClient();
+    const unregisterGlobal = registerGlobalReconnect({ queryClient: qc });
+    const unregisterWs = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "acme",
+    });
+    const unregisterPr = registerProjectReconnect({
+      queryClient: qc,
+      slug: "acme",
+      identifier: "ENG",
+    });
+    try {
+      await handleReconnect(null);
+      expect(keys).toContainEqual(["issues", "acme", "ENG"]);
+      expect(keys).toContainEqual(["objectives", "acme"]);
+      expect(keys).toContainEqual(["notifications"]);
+    } finally {
+      unregisterGlobal();
+      unregisterWs();
+      unregisterPr();
+    }
+  });
+
+  it("C44T0: stale global cleanup never clears a newer registration", async () => {
+    const { qc, keys } = spiedClient();
+    const unregisterOld = registerGlobalReconnect({ queryClient: qc });
+    const qcNew = new QueryClient();
+    const keysNew: unknown[][] = [];
+    vi.spyOn(qcNew, "invalidateQueries").mockImplementation(async (o) => {
+      keysNew.push(o?.queryKey as unknown[]);
+    });
+    const unregisterNew = registerGlobalReconnect({ queryClient: qcNew });
+    try {
+      unregisterOld(); // stale cleanup: must NOT clear the new registration
+      await handleReconnect(null);
+      expect(keys).toHaveLength(0);
+      expect(keysNew).toEqual([["notifications"]]);
+    } finally {
+      unregisterNew();
+    }
+  });
+
+  it("C44T0: after global unregister, reconnect resyncs nothing", async () => {
+    const { qc, keys } = spiedClient();
+    const unregister = registerGlobalReconnect({ queryClient: qc });
     unregister();
     await handleReconnect(null);
     expect(keys).toHaveLength(0);

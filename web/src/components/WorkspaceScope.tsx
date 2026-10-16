@@ -1,9 +1,12 @@
 // WorkspaceScope (C43T0): layout for all /w/:slug/* routes — workspace
 // pages AND the project routes nested under it. Owns the realtime
-// connection for the workspace (single resync owner for workspace keys)
-// and the connection status dot. ProjectScope (nested inside) owns the
-// project channel + resyncProject; the socket client's refcounting makes
-// the double workspace+user subscription on project pages benign.
+// connection for the workspace (single resync owner for workspace keys).
+// ProjectScope (nested inside) owns the project channel +
+// resyncProject; the socket client's refcounting makes the double
+// workspace+user subscription on project pages benign. The single
+// <ConnectionDot /> lives in GlobalScope (C44T0) above every
+// authenticated route — WorkspaceScope must NOT render its own, so
+// workspace pages show exactly one dot.
 
 import { useEffect } from "react";
 import { Outlet, useParams } from "react-router-dom";
@@ -11,7 +14,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getRealtimeClient } from "../lib/ws";
 import { useAuth } from "../lib/auth";
 import { handleReconnect, registerWorkspaceReconnect, useWorkspaceRealtime } from "../lib/realtime";
-import ConnectionDot from "./ConnectionDot";
 
 export default function WorkspaceScope() {
   const { slug = "" } = useParams<{ slug: string }>();
@@ -34,10 +36,5 @@ export default function WorkspaceScope() {
 
   useWorkspaceRealtime({ slug, userId: user?.id });
 
-  return (
-    <>
-      <ConnectionDot />
-      <Outlet />
-    </>
-  );
+  return <Outlet />;
 }

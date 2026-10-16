@@ -14,7 +14,11 @@
 // mounts useProjectRealtime underneath on project routes, so the workspace
 // and user channels end up double-subscribed there — refcounted-benign
 // (one wire subscription per channel; the handler is idempotent).
-// Events invalidate TanStack Query caches with prefix keys — targeted
+// useGlobalRealtime (C44T0) subscribes to the user channel ONLY;
+// GlobalScope mounts it above every authenticated route, so slug-less
+// routes (/, /notifications, …) get notification.created too and the
+// user channel is triple-subscribed on project routes — same benign
+// overlap. Events invalidate TanStack Query caches with prefix keys — targeted
 // invalidation of the list/detail/board queries, never a full refetch.
 // The client refcounts channel subscriptions, so mounting this in both a
 // layout and a page is safe.
@@ -350,12 +354,21 @@ export async function resyncWorkspace(
 // race by mount order. On a fresh project-page load, WorkspaceScope's
 // workspace-only handler overwrote ProjectScope's composed handler and
 // resyncProject silently never ran on reconnect (a regression vs
-// pre-C43, where ProjectScope alone owned onReconnect). Instead both
+// pre-C43, where ProjectScope alone owned onReconnect). Instead all
 // scopes register the SAME stable dispatcher below; it reads the
 // currently-registered resync callbacks at reconnect time, so effect
 // order no longer matters. Each registration returns an unregister
 // cleanup that clears only its own registration (identity guard), so a
 // stale cleanup can never clear a newer registration.
+//
+// C44T0 adds a third registration: the global owner (GlobalScope,
+// mounted above every authenticated route) resyncs the notifications
+// keys on reconnect, so routes outside WorkspaceScope (/,
+// /notifications, /profile, …) also resync instead of going stale
+// until the next poll/navigation. On workspace routes resyncWorkspace
+// already invalidates ["notifications"], so the global resync there
+// is a duplicate-but-idempotent invalidation — the same benign overlap
+// as the triple user-channel subscription.
 interface WorkspaceReconnectRegistration {
   queryClient: QueryClient;
   slug: string;
@@ -367,8 +380,13 @@ interface ProjectReconnectRegistration {
   identifier: string;
 }
 
+interface GlobalReconnectRegistration {
+  queryClient: QueryClient;
+}
+
 let workspaceReconnect: WorkspaceReconnectRegistration | null = null;
 let projectReconnect: ProjectReconnectRegistration | null = null;
+let globalReconnect: GlobalReconnectRegistration | null = null;
 
 export function registerWorkspaceReconnect(
   reg: WorkspaceReconnectRegistration,
@@ -388,11 +406,31 @@ export function registerProjectReconnect(
   };
 }
 
-// handleReconnect is the single onReconnect handler both scopes
+export function registerGlobalReconnect(
+  reg: GlobalReconnectRegistration,
+): () => void {
+  globalReconnect = reg;
+  return () => {
+    if (globalReconnect === reg) globalReconnect = null;
+  };
+}
+
+// resyncNotifications runs on reconnect from GlobalScope (C44T0).
+// Exported for tests. Invalidates ONLY the bare ["notifications"]
+// prefix — the same key set the live notification.created handler
+// invalidates (see handleRealtimeEvent).
+export async function resyncNotifications(
+  queryClient: QueryClient,
+): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+}
+
+// handleReconnect is the single onReconnect handler all scopes
 // register (getRealtimeClient merges options; last-writer-wins is
 // harmless because the function reference is identical). Runs the
 // project resync then the workspace resync — the same order as the
-// pre-fix composed handler. Exported for tests.
+// pre-fix composed handler — then the global notifications resync.
+// Exported for tests.
 export async function handleReconnect(since: string | null): Promise<void> {
   if (projectReconnect) {
     await resyncProject(
@@ -410,6 +448,9 @@ export async function handleReconnect(since: string | null): Promise<void> {
       { slug: workspaceReconnect.slug },
       since,
     );
+  }
+  if (globalReconnect) {
+    await resyncNotifications(globalReconnect.queryClient);
   }
 }
 
@@ -533,4 +574,51 @@ export function useWorkspaceRealtime({
     // deps so the user-channel subscription appears once /me resolves).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, userId]);
+}
+
+interface UseGlobalRealtimeOpts {
+  /**
+   * Current user id (from useAuth() at the call site — same plumbing as
+   * useWorkspaceRealtime). When set, subscribes to the user:{id}
+   * channel. Omitted while auth is loading or logged out.
+   */
+  userId?: string;
+}
+
+// useGlobalRealtime (C44T0) subscribes to the user channel ONLY and
+// wires invalidation through the SAME handleRealtimeEvent case as the
+// workspace/project hooks — no second notification.created handler.
+// Mounted by GlobalScope above every authenticated route, so routes
+// outside WorkspaceScope (/, /notifications, /profile,
+// /settings/tokens, /w, /onboarding) get live notification.created
+// invalidation too. On workspace/project routes the user channel ends
+// up triple-subscribed (global + workspace + project) —
+// refcounted-benign (one wire subscription; invalidation idempotent),
+// the already-accepted overlap from C43.
+//
+// The handler ctx carries slug/identifier "" (there is no workspace
+// or project in a global scope). That is safe by construction:
+// notification.created — the ONLY event that arrives on the user
+// channel — never reads slug/identifier, so it invalidates exactly
+// ["notifications"]. Any other event on this channel would hit a
+// project-scoped case with empty identifiers, invalidating
+// ["<key>", "", "", ...] prefixes that match no real query — a no-op,
+// same as the workspace hook's identifier-"" no-op.
+export function useGlobalRealtime({ userId }: UseGlobalRealtimeOpts): void {
+  const queryClient = useQueryClient();
+  const ref = useRef({ queryClient });
+  ref.current = { queryClient };
+
+  useEffect(() => {
+    if (!userId) return;
+    const client = getRealtimeClient();
+    client.connect();
+    const ctx = { slug: "", identifier: "" };
+    const unsub = client.subscribe(userChannel(userId), (evt) =>
+      handleRealtimeEvent(ref.current.queryClient, ctx, evt),
+    );
+    return unsub;
+    // Re-subscribe only when the identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 }

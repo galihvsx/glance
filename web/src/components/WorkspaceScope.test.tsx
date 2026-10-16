@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// C43T0: WorkspaceScope owns the single ConnectionDot; ProjectScope must
-// NOT render its own, so a project page (WorkspaceScope > ProjectScope
-// nested) shows exactly one dot. Also asserts the nested subscription
-// set at the layout level.
+// C44T0: the single ConnectionDot moved from WorkspaceScope to
+// GlobalScope (above every authenticated route). WorkspaceScope /
+// ProjectScope render NO dot on their own; the exactly-one-dot
+// invariant across nested scopes is covered by GlobalScope.test.tsx.
+// This file keeps the nested subscription-set assertions.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -63,13 +64,13 @@ function renderAt(path: string, children: ReactNode) {
   return utils;
 }
 
-describe("WorkspaceScope / ProjectScope ConnectionDot ownership (C43T0)", () => {
+describe("WorkspaceScope / ProjectScope subscription set (C43T0, dot ownership moved to GlobalScope in C44T0)", () => {
   afterEach(() => {
     wsMock.subscriptions.clear();
     vi.clearAllMocks();
   });
 
-  it("a project page (WorkspaceScope > ProjectScope) shows exactly ONE ConnectionDot", () => {
+  it("a project page (WorkspaceScope > ProjectScope) renders NO ConnectionDot itself and keeps the nested subscription set", () => {
     const { unmount } = renderAt(
       "/w/acme/p/ENG",
       createElement(
@@ -91,11 +92,12 @@ describe("WorkspaceScope / ProjectScope ConnectionDot ownership (C43T0)", () => 
     );
     try {
       expect(screen.getByText("project page")).toBeTruthy();
-      // ConnectionDot renders aria-label "Realtime disconnected" while
-      // the mocked client reports status "closed".
+      // The dot is owned by GlobalScope (C44T0) — the scopes alone
+      // render none. GlobalScope.test.tsx asserts exactly one dot
+      // for the full nesting.
       expect(
-        screen.getAllByLabelText("Realtime disconnected"),
-      ).toHaveLength(1);
+        screen.queryAllByLabelText("Realtime disconnected"),
+      ).toHaveLength(0);
       // Both scopes subscribed the shared channels; the project channel
       // belongs to ProjectScope alone.
       expect(wsMock.subscriptions.get("workspace:acme")).toHaveLength(2);
@@ -106,7 +108,7 @@ describe("WorkspaceScope / ProjectScope ConnectionDot ownership (C43T0)", () => 
     }
   });
 
-  it("a workspace page (WorkspaceScope alone) shows exactly one ConnectionDot and no project subscription", () => {
+  it("a workspace page (WorkspaceScope alone) renders NO ConnectionDot itself and no project subscription", () => {
     const { unmount } = renderAt(
       "/w/acme/goals",
       createElement(
@@ -125,8 +127,8 @@ describe("WorkspaceScope / ProjectScope ConnectionDot ownership (C43T0)", () => 
     try {
       expect(screen.getByText("goals page")).toBeTruthy();
       expect(
-        screen.getAllByLabelText("Realtime disconnected"),
-      ).toHaveLength(1);
+        screen.queryAllByLabelText("Realtime disconnected"),
+      ).toHaveLength(0);
       expect(wsMock.subscriptions.get("workspace:acme")).toHaveLength(1);
       expect(wsMock.subscriptions.get("user:u-1")).toHaveLength(1);
       expect(
