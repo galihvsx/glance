@@ -32,6 +32,7 @@ const (
 	EventCustomFieldUpdated  = "custom_field.updated"
 	EventIntakeUpdated       = "intake.updated"
 	EventInitiativeUpdated   = "initiative.updated"
+	EventObjectiveUpdated    = "objective.updated"
 	EventNotificationCreated = "notification.created"
 )
 
@@ -215,5 +216,18 @@ func announceTemplateUpdated(ctx context.Context, pool *pgxpool.Pool, templateID
 		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventTemplateUpdated,
 		map[string]string{"id": templateID},
+	)
+}
+
+// announceObjectiveUpdated broadcasts objective.updated on the
+// workspace channel. Best-effort: nil broadcaster in tests → silent.
+// Objectives are workspace-scoped, so the channel is the workspace
+// one — the exact precedent of announceInitiativeUpdated. The payload
+// carries only the parent objective id — clients refetch via REST.
+func announceObjectiveUpdated(ctx context.Context, wsSlug, objectiveID string) {
+	announce(
+		[]string{workspaceChannel(wsSlug)},
+		EventObjectiveUpdated,
+		map[string]string{"id": objectiveID},
 	)
 }
