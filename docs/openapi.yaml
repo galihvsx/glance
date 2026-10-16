@@ -1999,7 +1999,7 @@
       "get": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Get the project overview",
-        "description": "Single-round-trip payload for the Overview page: project identity + editable description, the caller's workspace role (drives the description edit gate), the analytics summary, states (for group resolution), recent activity (also feeds top contributors), and the live cycle's completed/total counts. Member (15)+.",
+        "description": "Single-round-trip payload for the Overview page: project identity + editable description, the caller's workspace role (drives the description edit gate), the analytics summary, states (for group resolution), recent activity (also feeds top contributors), the live cycle's completed/total counts, and the upcoming (planned) releases with progress snapshots. Member (15)+.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
         "responses": { "200": { "description": "Project overview", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectOverview" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
@@ -3011,7 +3011,11 @@
           "name": { "type": "string" },
           "description": { "type": "string", "nullable": true },
           "status": { "type": "string" },
-          "release_date": { "type": "string", "format": "date", "nullable": true }
+          "release_date": { "type": "string", "format": "date", "nullable": true },
+          "issue_count": { "type": "integer", "description": "Live count of non-deleted issues assigned to the release" },
+          "progress_snapshot": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Live count of the release's non-deleted issues by state group; all six groups (triage, backlog, unstarted, started, completed, cancelled) are always present, even when zero" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "ReleaseNotes": {
@@ -3172,7 +3176,19 @@
           "states": { "type": "array", "items": { "$ref": "#/components/schemas/State" } },
           "activity": { "type": "array", "items": { "$ref": "#/components/schemas/ActivityEntry" } },
           "cycle": { "type": "object", "nullable": true, "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" }, "status": { "type": "string" }, "completed": { "type": "integer" }, "total": { "type": "integer" } } },
-          "open_by_priority": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Open-issue counts by priority bucket (0-4)" }
+          "open_by_priority": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Open-issue counts by priority bucket (0-4)" },
+          "releases": { "type": "array", "items": { "$ref": "#/components/schemas/OverviewRelease" }, "description": "Upcoming (planned) releases, ordered by release_date nulls-last then name, capped at 5" }
+        }
+      },
+      "OverviewRelease": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "release_date": { "type": "string", "format": "date", "nullable": true },
+          "issue_count": { "type": "integer", "description": "Live count of non-deleted issues assigned to the release" },
+          "progress_snapshot": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Live count of the release's non-deleted issues by state group; all six groups (triage, backlog, unstarted, started, completed, cancelled) are always present, even when zero" }
         }
       },
       "AnalyticsSummary": {

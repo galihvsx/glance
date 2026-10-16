@@ -166,6 +166,118 @@ func TestReleaseHTTP(t *testing.T) {
 	}
 }
 
+func TestReleaseHTTPSnapshot(t *testing.T) {
+	pool := newTestPool(t)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
+	RegisterIssueRoutes(e, &IssueHandler{Pool: pool})
+	RegisterReleaseRoutes(e, &IssueHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("release-snap-http"), "test-agent", uniqueIP())
+	slug := uniqueSlug("release-snap-http")
+	createWorkspaceHTTP(t, e, cookie, "Release Co", slug)
+	ident := uniqueProjectIdentifier("RS")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	issueBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+	releaseBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/releases"
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident
+
+	type releaseJSON struct {
+		ID               string           `json:"id"`
+		Name             string           `json:"name"`
+		IssueCount       int64            `json:"issue_count"`
+		ProgressSnapshot map[string]int64 `json:"progress_snapshot"`
+	}
+	createRelease := func(body string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, releaseBase, cookie, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create release %s: status = %d (body: %s)", body, rec.Code, rec.Body.String())
+		}
+		var created releaseJSON
+		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+			t.Fatalf("decode release: %v", err)
+		}
+		// Create carries the exact all-zero snapshot.
+		for _, g := range []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"} {
+			v, ok := created.ProgressSnapshot[g]
+			if !ok || v != 0 {
+				t.Fatalf("create snapshot[%s] = %d, present=%v; want 0 present", g, v, ok)
+			}
+		}
+		return created.ID
+	}
+	fullID := createRelease(`{"name":"v1.0","status":"planned"}`)
+	emptyID := createRelease(`{"name":"v1.1","status":"planned"}`)
+
+	// Two issues on v1.0: one completed, one in the default state.
+	iss1 := createIssueHTTP(t, e, cookie, issueBase, "Snap issue one")
+	iss2 := createIssueHTTP(t, e, cookie, issueBase, "Snap issue two")
+	rec := postAuthedJSON(t, e, http.MethodPost, releaseBase+"/"+fullID+"/issues", cookie,
+		`{"issue_ids":["`+iss1+`","`+iss2+`"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign issues: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	doneID := stateIDByName(t, e, base, cookie, "Done")
+	rec = postAuthedJSON(t, e, http.MethodPatch, issueBase+"/"+iss1, cookie,
+		`{"state_id":"`+doneID+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// List carries the snapshot on every release.
+	rec = getAuthed(t, e, http.MethodGet, releaseBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list releases: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Releases []releaseJSON `json:"releases"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Releases) != 2 {
+		t.Fatalf("len = %d, want 2", len(listed.Releases))
+	}
+	byID := map[string]releaseJSON{}
+	for _, r := range listed.Releases {
+		byID[r.ID] = r
+	}
+	full := byID[fullID]
+	if full.IssueCount != 2 || full.ProgressSnapshot["completed"] != 1 || full.ProgressSnapshot["backlog"] != 1 {
+		t.Fatalf("list full = %+v, want count 2 / completed 1 / backlog 1", full)
+	}
+	for _, g := range []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"} {
+		if _, ok := full.ProgressSnapshot[g]; !ok {
+			t.Fatalf("list full snapshot missing group %q", g)
+		}
+	}
+	empty := byID[emptyID]
+	if empty.IssueCount != 0 {
+		t.Fatalf("list empty issue_count = %d, want 0", empty.IssueCount)
+	}
+	for _, g := range []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"} {
+		v, ok := empty.ProgressSnapshot[g]
+		if !ok || v != 0 {
+			t.Fatalf("list empty snapshot[%s] = %d, present=%v; want 0 present", g, v, ok)
+		}
+	}
+
+	// Get carries the same snapshot.
+	rec = getAuthed(t, e, http.MethodGet, releaseBase+"/"+fullID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get release: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got releaseJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got.IssueCount != 2 || got.ProgressSnapshot["completed"] != 1 || got.ProgressSnapshot["backlog"] != 1 {
+		t.Fatalf("get = %+v, want count 2 / completed 1 / backlog 1", got)
+	}
+}
+
 func TestReleaseNotesHTTP(t *testing.T) {
 	pool := newTestPool(t)
 	e := testServer(t, pool)

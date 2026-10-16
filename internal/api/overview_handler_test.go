@@ -28,6 +28,7 @@ func setupOverviewHTTP(t *testing.T) (*echo.Echo, *http.Cookie, string) {
 	RegisterCycleRoutes(e, &IssueHandler{Pool: pool})
 	RegisterActivityRoutes(e, &IssueHandler{Pool: pool})
 	RegisterOverviewRoutes(e, &IssueHandler{Pool: pool})
+	RegisterReleaseRoutes(e, &IssueHandler{Pool: pool})
 
 	cookie := loginTestUser(t, e, pool, uniqueEmail("h-ovw"), "test-agent/1.0", uniqueIP())
 	slug := uniqueSlug("overview-http")
@@ -65,6 +66,14 @@ type overviewBody struct {
 		Total     int64  `json:"total"`
 	} `json:"cycle"`
 	OpenByPriority map[string]int64 `json:"open_by_priority"`
+	Releases       []struct {
+		ID               string           `json:"id"`
+		Name             string           `json:"name"`
+		Status           string           `json:"status"`
+		ReleaseDate      *string          `json:"release_date"`
+		IssueCount       int64            `json:"issue_count"`
+		ProgressSnapshot map[string]int64 `json:"progress_snapshot"`
+	} `json:"releases"`
 }
 
 func getOverview(t *testing.T, e *echo.Echo, base string, cookie *http.Cookie) overviewBody {
@@ -215,6 +224,85 @@ func TestOverviewHTTPNoCycles(t *testing.T) {
 	}
 	if body.Project.Description != "" {
 		t.Errorf("description = %q, want empty default", body.Project.Description)
+	}
+	if len(body.Releases) != 0 {
+		t.Errorf("releases = %+v, want empty for a project without releases", body.Releases)
+	}
+}
+
+// TestOverviewHTTPReleases (C38T0): the overview carries the upcoming
+// (planned) releases — planned-only, ordered by release_date nulls-last
+// then name, capped at 5 — each with issue_count + the six-group
+// progress snapshot.
+func TestOverviewHTTPReleases(t *testing.T) {
+	e, cookie, base := setupOverviewHTTP(t)
+	releaseBase := base + "/releases"
+
+	createRelease := func(body string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, releaseBase, cookie, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create release %s: status = %d (body: %s)", body, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+			t.Fatalf("decode release: %v", err)
+		}
+		return created.ID
+	}
+	earlyID := createRelease(`{"name":"M-Early","status":"planned","release_date":"2027-01-01"}`)
+	createRelease(`{"name":"M-A","status":"planned","release_date":"2027-02-01"}`)
+	createRelease(`{"name":"M-B","status":"planned","release_date":"2027-03-01"}`)
+	createRelease(`{"name":"M-C","status":"planned","release_date":"2027-04-01"}`)
+	createRelease(`{"name":"M-D","status":"planned","release_date":"2027-05-01"}`)
+	// Sixth planned release (undated) sorts last and is cut off by the cap.
+	createRelease(`{"name":"M-Undated","status":"planned"}`)
+	// Released releases are never upcoming.
+	createRelease(`{"name":"M-Shipped","status":"released","release_date":"2026-01-01"}`)
+
+	// One completed issue on M-Early.
+	iss := createIssueHTTP(t, e, cookie, base+"/issues", "Overview release issue")
+	rec := postAuthedJSON(t, e, http.MethodPost, releaseBase+"/"+earlyID+"/issues", cookie,
+		`{"issue_ids":["`+iss+`"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	doneID := stateIDByName(t, e, base, cookie, "Done")
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/issues/"+iss, cookie,
+		fmt.Sprintf(`{"state_id":%q}`, doneID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	body := getOverview(t, e, base, cookie)
+	if len(body.Releases) != 5 {
+		t.Fatalf("len(releases) = %d, want 5 (cap)", len(body.Releases))
+	}
+	wantOrder := []string{"M-Early", "M-A", "M-B", "M-C", "M-D"}
+	for i, want := range wantOrder {
+		if body.Releases[i].Name != want {
+			t.Fatalf("releases[%d].name = %q, want %q", i, body.Releases[i].Name, want)
+		}
+		if body.Releases[i].Status != "planned" {
+			t.Fatalf("releases[%d].status = %q, want planned", i, body.Releases[i].Status)
+		}
+	}
+	early := body.Releases[0]
+	if early.ID != earlyID || early.IssueCount != 1 {
+		t.Fatalf("early = %+v, want id %s / issue_count 1", early, earlyID)
+	}
+	if early.ReleaseDate == nil || !strings.HasPrefix(*early.ReleaseDate, "2027-01-01") {
+		t.Fatalf("early release_date = %v, want 2027-01-01…", early.ReleaseDate)
+	}
+	if early.ProgressSnapshot["completed"] != 1 {
+		t.Fatalf("early snapshot = %+v, want completed 1", early.ProgressSnapshot)
+	}
+	for _, g := range []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"} {
+		if _, ok := early.ProgressSnapshot[g]; !ok {
+			t.Fatalf("early snapshot missing group %q", g)
+		}
 	}
 }
 
