@@ -180,8 +180,19 @@ func UpdateState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 // state in the same project) to move them in the same transaction.
 // Without reassignTo and with any referencing issues → 409 ErrStateInUse.
 // Deleting the project's last state is always 409 ErrLastState.
+//
+// C45T2: when reassignTo moves live issues, each moved live issue changed
+// state_id by construction (reassignTo is validated != the deleted state),
+// so after commit each one announces issue.updated (post-commit snapshot)
+// + objective.updated fan-out for its linked objectives. Soft-deleted
+// issues are moved but never announced. Zero refs / 409 / failed delete:
+// nothing is announced.
 func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, stateID, actorID string, reassignTo *string) error {
-	_, projectID, role, err := resolveStateScope(ctx, pool, wsSlug, identifier, actorID)
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return err
+	}
+	_, projectID, role, err := resolveStateScope(ctx, pool, wsSlug, ident, actorID)
 	if err != nil {
 		return err
 	}
@@ -229,6 +240,10 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 		`SELECT COUNT(*) FROM issues WHERE state_id = $1::uuid`, stateID).Scan(&refs); err != nil {
 		return err
 	}
+	// movedLiveIDs collects the LIVE issues the reassign UPDATE moves, so
+	// they can be announced after commit. Soft-deleted issues are moved
+	// by the same UPDATE but never announced (kept invariant).
+	var movedLiveIDs []string
 	if refs > 0 {
 		if reassignTo == nil || *reassignTo == "" {
 			return ErrStateInUse
@@ -246,9 +261,30 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 		if !targetOK {
 			return ErrInvalidReassign
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE issues SET state_id = $1::uuid, updated_at = now() WHERE state_id = $2::uuid`,
-			*reassignTo, stateID); err != nil {
+		// The UPDATE leaves deleted_at untouched, so RETURNING
+		// deleted_at IS NULL reports each row's pre-update liveness:
+		// exactly the live issues moved, in one statement.
+		movedRows, err := tx.Query(ctx,
+			`UPDATE issues SET state_id = $1::uuid, updated_at = now()
+			  WHERE state_id = $2::uuid
+			  RETURNING id::text, deleted_at IS NULL`,
+			*reassignTo, stateID)
+		if err != nil {
+			return err
+		}
+		for movedRows.Next() {
+			var movedID string
+			var isLive bool
+			if err := movedRows.Scan(&movedID, &isLive); err != nil {
+				movedRows.Close()
+				return err
+			}
+			if isLive {
+				movedLiveIDs = append(movedLiveIDs, movedID)
+			}
+		}
+		movedRows.Close()
+		if err := movedRows.Err(); err != nil {
 			return err
 		}
 	}
@@ -259,5 +295,25 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 	if ct.RowsAffected() == 0 {
 		return ErrStateNotFound
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// C45T2: announce AFTER commit only. A failed / rolled-back tx
+	// announces nothing. Each moved live issue changed state_id, so it
+	// gets issue.updated (post-commit snapshot) + objective fan-out.
+	// Snapshot lookups are best-effort: a row that vanished after
+	// commit is skipped rather than failing the (already committed)
+	// delete.
+	for _, movedID := range movedLiveIDs {
+		iss, err := scanIssue(pool.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			movedID, projectID))
+		if err != nil {
+			continue
+		}
+		announceIssueUpdated(wsSlug, ident, movedID, iss)
+		announceObjectivesForIssue(ctx, pool, wsSlug, movedID)
+	}
+	return nil
 }
