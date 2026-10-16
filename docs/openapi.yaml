@@ -486,6 +486,36 @@
         "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TrelloImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/linear/teams": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List Linear teams for import",
+        "description": "Lists the Linear teams the API key can see (id, key, name) so the UI can offer a team picker instead of demanding a team UUID. No writes. The API key travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["api_key"], "properties": { "api_key": { "type": "string", "description": "Linear personal API key (from Settings → API); sent as a Bearer header to api.linear.app only, never stored" } } } } } },
+        "responses": { "200": { "description": "Teams", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LinearTeamsResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/linear/preview": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Preview a Linear issues import",
+        "description": "Fetches issues from the Linear GraphQL API (cursor pagination, first: 50) and reports how the first 10 would map: state.type → glance state group (canceled → cancelled), priority inversion (Linear 1=urgent … 4=low), labels (missing ones would be created, default gray), assignee email matches/misses, due date → target date. No writes. The API key travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["api_key", "team_id"], "properties": { "api_key": { "type": "string", "description": "Linear personal API key (from Settings → API); sent as a Bearer header to api.linear.app only, never stored" }, "team_id": { "type": "string", "description": "Linear team UUID (from the teams endpoint)" }, "max": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Preview result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LinearImportPreview" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/imports/linear": {
+      "post": {
+        "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Import issues from Linear",
+        "description": "Imports Linear issues as glance issues: state.type maps to the glance state group (unmatched state names create new states in the mapped group), labels are created when missing (default gray), priorities are inverted to glance's scale, comments are imported with attribution and original timestamps (Markdown kept), assignees are matched best-effort by email, due dates become target dates, sub-issues/parent links/cycles/projects are NOT imported (flat issues). Idempotent via an imported-from marker in each issue's description: re-running skips already-imported issues. The API key travels in the body only and is never stored. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["api_key", "team_id"], "properties": { "api_key": { "type": "string", "description": "Linear personal API key (from Settings → API); sent as a Bearer header to api.linear.app only, never stored" }, "team_id": { "type": "string", "description": "Linear team UUID (from the teams endpoint)" }, "max": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 } } } } } },
+        "responses": { "200": { "description": "Import result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LinearImportResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "429": { "$ref": "#/components/responses/RateLimited" }, "502": { "$ref": "#/components/responses/BadGateway" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/imports/plane-import/analyze": {
       "post": {
         "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2971,6 +3001,48 @@
           "assignee_misses": { "type": "integer" },
           "checklists_skipped": { "type": "integer" },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer", "description": "1-based ordinal of the card in the fetched batch" }, "message": { "type": "string" } } } }
+        }
+      },
+      "LinearTeam": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Linear team UUID" },
+          "key": { "type": "string", "description": "Team key, e.g. ENG" },
+          "name": { "type": "string" }
+        }
+      },
+      "LinearTeamsResult": {
+        "type": "object",
+        "properties": {
+          "teams": { "type": "array", "items": { "$ref": "#/components/schemas/LinearTeam" } }
+        }
+      },
+      "LinearImportPreview": {
+        "type": "object",
+        "properties": {
+          "issues": { "type": "array", "items": { "type": "object", "properties": {
+            "identifier": { "type": "string", "description": "Linear issue identifier, e.g. ENG-123" },
+            "title": { "type": "string" },
+            "state": { "type": "string", "description": "Matched glance state name, or the Linear state name when new" },
+            "priority": { "type": "integer", "description": "0=none 1=low 2=medium 3=high 4=urgent (Linear scale already inverted)" },
+            "labels": { "type": "array", "items": { "type": "string" } },
+            "assignee_email": { "type": "string", "nullable": true },
+            "assignee_matched": { "type": "boolean" },
+            "due_date": { "type": "string", "nullable": true, "description": "YYYY-MM-DD or null" },
+            "url": { "type": "string" }
+          } } },
+          "total": { "type": "integer", "description": "Issues actually fetched" },
+          "assignee_misses": { "type": "integer" }
+        }
+      },
+      "LinearImportResult": {
+        "type": "object",
+        "properties": {
+          "created": { "type": "integer" },
+          "skipped": { "type": "integer" },
+          "failed": { "type": "integer" },
+          "errors": { "type": "array", "items": { "type": "object", "properties": { "identifier": { "type": "string", "description": "Linear issue identifier" }, "message": { "type": "string" } } } },
+          "assignee_misses": { "type": "integer" }
         }
       },
       "PlaneImportUnresolved": {
