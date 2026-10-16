@@ -163,6 +163,36 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Risk radar (cycle 30)**
+- Risk backend (C30T1): `GetRiskReport` — documented weighted composite
+  `risk_score = round(35×overdue_ratio + 25×stalled_share +
+  20×unassigned_share + 20×overload_share)`, each ratio in [0,1], score
+  0–100; levels healthy 0–24 / watch 25–49 / at-risk 50–74 / critical
+  75–100. Stalled = open issue with latest activity older than 7 days
+  (activity log, `updated_at` fallback); overload share reuses c29
+  `GetWorkload`. `GET /workspaces/:slug/risk` (member 5+), openapi.yaml,
+  `docs/risk.md`. No migration needed; batched queries, no N+1.
+- Risk UI (C30T3): `/w/:slug/risk` page implementing the galih-approved
+  C30T2 prototype — summary strip (counts per level), per-project risk
+  cards (score, level badge, score bar, factor rows with ratio + mini
+  bar), drill-down links into Issues on the established filter schema
+  (overdue → `due_before=yesterday`, stalled → `updated_before=7d`,
+  unassigned → `assignee=none`, overload → Workload), loading / empty /
+  error states. Sidebar "Risk" entry in the Workspace section next to
+  Workload. 28 new vitest.
+- Latent fix (C30T0): `requireScheduleMember` double-write — helper now
+  uses the bool-pattern (writes + returns false on failure; caller
+  returns), all 3 call sites updated, regression test asserts a single
+  response write on the 403 path.
+- Honest v1 limitations: risk is a heuristic composite, not a
+  prediction; weights fixed v1; stalled detection keys off the activity
+  log with `updated_at` fallback (bulk no-op updates reset staleness);
+  no historical risk series in v1; overload share depends on capacity
+  being set (c29).
+- Cycle 30 is the third deliberate beyond-Plane capability (Plane's
+  analytics show descriptive charts but no synthesized project health
+  signal); shipped free.
+
 **Workload & capacity (cycle 29)**
 - Workload backend (C29T0): migration 000052
   (`workspace_members.weekly_capacity_points`, 0..999 CHECK), `GetWorkload`
