@@ -671,3 +671,93 @@ func TestWorkspaceArchiveImportMissingFile(t *testing.T) {
 		t.Errorf("missing file = %d, want 400", rec.Code)
 	}
 }
+
+func TestWorkspaceArchiveImportPreservesCommentResolution(t *testing.T) {
+	src := seedArchiveSource(t, "arcres")
+	ctx := context.Background()
+
+	// Resolve the root comment ("looks good") as the assignee member,
+	// leaving the reply unresolved.
+	var rootID, assigneeID string
+	if err := src.pool.QueryRow(ctx, `SELECT c.id::text FROM comments c
+		JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id
+		WHERE p.workspace_id = $1::uuid AND c.parent_id IS NULL`, src.wsID).Scan(&rootID); err != nil {
+		t.Fatalf("source root comment: %v", err)
+	}
+	if err := src.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE email = $1`, src.assigneeMail).Scan(&assigneeID); err != nil {
+		t.Fatalf("assignee id: %v", err)
+	}
+	if _, err := src.pool.Exec(ctx, `UPDATE comments SET resolved_at = now(), resolved_by = $1::uuid WHERE id = $2::uuid`,
+		assigneeID, rootID); err != nil {
+		t.Fatalf("resolve source comment: %v", err)
+	}
+
+	archive := exportSourceArchive(t, src)
+
+	// The archive itself carries the resolution (email-identified resolver).
+	var decoded struct {
+		Issues []struct {
+			Comments []struct {
+				Content         json.RawMessage `json:"content"`
+				ResolvedAt      *string         `json:"resolved_at"`
+				ResolvedByEmail *string         `json:"resolved_by_email"`
+			} `json:"comments"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(archive, &decoded); err != nil {
+		t.Fatalf("decode archive: %v", err)
+	}
+	found := false
+	for _, is := range decoded.Issues {
+		for _, c := range is.Comments {
+			if strings.Contains(string(c.Content), "looks good") {
+				found = true
+				if c.ResolvedAt == nil || *c.ResolvedAt == "" {
+					t.Error("archived root comment resolved_at is empty, want it set")
+				}
+				if c.ResolvedByEmail == nil || *c.ResolvedByEmail != src.assigneeMail {
+					t.Errorf("archived resolved_by_email = %v, want %q", c.ResolvedByEmail, src.assigneeMail)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("root comment not found in exported archive")
+	}
+
+	// Import into a fresh workspace: resolution survives the round-trip.
+	targetSlug := freshTargetWorkspace(t, src, "arcrestgt")
+	rec := postArchiveImport(t, src.e, targetSlug, src.adminCookie, archive)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d, want 200 (body: %.500s)", rec.Code, rec.Body.String())
+	}
+	var targetWSID string
+	if err := src.pool.QueryRow(ctx,
+		`SELECT id::text FROM workspaces WHERE slug = $1`, targetSlug).Scan(&targetWSID); err != nil {
+		t.Fatalf("target workspace id: %v", err)
+	}
+	var resolvedAt *string
+	var resolverEmail *string
+	if err := src.pool.QueryRow(ctx, `SELECT c.resolved_at::text, r.email::text
+		FROM comments c LEFT JOIN users r ON r.id = c.resolved_by
+		JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id
+		WHERE p.workspace_id = $1::uuid AND c.parent_id IS NULL`, targetWSID).Scan(&resolvedAt, &resolverEmail); err != nil {
+		t.Fatalf("target root comment: %v", err)
+	}
+	if resolvedAt == nil || *resolvedAt == "" {
+		t.Error("target root comment resolved_at is empty, want it preserved")
+	}
+	if resolverEmail == nil || *resolverEmail != src.assigneeMail {
+		t.Errorf("target resolved_by email = %v, want %q", resolverEmail, src.assigneeMail)
+	}
+	// The reply stays unresolved.
+	var replyResolvedAt *string
+	if err := src.pool.QueryRow(ctx, `SELECT c.resolved_at::text
+		FROM comments c JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id
+		WHERE p.workspace_id = $1::uuid AND c.parent_id IS NOT NULL`, targetWSID).Scan(&replyResolvedAt); err != nil {
+		t.Fatalf("target reply comment: %v", err)
+	}
+	if replyResolvedAt != nil {
+		t.Errorf("target reply resolved_at = %q, want NULL", *replyResolvedAt)
+	}
+}

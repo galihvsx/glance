@@ -778,8 +778,8 @@
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List issue comments",
-        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Comments", "content": { "application/json": { "schema": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } } } } } }
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "resolved", "in": "query", "schema": { "type": "string", "enum": ["all", "open", "resolved"], "default": "all" }, "description": "Filter thread roots by resolution state; a passing root carries its whole reply subtree. An invalid value is a 400." } ],
+        "responses": { "200": { "description": "Comments", "content": { "application/json": { "schema": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -805,6 +805,24 @@
         "description": "Soft delete; author or admin.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}/resolve": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Resolve a comment thread",
+        "description": "Marks a thread root resolved (resolved_at = now, resolved_by = caller) and writes a _comment_resolved activity entry. Any workspace member (15)+ may resolve any thread. Idempotent: resolving an already-resolved thread returns the current state with no new activity entry. Resolve on a reply is a 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Resolved comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}/reopen": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Reopen a comment thread",
+        "description": "Clears a thread root's resolution (resolved_at / resolved_by back to null) and writes a _comment_reopened activity entry. Any workspace member (15)+ may reopen any thread. Idempotent: reopening an already-open thread returns the current state with no new activity entry. Reopen on a reply is a 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Reopened comment", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}/reactions": {
@@ -2574,7 +2592,9 @@
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "author": { "$ref": "#/components/schemas/User" },
           "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "updated_at": { "type": "string", "format": "date-time" },
+          "resolved_at": { "type": "string", "format": "date-time", "nullable": true, "description": "When the thread was resolved; null while open. Only thread roots (parent_id null) ever carry a value." },
+          "resolved_by": { "$ref": "#/components/schemas/User", "nullable": true, "description": "Who resolved the thread; null while open." }
         }
       },
       "Reaction": {

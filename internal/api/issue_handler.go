@@ -1074,6 +1074,8 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/comments", h.createComment)
 	g.PATCH("/comments/:commentID", h.updateComment)
 	g.DELETE("/comments/:commentID", h.deleteComment)
+	g.POST("/comments/:commentID/resolve", h.resolveComment)
+	g.POST("/comments/:commentID/reopen", h.reopenComment)
 	g.POST("/comments/:commentID/reactions", h.addCommentReaction)
 	g.DELETE("/comments/:commentID/reactions", h.removeCommentReaction)
 	g.GET("/reactions", h.listIssueReactions)
@@ -1123,13 +1125,14 @@ func (h *IssueHandler) issueParams(c *echo.Context) (slug, ident, uuid, actor st
 }
 
 // listComments implements GET .../issues/{uuid}/comments: the threaded
-// comment tree, oldest first.
+// comment tree, oldest first. ?resolved=all|open|resolved filters
+// thread roots (default all); an invalid value is a 400.
 func (h *IssueHandler) listComments(c *echo.Context) error {
 	slug, ident, uuid, actor, ok := h.issueParams(c)
 	if !ok {
 		return nil
 	}
-	tree, err := service.ListComments(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	tree, err := service.ListCommentsFiltered(c.Request().Context(), h.Pool, slug, ident, uuid, actor, c.QueryParam("resolved"))
 	if err != nil {
 		return issueError(c, err)
 	}
@@ -1205,6 +1208,44 @@ func (h *IssueHandler) deleteComment(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// resolveComment implements POST .../issues/{uuid}/comments/{commentID}/resolve:
+// marks a thread root resolved (200 Comment). Member (15)+; resolve on
+// a reply is a 400.
+func (h *IssueHandler) resolveComment(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	comment, err := service.ResolveComment(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, comment)
+}
+
+// reopenComment implements POST .../issues/{uuid}/comments/{commentID}/reopen:
+// clears a thread root's resolution (200 Comment). Member (15)+;
+// reopen on a reply is a 400.
+func (h *IssueHandler) reopenComment(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	comment, err := service.ReopenComment(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, comment)
 }
 
 type reactionBody struct {

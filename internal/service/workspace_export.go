@@ -34,7 +34,8 @@ package service
 //	              "labels":[{"label_id","name"}],
 //	              "custom_values":[{"field_id","field_name","field_type","value"}],
 //	              "comments":[{"id","parent_id","actor_id","actor_email","content",
-//	                          "created_at","updated_at"}],
+//	                          "created_at","updated_at","resolved_at",
+//	                          "resolved_by","resolved_by_email"}],
 //	              "attachments":[{"id","filename","content_type","size_bytes",
 //	                               "uploaded_by","created_at"}]}]
 //	}
@@ -299,13 +300,16 @@ type exportCustomValue struct {
 }
 
 type exportComment struct {
-	ID         string          `json:"id"`
-	ParentID   *string         `json:"parent_id"`
-	ActorID    string          `json:"actor_id"`
-	ActorEmail string          `json:"actor_email"`
-	Content    json.RawMessage `json:"content"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID              string          `json:"id"`
+	ParentID        *string         `json:"parent_id"`
+	ActorID         string          `json:"actor_id"`
+	ActorEmail      string          `json:"actor_email"`
+	Content         json.RawMessage `json:"content"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	ResolvedAt      *time.Time      `json:"resolved_at,omitempty"`
+	ResolvedBy      *string         `json:"resolved_by,omitempty"`
+	ResolvedByEmail *string         `json:"resolved_by_email,omitempty"`
 }
 
 // exportAttachment is attachment METADATA only. Binaries are never
@@ -910,9 +914,11 @@ func fillIssueRelations(ctx context.Context, tx pgx.Tx, is *exportIssue) error {
 	is.Comments = []exportComment{}
 	cRows, err := tx.Query(ctx,
 		`SELECT c.id::text, c.parent_id::text, c.actor_id::text, u.email::text,
-		        c.content, c.created_at, c.updated_at
+		        c.content, c.created_at, c.updated_at,
+		        c.resolved_at, c.resolved_by::text, r.email::text
 		 FROM comments c
 		 JOIN users u ON u.id = c.actor_id
+		 LEFT JOIN users r ON r.id = c.resolved_by
 		 WHERE c.issue_id = $1::uuid AND c.deleted_at IS NULL
 		 ORDER BY c.created_at`,
 		is.ID)
@@ -923,7 +929,8 @@ func fillIssueRelations(ctx context.Context, tx pgx.Tx, is *exportIssue) error {
 		var c exportComment
 		var content []byte
 		if err := cRows.Scan(&c.ID, &c.ParentID, &c.ActorID, &c.ActorEmail,
-			&content, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&content, &c.CreatedAt, &c.UpdatedAt,
+			&c.ResolvedAt, &c.ResolvedBy, &c.ResolvedByEmail); err != nil {
 			cRows.Close()
 			return err
 		}
