@@ -328,6 +328,67 @@ queued onboarding follow-up (invites endpoint).
   backfill seed + the archived seed, different UUIDs) — an extra
   "started at" row, no data loss.
 
+**Realtime completeness (cycle 44)**
+- Global realtime (C44T0): new `GlobalScope` layout mounted inside
+  `ProtectedRoute` above `/onboarding` + `AppShell`, so every
+  authenticated route — including the slug-less `/`, `/notifications`,
+  `/profile`, `/settings/tokens`, `/w` — subscribes the `user:{id}`
+  channel (the ONLY channel carrying `notification.created`) via new
+  `useGlobalRealtime`, which routes through the SAME
+  `handleRealtimeEvent` notification.created case — no second handler.
+  GlobalScope owns the socket lifecycle + a global reconnect callback
+  (registered through the stable `handleReconnect` dispatcher; order
+  project → workspace → global) that resyncs only the bare
+  `["notifications"]` prefix, and owns the single `<ConnectionDot />`
+  (moved out of `WorkspaceScope`, so `/w/:slug/*` routes still show
+  exactly one dot). Mounting in `App.tsx` rather than `AppShell` was
+  required to cover `/onboarding`, which sits outside `AppShell`.
+  Server side verified: the user channel carries ONLY
+  `notification.created`, so the global hook's empty-slug ctx is safe.
+  Tests: GlobalScope layout tests (exactly one dot at all three nesting
+  depths, user-only subscription, live invalidation, unmount cleanup)
+  + realtime tests (global hook, resyncNotifications, 3-way dispatcher
+  composition, stale-cleanup guard).
+- Backend objective.updated on linked-issue progress change (C44T1):
+  new best-effort `announceObjectivesForIssue(s)` helper (one
+  `SELECT DISTINCT o.id` via `key_result_issues → key_results →
+  objectives`, workspace-scoped by slug; lookup failure skips
+  silently; deliberately NO `deleted_at` filter so delete paths still
+  fan out after commit) hooked into every issue-mutation path that
+  can change KR progress, after commit only: UpdateIssue (gated on
+  `state_id` actually changing — `updateIssueTx` gains a third return
+  computed by re-reading `state_id` AFTER the automation blocks, so
+  a field-level rule cascade is caught and a net-zero cascade reports
+  false), BulkUpdateIssues + BulkSetIssues (one batch announce,
+  DISTINCT per objective), DeleteIssue + BulkDeleteIssues, MergeIssue
+  source (gated on the source's state actually changing), MoveIssue
+  (move always rewrites `state_id` — remap by state name else the
+  target's backlog fallback, and same-project moves are rejected —
+  so the hook matches UpdateIssue's id-based gate granularity).
+  Title-only / same-state edits, unlinked issues, and failed
+  mutations announce nothing; `issue.updated` emission untouched.
+  Explicitly skipped with reasons: RestoreVersion, scheduled +
+  comment-triggered automation state changes, and state deletion
+  (all emit no `issue.updated` today — adding `objective.updated`
+  alone would diverge the streams; follow-up with that gap),
+  ConvertIssue (parent_id only, never state/deletes), intake accept
+  (pre-triage, no links yet). Tests: 17
+  `TestObjectiveBroadcastLinkedIssue*` with a capturing Broadcaster
+  (state change, title-only, same-state, unlinked, delete, bulk
+  delete/update/set, merge ×3, move, two objectives, two KRs one
+  objective, failed mutation, automation cascade, nil broadcaster).
+  Review note: the first full-suite re-run showed 240 FAILs, all
+  "database glance_test_service does not exist" — root-caused as
+  two overlapping `go test` runs sharing one per-package test DB
+  (an orphaned run's teardown DROP hit the live run); clean single
+  re-run green. Never run two `go test` invocations on the same
+  package concurrently.
+- Residual (still open): issue-only objectives render no sparkline —
+  the trajectory would need replaying `issue_activities`
+  (field-level state history), but activity-write coverage across
+  bulk/automation paths is unaudited; that audit is a later cycle's
+  job.
+
 **Realtime everywhere + Goals list sparkline (cycle 43)**
 - Workspace-level realtime mount (C43T0): new `WorkspaceScope`
   layout wraps every `/w/:slug/*` route (workspace pages AND the
