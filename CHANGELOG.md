@@ -163,6 +163,50 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Pages ↔ Work items (cycle 36, Plane parity)**
+- Page↔issue links backend (C36T0): migration `000057_page_issue_links`
+  (`page_issue_links` with UNIQUE(page_id, issue_id) duplicate backstop,
+  both FKs ON DELETE CASCADE, creator FK SET NULL) + 6 routes:
+  `GET/POST .../pages/{pageID}/issues`,
+  `DELETE .../pages/{pageID}/issues/{issueID}`,
+  `GET/POST .../issues/{uuid}/pages`,
+  `DELETE .../issues/{uuid}/pages/{pageID}` (guest 5+ reads, member 15+
+  mutations; duplicate → 409, cross-project → 409, unknown → 404;
+  archived and draft issues are linkable; soft-deleted issues hidden).
+  openapi. Service + HTTP tests.
+- Page↔issue links UI (C36T1): page-detail "Linked issues" section
+  (state badge + display_id + title, click → issue detail; Link-issue
+  dialog with debounced project-scoped search, already-linked / draft /
+  archived filtered out; unlink with confirm; "Create issue from this
+  page" creates via the existing issue-create endpoint — title = page
+  title, description = TipTap doc of "From page: <title>" + page URL —
+  then links and navigates to the new issue) + issue-detail "Linked
+  pages" section in the project-structure area (title + relative updated
+  time, click → Pages view with that page selected via location state;
+  Link-page dialog with tree-flattened picker, client-side title filter;
+  unlink with confirm). Member 15+ for mutations, viewers read-only
+  (server enforces); loading / error / empty states. 20 new vitest.
+- Workspace archive round-trip (C36T2): exporter includes
+  `page_issue_links` per project (page id + title, issue display_id,
+  creator id + email; streamed after issues; links to soft-deleted
+  issues excluded); importer restores them (page by id-then-title,
+  issue by project identifier + display_id; unresolvable side → skip +
+  note; cross-project pair → skip; unmapped creator → null + note;
+  re-import idempotent via ON CONFLICT DO NOTHING → "already linked"
+  skip). 4 archive tests (round-trip, unresolvable side, title
+  fallback, cross-project skipped).
+- Cycle 36 closes the last verified Plane-parity gap in the
+  Pages↔Work-items area: Plane documents linking Pages to Work Items
+  and creating Work Items from Page content (Pro/Business-tier in
+  Plane); glance had zero page↔issue linkage. The audit also closed the
+  Milestones gap without new work — Milestone already maps to Releases
+  (issue-detail picker exists, Releases detail computes progress).
+- Honest v1 limitations: no live issue cards embedded *inside* page
+  content (links live in the Linked-issues section, not the Markdown
+  body); no @-mentioning issues inside page Markdown; same-project
+  links only; no link comments / annotations; no notifications on
+  link/unlink.
+
 **OKRs — Objectives + Key Results (cycle 35, beyond Plane)**
 - OKR backend (C35T0): migration `000056_okrs` (`objectives` with
   UNIQUE(workspace_id, title), status CHECK active/completed/archived,
