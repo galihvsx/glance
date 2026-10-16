@@ -85,7 +85,11 @@ package service
 //   - NOT imported (never exported either): Slack webhook URL (secret),
 //     activity history, reactions, votes, issue links (issue↔issue), intake items,
 //     webhooks config, notification prefs, API tokens, page revisions,
-//     sessions/OTP.
+//     sessions/OTP, and the workspace audit log (C37T2). History is NOT
+//     portable: a hand-crafted audit section in an archive is ignored
+//     (the unknown-key default), never imported — importing it would
+//     fabricate witnessed events that never happened in the target
+//     workspace, which keeps its own audit log.
 //   - Unique-name conflicts (a DIFFERENT row already owns the archived
 //     name in the target scope, e.g. a label "bug" with another UUID)
 //     skip the archived row with an honest reason — the importer never
