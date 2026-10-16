@@ -26,7 +26,7 @@ From the repo root:
 ./qa/visual.sh /path/to/glance/checkout board detail
 ```
 
-Screens: `shell | board | detail | list | mywork | inbox`.
+Screens: `shell | board | detail | list | mywork | inbox | cycles`.
 Output lands in `qa/shots/<screen>.png` (gitignored — never committed).
 
 Example detail flow:
@@ -68,5 +68,6 @@ inside `qa/` and export `PLAYWRIGHT_CHROMIUM_PATH` to the installed binary.
 ## Seeded fixtures
 
 `visual.sh` seeds a deterministic workspace: `acme` / project `EXAMP` with 7
-issues across Backlog/Todo/In Progress/Done. Seed data is synthetic example
+issues across Backlog/Todo/In Progress/Done, 2 more opted into the intake
+inbox (`intake:true`), and one current cycle ("Sprint 1", 3 issues). Seed data is synthetic example
 titles — no real user data, no credentials.

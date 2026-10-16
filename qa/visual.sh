@@ -1,7 +1,7 @@
 #!/bin/bash
 # visual.sh — build a glance worktree, boot it with seeded QA data, screenshot screens.
 # Usage (from repo root): ./qa/visual.sh <worktree-path> <screen> [screen...]
-# Screens: shell | board | detail | list | mywork | inbox
+# Screens: shell | board | detail | list | mywork | inbox | cycles
 # Output: qa/shots/<screen>.png
 #
 # Credentials come from the environment; nothing real is baked in:
@@ -84,7 +84,23 @@ mkissue "Preserve board filters in shared links" 2 "Todo"
 mkissue "Improve keyboard navigation in issue peek" 3 "In Progress"
 mkissue "Add workspace-level webhook delivery log" 4 "In Progress"
 mkissue "Reduce first-load bundle size" 3 "Done"
+mkintake() { # name priority — opts into the intake inbox
+  api -X POST "$BASE/api/v1/workspaces/$WS_SLUG/projects/EXAMP/issues" \
+    -d "$(python3 -c "import json; print(json.dumps({'name':'''$1''','priority':$2,'intake':True}))")" >/dev/null
+}
+mkintake "Customer asks for SOC2 report" 2
+mkintake "Idea: public roadmap page" 1
 echo "seeded 7 issues"
+echo "== seeding cycle =="
+START=$(date -d "-4 days" +%F); END=$(date -d "+10 days" +%F)
+CYCLE_ID=$(api -X POST "$BASE/api/v1/workspaces/$WS_SLUG/projects/EXAMP/cycles" -d "{\"name\":\"Sprint 1\",\"start_date\":\"$START\",\"end_date\":\"$END\"}" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+ISSUE_IDS=$(api "$BASE/api/v1/workspaces/$WS_SLUG/projects/EXAMP/issues?limit=100" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+items = d if isinstance(d, list) else d.get('results', d.get('issues', []))
+print(','.join('\"%s\"' % i['id'] for i in items[:3]))")
+api -X POST "$BASE/api/v1/workspaces/$WS_SLUG/projects/EXAMP/cycles/$CYCLE_ID/issues" -d "{\"issue_ids\":[$ISSUE_IDS]}" >/dev/null
+echo "seeded cycle Sprint 1 ($START -> $END) with 3 issues"
 
 echo "== screenshots =="
 node "$QA_DIR/shot.mjs" "$BASE" "$SESSION" "$QA_DIR/shots" "${SCREENS[@]}"

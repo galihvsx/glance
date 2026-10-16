@@ -1,6 +1,6 @@
 // shot.mjs — headless visual QA for glance cycle 19.
 // Usage: node shot.mjs <baseUrl> <sessionCookie> <outDir> <screen...>
-// Screens: shell | board | detail | list | mywork | inbox
+// Screens: shell | board | detail | list | mywork | inbox | cycles
 // Opens each screen, waits for network idle, screenshots 1920x1080.
 import { chromium } from 'playwright-core';
 
@@ -32,7 +32,8 @@ const routes = {
   detail: `/w/${WS}/p/${PROJ}/board`, // then click first card to open peek panel
   list: `/w/${WS}/p/${PROJ}`,
   mywork: `/w/${WS}/my-work`,
-  inbox: `/notifications`,
+  inbox: `/w/${WS}/p/${PROJ}/intake`,
+  cycles: `/w/${WS}/p/${PROJ}/cycles`,
 };
 
 for (const s of screens) {
