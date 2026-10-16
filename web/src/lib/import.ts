@@ -118,6 +118,8 @@ export interface GitHubImportResult {
   labels_created: string[];
   assignee_misses: number;
   milestones_skipped: number;
+  /** Releases created from imported milestones (C38T2). */
+  releases_created: number;
   errors: ImportRowError[];
 }
 

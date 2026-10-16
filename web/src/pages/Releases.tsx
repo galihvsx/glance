@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -44,9 +44,12 @@ import {
   OrgHeaderButton,
   OrgHeaderPrimaryButton,
   OrgIssueRow,
+  OrgProgressBar,
+  OrgProgressCounts,
   OrgSectionHead,
   OrgStatBand,
   OrgStatusChip,
+  snapshotProgressCounts,
 } from "../components/org/OrgViews";
 
 /** State groups in display order (mirrors Modules.tsx). */
@@ -224,13 +227,22 @@ export function progressCounts(issues: Issue[], states: IssueState[]) {
   return { open, inProgress, done };
 }
 
-function ReleaseCard({
+/**
+ * Release list card (C38T1): progress bar + folded counts from the
+ * backend `progress_snapshot` — the card never fetches the release's
+ * issues to compute progress. An empty snapshot (all six groups zero)
+ * renders an all-open bar, not a missing bar.
+ */
+export function ReleaseCard({
   release,
+  states,
   onSelect,
 }: {
   release: Release;
+  states: IssueState[];
   onSelect: () => void;
 }) {
+  const counts = snapshotProgressCounts(release.progress_snapshot ?? {});
   return (
     <OrgCard label={`Open release ${release.name}`} onActivate={onSelect}>
       <div className="flex items-center gap-2">
@@ -252,6 +264,14 @@ function ReleaseCard({
         <span className="font-mono">{release.issue_count}</span> issue
         {release.issue_count === 1 ? "" : "s"}
       </p>
+      <div className="mt-2.5">
+        <OrgProgressBar
+          snapshot={release.progress_snapshot ?? {}}
+          states={states}
+          emptyBar
+        />
+        <OrgProgressCounts {...counts} />
+      </div>
     </OrgCard>
   );
 }
@@ -282,7 +302,12 @@ export default function Releases() {
     identifier: string;
   }>();
   const queryClient = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Overview Milestones rows deep-link here with ?release=<id> (C38T1).
+  // An unknown id simply matches nothing and shows the list.
+  const [searchParams] = useSearchParams();
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    searchParams.get("release"),
+  );
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Release | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -569,6 +594,7 @@ export default function Releases() {
                 <ReleaseCard
                   key={r.id}
                   release={r}
+                  states={states}
                   onSelect={() => setSelectedId(r.id)}
                 />
               ))}

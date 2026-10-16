@@ -10,6 +10,7 @@ import { ApiError } from "../../lib/api";
 import {
   fetchLinearTeams,
   previewLinearImport,
+  runGitHubImport,
   runLinearImport,
 } from "../../lib/import";
 
@@ -20,12 +21,15 @@ vi.mock("../../lib/import", async (importOriginal) => {
     fetchLinearTeams: vi.fn(),
     previewLinearImport: vi.fn(),
     runLinearImport: vi.fn(),
+    previewGitHubImport: vi.fn(),
+    runGitHubImport: vi.fn(),
   };
 });
 
 const teamsMock = fetchLinearTeams as unknown as Mock;
 const previewMock = previewLinearImport as unknown as Mock;
 const runMock = runLinearImport as unknown as Mock;
+const ghRunMock = runGitHubImport as unknown as Mock;
 
 const TEAMS = [
   { id: "team-1", key: "ENG", name: "Engineering" },
@@ -184,5 +188,39 @@ describe("Linear importer card", () => {
     expect(screen.getByText("ENG-3: title is required")).toBeTruthy();
     // The key never lingers in the form after a run.
     expect((screen.getByLabelText(/API key/) as HTMLInputElement).value).toBe("");
+  });
+});
+
+describe("GitHub importer result (C38T1 follow-up)", () => {
+  it("shows the Releases created stat next to Milestones skipped", async () => {
+    // GitHub is the default tab — no tab click needed.
+    render(<ImportSection slug="acme" identifier="ENG" canEdit />);
+    fireEvent.change(screen.getByLabelText(/Owner/), {
+      target: { value: "octocat" },
+    });
+    fireEvent.change(screen.getByLabelText(/Repo/), {
+      target: { value: "hello-world" },
+    });
+    ghRunMock.mockResolvedValue({
+      source: "octocat/hello-world",
+      created: 5,
+      skipped: 0,
+      prs_skipped: 1,
+      failed: 0,
+      labels_created: [],
+      assignee_misses: 0,
+      milestones_skipped: 0,
+      releases_created: 2,
+      errors: [],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Import$/ }));
+    await waitFor(() => expect(ghRunMock).toHaveBeenCalled());
+    expect(screen.getByText(/Import result/)).toBeTruthy();
+    const stat = screen.getByText("Releases created");
+    // The Stat renders value above label — the value 2 sits in the same cell.
+    expect(stat.parentElement?.textContent).toContain("2");
+    expect(
+      screen.getByText("Milestones skipped (unmappable)"),
+    ).toBeTruthy();
   });
 });

@@ -33,6 +33,14 @@ const release: Release = {
   status: "planned",
   release_date: "2026-12-01",
   issue_count: 1,
+  progress_snapshot: {
+    triage: 0,
+    backlog: 1,
+    unstarted: 0,
+    started: 0,
+    completed: 0,
+    cancelled: 0,
+  },
   created_at: "2026-01-01",
   updated_at: "2026-01-01",
 };
