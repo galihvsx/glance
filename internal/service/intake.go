@@ -510,7 +510,11 @@ func AcceptIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		// state actually changes, plus a version snapshot of the
 		// post-mutation row. Its state-change notifications ride along to
 		// triageTx, which broadcasts them after commit.
-		_, notified, err := updateIssueTx(ctx, tx, projectID, ident, r.issueID, actorID,
+		// C44T1: intake accept is explicitly NOT fanned out to
+		// objectives — intake issues are pre-triage inbox items with
+		// no KR links yet (plan expectation); the stateChanged flag
+		// is discarded.
+		_, notified, _, err := updateIssueTx(ctx, tx, projectID, ident, r.issueID, actorID,
 			IssuePatch{StateID: &backlog})
 		if err != nil {
 			return nil, nil, err
