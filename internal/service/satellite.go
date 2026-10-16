@@ -378,7 +378,12 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 		// Reuses the PATCH machinery: per-field activity rows plus the
 		// new version snapshot, all inside this tx. State changes and
 		// webhook fan-out ride along; broadcast after commit.
-		updated, notified, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+		// C44T1: restore is explicitly NOT fanned out to objectives —
+		// it emits no issue.updated today either, and adding
+		// objective.updated alone would diverge the two streams;
+		// the stateChanged flag is discarded (follow-up with the
+		// issue.updated gap).
+		updated, notified, _, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
 		if err != nil {
 			return nil, err
 		}

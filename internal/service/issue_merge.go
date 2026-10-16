@@ -281,6 +281,15 @@ func MergeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, iss
 	}
 	announceIssueUpdated(wsSlug, ident, issueID, src)
 	announceIssueUpdated(wsSlug, ident, into, tgt)
+	// C44T1: the source lands in the cancelled state, so its KR
+	// progress can change — fan out for its linked objectives, but
+	// only when its state actually changed (a source already in a
+	// cancelled state has unchanged progress). The surviving issue's
+	// state never changes (only its satellites move) — no announce
+	// for it.
+	if srcStateID != cancelledID {
+		announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+	}
 
 	return &MergeIssueResult{Merged: true, Issue: src, IntoDisplayID: tgtDisplay}, nil
 }

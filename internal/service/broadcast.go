@@ -219,6 +219,51 @@ func announceTemplateUpdated(ctx context.Context, pool *pgxpool.Pool, templateID
 	)
 }
 
+// announceObjectivesForIssue broadcasts objective.updated once per
+// objective linked to the given issue (via key_result_issues →
+// key_results → objectives, scoped to the workspace named by wsSlug).
+// Best-effort: a lookup failure skips silently (never fail the
+// mutation); nil broadcaster → silent (existing announce behavior).
+// One announce per objective even if the issue links to several KRs
+// of the same objective (DISTINCT). The lookup deliberately does NOT
+// filter on issues.deleted_at: delete paths announce after commit,
+// when the row is already soft-deleted, and the link rows still
+// exist — filtering would make deletes announce nothing.
+func announceObjectivesForIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, issueID string) {
+	announceObjectivesForIssues(ctx, pool, wsSlug, []string{issueID})
+}
+
+// announceObjectivesForIssues is the batch form of
+// announceObjectivesForIssue: one lookup for all given issue ids,
+// exactly one announce per objective even when several changed issues
+// link to the same objective (DISTINCT across the whole batch).
+func announceObjectivesForIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug string, issueIDs []string) {
+	if len(issueIDs) == 0 {
+		return
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT DISTINCT o.id::text
+		   FROM objectives o
+		   JOIN key_results kr ON kr.objective_id = o.id
+		   JOIN key_result_issues kri ON kri.key_result_id = kr.id
+		   JOIN workspaces w ON w.id = o.workspace_id
+		  WHERE kri.issue_id = ANY($1::uuid[])
+		    AND w.slug = $2
+		  ORDER BY 1`,
+		issueIDs, wsSlug)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var objectiveID string
+		if err := rows.Scan(&objectiveID); err != nil {
+			return
+		}
+		announceObjectiveUpdated(ctx, wsSlug, objectiveID)
+	}
+}
+
 // announceObjectiveUpdated broadcasts objective.updated on the
 // workspace channel. Best-effort: nil broadcaster in tests → silent.
 // Objectives are workspace-scoped, so the channel is the workspace

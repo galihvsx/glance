@@ -413,6 +413,15 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 	for _, iss := range moved {
 		announceIssueUpdated(wsSlug, dstIdent, iss.ID, iss)
 	}
+	// C44T1: a move always rewrites state_id — remap by state name,
+	// else the target's backlog fallback — and the remap can change
+	// the state GROUP, so KR progress can change. Fan out for every
+	// moved issue's linked objectives (DISTINCT per objective).
+	movedIDs := make([]string, 0, len(moved))
+	for _, iss := range moved {
+		movedIDs = append(movedIDs, iss.ID)
+	}
+	announceObjectivesForIssues(ctx, pool, wsSlug, movedIDs)
 
 	return &MoveIssueResult{
 		Issue:               moved[0],

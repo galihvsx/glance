@@ -620,7 +620,7 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return nil, ErrForbidden
 	}
 
-	iss, notified, err := updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+	iss, notified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
 	if err != nil {
 		return nil, err
 	}
@@ -629,6 +629,12 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	}
 	announceIssueUpdated(wsSlug, ident, issueID, iss)
 	announceNotifications(notified)
+	// C44T1: a linked issue's state change moves KR progress — fan out
+	// objective.updated for its linked objectives. Title-only (and
+	// other non-state) edits report stateChanged=false: no event.
+	if stateChanged {
+		announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+	}
 	return iss, nil
 }
 
@@ -652,8 +658,10 @@ func validateIssuePatch(patch IssuePatch) error {
 // BulkUpdateIssues wraps each item in a savepoint). Role checks stay with
 // the callers. It returns the updated issue plus the in-app notifications
 // created (state changes notify watchers); callers broadcast them after
-// commit via announceNotifications.
-func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string, patch IssuePatch) (*Issue, []*Notification, error) {
+// commit via announceNotifications. The third return reports whether
+// state_id actually changed in the final in-tx row — callers gate
+// their objective.updated fan-out on it (C44T1).
+func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string, patch IssuePatch) (*Issue, []*Notification, bool, error) {
 	// Lock the row and read the before-image for per-field comparison.
 	old, err := scanIssue(tx.QueryRow(ctx,
 		`SELECT `+issueColumns+` FROM issues
@@ -662,9 +670,9 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		issueID, projectID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return nil, nil, ErrIssueNotFound
+			return nil, nil, false, ErrIssueNotFound
 		}
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	// Validate references before building the SET clause.
@@ -672,7 +680,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	if patch.StateID != nil {
 		sid, err := checkStateInProject(ctx, tx, projectID, *patch.StateID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		stateID = &sid
 	}
@@ -682,7 +690,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	// covers single PATCH, bulk-update, and bulk-set alike.
 	if stateID != nil && *stateID != old.StateID && !patch.IgnoreBlockers {
 		if err := assertNoOpenBlockersTx(ctx, tx, projectID, ident, issueID, *stateID); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 	}
 	var parentID PatchField[string]
@@ -690,16 +698,16 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		if patch.ParentID.Value != nil {
 			pid := strings.ToLower(strings.TrimSpace(*patch.ParentID.Value))
 			if pid == "" || pid == old.ID {
-				return nil, nil, ErrInvalidParent
+				return nil, nil, false, ErrInvalidParent
 			}
 			if err := checkParentIssue(ctx, tx, projectID, pid); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			// C5T4: PATCH must not bypass the SetParent cycle guard — a
 			// re-parent under one of the issue's own descendants would
 			// otherwise close a cycle the routes could never create.
 			if err := checkParentCycle(ctx, tx, old.ID, pid); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			parentID = PatchField[string]{Set: true, Value: &pid}
 		} else {
@@ -712,7 +720,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		if patch.EstimatePointID.Value != nil {
 			epid, err := checkEstimatePoint(ctx, tx, projectID, *patch.EstimatePointID.Value)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			estimatePointID = PatchField[string]{Set: true, Value: &epid}
 		} else {
@@ -728,7 +736,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		if patch.ReleaseID.Value != nil {
 			rid := strings.ToLower(strings.TrimSpace(*patch.ReleaseID.Value))
 			if _, err := resolveRelease(ctx, tx, projectID, rid); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			releaseID = PatchField[string]{Set: true, Value: &rid}
 		} else {
@@ -746,7 +754,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		effTarget = patch.TargetDate.Value
 	}
 	if effStart != nil && effTarget != nil && effStart.After(*effTarget) {
-		return nil, nil, ErrInvalidDateRange
+		return nil, nil, false, ErrInvalidDateRange
 	}
 
 	// Build the SET clause from changed fields only. args[0]/args[1] are
@@ -822,7 +830,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		if err := tx.QueryRow(ctx,
 			`SELECT release_id::text FROM issues WHERE id = $1::uuid`,
 			issueID).Scan(&oldReleaseID); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		if !strPtrEq(oldReleaseID, releaseID.Value) {
 			add("release_id", "release_id", "::uuid", releaseID.Value,
@@ -850,7 +858,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		// was already rejected by validateIssuePatch with
 		// ErrNothingToUpdate.) The caller commits.
 		old.DisplayID = ident + "-" + strconv.Itoa(old.SequenceID)
-		return old, nil, nil
+		return old, nil, false, nil
 	}
 
 	updated, err := scanIssue(tx.QueryRow(ctx,
@@ -859,7 +867,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		 RETURNING `+issueColumns,
 		append([]any{issueID, projectID}, args...)...))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	for _, a := range activities {
@@ -867,7 +875,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
 			 VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::jsonb)`,
 			updated.ID, actorID, a.field, toJSONBParam(a.oldVal), toJSONBParam(a.newVal)); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 	}
 
@@ -876,7 +884,7 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	// inside the caller's tx/savepoint, so BulkUpdateIssues gets per-item
 	// versions for free.
 	if err := snapshotVersionTx(ctx, tx, updated.ID, actorID, updated); err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	// State changes notify the issue's watchers (subscribers + assignees),
@@ -897,11 +905,11 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	if stateChanged {
 		watchers, err := issueWatchersTx(ctx, tx, issueID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		if err := tx.QueryRow(ctx,
 			`SELECT name FROM states WHERE id = $1::uuid`, updated.StateID).Scan(&stateName); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		actorName = actorDisplayName(ctx, tx, actorID)
 		notified, err = notifyTx(ctx, tx, NotifyStateChanged,
@@ -918,19 +926,19 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			},
 			actorID, watchers)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 	}
 	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	if stateChanged {
 		// Slack (C9T3): one compact message per state change, enqueued
 		// in-tx like the generic webhook fan-out below — never inline.
 		if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
 			slackStateChangedText(updated.DisplayID, updated.Name, stateName, actorName)); err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		// C11T1: workflow automations. Matching rules run their actions
 		// in this same tx; a failing action is logged, never fatal, and
@@ -968,9 +976,19 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		"changed_fields": changedFields,
 		"actor_id":       actorID,
 	}); err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	return updated, notified, nil
+	// C44T1: report whether state_id actually changed. Re-read AFTER
+	// the automation blocks above: a field-level rule (e.g.
+	// priority_changed → set_state) can move the issue after `updated`
+	// was scanned, and only the final in-tx row is what commits.
+	// A title-only edit (or a net-zero cascade) reports false.
+	var finalStateID string
+	if err := tx.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, updated.ID).Scan(&finalStateID); err != nil {
+		return nil, nil, false, err
+	}
+	return updated, notified, finalStateID != old.StateID, nil
 }
 
 // DeleteIssue soft-deletes the issue (sets deleted_at) and writes a
@@ -1004,6 +1022,9 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return err
 	}
 	announceIssueDeleted(wsSlug, ident, issueID)
+	// C44T1: a deleted issue drops out of KR progress — fan out
+	// objective.updated for its (still-linked) objectives.
+	announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
 	return nil
 }
 
@@ -1236,6 +1257,7 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 
 	results := make([]BulkItemResult, 0, len(ids))
 	announced := make([]*Issue, 0, len(ids))
+	stateChangedIDs := make([]string, 0, len(ids))
 	var notified []*Notification
 	for i, id := range ids {
 		sp := fmt.Sprintf("bulk_item_%d", i)
@@ -1243,7 +1265,7 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, err
 		}
-		updated, itemNotified, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		updated, itemNotified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
 		if err != nil {
 			// Per-item failure: roll back this item only, record the
 			// reason, keep going.
@@ -1262,6 +1284,9 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		}
 		results = append(results, BulkItemResult{ID: id, OK: true})
 		announced = append(announced, updated)
+		if stateChanged {
+			stateChangedIDs = append(stateChangedIDs, id)
+		}
 		notified = append(notified, itemNotified...)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1271,6 +1296,9 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		announceIssueUpdated(wsSlug, ident, u.ID, u)
 	}
 	announceNotifications(notified)
+	// C44T1: one objective.updated per linked objective across the
+	// whole batch (DISTINCT in the helper) — never per issue.
+	announceObjectivesForIssues(ctx, pool, wsSlug, stateChangedIDs)
 	return results, nil
 }
 
@@ -1334,6 +1362,9 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	for _, id := range deletedIDs {
 		announceIssueDeleted(wsSlug, ident, id)
 	}
+	// C44T1: deleted issues drop out of KR progress — one
+	// objective.updated per linked objective across the batch.
+	announceObjectivesForIssues(ctx, pool, wsSlug, deletedIDs)
 	return results, nil
 }
 
@@ -1497,6 +1528,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 
 	var notified []*Notification
 	announced := make([]*Issue, 0, len(norm))
+	stateChangedIDs := make([]string, 0, len(norm))
 	for _, id := range norm {
 		var patch IssuePatch
 		if stateID != nil {
@@ -1511,7 +1543,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// notifications, webhook fan-out. A patch with no changed fields
 		// returns the current row without writing (labels/assignees-only
 		// sets are fine).
-		updated, itemNotified, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		updated, itemNotified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1531,6 +1563,9 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			notified = append(notified, added...)
 		}
 		announced = append(announced, updated)
+		if stateChanged {
+			stateChangedIDs = append(stateChangedIDs, id)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, nil, err
@@ -1539,6 +1574,9 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		announceIssueUpdated(wsSlug, ident, u.ID, u)
 	}
 	announceNotifications(notified)
+	// C44T1: same rule as BulkUpdateIssues — one objective.updated per
+	// linked objective across the batch.
+	announceObjectivesForIssues(ctx, pool, wsSlug, stateChangedIDs)
 	return len(norm), norm, nil
 }
 
