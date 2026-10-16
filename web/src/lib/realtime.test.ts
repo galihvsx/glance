@@ -2,7 +2,8 @@
 // Tests for the realtime → TanStack Query invalidation map and the
 // ?updated_after= reconnect resync (Task 25, cycle 41: six *.updated
 // handlers + workspace subscription; C41T2: notification.created handler
-// + user-channel subscription).
+// + user-channel subscription; C43T0: WorkspaceScope hook, objective
+// handler, resyncWorkspace, double-mount safety).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,7 +12,9 @@ import { createElement, type ReactNode } from "react";
 import {
   handleRealtimeEvent,
   resyncProject,
+  resyncWorkspace,
   useProjectRealtime,
+  useWorkspaceRealtime,
 } from "./realtime";
 import type { WsEventFrame, WsEventHandler } from "./ws";
 
@@ -25,7 +28,12 @@ const wsMock = vi.hoisted(() => {
       const list = subscriptions.get(channel) ?? [];
       list.push(handler);
       subscriptions.set(channel, list);
-      return () => {};
+      return () => {
+        const live = subscriptions.get(channel);
+        if (!live) return;
+        const i = live.indexOf(handler);
+        if (i >= 0) live.splice(i, 1);
+      };
     }),
   };
   return { subscriptions, client };
@@ -159,6 +167,24 @@ describe("handleRealtimeEvent", () => {
     const { qc, keys } = spiedClient();
     handleRealtimeEvent(qc, CTX, frame("notification.created", { id: "n1" }));
     expect(keys).toEqual([["notifications"]]);
+  });
+
+  it("objective.updated invalidates objectives list, objective detail, and kr-checkins prefix", () => {
+    // C43T0: synthetic event — the backend broadcast lands in C43T1;
+    // the case is implemented from the cross-task contract alone.
+    const { qc, keys } = spiedClient();
+    handleRealtimeEvent(qc, CTX, frame("objective.updated", { id: "obj-1" }));
+    expect(keys).toEqual([
+      ["objectives", "acme"],
+      ["objective", "acme", "obj-1"],
+      ["kr-checkins", "acme", "obj-1"],
+    ]);
+  });
+
+  it("objective.updated without an id invalidates only the objectives list", () => {
+    const { qc, keys } = spiedClient();
+    handleRealtimeEvent(qc, CTX, frame("objective.updated", {}));
+    expect(keys).toEqual([["objectives", "acme"]]);
   });
 
   it("ignores unknown future events", () => {
@@ -328,5 +354,176 @@ describe("resyncProject", () => {
     const { qc, keys } = spiedClient();
     await resyncProject(qc, CTX, "2026-10-06T00:00:00Z");
     expect(keys).toContainEqual(["issues", "acme", "ENG"]);
+  });
+});
+
+describe("useWorkspaceRealtime subscription set (C43T0)", () => {
+  afterEach(() => {
+    wsMock.subscriptions.clear();
+    vi.clearAllMocks();
+  });
+
+  function mountHook(opts: { slug: string; userId?: string }) {
+    const qc = new QueryClient();
+    const keys: unknown[][] = [];
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (o) => {
+      keys.push(o?.queryKey as unknown[]);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+    const { unmount } = renderHook(() => useWorkspaceRealtime(opts), {
+      wrapper,
+    });
+    return { qc, keys, unmount };
+  }
+
+  it("subscribes to workspace + user channels, never the project channel", () => {
+    const { keys, unmount } = mountHook({ slug: "acme", userId: "u-1" });
+    try {
+      const channels = [...wsMock.subscriptions.keys()];
+      expect(channels).toContain("workspace:acme");
+      expect(channels).toContain("user:u-1");
+      expect(channels.filter((c) => c.startsWith("project:"))).toHaveLength(0);
+      // Workspace-channel events invalidate workspace keys…
+      wsMock.subscriptions
+        .get("workspace:acme")![0](frame("objective.updated", { id: "obj-1" }));
+      expect(keys).toContainEqual(["objectives", "acme"]);
+      expect(keys).toContainEqual(["objective", "acme", "obj-1"]);
+      expect(keys).toContainEqual(["kr-checkins", "acme", "obj-1"]);
+      // …and user-channel events invalidate notifications.
+      keys.length = 0;
+      wsMock.subscriptions
+        .get("user:u-1")![0](frame("notification.created", { id: "n1" }));
+      expect(keys).toEqual([["notifications"]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("does NOT subscribe to a user channel when userId is omitted (auth loading / logged out)", () => {
+    const { unmount } = mountHook({ slug: "acme" });
+    try {
+      const channels = [...wsMock.subscriptions.keys()];
+      expect(channels).toContain("workspace:acme");
+      expect(channels.filter((c) => c.startsWith("user:"))).toHaveLength(0);
+    } finally {
+      unmount();
+    }
+  });
+});
+
+describe("resyncWorkspace (C43T0)", () => {
+  it("invalidates workspace-level keys ONLY — never project keys", async () => {
+    const { qc, keys } = spiedClient();
+    await resyncWorkspace(qc, { slug: "acme" }, "2026-10-06T00:00:00Z");
+    expect(keys).toEqual([
+      ["initiatives", "acme"],
+      ["initiative", "acme"],
+      ["initiative-rollup", "acme"],
+      ["objectives", "acme"],
+      ["objective", "acme"],
+      ["kr-checkins", "acme"],
+      ["notifications"],
+      ["workload", "acme"],
+      ["risk", "acme"],
+      ["mywork", "acme"],
+      ["projects", "acme"],
+      ["workspace", "acme"],
+      ["members", "acme"],
+      ["webhooks", "acme"],
+      ["project-templates", "acme"],
+      ["workspace-audit-log", "acme"],
+    ]);
+    // Explicitly: no project key may leak in — every key is either the
+    // bare ["notifications"] prefix or slug-scoped with NO identifier.
+    const projectKeys: unknown[][] = [
+      ["issues", "acme", "ENG"],
+      ["board-issues", "acme", "ENG"],
+      ["issue", "acme", "ENG"],
+      ["history", "acme", "ENG"],
+      ["comments", "acme", "ENG"],
+      ["cycles", "acme", "ENG"],
+      ["cycle-issues", "acme", "ENG"],
+      ["intake", "acme", "ENG"],
+      ["modules", "acme", "ENG"],
+      ["module-issues", "acme", "ENG"],
+      ["pages", "acme", "ENG"],
+      ["page-revisions", "acme", "ENG"],
+      ["page-detail", "acme", "ENG"],
+      ["releases", "acme", "ENG"],
+      ["release-issues", "acme", "ENG"],
+      ["release-notes", "acme", "ENG"],
+      ["templates", "acme", "ENG"],
+      ["custom-fields", "acme", "ENG"],
+    ];
+    for (const k of projectKeys) expect(keys).not.toContainEqual(k);
+    expect(keys.every((k) => k.length <= 2 || k[0] === "notifications")).toBe(
+      true,
+    );
+  });
+
+  it("is unconditional: same key set with a null `since` (first connect)", async () => {
+    const { qc, keys } = spiedClient();
+    await resyncWorkspace(qc, { slug: "acme" }, null);
+    expect(keys).toContainEqual(["objectives", "acme"]);
+    expect(keys).toContainEqual(["notifications"]);
+    expect(keys).toHaveLength(16);
+  });
+});
+
+describe("double-mount refcount safety (C43T0)", () => {
+  afterEach(() => {
+    wsMock.subscriptions.clear();
+    vi.clearAllMocks();
+  });
+
+  it("WorkspaceScope + ProjectScope mounted together: handler runs, unmounting one leaves the other live", () => {
+    const qc = new QueryClient();
+    const keys: unknown[][] = [];
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (o) => {
+      keys.push(o?.queryKey as unknown[]);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+    // WorkspaceScope's mount (workspace + user channels)…
+    const wsMount = renderHook(
+      () => useWorkspaceRealtime({ slug: "acme", userId: "u-1" }),
+      { wrapper },
+    );
+    // …plus ProjectScope's mount (project + workspace + user channels).
+    const projMount = renderHook(
+      () =>
+        useProjectRealtime({ slug: "acme", identifier: "ENG", userId: "u-1" }),
+      { wrapper },
+    );
+    try {
+      // Both hooks registered a handler on the shared workspace channel.
+      expect(wsMock.subscriptions.get("workspace:acme")).toHaveLength(2);
+      expect(wsMock.subscriptions.get("user:u-1")).toHaveLength(2);
+      expect(wsMock.subscriptions.get("project:acme:ENG")).toHaveLength(1);
+
+      // One event on the shared channel runs the handler (no crash,
+      // idempotent duplicate invalidation — the documented double
+      // delivery). Wire-level "one subscribe per channel" is covered
+      // by ws.test.ts ("sends subscribe … once per channel").
+      wsMock.subscriptions
+        .get("workspace:acme")!
+        .forEach((h) => h(frame("initiative.updated", { id: "init-1" })));
+      expect(keys).toContainEqual(["initiatives", "acme"]);
+
+      // Unmounting the workspace hook leaves the project hook's handler.
+      wsMount.unmount();
+      expect(wsMock.subscriptions.get("workspace:acme")).toHaveLength(1);
+      keys.length = 0;
+      wsMock.subscriptions
+        .get("workspace:acme")!
+        .forEach((h) => h(frame("initiative.updated", { id: "init-1" })));
+      expect(keys).toContainEqual(["initiatives", "acme"]);
+    } finally {
+      projMount.unmount();
+    }
+    expect(wsMock.subscriptions.get("workspace:acme")).toHaveLength(0);
+    expect(wsMock.subscriptions.get("project:acme:ENG")).toHaveLength(0);
+    expect(wsMock.subscriptions.get("user:u-1")).toHaveLength(0);
   });
 });

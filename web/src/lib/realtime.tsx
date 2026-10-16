@@ -8,6 +8,12 @@
 // workspace-scoped), the user channel (user:{id} — notification.created
 // arrives ONLY here) when the caller passes userId, and, when issueUuid is
 // set, the issue channel too.
+//
+// useWorkspaceRealtime (C43T0) subscribes to the workspace + user channels
+// only. WorkspaceScope mounts it on every /w/:slug/* route; ProjectScope
+// mounts useProjectRealtime underneath on project routes, so the workspace
+// and user channels end up double-subscribed there — refcounted-benign
+// (one wire subscription per channel; the handler is idempotent).
 // Events invalidate TanStack Query caches with prefix keys — targeted
 // invalidation of the list/detail/board queries, never a full refetch.
 // The client refcounts channel subscriptions, so mounting this in both a
@@ -176,6 +182,22 @@ export function handleRealtimeEvent(
         });
       }
       break;
+    case "objective.updated":
+      // Objectives are workspace-scoped (cross-task contract, cycle 43):
+      // event `objective.updated`, channel `workspace:{slug}` ONLY,
+      // payload `{id: objectiveID}`. The ["kr-checkins", slug, id]
+      // invalidation is a PREFIX — it covers every KR of that objective
+      // (key shape ["kr-checkins", slug, objectiveId, krId]).
+      void queryClient.invalidateQueries({ queryKey: ["objectives", slug] });
+      if (id) {
+        void queryClient.invalidateQueries({
+          queryKey: ["objective", slug, id],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["kr-checkins", slug, id],
+        });
+      }
+      break;
     case "notification.created":
       // notification.created arrives ONLY on the user:{id} channel
       // (notify.go announces to the recipient). Every notifications key
@@ -258,6 +280,70 @@ export async function resyncProject(
   });
 }
 
+interface WorkspaceRealtimeContext {
+  slug: string;
+}
+
+// resyncWorkspace runs on reconnect from WorkspaceScope (C43T0).
+// Exported for tests. Unconditionally invalidates workspace-level keys
+// ONLY — never project keys (["issues", ...], ["board-issues", ...],
+// cycles/modules/pages/releases/templates/custom-fields stay owned by
+// resyncProject). Every key below was verified against its owning page;
+// no key is invented:
+//   initiatives/initiative/initiative-rollup — Initiatives.tsx,
+//     InitiativeDetail.tsx, AppSidebar.tsx
+//   objectives/objective/kr-checkins — Goals.tsx, GoalDetail.tsx,
+//     AppSidebar.tsx (objectives list)
+//   notifications (bare prefix) — Notifications.tsx (NOTIFICATION_KEYS
+//     list/unread/prefs/schedule + ["notifications", "context"]),
+//     NotificationsSheet.tsx
+//   workload — Workload.tsx (["workload", slug, selectedIds])
+//   risk — Risk.tsx
+//   mywork — MyWork.tsx ([...myWorkKeys(slug).all, filter])
+//   projects — GoalDetail.tsx, Initiatives.tsx, Workload.tsx,
+//     AppSidebar.tsx, CommandPalette.tsx, MoveIssueDialog.tsx
+//   workspace (prefix; covers ["workspace", slug, "members"] too) —
+//     Goals.tsx, GoalDetail.tsx, Initiatives.tsx, InitiativeDetail.tsx
+//   members — Goals.tsx, GoalDetail.tsx
+//   webhooks / project-templates / workspace-audit-log —
+//     WorkspaceSettings.tsx child sections (WebhooksSection,
+//     ProjectTemplatesSection, AuditLogSection)
+// Deliberately NOT here: ["project-issues", slug, ...] (GoalDetail link
+// picker — a project-scoped issue listing, not a workspace key),
+// ["workspace-role", slug] (IssueCustomFields, a project-page
+// component), bare ["workspaces"] (global list, not slug-scoped).
+// `since` is accepted for shape parity with resyncProject; the
+// invalidation is unconditional (no delta probe for workspace keys).
+export async function resyncWorkspace(
+  queryClient: QueryClient,
+  ctx: WorkspaceRealtimeContext,
+  _since: string | null,
+): Promise<void> {
+  const { slug } = ctx;
+  await queryClient.invalidateQueries({ queryKey: ["initiatives", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["initiative", slug] });
+  await queryClient.invalidateQueries({
+    queryKey: ["initiative-rollup", slug],
+  });
+  await queryClient.invalidateQueries({ queryKey: ["objectives", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["objective", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["kr-checkins", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+  await queryClient.invalidateQueries({ queryKey: ["workload", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["risk", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["mywork", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["projects", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["workspace", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["members", slug] });
+  await queryClient.invalidateQueries({ queryKey: ["webhooks", slug] });
+  await queryClient.invalidateQueries({
+    queryKey: ["project-templates", slug],
+  });
+  await queryClient.invalidateQueries({
+    queryKey: ["workspace-audit-log", slug],
+  });
+}
+
 interface UseProjectRealtimeOpts extends RealtimeContext {
   issueUuid?: string;
   /**
@@ -322,4 +408,61 @@ export function useProjectRealtime({
     // deps so the user-channel subscription appears once /me resolves).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug, identifier, issueUuid, userId]);
+}
+
+interface UseWorkspaceRealtimeOpts {
+  slug: string;
+  /**
+   * Current user id (from useAuth() at the call site — same plumbing as
+   * useProjectRealtime). When set, also subscribes to the user:{id}
+   * channel. Omitted while auth is loading or logged out.
+   */
+  userId?: string;
+}
+
+// useWorkspaceRealtime subscribes to the workspace + user channels and
+// wires invalidation. Resync-on-reconnect is the layout's job (single
+// owner); pass nothing here — this hook only subscribes.
+//
+// The handler ctx carries identifier "" (there is no project in a
+// workspace scope). Project-scoped event cases then invalidate
+// ["<key>", slug, "", ...] prefixes, which match no real query — a
+// no-op. That is safe by construction: no project queries mount on
+// workspace pages, and on project pages ProjectScope's own
+// useProjectRealtime (real identifier) handles the same events.
+// Workspace-scoped cases (initiative/objective/notification) never read
+// the identifier, so they invalidate exactly the right keys.
+export function useWorkspaceRealtime({
+  slug,
+  userId,
+}: UseWorkspaceRealtimeOpts): void {
+  const queryClient = useQueryClient();
+  const ref = useRef({ queryClient, slug });
+  ref.current = { queryClient, slug };
+
+  useEffect(() => {
+    const client = getRealtimeClient();
+    client.connect();
+    const ctx = { slug, identifier: "" };
+    const unsubs = [
+      client.subscribe(workspaceChannel(slug), (evt) =>
+        handleRealtimeEvent(ref.current.queryClient, ctx, evt),
+      ),
+    ];
+    if (userId) {
+      // User channel: notification.created arrives ONLY here. The hub
+      // authorizes only the subscriber's OWN user:{id} channel.
+      unsubs.push(
+        client.subscribe(userChannel(userId), (evt) =>
+          handleRealtimeEvent(ref.current.queryClient, ctx, evt),
+        ),
+      );
+    }
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+    // Re-subscribe only when the identity changes (userId joins the
+    // deps so the user-channel subscription appears once /me resolves).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, userId]);
 }
