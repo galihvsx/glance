@@ -17,17 +17,31 @@ Plane is powerful, but it's heavy: Python backend, many moving parts, hungry for
 - **Boring to deploy** — `docker compose up`, done
 - **Fast** — issue list p95 3.5ms, cold start <0.2s, idle RSS ~15MB ([benchmarks](docs/perf.md))
 
-## Features (v0.1.0)
+## Features
 
 | Area | What's in |
 |---|---|
-| **Issues** | CRUD with per-project sequences (`ENG-123`), sub-issues, priorities, labels, assignees, full-text search, filters, cursor pagination, bulk operations, idempotency keys |
-| **Views** | List, Kanban board (drag & drop, keyboard-operable), issue detail with comments, relations, and full history |
-| **Intake** | Inbox for incoming issues — accept to backlog, reject, snooze, or mark duplicate |
-| **Cycles** | Sprints with progress tracking and automatic rollover |
-| **Realtime** | WebSocket live updates, command palette (`⌘K`), keyboard shortcuts throughout |
-| **Auth** | Passwordless email OTP + Google/GitHub OAuth, cookie sessions, scoped API tokens |
-| **Integrations** | Webhooks with HMAC signatures, retry + backoff, SSRF guard |
+| **Issues** | CRUD with per-project sequences (`ENG-123`), sub-issues with progress rollup, priorities, labels, estimates, assignees, watchers, full-text search, filters, cursor pagination, bulk operations, idempotency keys, duplicate detection on create, blocker guard on completion, clone, archive, time tracking |
+| **Views** | List, Kanban board (drag & drop, keyboard-operable), Calendar (month/week drag, quick-add, unscheduled strip), Spreadsheet (inline cell editing, custom-field columns), Gantt (dependency editing), Roadmap, saved views (own + shared), global search + `Cmd/Ctrl+K` palette |
+| **Intake** | Inbox — accept to backlog, reject, snooze, mark duplicate, bulk triage, AI triage suggestions |
+| **Cycles** | Sprints with progress tracking, automatic rollover, cycle-ending scheduled automations |
+| **Modules & Releases** | Modules for grouping work; Releases (milestones) with live progress snapshot + release notes |
+| **Pages** | Wiki pages with comments, Mermaid diagrams, two-way links to work items, create issue from a page |
+| **Initiatives** | Programs grouping projects, with aggregate rollup + completion % |
+| **OKRs / Goals** | Objectives + measurable key results (metric + issue-linked), check-in history with progress chart + list sparkline, live updates |
+| **Workload & Risk** | Per-member load vs weekly capacity, overload alerts + weekly digest section; risk radar composite score (overdue / stalled / unassigned / overload) |
+| **Recurring** | Scheduled issue creation (daily/weekly/monthly) with run-now |
+| **Automations** | Event + scheduled triggers (13 event types), 12 actions, run history, retention, blocker-safe |
+| **AI assistance** | Draft-with-AI, triage suggestions, issue summary, sub-issue breakdown, duplicate merge — provider-agnostic, degrades honestly when unconfigured |
+| **Realtime** | WebSocket live updates on every authenticated route (global + workspace + project scopes), single connection indicator |
+| **Auth & roles** | Passwordless email OTP + Google/GitHub OAuth, cookie sessions, scoped API tokens, viewer/member/admin roles, workspace invites |
+| **Admin & audit** | Instance admin panel (users, workspaces, stats), append-only workspace audit log + CSV export, admin audit log |
+| **Importers** | GitHub, Jira Cloud, Trello, Linear, Plane JSON export — preview + mapping, honest-loss reports |
+| **Export & portability** | Issue CSV/JSON export, full workspace archive export + idempotent re-import |
+| **Integrations** | Webhooks (HMAC, retry + backoff, delivery log, SSRF guard), Slack notifications, GitHub two-way PR linking, due-date reminders, stale-issue nudges |
+| **Notifications** | In-app inbox + @mentions, per-user prefs, email digests (per-user timezone), live bell |
+| **Custom fields & templates** | Project custom fields (text/number/date/select/checkbox, required enforcement), issue templates, project templates |
+| **Attachments & sharing** | Issue attachments (local storage, 25 MB default cap), public share links |
 
 ![Issue list](docs/screenshots/list.png)
 ![Intake inbox](docs/screenshots/inbox.png)
@@ -86,15 +100,17 @@ All config is via environment variables — see [`.env.example`](.env.example) f
 
 ## glance vs Plane
 
-| | glance v0.1.0 | Plane |
+| | glance (main) | Plane |
 |---|---|---|
 | Issue tracking, boards, cycles, intake | ✅ | ✅ |
 | Self-host difficulty | one binary + Postgres | multiple services |
 | Idle memory | ~15MB | GBs |
-| Realtime collaboration | ✅ (WebSocket) | ✅ |
-| Pages / docs | roadmap | ✅ |
-| Gantt, calendar, analytics | roadmap | ✅ |
-| Importers (GitHub/Jira) | roadmap | ✅ |
+| Realtime collaboration | ✅ (WebSocket, live on every route) | ✅ |
+| Pages / docs | ✅ | ✅ |
+| Gantt, calendar, analytics | ✅ | ✅ |
+| Importers (GitHub/Jira/Trello/Linear/Plane) | ✅ | ✅ |
+| Initiatives, Automations, Custom fields | ✅ (free, no paywall) | ✅ (paywalled) |
+| Recurring issues, Risk radar, Workload capacity | ✅ (beyond Plane) | — |
 
 glance is for teams that want Plane's core workflow without Plane's operational footprint.
 
@@ -128,7 +144,12 @@ The full REST API is documented in [`docs/openapi.yaml`](docs/openapi.yaml) (Ope
 
 ## Roadmap
 
-Post-v1, each ships as its own forward-only migration + feature plan: **pages**, **attachments**, **issue views** (saved filters), **Gantt & calendar**, **roadmaps**, **analytics**, **public boards**, **admin panel**, **importers** (GitHub/Jira), **favorites**.
+Everything in the old roadmap has shipped — pages, Gantt, calendar, analytics,
+importers, admin panel, favorites, attachments, saved views.
+
+What's still ahead: the **v0.2.0** and **v0.3.0** releases — see
+[CHANGELOG.md](CHANGELOG.md) for what's already on `main` in each. Release
+publishes are a manual checkpoint, never automatic.
 
 ## Development
 
