@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useParams } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -21,6 +21,7 @@ import { api, ApiError } from "../lib/api";
 import { copyText } from "../lib/clipboard";
 import { Markdown } from "../components/Markdown";
 import PageComments from "../components/page/PageComments";
+import PageLinkedIssues from "../components/page/PageLinkedIssues";
 import PageReactions from "../components/page/PageReactions";
 import type { Page, PageRevision } from "../lib/types";
 import { cn } from "../lib/utils";
@@ -204,7 +205,22 @@ export default function Pages() {
     identifier: string;
   }>();
   const queryClient = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // C36T1: issue detail links here with location state { pageId } so a
+  // linked page opens selected. The state survives a fresh mount (the
+  // normal case: navigating from an issue), the effect covers a
+  // state change while this view is already mounted.
+  const location = useLocation();
+  const requestedPageId =
+    typeof (location.state as { pageId?: unknown } | null)?.pageId ===
+    "string"
+      ? ((location.state as { pageId: string }).pageId as string)
+      : null;
+  const [selectedId, setSelectedId] = useState<string | null>(
+    requestedPageId,
+  );
+  useEffect(() => {
+    if (requestedPageId) setSelectedId(requestedPageId);
+  }, [requestedPageId]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Page | null>(null);
@@ -608,6 +624,14 @@ export default function Pages() {
                   )}
                 </CardContent>
               </Card>
+              {/* C36T1: issues linked to this page. */}
+              <div className="mt-4">
+                <PageLinkedIssues
+                  slug={slug}
+                  identifier={identifier}
+                  page={selected}
+                />
+              </div>
               {/* C24T3: page reactions row (optimistic) + comments thread. */}
               <div className="mt-4">
                 <PageReactions

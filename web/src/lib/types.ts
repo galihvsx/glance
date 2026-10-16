@@ -587,6 +587,41 @@ export interface Attachment {
   created_at: string;
 }
 
+/** One page↔issue link row (C36T0). The link id itself is not exposed
+ *  by the list endpoints — unlink addresses the pair (pageID, issueID). */
+export interface PageIssueLink {
+  id: string;
+  page_id: string;
+  issue_id: string;
+  created_by?: string | null;
+  created_at: string;
+}
+
+/**
+ * One linked issue on the page side (GET .../pages/{pageID}/issues):
+ * display_id, title, state name, priority — ordered by issue
+ * created_at. `state` is the state's display name (no color — use a
+ * plain badge, not StateBadge, which needs the full IssueState).
+ */
+export interface PageLinkedIssue {
+  id: string;
+  display_id: string;
+  title: string;
+  state: string;
+  state_id: string;
+  priority: number;
+}
+
+/**
+ * One linked page on the issue side (GET .../issues/{uuid}/pages):
+ * title + updated_at — ordered by page updated_at desc.
+ */
+export interface PageLinkedPage {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
 /** A directed dependency edge between issues (C4T0). `issue_id` blocks
  *  `target_issue_id` when kind is "blocks". */
 export interface IssueLink {

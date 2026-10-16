@@ -60,6 +60,7 @@ import {
 } from "../ui/alert-dialog";
 import PropertyStrip from "./PropertyStrip";
 import IssueProperties from "./IssueProperties";
+import IssueLinkedPages from "./IssueLinkedPages";
 import ActivitySection, { type ActivityTab } from "./ActivitySection";
 import { useTimeSummary } from "./TimeTracker";
 import { cn } from "cn";
@@ -947,6 +948,14 @@ export default function IssueDetailContent({
                 onOpenWorklogs={() => setActivityTab("worklogs")}
                 onError={setError}
                 disabled={patchMutation.isPending}
+              />
+
+              {/* C36T1: pages linked to this issue (project-structure area). */}
+              <IssueLinkedPages
+                slug={slug}
+                identifier={identifier}
+                uuid={uuid}
+                onError={setError}
               />
 
               {/* Meta rows */}
