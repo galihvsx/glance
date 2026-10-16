@@ -7,7 +7,7 @@
 // Both endpoints are workspace-Admin-only (role 20) server-side; the
 // Settings page additionally hides this section from non-admins.
 //
-// Action catalogue: exactly the 15 actions the backend emits. The
+// Action catalogue: exactly the 14 actions the backend emits. The
 // backend does NOT emit integration.token_created /
 // integration.token_revoked (API tokens are user-scoped, no workspace
 // attribution — C37T0 accepted deviation), so token actions are NOT
