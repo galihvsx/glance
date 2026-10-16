@@ -71,8 +71,14 @@ package service
 //   - NOT exported: the Slack webhook URL (secret), issue activity
 //     history, reactions, votes, issue links (issue↔issue), intake items, webhooks
 //     configuration, notification prefs, API tokens, page revisions,
-//     sessions/OTP material. The archive covers the current data model,
-//     not audit history or integration config.
+//     sessions/OTP material, and the workspace audit log
+//     (workspace_audit_log, C37T2). History is NOT portable: audit rows
+//     are witnessed history of the source workspace — importing them
+//     into another workspace would fabricate events that never happened
+//     there. The target workspace keeps its own audit log (empty until
+//     its own events occur); the importer likewise ignores any
+//     hand-crafted audit section in an archive. The archive covers the
+//     current data model, not audit history or integration config.
 //   - There IS an archive importer for this format:
 //     ImportWorkspaceArchive in internal/service/workspace_import.go
 //     (C11T0), served at POST /api/v1/workspaces/{slug}/import. It reads
@@ -116,7 +122,9 @@ const exportSchemaNote = "glance workspace data archive, format glance-export/1.
 	"Attachments carry metadata only (filename, content_type, size_bytes, uploaded_by, timestamps): " +
 	"binaries are NOT included and the server-side stored_path is never exported. " +
 	"Not exported: Slack webhook URL (secret), issue activity history, reactions, votes, issue links (issue↔issue), " +
-	"intake items, webhooks config, notification prefs, API tokens, page revisions, sessions/OTP. " +
+	"intake items, webhooks config, notification prefs, API tokens, page revisions, sessions/OTP, " +
+	"the workspace audit log (witnessed history is not portable — importing audit rows would fabricate " +
+	"events that never happened in the target workspace; the target keeps its own audit log). " +
 	"An archive importer is available at POST /api/v1/workspaces/{slug}/import (admin only); " +
 	"it honors the format version pin and refuses unknown versions."
 
