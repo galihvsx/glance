@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
+import AuditLogSection from "../components/settings/AuditLogSection";
 import WebhooksSection from "../components/settings/WebhooksSection";
 import SlackSection from "../components/settings/SlackSection";
 import DataSection from "../components/settings/DataSection";
@@ -395,6 +396,9 @@ export default function WorkspaceSettings() {
 
       {/* ---------- Data export (admin only, matches danger-zone gating) ---------- */}
       {isAdmin && <DataSection slug={ws.slug} />}
+
+      {/* ---------- Audit log (admin only, C37T1) ---------- */}
+      {isAdmin && <AuditLogSection slug={ws.slug} />}
 
       {/* ---------- Danger zone ---------- */}
       {isAdmin && (
