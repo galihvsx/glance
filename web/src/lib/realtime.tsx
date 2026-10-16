@@ -1,10 +1,13 @@
 // React bindings for the realtime WS client (Task 25, cycle 41: six
-// *.updated handlers + workspace subscription).
+// *.updated handlers + workspace subscription; C41T2: notification.created
+// handler + user-channel subscription).
 //
 // useProjectRealtime subscribes to the workspace-qualified project channel
 // (project:{slug}:{identifier}, R11), the workspace channel
 // (workspace:{slug} — initiative.updated arrives ONLY here, initiatives are
-// workspace-scoped), and, when issueUuid is set, the issue channel too.
+// workspace-scoped), the user channel (user:{id} — notification.created
+// arrives ONLY here) when the caller passes userId, and, when issueUuid is
+// set, the issue channel too.
 // Events invalidate TanStack Query caches with prefix keys — targeted
 // invalidation of the list/detail/board queries, never a full refetch.
 // The client refcounts channel subscriptions, so mounting this in both a
@@ -30,6 +33,7 @@ import {
   getRealtimeClient,
   issueChannel,
   projectChannel,
+  userChannel,
   workspaceChannel,
   type ConnectionStatus,
   type WsEventFrame,
@@ -172,8 +176,16 @@ export function handleRealtimeEvent(
         });
       }
       break;
+    case "notification.created":
+      // notification.created arrives ONLY on the user:{id} channel
+      // (notify.go announces to the recipient). Every notifications key
+      // starts with "notifications" (NOTIFICATION_KEYS list/unread/prefs/
+      // schedule + ["notifications", "context"] in NotificationsSheet and
+      // the Notifications page), so the bare prefix covers all of them.
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      break;
     default:
-      // Unknown future events (e.g. notification.created): ignore.
+      // Unknown future events: ignore.
       break;
   }
 }
@@ -248,15 +260,25 @@ export async function resyncProject(
 
 interface UseProjectRealtimeOpts extends RealtimeContext {
   issueUuid?: string;
+  /**
+   * Current user id (from useAuth() at the call site — the /me session
+   * user, no new endpoint). When set, also subscribes to the user:{id}
+   * channel: notification.created arrives ONLY there. The hub authorizes
+   * a subscriber to its OWN user:{id} channel and rejects foreign ones
+   * (ws_handler.go authorizeChannel). Omitted while auth is loading or
+   * logged out — the effect re-runs once the id arrives.
+   */
+  userId?: string;
 }
 
-// useProjectRealtime subscribes to project (+workspace, +issue) channels
-// and wires invalidation. Resync-on-reconnect is the layout's job (single
-// owner); pass nothing here — this hook only subscribes.
+// useProjectRealtime subscribes to project (+workspace, +issue, +user)
+// channels and wires invalidation. Resync-on-reconnect is the layout's
+// job (single owner); pass nothing here — this hook only subscribes.
 export function useProjectRealtime({
   slug,
   identifier,
   issueUuid,
+  userId,
 }: UseProjectRealtimeOpts): void {
   const queryClient = useQueryClient();
   const ref = useRef({ queryClient, slug, identifier });
@@ -284,10 +306,20 @@ export function useProjectRealtime({
         ),
       );
     }
+    if (userId) {
+      // User channel: notification.created arrives ONLY here. The hub
+      // authorizes only the subscriber's OWN user:{id} channel.
+      unsubs.push(
+        client.subscribe(userChannel(userId), (evt) =>
+          handleRealtimeEvent(ref.current.queryClient, ctx, evt),
+        ),
+      );
+    }
     return () => {
       unsubs.forEach((u) => u());
     };
-    // Re-subscribe only when the identity changes.
+    // Re-subscribe only when the identity changes (userId joins the
+    // deps so the user-channel subscription appears once /me resolves).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, identifier, issueUuid]);
+  }, [slug, identifier, issueUuid, userId]);
 }

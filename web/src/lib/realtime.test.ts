@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // Tests for the realtime → TanStack Query invalidation map and the
 // ?updated_after= reconnect resync (Task 25, cycle 41: six *.updated
-// handlers + workspace subscription).
+// handlers + workspace subscription; C41T2: notification.created handler
+// + user-channel subscription).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -154,9 +155,15 @@ describe("handleRealtimeEvent", () => {
     expect(keys).toEqual([["initiatives", "acme"]]);
   });
 
-  it("ignores unknown future events", () => {
+  it("notification.created invalidates ONLY the notifications prefix", () => {
     const { qc, keys } = spiedClient();
     handleRealtimeEvent(qc, CTX, frame("notification.created", { id: "n1" }));
+    expect(keys).toEqual([["notifications"]]);
+  });
+
+  it("ignores unknown future events", () => {
+    const { qc, keys } = spiedClient();
+    handleRealtimeEvent(qc, CTX, frame("something.else", { id: "x1" }));
     expect(keys).toHaveLength(0);
   });
 });
@@ -189,6 +196,55 @@ describe("useProjectRealtime workspace subscription", () => {
       expect(keys).toContainEqual(["initiatives", "acme"]);
       expect(keys).toContainEqual(["initiative", "acme", "init-1"]);
       expect(keys).toContainEqual(["initiative-rollup", "acme", "init-1"]);
+    } finally {
+      unmount();
+    }
+  });
+});
+
+describe("useProjectRealtime user-channel subscription", () => {
+  afterEach(() => {
+    wsMock.subscriptions.clear();
+    vi.clearAllMocks();
+  });
+
+  function mountHook(opts: { slug: string; identifier: string; userId?: string }) {
+    const qc = new QueryClient();
+    const keys: unknown[][] = [];
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (o) => {
+      keys.push(o?.queryKey as unknown[]);
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+    const { unmount } = renderHook(() => useProjectRealtime(opts), { wrapper });
+    return { qc, keys, unmount };
+  }
+
+  it("subscribes to the user's own user:{id} channel and notification.created there invalidates notifications", () => {
+    const { keys, unmount } = mountHook({
+      slug: "acme",
+      identifier: "ENG",
+      userId: "u-1",
+    });
+    try {
+      const channels = [...wsMock.subscriptions.keys()];
+      expect(channels).toContain("user:u-1");
+      const wsHandler = wsMock.subscriptions.get("user:u-1");
+      expect(wsHandler).toHaveLength(1);
+      wsHandler![0](frame("notification.created", { id: "n1" }));
+      expect(keys).toEqual([["notifications"]]);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("does NOT subscribe to a user channel when userId is omitted (auth loading / logged out)", () => {
+    const { unmount } = mountHook({ slug: "acme", identifier: "ENG" });
+    try {
+      const channels = [...wsMock.subscriptions.keys()];
+      expect(channels).toContain("project:acme:ENG");
+      expect(channels).toContain("workspace:acme");
+      expect(channels.filter((c) => c.startsWith("user:"))).toHaveLength(0);
     } finally {
       unmount();
     }
@@ -231,6 +287,8 @@ describe("resyncProject", () => {
     expect(keys).toContainEqual(["initiatives", "acme"]);
     expect(keys).toContainEqual(["initiative", "acme"]);
     expect(keys).toContainEqual(["initiative-rollup", "acme"]);
+    // C41T2: notifications stay out of resync — the bell refetches on open.
+    expect(keys).not.toContainEqual(["notifications"]);
   });
 
   it("skips the issue caches when the delta probe is empty", async () => {
