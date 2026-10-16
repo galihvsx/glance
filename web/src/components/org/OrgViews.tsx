@@ -381,20 +381,72 @@ export function OrgEmpty({
 // ---------- Progress bars ----------
 
 /**
+ * Folded progress counts from a six-group progress_snapshot — the same
+ * fold as the client-side progressCounts (issues + states): triage +
+ * backlog + unstarted → open, started → in progress, completed +
+ * cancelled → done. Unknown groups are ignored; missing groups are zero.
+ */
+export interface SnapshotCounts {
+  open: number;
+  inProgress: number;
+  done: number;
+}
+
+export function snapshotProgressCounts(
+  snapshot: Record<string, number>,
+): SnapshotCounts {
+  return {
+    open:
+      (snapshot.triage ?? 0) +
+      (snapshot.backlog ?? 0) +
+      (snapshot.unstarted ?? 0),
+    inProgress: snapshot.started ?? 0,
+    done: (snapshot.completed ?? 0) + (snapshot.cancelled ?? 0),
+  };
+}
+
+/** Counts line under a progress bar, prototype shape (C38T1):
+ *  "6 done · 3 in progress · 3 open". */
+export function OrgProgressCounts({ open, inProgress, done }: SnapshotCounts) {
+  return (
+    <p className="mt-1.5 text-[11px] text-ink-muted">
+      <b className="tabular-nums text-ink">{done}</b> done
+      <span className="mx-1" aria-hidden>
+        ·
+      </span>
+      <b className="tabular-nums text-ink">{inProgress}</b> in progress
+      <span className="mx-1" aria-hidden>
+        ·
+      </span>
+      <b className="tabular-nums text-ink">{open}</b> open
+    </p>
+  );
+}
+
+/**
  * Stacked progress bar from a cycle progress_snapshot. Segment colors
  * come from the project's states (first state in each group) — state
  * colors, never hardcoded. Thin 6px track; optional compact legend.
+ *
+ * `states` only needs group + color, so overview payload states
+ * (OverviewState) are assignable too. When the snapshot is empty,
+ * `emptyBar` renders an all-open bar (a full-width segment in the
+ * open-group color) instead of the `emptyLabel` text — releases show
+ * the bar even with zero issues (C38T1 prototype); callers that want
+ * the text keep the default.
  */
 export function OrgProgressBar({
   snapshot,
   states,
   legend = false,
   emptyLabel = "No issues yet.",
+  emptyBar = false,
 }: {
   snapshot: Record<string, number>;
-  states: IssueState[];
+  states: Array<{ group: string; color: string }>;
   legend?: boolean;
   emptyLabel?: string;
+  emptyBar?: boolean;
 }) {
   const groups = [
     "triage",
@@ -406,6 +458,32 @@ export function OrgProgressBar({
   ] as const;
   const total = groups.reduce((n, g) => n + (snapshot[g] ?? 0), 0);
   if (total === 0) {
+    if (emptyBar) {
+      // All-open bar: no issues, so the whole track reads as open.
+      // Color = first state in an open group (unstarted, then backlog,
+      // then triage), same fallback as the segments below.
+      const openColor =
+        states.find((s) => s.group === "unstarted")?.color ??
+        states.find((s) => s.group === "backlog")?.color ??
+        states.find((s) => s.group === "triage")?.color ??
+        "#777780";
+      return (
+        <div
+          className="flex h-[6px] w-full overflow-hidden rounded-full bg-raised"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={0}
+          aria-valuenow={0}
+          aria-label="Progress"
+        >
+          <div
+            className="h-full"
+            style={{ width: "100%", backgroundColor: openColor }}
+            title="open: 0"
+          />
+        </div>
+      );
+    }
     return <p className="text-[11px] text-ink-muted">{emptyLabel}</p>;
   }
   return (

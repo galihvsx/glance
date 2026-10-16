@@ -599,6 +599,7 @@ function GitHubPanel({ slug, identifier }: { slug: string; identifier: string })
               />
               <Stat label="Assignee misses" value={result.assignee_misses} />
               <Stat label="Milestones skipped (unmappable)" value={result.milestones_skipped} />
+              <Stat label="Releases created" value={result.releases_created} />
             </div>
             {result.labels_created.length > 0 && (
               <div className="flex flex-wrap gap-1">

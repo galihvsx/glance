@@ -19,8 +19,15 @@ import {
   priorityBreakdown,
   recentActivity,
   topContributors,
+  type OverviewRelease,
+  type OverviewState,
   type ProjectOverview,
 } from "../lib/overview";
+import {
+  OrgProgressBar,
+  OrgProgressCounts,
+  snapshotProgressCounts,
+} from "../components/org/OrgViews";
 import { relativeTime } from "../lib/relativeTime";
 import { PRIORITY_LABELS } from "../lib/types";
 import { cn } from "../lib/utils";
@@ -233,6 +240,82 @@ function DescriptionCard({
   );
 }
 
+/**
+ * Milestones section (C38T1): upcoming (planned) releases from
+ * `overview.releases` — name, progress bar + folded counts from the
+ * backend snapshot, release date. Each row links to the release
+ * detail (`?release=<id>`); the header links to the Releases page.
+ * When there are no planned releases the section shows its empty
+ * state — it never silently disappears.
+ */
+export function OverviewMilestones({
+  releases,
+  states,
+  issueBase,
+}: {
+  releases: OverviewRelease[];
+  states: OverviewState[];
+  issueBase: string;
+}) {
+  return (
+    <Card className="rounded-lg border-border-hairline">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-xs font-semibold">Milestones</CardTitle>
+        <Link
+          to={`${issueBase}/releases`}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          View all releases →
+        </Link>
+      </CardHeader>
+      <CardContent className="p-0">
+        {releases.length === 0 ? (
+          <p className="px-4 py-4 text-xs text-muted-foreground">
+            No upcoming milestones — plan a release in{" "}
+            <Link
+              to={`${issueBase}/releases`}
+              className="font-medium text-primary hover:underline"
+            >
+              Releases
+            </Link>
+            .
+          </p>
+        ) : (
+          <div className="divide-y divide-border-hairline">
+            {releases.map((r) => (
+              <Link
+                key={r.id}
+                to={`${issueBase}/releases?release=${encodeURIComponent(r.id)}`}
+                className="block px-4 py-3 hover:bg-wash-hover"
+                aria-label={`Open release ${r.name}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13px] font-semibold">
+                    {r.name}
+                  </span>
+                  <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                    {r.release_date ? r.release_date.slice(0, 10) : "No date"}
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <OrgProgressBar
+                    snapshot={r.progress_snapshot ?? {}}
+                    states={states}
+                    emptyBar
+                  />
+                  <OrgProgressCounts
+                    {...snapshotProgressCounts(r.progress_snapshot ?? {})}
+                  />
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Overview() {
   const { slug = "", identifier = "" } = useParams<{
     slug: string;
@@ -354,6 +437,13 @@ export default function Overview() {
                   sub="past target date, not done"
                 />
               </div>
+
+              {/* C38T1: Milestones section from overview.releases. */}
+              <OverviewMilestones
+                releases={data.releases ?? []}
+                states={data.states}
+                issueBase={issueBase}
+              />
 
               {/* C34T1: project status updates timeline on Overview. */}
               <ProjectUpdates

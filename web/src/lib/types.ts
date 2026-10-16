@@ -366,7 +366,10 @@ export interface Module {
   updated_at: string;
 }
 
-/** A project release/milestone (C4T6). release_date is YYYY-MM-DD or null. */
+/** A project release/milestone (C4T6). release_date is YYYY-MM-DD or null.
+ *  progress_snapshot counts live issues by state group: triage, backlog,
+ *  unstarted, started, completed, cancelled — all six groups always
+ *  present even when zero (C38T0, same shape as Cycle). */
 export interface Release {
   id: string;
   project_id: string;
@@ -375,6 +378,7 @@ export interface Release {
   status: "planned" | "released";
   release_date?: string | null;
   issue_count: number;
+  progress_snapshot: Record<string, number>;
   created_at: string;
   updated_at: string;
 }

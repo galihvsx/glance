@@ -21,6 +21,19 @@ export interface OverviewCycle {
   total: number;
 }
 
+/** One upcoming (planned) release on the overview (C38T0): identity +
+ *  status + date + live issue count + the same six-group progress
+ *  snapshot ListReleases returns. release_date arrives as RFC3339 or
+ *  null. */
+export interface OverviewRelease {
+  id: string;
+  name: string;
+  status: string;
+  release_date: string | null;
+  issue_count: number;
+  progress_snapshot: Record<string, number>;
+}
+
 /** The overview endpoint's response shape. */
 export interface ProjectOverview {
   project: { id: string; identifier: string; name: string; description: string };
@@ -38,6 +51,10 @@ export interface ProjectOverview {
   cycle: OverviewCycle | null;
   /** Open-issue counts by priority bucket ("0".."4"), server-computed. */
   open_by_priority: Record<string, number>;
+  /** Upcoming (planned) releases, ordered by release_date nulls-last
+   *  then name, capped at 5. Empty when the project has no planned
+   *  releases. */
+  releases: OverviewRelease[];
 }
 
 /** State groups that count as "done" for completion math (mirrors the
