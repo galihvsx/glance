@@ -1,0 +1,24 @@
+-- C42T1 up: backfill KR check-in history seeds for pre-cycle-40
+-- metric KRs. Those KRs were created before the check-in log existed
+-- (migration 000060), so they have zero check-in rows and their
+-- timeline shows "No check-ins yet" even though they have a
+-- current_value and a created_at.
+--
+-- One seed row per metric KR that has no check-in row at all.
+-- Idempotent (NOT EXISTS guard — precedent: 000011), so it is safe
+-- to re-run; the service test re-executes exactly this statement
+-- to prove it.
+--
+-- Honest limitations (documented, not papered over):
+--   * author_id is NULL: key_results has no creator column, and the
+--     workspace audit log records no KR events, so the creator of a
+--     pre-c40 KR is not recorded anywhere — there is nothing to
+--     recover. The timeline renders a NULL author as "Deleted user".
+--   * created_at = kr.created_at: history starts at KR creation.
+--   * Intermediate pre-c40 movements are unrecoverable: the backfill
+--     writes exactly one seed at current_value and never fabricates
+--     intermediate points.
+-- Scope: metric KRs only (issue KRs compute progress from linked
+-- issues and must never gain check-ins); KRs that already have ANY
+-- check-in row are untouched.
+INSERT INTO key_result_checkins (key_result_id, author_id, previous_value, new_value, note, created_at) SELECT kr.id, NULL, NULL, kr.current_value, 'Backfilled history', kr.created_at FROM key_results kr WHERE kr.kind = 'metric' AND NOT EXISTS (SELECT 1 FROM key_result_checkins c WHERE c.key_result_id = kr.id);
