@@ -2,11 +2,12 @@
 // Owns the realtime connection for the project (project channel +
 // resyncProject) and the issue:{uuid} subscription (via
 // IssueDetailContent). Nested inside WorkspaceScope, which owns the
-// socket lifecycle for workspace keys and the connection status dot —
-// ProjectScope must NOT render its own <ConnectionDot /> so project
-// pages show exactly one dot (C43T0). The global command palette moved
-// to the app shell in C18T0 (workspace-global). The global keyboard
-// shortcuts are installed once app-wide by ShortcutsHost.
+// socket lifecycle for workspace keys; the single <ConnectionDot />
+// lives in GlobalScope (C44T0) above every authenticated route —
+// ProjectScope must NOT render its own so project pages show exactly
+// one dot (C43T0). The global command palette moved to the app shell
+// in C18T0 (workspace-global). The global keyboard shortcuts are
+// installed once app-wide by ShortcutsHost.
 
 import { useEffect } from "react";
 import { Outlet, useParams } from "react-router-dom";

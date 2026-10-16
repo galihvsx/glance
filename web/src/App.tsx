@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./lib/auth";
 import { QueryProvider } from "./lib/query";
 import ProtectedRoute from "./components/ProtectedRoute";
+import GlobalScope from "./components/GlobalScope";
 import WorkspaceScope from "./components/WorkspaceScope";
 import ProjectScope from "./components/ProjectScope";
 import AdminGuard from "./components/AdminGuard";
@@ -55,6 +56,11 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/s/:token" element={<PublicShare />} />
             <Route element={<ProtectedRoute />}>
+              {/* C44T0: GlobalScope owns the user:{id} subscription +
+                  the single ConnectionDot for every authenticated
+                  route, including /onboarding and the slug-less
+                  AppShell routes (/, /notifications, /profile, …). */}
+              <Route element={<GlobalScope />}>
               <Route path="/onboarding" element={<Onboarding />} />
               <Route element={<AppShell />}>
                 <Route path="/" element={<Home />} />
@@ -71,7 +77,8 @@ export default function App() {
                 />
                 <Route path="/w" element={<Workspaces />} />
                 {/* C43T0: every /w/:slug/* route lives under WorkspaceScope
-                    (workspace realtime mount + the single ConnectionDot). */}
+                    (workspace realtime mount). The single ConnectionDot
+                    lives in GlobalScope (C44T0) above. */}
                 <Route element={<WorkspaceScope />}>
                   <Route path="/w/:slug" element={<Projects />} />
                   <Route
@@ -171,6 +178,7 @@ export default function App() {
                     />
                   </Route>
                 </Route>
+              </Route>
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
