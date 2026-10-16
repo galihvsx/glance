@@ -21,6 +21,7 @@ import {
   ChevronDown,
   FileText,
   Gauge,
+  Goal,
   Home,
   Inbox,
   Layers,
@@ -36,7 +37,7 @@ import { api } from "../../lib/api";
 import { draftsKey, fetchDrafts } from "../../lib/drafts";
 import { useUnreadCount } from "../../lib/notifications";
 import { emitShortcutAction } from "../../lib/shortcuts";
-import type { Initiative, Project } from "../../lib/types";
+import type { Initiative, Objective, Project } from "../../lib/types";
 import { useShell } from "./shell-context";
 import { toast } from "../ui/toast";
 import {
@@ -341,6 +342,23 @@ function WorkspaceSection() {
   const activeInitiatives = (initiativesQuery.data ?? []).filter(
     (i) => i.status !== "archived",
   ).length;
+  // C35T1: goals are workspace-scoped, so their entry lives here in
+  // the workspace section under Initiatives (badge = non-archived
+  // count, same NavRow icon/badge style as Initiatives).
+  const goalsHref = slug ? `/w/${encodeURIComponent(slug)}/goals` : "/";
+  const goalsQuery = useQuery({
+    queryKey: ["objectives", slug ?? ""],
+    queryFn: () =>
+      api
+        .get<{ objectives: Objective[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug ?? "")}/objectives`,
+        )
+        .then((d) => d.objectives),
+    enabled: !!slug,
+  });
+  const activeGoals = (goalsQuery.data ?? []).filter(
+    (o) => o.status !== "archived",
+  ).length;
   // C29T1: workload is workspace-scoped, so its entry lives here in the
   // workspace section next to Initiatives.
   const workloadHref = slug ? `/w/${encodeURIComponent(slug)}/workload` : "/";
@@ -374,6 +392,15 @@ function WorkspaceSection() {
             active={
               pathname === initiativesHref ||
               pathname.startsWith(`${initiativesHref}/`)
+            }
+          />
+          <NavRow
+            icon={Goal}
+            label="Goals"
+            to={goalsHref}
+            count={activeGoals}
+            active={
+              pathname === goalsHref || pathname.startsWith(`${goalsHref}/`)
             }
           />
           <NavRow
