@@ -163,6 +163,35 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Comment resolve threads (cycle 32)**
+- Resolve backend (C32T0): migration `000054_comment_resolve`
+  (`resolved_at timestamptz`, `resolved_by uuid REFERENCES users(id) ON
+  DELETE SET NULL`) + `POST .../comments/:commentID/resolve` /
+  `.../reopen` → 200 Comment (roots only — reply → 400; any member 15+
+  may resolve/reopen any thread, NOT author-only; idempotent no-op
+  re-resolve/re-reopen writes no duplicate activity entry) +
+  `GET .../comments?resolved=all|open|resolved` (default all, invalid
+  → 400; filter applies to thread roots, subtrees intact) +
+  `_comment_resolved` / `_comment_reopened` activity entries
+  (`{"comment_id": "<uuid>"}`). Workspace archive export/import
+  round-trips resolution (roots only; unmapped resolver degrades to
+  unresolved with a skip note, never drops the comment). openapi.yaml.
+- Resolve UI (C32T1): ActivitySection comment tree — Resolve/Reopen
+  button on thread roots only (never on replies), resolved badge
+  ("Resolved by <name> · <time>"), resolved threads collapsed by
+  default with Show/Hide thread (header stays visible so Reopen is one
+  click away), Open / Resolved / All segmented filter wired to
+  `?resolved=`, filter-aware thread count ("N open threads" under
+  All/Open, "N resolved threads" under Resolved). 5 new vitest.
+- Honest v1 limitations: resolution is per-thread-root, not per-reply;
+  a reply posted to a resolved thread does NOT auto-reopen it
+  (reopening is explicit, GitHub-style); no "unresolved threads block
+  issue close" rule in v1; page comments not covered (issue comments
+  only); importers keep imported comments unresolved.
+- Cycle 32 closes the most substantive item on the c25/c26/c27 deferred
+  list (page export + release notes stay low value; calendar
+  drag-reschedule stays medium value / Plane's own calendar is basic).
+
 **Linear importer (cycle 31)**
 - Linear backend (C31T0): GraphQL client (`POST
   https://api.linear.app/graphql`, Bearer key, pinned host, https-only,
