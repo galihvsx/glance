@@ -230,6 +230,9 @@ func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name
 		}
 	}
 
+	// C37T0: snapshot the pre-update values for the changed-field list.
+	oldName, oldSlug := ws.Name, ws.Slug
+
 	err = tx.QueryRow(ctx,
 		`UPDATE workspaces SET name = $1, slug = $2, updated_at = now()
 		 WHERE id = $3::uuid
@@ -242,6 +245,23 @@ func UpdateWorkspace(ctx context.Context, pool *pgxpool.Pool, slug, userID, name
 			return nil, ErrSlugConflict
 		}
 		return nil, err
+	}
+	// C37T0: workspace.settings_updated — field names only, never
+	// values (values could carry secrets). Emit only when something
+	// actually changed.
+	var changedFields []string
+	if name != oldName {
+		changedFields = append(changedFields, "name")
+	}
+	if targetSlug != oldSlug {
+		changedFields = append(changedFields, "slug")
+	}
+	if len(changedFields) > 0 {
+		if err := recordWorkspaceAuditInTx(ctx, tx, ws.ID, userID,
+			WorkspaceAuditWorkspaceSettingsUpdated, "workspace", ws.ID,
+			map[string]any{"changed_fields": changedFields}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -391,6 +411,23 @@ func UpsertMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	if err != nil {
 		return err
 	}
+	// C37T0: member.added for a brand-new member (via "direct" —
+	// UpsertMember is the direct add path; invites go through
+	// InviteMembers), member.role_changed ONLY when the role actually
+	// changes. A same-role upsert is a no-op and records nothing.
+	if rowErr != nil {
+		if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+			WorkspaceAuditMemberAdded, "member", targetUserID,
+			map[string]any{"role": role, "via": "direct"}); err != nil {
+			return err
+		}
+	} else if oldRole != role {
+		if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+			WorkspaceAuditMemberRoleChanged, "member", targetUserID,
+			map[string]any{"from_role": oldRole, "to_role": role}); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -492,6 +529,20 @@ func InviteMembers(ctx context.Context, pool *pgxpool.Pool, slug, actorID string
 			wsID, userID, role); err != nil {
 			return nil, err
 		}
+		// C37T0: InviteMembers inserts the membership directly (there
+		// is no separate invite-accept call site), so one invited
+		// email yields both member.invited (entity: the email) and
+		// member.added (via "invite") in the same tx.
+		if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+			WorkspaceAuditMemberInvited, "invite", email,
+			map[string]any{"role": role}); err != nil {
+			return nil, err
+		}
+		if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+			WorkspaceAuditMemberAdded, "member", userID,
+			map[string]any{"role": role, "via": "invite"}); err != nil {
+			return nil, err
+		}
 		results = append(results, InviteResult{Email: email, Status: InviteStatusInvited})
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -553,6 +604,12 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM workspace_members WHERE workspace_id = $1::uuid AND user_id = $2::uuid`,
 		wsID, targetUserID); err != nil {
+		return err
+	}
+	// C37T0: member.removed carries the role the member held.
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		WorkspaceAuditMemberRemoved, "member", targetUserID,
+		map[string]any{"role": targetRole}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

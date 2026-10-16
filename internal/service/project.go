@@ -620,6 +620,17 @@ func ArchiveProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 	if err != nil {
 		return nil, err
 	}
+	// C37T0: archive/restore only — the idempotent no-op path above
+	// returns before this point and records nothing.
+	action := WorkspaceAuditProjectArchived
+	if !archived {
+		action = WorkspaceAuditProjectRestored
+	}
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		action, "project", projectID,
+		map[string]any{"project_identifier": ident}); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -706,6 +717,14 @@ func DeleteProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM projects WHERE id = $1::uuid`, projectID); err != nil {
+		return err
+	}
+	// C37T0: project.deleted. The audit row references only the
+	// workspace (not the deleted project row), so it lands in the
+	// same tx after the deletes.
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		WorkspaceAuditProjectDeleted, "project", projectID,
+		map[string]any{"project_identifier": ident}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

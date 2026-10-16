@@ -226,12 +226,28 @@ func CreateWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID stri
 	if events == nil {
 		events = []string{}
 	}
-	w, err := scanWebhook(pool.QueryRow(ctx,
+	// C37T0: the insert and its audit row share one tx.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	w, err := scanWebhook(tx.QueryRow(ctx,
 		`INSERT INTO webhooks (workspace_id, url, secret, events, active)
 		 VALUES ($1::uuid, $2, $3, $4, $5)
 		 RETURNING `+webhookColumns,
 		wsID, strings.TrimSpace(in.URL), secret, events, active))
 	if err != nil {
+		return nil, err
+	}
+	// Meta carries the webhook host ONLY — never the full URL (URLs
+	// may embed tokens in query strings) and never the secret.
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		WorkspaceAuditIntegrationWebhookCreated, "webhook", w.ID,
+		map[string]any{"host": webhookHost(w.URL)}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return w, nil
@@ -344,7 +360,23 @@ func DeleteWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, id 
 	if err != nil {
 		return err
 	}
-	tag, err := pool.Exec(ctx,
+	// C37T0: the delete and its audit row share one tx. The URL is
+	// read first so the audit meta can carry the host only.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var rawURL string
+	if err := tx.QueryRow(ctx,
+		`SELECT url FROM webhooks WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+		id, wsID).Scan(&rawURL); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return ErrWebhookNotFound
+		}
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM webhooks WHERE id = $1::uuid AND workspace_id = $2::uuid`, id, wsID)
 	if err != nil {
 		if isInvalidUUID(err) {
@@ -355,7 +387,12 @@ func DeleteWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, id 
 	if tag.RowsAffected() == 0 {
 		return ErrWebhookNotFound
 	}
-	return nil
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		WorkspaceAuditIntegrationWebhookDeleted, "webhook", id,
+		map[string]any{"host": webhookHost(rawURL)}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // enqueueWebhookDeliveryTx enqueues one "webhook.deliver" outbox row per

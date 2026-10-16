@@ -626,6 +626,13 @@ func CreateProjectWithTemplate(ctx context.Context, pool *pgxpool.Pool, wsSlug, 
 		return nil, err
 	}
 
+	// C37T0: project.created in the same tx as the project row.
+	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
+		WorkspaceAuditProjectCreated, "project", p.ID,
+		map[string]any{"project_identifier": p.Identifier}); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

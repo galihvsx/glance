@@ -275,6 +275,7 @@ func SetWorkspaceGitHubSecret(ctx context.Context, pool *pgxpool.Pool, wsSlug, a
 	}
 
 	var newSecret any // nil interface → SQL NULL (clears the column)
+	configured := false
 	if raw != nil {
 		s := strings.TrimSpace(*raw)
 		if s != "" {
@@ -282,6 +283,7 @@ func SetWorkspaceGitHubSecret(ctx context.Context, pool *pgxpool.Pool, wsSlug, a
 				return nil, err
 			}
 			newSecret = s
+			configured = true
 		}
 	}
 	if err := tx.QueryRow(ctx,
@@ -290,6 +292,17 @@ func SetWorkspaceGitHubSecret(ctx context.Context, pool *pgxpool.Pool, wsSlug, a
 		  RETURNING github_webhook_secret IS NOT NULL`,
 		newSecret, ws.ID).Scan(&ws.GitHubWebhookConfigured); err != nil {
 		return nil, err
+	}
+	// C37T0: integration.github_configured on every successful set
+	// (including a secret rotation). Meta carries only the boolean —
+	// never the secret. Clearing emits nothing: there is no
+	// github_disconnected event in the v1 catalogue.
+	if configured {
+		if err := recordWorkspaceAuditInTx(ctx, tx, ws.ID, actorID,
+			WorkspaceAuditIntegrationGitHubConfigured, "integration", "github",
+			map[string]any{"configured": true}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
