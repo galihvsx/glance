@@ -328,6 +328,64 @@ queued onboarding follow-up (invites endpoint).
   backfill seed + the archived seed, different UUIDs) — an extra
   "started at" row, no data loss.
 
+**Realtime everywhere + Goals list sparkline (cycle 43)**
+- Workspace-level realtime mount (C43T0): new `WorkspaceScope`
+  layout wraps every `/w/:slug/*` route (workspace pages AND the
+  project routes nested under it) — it subscribes the
+  `workspace:{slug}` + `user:{id}` channels, owns the socket
+  lifecycle + reconnect resync for workspace keys, and renders the
+  single `<ConnectionDot />` (moved up from ProjectScope, so
+  project pages show exactly one dot). New `resyncWorkspace`
+  unconditionally invalidates 16 workspace-level key families on
+  reconnect (initiatives/initiative/initiative-rollup,
+  objectives/objective/kr-checkins, bare `["notifications"]`,
+  workload, risk, mywork, projects, workspace, members, webhooks,
+  project-templates, workspace-audit-log — each verified against
+  its owning page), never project keys. New `objective.updated`
+  handler case (objectives list + objective detail + kr-checkins
+  prefix). Review fix (coordinator): the WS client keeps only the
+  last-registered `onReconnect`, and React runs child passive
+  effects before parent ones — per-scope handlers raced by mount
+  order, so on a fresh project-page load the workspace-only handler
+  overwrote the composed one and `resyncProject` silently never
+  ran. Both scopes now register the SAME stable `handleReconnect`
+  dispatcher, which reads the currently-registered resync callbacks
+  at reconnect time; registrations return identity-guarded
+  unregister cleanups. Tests: realtime.test.ts + WorkspaceScope
+  layout tests (single dot, resync key sets, double-mount safety,
+  dispatcher incl. stale-cleanup guard). Known bound: `/notifications`
+  and `/` carry no workspace slug, so they sit outside
+  WorkspaceScope — the Notifications page still only gets
+  `notification.created` inside a project scope (follow-up).
+- Backend OKR broadcast (C43T1): `EventObjectiveUpdated`
+  (`objective.updated`, `workspace:{slug}` channel only, id-only
+  payload — the `initiative.updated` precedent) announced after
+  successful mutation from all eight OKR mutation paths:
+  Create/Update/DeleteObjective, Create/Update/DeleteKeyResult,
+  Link/UnlinkIssueToKeyResult (link/unlink change issue-KR
+  progress, so they announce too — caught in review). No announce
+  from import paths (bulk import would spam the channel) and none
+  on failed mutations. Tests with a fake Broadcaster assert the
+  exact type/channel/payload per call site. Residual: a linked
+  issue's own state change fires `issue.updated`, not
+  `objective.updated` — another tab's Goals list refreshes on OKR
+  mutations, not on linked-issue progress drift.
+- Goals list progress sparkline (C43T2): the list response carries
+  an additive `progress_history` per objective (one point per
+  distinct metric-KR check-in timestamp, capped at the last 60) —
+  a batched 2-query loader (no N+1), replaying check-in rows
+  chronologically with the same progress formula as the current
+  bar (metric via `metricKRProgress`, issue KRs at their current
+  progress, KRs contribute only from creation onward, same-timestamp
+  rows collapse to the post-event state, orphan rows skipped).
+  Each Goals card renders a pure-SVG `GoalSparkline` under the
+  progress bar (C42 chart guards: index-spread, midline, dot,
+  empty → null) fed ONLY by the list response — no per-goal
+  fetches. Issue-only objectives have empty history and render no
+  sparkline (honest: no trajectory data); the sparkline's last
+  point can predate the current bar when only issue KRs were added
+  after the last metric check-in.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
