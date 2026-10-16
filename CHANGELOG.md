@@ -198,6 +198,33 @@ queued onboarding follow-up (invites endpoint).
   observation: an unknown `?release=` id fires one wasted issues fetch
   whose error is never rendered — the list still renders.
 
+**Milestone parity completion (cycle 39)**
+- Jira + Plane import milestone mapping (C39T0): Jira `fixVersions`
+  map to releases — each distinct version name becomes a Release
+  (name = version name, release_date = version `releaseDate` when
+  present and parseable, status `released` when the version is released
+  or archived, else `planned`); each imported issue is assigned to its
+  version's release; duplicate names map to ONE release; a pre-existing
+  release is reused untouched; issues with multiple fixVersions take
+  the first (glance issues carry a single `release_id`); only
+  empty-name versions count in `versions_skipped`. Result gains
+  `releases_created` + `versions_skipped`; the Jira search fetch now
+  requests `fixVersions`. Plane export carries NO milestone data (no
+  per-issue milestone link, no milestones collection — verified
+  against the parser fields, both fixtures, and Plane's export docs),
+  so the Plane import creates no releases — documented as a no-op,
+  nothing invented. openapi updated. Jira preview rows do not yet
+  show the fixVersion (follow-up if wanted).
+- Detail sub-issue progress + wasted-fetch fix (C39T1): the issue
+  detail Sub-issues section renders the existing `SubtaskProgressBar`
+  (detail variant — full bar + done/total) under the header, above the
+  child list, fed by `issue.subtask_progress` (already on the detail
+  payload); renders nothing when there are no sub-issues, so the empty
+  state is unchanged. `Releases.tsx` gates the detail issues query on
+  the release actually existing (`selected !== null`), so an unknown
+  `?release=` id fires no fetch — closing the cycle 38 observation.
+  Prototype: `prototype/subissues.html`.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
