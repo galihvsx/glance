@@ -11,7 +11,7 @@ package service
 // Design — v1 "restore-by-UUID" with deterministic clone remap:
 //   - Sections are processed in dependency order (members, projects,
 //     states, labels, estimates, custom_fields, cycles, modules, pages,
-//     issues). The archive streams via json.Decoder: memory stays O(one
+//     project_updates, issues). The archive streams via json.Decoder: memory stays O(one
 //     row) — the only in-memory growth is the small UUID bookkeeping
 //     sets, the archived→final UUID remap, plus deferred cross-section
 //     links (pairs of UUID strings, the same granularity the exporter
@@ -46,8 +46,10 @@ package service
 //     carries email per member). Users are never auto-created: an
 //     archived member with no instance user is skipped with an honest
 //     report entry, and every link to them degrades gracefully —
-//     assignee links are dropped (unassigned), comment actors cause the
-//     comment to be skipped (actor is NOT NULL), issue created_by falls
+//     assignee links are dropped (unassigned), comment actors and
+//     project-update authors cause their row to be skipped (actor is
+//     NOT NULL for comments; an update imported under another author
+//     would be a fabricated attribution), issue created_by falls
 //     back to the importing admin (NOT NULL, and dropping whole issues
 //     over an unmapped author would silently lose data), page authors
 //     and module leads become NULL (both nullable).
@@ -187,7 +189,7 @@ const maxArchiveSkipReasons = 64
 var archiveImportSections = []string{
 	"members", "projects", "states", "labels", "estimates",
 	"estimate_points", "custom_fields", "cycles", "cycle_issues",
-	"modules", "module_issues", "pages", "issues", "issue_assignees",
+	"modules", "module_issues", "pages", "project_updates", "issues", "issue_assignees",
 	"issue_labels", "issue_custom_values", "comments", "attachments",
 }
 
@@ -210,7 +212,7 @@ type archiveImporter struct {
 	remap   map[string]string // archived row UUID -> final target-scope UUID (clone remap)
 	// known UUID sets in the target scope (preloaded + imported).
 	projects, labels, states, estimates, estimatePoints,
-	customFields, cycles, modules, pages, issues, comments map[string]bool
+	customFields, cycles, modules, pages, projectUpdates, issues, comments map[string]bool
 	maxSeq map[string]int // resolved project UUID -> max restored issue sequence_id
 
 	cycleLinks, moduleLinks      []archiveLink
@@ -236,7 +238,7 @@ func newArchiveImporter(ctx context.Context, tx pgx.Tx, wsID, slug, actorID stri
 		remap:    map[string]string{},
 		projects: sets(), labels: sets(), states: sets(), estimates: sets(),
 		estimatePoints: sets(), customFields: sets(), cycles: sets(),
-		modules: sets(), pages: sets(), issues: sets(), comments: sets(),
+		modules: sets(), pages: sets(), projectUpdates: sets(), issues: sets(), comments: sets(),
 		maxSeq: map[string]int{},
 	}
 }
@@ -366,6 +368,7 @@ func (imp *archiveImporter) preload() error {
 		&imp.cycles:         `SELECT c.id::text FROM cycles c JOIN projects p ON p.id = c.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.modules:        `SELECT m.id::text FROM modules m JOIN projects p ON p.id = m.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.pages:          `SELECT pg.id::text FROM pages pg JOIN projects p ON p.id = pg.project_id WHERE p.workspace_id = $1::uuid`,
+		&imp.projectUpdates: `SELECT pu.id::text FROM project_updates pu JOIN projects p ON p.id = pu.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.issues:         `SELECT i.id::text FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.comments:       `SELECT c.id::text FROM comments c JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id WHERE p.workspace_id = $1::uuid`,
 	}
@@ -525,6 +528,10 @@ func (imp *archiveImporter) decode(r io.Reader) error {
 			}
 		case "pages":
 			if err := decodeArchiveSection(dec, imp.importPage); err != nil {
+				return err
+			}
+		case "project_updates":
+			if err := decodeArchiveSection(dec, imp.importProjectUpdate); err != nil {
 				return err
 			}
 		case "issues":
@@ -1096,6 +1103,76 @@ func (imp *archiveImporter) importPage(p *exportPage) error {
 	if p.ParentID != nil {
 		imp.pageParents = append(imp.pageParents, archiveLink{parent: *p.ParentID, child: finalID})
 	}
+	return nil
+}
+
+// importProjectUpdate restores one project status update (C34T2).
+// Degradation mirrors comments: an unmapped author skips the update
+// with an honest note — never silently dropped, never imported under
+// a fabricated author. A null author (the author's user row was
+// deleted, ON DELETE SET NULL) imports as null. An unknown status or
+// an empty body skips the row: a hand-crafted archive must not
+// smuggle in a row the service layer could never have created.
+func (imp *archiveImporter) importProjectUpdate(u *exportProjectUpdate) error {
+	if !validArchiveUUID(u.ID) || !validArchiveUUID(u.ProjectID) ||
+		(u.AuthorID != nil && !validArchiveUUID(*u.AuthorID)) {
+		imp.skip("project_updates", u.ID, "project update skipped: malformed archived id")
+		return nil
+	}
+	if imp.alreadyImported(imp.projectUpdates, u.ID) {
+		imp.skip("project_updates", u.ID, "project update skipped: already exists in this workspace")
+		return nil
+	}
+	projectID := imp.resolveID(u.ProjectID)
+	if !imp.projects[projectID] {
+		imp.skip("project_updates", u.ID, "project update skipped: its project was not imported into this workspace")
+		return nil
+	}
+	switch u.Status {
+	case ProjectUpdateOnTrack, ProjectUpdateAtRisk, ProjectUpdateOffTrack:
+	default:
+		imp.skip("project_updates", u.ID,
+			fmt.Sprintf("project update skipped: unknown status %q", u.Status))
+		return nil
+	}
+	body := strings.TrimSpace(u.Body)
+	if body == "" {
+		imp.skip("project_updates", u.ID, "project update skipped: body is empty")
+		return nil
+	}
+	var authorID any
+	if u.AuthorID != nil {
+		author, ok, err := imp.resolveUser(*u.AuthorID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			authorEmail := ""
+			if u.AuthorEmail != nil {
+				authorEmail = *u.AuthorEmail
+			}
+			imp.skip("project_updates", u.ID,
+				fmt.Sprintf("project update skipped: author %q has no user in this instance", authorEmail))
+			return nil
+		}
+		authorID = author
+	}
+	_, inserted, err := imp.insertWithFallback(imp.projectUpdates, "project_updates", u.ID,
+		func(id string) error {
+			_, err := imp.tx.Exec(imp.ctx,
+				`INSERT INTO project_updates (id, project_id, author_id, status, body, created_at, updated_at)
+				 VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7)`,
+				id, projectID, authorID, u.Status, body, u.CreatedAt, u.UpdatedAt)
+			return err
+		})
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		imp.skip("project_updates", u.ID, "project update skipped: already exists in this workspace")
+		return nil
+	}
+	imp.rep.Imported["project_updates"]++
 	return nil
 }
 
