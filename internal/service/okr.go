@@ -439,7 +439,7 @@ func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID string) ([
 	rows, err := q.Query(ctx,
 		`SELECT `+keyResultColumns+`
 		 FROM key_results kr WHERE kr.objective_id = $1::uuid
-		 ORDER BY kr.created_at`, objectiveID)
+		 ORDER BY kr.created_at, kr.id`, objectiveID)
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +568,7 @@ func ListObjectives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 		`SELECT `+objectiveColumnsCounted+`
 		 FROM objectives o LEFT JOIN users ow ON ow.id = o.owner_id
 		 WHERE o.workspace_id = $1::uuid
-		 ORDER BY o.created_at`, wsID)
+		 ORDER BY o.created_at, o.id`, wsID)
 	if err != nil {
 		return nil, err
 	}
