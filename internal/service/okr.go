@@ -605,7 +605,12 @@ func CreateObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID st
 		}
 		return nil, err
 	}
-	return GetObjective(ctx, pool, wsSlug, actorID, id)
+	ob, err := GetObjective(ctx, pool, wsSlug, actorID, id)
+	if err != nil {
+		return nil, err
+	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
+	return ob, nil
 }
 
 // ListObjectives returns the workspace's objectives ordered by
@@ -756,7 +761,12 @@ func UpdateObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 		}
 		return nil, err
 	}
-	return GetObjective(ctx, pool, wsSlug, actorID, id)
+	ob, err := GetObjective(ctx, pool, wsSlug, actorID, id)
+	if err != nil {
+		return nil, err
+	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
+	return ob, nil
 }
 
 // DeleteObjective deletes the objective. Its KRs + links cascade;
@@ -774,6 +784,7 @@ func DeleteObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 		objectiveID, wsID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, objectiveID)
 	return nil
 }
 
@@ -858,7 +869,12 @@ func CreateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	kr, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	if err != nil {
+		return nil, err
+	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
+	return kr, nil
 }
 
 // loadKeyResultWithProgress loads one KR with its computed progress
@@ -974,7 +990,14 @@ func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	updated, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	if err != nil {
+		return nil, err
+	}
+	// The check-in write (when one was recorded) rides this same
+	// call — there is no separate check-in event type.
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
+	return updated, nil
 }
 
 // DeleteKeyResult deletes the key result. Its issue links cascade;
@@ -996,6 +1019,7 @@ func DeleteKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 		krID, ob.ID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
 	return nil
 }
 
@@ -1112,6 +1136,7 @@ func LinkIssueToKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 		krID, issueID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
 	return nil
 }
 
@@ -1140,5 +1165,6 @@ func UnlinkIssueFromKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, a
 		krID, issueID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
 	return nil
 }
