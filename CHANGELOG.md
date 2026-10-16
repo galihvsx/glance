@@ -252,6 +252,43 @@ queued onboarding follow-up (invites endpoint).
   15+) and never fetches for issue KRs; loading / error / empty
   states covered. Prototype: `prototype/checkins.html`.
 
+**Realtime completion + Jira preview fixVersion (cycle 41)**
+- Realtime handlers (C41T0): the frontend `handleRealtimeEvent` now
+  covers the six `*.updated` events the backend already broadcast but
+  the client dropped — `module.updated` (modules + module-issues),
+  `page.updated` (pages + page-revisions + per-page detail),
+  `release.updated` (releases + release-issues + release-notes),
+  `template.updated`, `custom_field.updated` (custom-fields + the
+  single subject issue's detail — per-issue value writes announce with
+  the issue id and emit no `issue.*` event, so without this a second
+  tab's open issue stayed stale; field-CRUD events carry a field id,
+  which matches no issue key), `initiative.updated` (initiatives list
+  + detail + rollup). `useProjectRealtime` also subscribes to the
+  workspace channel — `initiative.updated` arrives ONLY there
+  (initiatives are workspace-scoped). Double-delivery (project +
+  workspace) is benign: the handler's only effect is idempotent
+  invalidation. `resyncProject` invalidates the same key families on
+  reconnect. Tests: realtime.test.ts 9 → 18.
+- Jira preview Milestone column (C41T1): `JiraImportPreviewRow`
+  gains `milestone` (the issue's FIRST fixVersion, trimmed; omitted
+  when none or empty-name-first — reuses the shared `mapJiraIssue`
+  `versionName` computation, import path untouched). The Jira preview
+  table renders the same `{milestone} (→ release)` badge as the
+  GitHub table, `—` when absent. The preview no longer hides the
+  release assignment the import is about to perform.
+- Notification realtime (C41T2): `notification.created` invalidates
+  the `["notifications"]` prefix (covers list/unread/prefs/schedule +
+  context). `useProjectRealtime` takes an optional `userId` and, when
+  set, subscribes to the caller's own `user:{id}` channel —
+  `notification.created` arrives ONLY there, and the hub authorizes a
+  subscriber to its OWN user channel only (foreign ids → forbidden,
+  verified in `authorizeChannel`; no hub/auth change). The id comes
+  from the existing `/me` session plumbing (`useAuth()` at the
+  ProjectScope / IssueDetailContent call sites); omitted while auth
+  is loading. Notifications stay out of `resyncProject` (the bell
+  refetches on open). Tests: realtime.test.ts 18 → 21, incl. a
+  resync-exclusion guard.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
