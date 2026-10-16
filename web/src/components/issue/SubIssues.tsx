@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Badge } from "../ui/badge";
 import { Skeleton } from "../ui/skeleton";
+import SubtaskProgressBar from "./SubtaskProgressBar";
 import { usePeekParam } from "./usePeek";
 import { childRows, removeChildMessage, subIssuesTitle } from "./subIssues";
 
@@ -203,6 +204,18 @@ export default function SubIssues({
         <ListTree className="h-3.5 w-3.5 text-ink-muted" aria-hidden />
         {subIssuesTitle(children)}
       </h2>
+      {/* C39T1: detail progress bar under the header, above the child
+          list (prototype subissues.html). Gated on total > 0 so the
+          no-sub-issues layout is unchanged — SubtaskProgressBar also
+          returns null there. */}
+      {issue.subtask_progress && issue.subtask_progress.total > 0 && (
+        <div className="mb-2.5">
+          <SubtaskProgressBar
+            progress={issue.subtask_progress}
+            variant="detail"
+          />
+        </div>
+      )}
       {children.length === 0 ? (
         <p className="text-[10px] text-ink-muted">
           No sub-work items yet. Add one below.

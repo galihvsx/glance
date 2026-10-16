@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { progressCounts, ReleaseCard } from "./Releases";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import Releases, { progressCounts, ReleaseCard } from "./Releases";
+import { api } from "../lib/api";
+import { makeQueryClient } from "../components/shell/test-utils";
 import { snapshotProgressCounts } from "../components/org/OrgViews";
 import type { Issue, IssueState, Release } from "../lib/types";
 
@@ -180,5 +184,67 @@ describe("ReleaseCard", () => {
     expect(card.textContent).toContain("0 done");
     expect(card.textContent).toContain("0 in progress");
     expect(card.textContent).toContain("0 open");
+  });
+});
+
+describe("unknown ?release= id (C39T1)", () => {
+  const seededRelease: Release = releaseCardRelease();
+
+  function renderWithReleaseParam(releaseParam: string | null) {
+    const qc = makeQueryClient([
+      [["releases", "acme", "ENG"], [seededRelease]],
+      [["states", "acme", "ENG"], cardStates],
+    ]);
+    const entry =
+      releaseParam === null
+        ? "/w/acme/p/ENG/releases"
+        : `/w/acme/p/ENG/releases?release=${releaseParam}`;
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route
+              path="/w/:slug/p/:identifier/releases"
+              element={<Releases />}
+            />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("fires no detail-issues fetch for an unknown id and shows the list", async () => {
+    // Never-resolving fetch: any query that fires hangs instead of
+    // failing the render, so the assertion below is the verdict.
+    const getSpy = vi
+      .spyOn(api, "get")
+      .mockImplementation(() => new Promise(() => {}) as Promise<never>);
+    renderWithReleaseParam("unknown-id");
+    // List view: the known release card renders.
+    expect(
+      await screen.findByRole("button", { name: "Open release v0.4.0" }),
+    ).toBeTruthy();
+    expect(
+      getSpy.mock.calls.map(([url]) => String(url)),
+    ).not.toContain(
+      expect.stringContaining("/releases/unknown-id/issues"),
+    );
+  });
+
+  it("still fetches detail issues for a known id (positive control)", async () => {
+    const getSpy = vi.spyOn(api, "get").mockImplementation((url: string) => {
+      if (url.includes("/releases/rel-1/issues")) {
+        return Promise.resolve({ issues: [] });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    renderWithReleaseParam("rel-1");
+    // Detail view: the issues section renders once the fetch resolves.
+    expect(await screen.findByText("Issues in this release")).toBeTruthy();
+    expect(
+      getSpy.mock.calls.map(([url]) => String(url)),
+    ).toContainEqual(
+      expect.stringContaining("/releases/rel-1/issues"),
+    );
   });
 });

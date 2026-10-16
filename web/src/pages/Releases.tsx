@@ -341,7 +341,10 @@ export default function Releases() {
 
   const releaseIssuesQuery = useQuery({
     queryKey: ["release-issues", slug, identifier, selectedId],
-    enabled: selectedId !== null,
+    // C39T1: gate on the release actually existing — an unknown
+    // ?release= id must fire no fetch (previously it 404'd, and the
+    // error was never rendered).
+    enabled: selectedId !== null && selected !== null,
     queryFn: () =>
       api
         .get<{ issues: Issue[] }>(`${base}/releases/${selectedId}/issues`)
