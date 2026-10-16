@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import { Outlet, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { getRealtimeClient } from "../lib/ws";
+import { useAuth } from "../lib/auth";
 import { resyncProject, useProjectRealtime } from "../lib/realtime";
 import ConnectionDot from "./ConnectionDot";
 
@@ -17,6 +18,9 @@ export default function ProjectScope() {
     identifier: string;
   }>();
   const queryClient = useQueryClient();
+  // C41T2: the /me session user id feeds the user:{id} realtime
+  // subscription (notification.created arrives ONLY there).
+  const { user } = useAuth();
 
   // Own the socket lifecycle + reconnect resync for this project scope.
   // (getRealtimeClient merges options, so mount order vs. pages that only
@@ -29,7 +33,7 @@ export default function ProjectScope() {
     client.connect();
   }, [queryClient, slug, identifier]);
 
-  useProjectRealtime({ slug, identifier });
+  useProjectRealtime({ slug, identifier, userId: user?.id });
 
   return (
     <>

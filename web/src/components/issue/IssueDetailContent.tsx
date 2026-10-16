@@ -322,7 +322,10 @@ export default function IssueDetailContent({
   const issueKey = ["issue", slug, identifier, uuid];
   const issuesKey = ["issues", slug, identifier];
 
-  useProjectRealtime({ slug, identifier, issueUuid: uuid });
+  // C41T2: userId feeds the user:{id} realtime subscription
+  // (notification.created arrives ONLY there); user is already in scope
+  // from useAuth() above.
+  useProjectRealtime({ slug, identifier, issueUuid: uuid, userId: user?.id });
 
   const issueQuery = useQuery({
     queryKey: issueKey,
