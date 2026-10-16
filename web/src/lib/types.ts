@@ -363,6 +363,30 @@ export interface Release {
   updated_at: string;
 }
 
+/**
+ * GET .../releases/{id}/notes (C33T1): a point-in-time Markdown snapshot
+ * of the release's issues, grouped by state group. `counts.unstarted`
+ * counts the Backlog section (unstarted, triage, backlog, cancelled, or
+ * unknown group), so completed + started + unstarted == total.
+ * release_date is YYYY-MM-DD or null.
+ */
+export interface ReleaseNotes {
+  release: {
+    id: string;
+    name: string;
+    status: string;
+    release_date: string | null;
+    description: string;
+  };
+  markdown: string;
+  counts: {
+    completed: number;
+    started: number;
+    unstarted: number;
+    total: number;
+  };
+}
+
 /** One day of a cycle burndown. `remaining` is null for future days. */
 export interface BurndownDay {
   date: string; // YYYY-MM-DD

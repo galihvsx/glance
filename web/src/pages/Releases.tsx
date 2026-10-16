@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import {
   useMutation,
@@ -7,10 +7,12 @@ import {
 } from "@tanstack/react-query";
 import { Pencil, Plus, Rocket, Trash2, X } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import type {
   Issue,
   IssueState,
   Release,
+  ReleaseNotes,
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import { Badge } from "../components/ui/badge";
@@ -74,6 +76,137 @@ function statusColor(status: string): string {
 function fmtDate(d?: string | null): string {
   if (!d) return "No release date";
   return d.slice(0, 10);
+}
+
+/**
+ * Filename slug — the SAME ASCII rule as C33T0's pageExportFilename
+ * (keep in sync): lowercase, runs of non-`a-z0-9` collapse to one `-`,
+ * leading/trailing `-` trimmed. Non-ASCII letters become `-` too, so the
+ * result is always a safe ASCII filename.
+ */
+export function slugifyExportName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Download filename for a release's notes: `<slug>-release-notes.md`. */
+export function releaseNotesFilename(name: string): string {
+  const slug = slugifyExportName(name);
+  return slug ? `${slug}-release-notes.md` : "release-notes.md";
+}
+
+/** Trigger a browser download of a text file (Blob + anchor click). */
+export function downloadTextFile(filename: string, text: string): void {
+  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/**
+ * Release-notes dialog (C33T1): renders the backend Markdown verbatim
+ * in a scrollable monospace block. Copy and Download both use the exact
+ * same `markdown` string the dialog shows — no re-formatting.
+ */
+export function ReleaseNotesDialog({
+  open,
+  onOpenChange,
+  releaseName,
+  markdown,
+  loading,
+  error,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  releaseName: string;
+  markdown: string;
+  loading: boolean;
+  error: unknown;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setCopied(false);
+      setCopyFailed(false);
+    }
+  }, [open]);
+
+  async function handleCopy() {
+    if (!markdown) return;
+    if (await copyText(markdown)) {
+      setCopied(true);
+      setCopyFailed(false);
+    } else {
+      setCopyFailed(true);
+    }
+  }
+
+  function handleDownload() {
+    if (!markdown) return;
+    downloadTextFile(releaseNotesFilename(releaseName), markdown);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Release notes — {releaseName}</DialogTitle>
+          <DialogDescription>
+            Generated from this release&apos;s issues, grouped by state.
+            Re-generate after issues change — notes are a snapshot, not a
+            stored artifact.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-2/3" />
+          </div>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertDescription>
+              {error instanceof ApiError
+                ? error.message
+                : "Failed to load release notes"}
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <pre className="max-h-[50vh] overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs leading-relaxed text-ink">
+            {markdown}
+          </pre>
+        )}
+        <DialogFooter>
+          {copyFailed && (
+            <span className="mr-auto self-center text-xs text-accent-red">
+              Copy failed — try Download instead.
+            </span>
+          )}
+          <Button
+            variant="outline"
+            disabled={loading || !markdown}
+            onClick={() => void handleCopy()}
+          >
+            {copied ? "Copied" : "Copy"}
+          </Button>
+          <Button disabled={loading || !markdown} onClick={handleDownload}>
+            Download .md
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 /** Progress counts from issues + states (same formula as Modules.tsx). */
@@ -654,6 +787,15 @@ function ReleaseDetail({
     [states],
   );
 
+  const [notesOpen, setNotesOpen] = useState(false);
+  const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+  const notesQuery = useQuery({
+    queryKey: ["release-notes", slug, identifier, release.id],
+    enabled: notesOpen,
+    queryFn: () =>
+      api.get<ReleaseNotes>(`${base}/releases/${release.id}/notes`),
+  });
+
   const grouped = useMemo(() => {
     const groupOf = new Map(states.map((s) => [s.id, s.group]));
     const buckets = new Map<string, Issue[]>();
@@ -697,6 +839,17 @@ function ReleaseDetail({
             <OrgHeaderButton onClick={onEdit}>
               <Pencil className="h-3 w-3" aria-hidden />
               Edit
+            </OrgHeaderButton>
+            <OrgHeaderButton
+              onClick={() => setNotesOpen(true)}
+              disabled={issuesLoading}
+              title={
+                issuesLoading
+                  ? "Issues are still loading"
+                  : "Generate release notes"
+              }
+            >
+              Release notes
             </OrgHeaderButton>
             <OrgHeaderButton onClick={onDelete} destructive>
               <Trash2 className="h-3 w-3" aria-hidden />
@@ -786,6 +939,15 @@ function ReleaseDetail({
           </div>
         )}
       </div>
+
+      <ReleaseNotesDialog
+        open={notesOpen}
+        onOpenChange={setNotesOpen}
+        releaseName={release.name}
+        markdown={notesQuery.data?.markdown ?? ""}
+        loading={notesQuery.isPending}
+        error={notesQuery.error}
+      />
     </div>
   );
 }
