@@ -169,7 +169,7 @@ describe("ActivitySection comment resolve (C32)", () => {
     await waitFor(() => {
       expect(screen.queryByText("open root one")).toBeNull();
     });
-    expect(screen.getByText("0 open threads")).toBeTruthy();
+    expect(screen.getByText("1 resolved thread")).toBeTruthy();
     // The resolved root is still listed (collapsed) under the filter.
     expect(screen.getByText(/Resolved by Bob/)).toBeTruthy();
 

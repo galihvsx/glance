@@ -466,7 +466,8 @@ export default function ActivitySection({
   const history = historyQuery.data ?? [];
   const mentionMembers = (membersQuery.data ?? []).filter((m) => m.id !== userId);
 
-  const commentMutation = useMutation({    mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
+  const commentMutation = useMutation({
+    mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
       api.post<CommentNode>(`${issuePath}/comments`, body),
     onSuccess: () => {
       setCommentDraft("");
@@ -643,7 +644,14 @@ export default function ActivitySection({
   const loading = commentsQuery.isPending || historyQuery.isPending;
   const commentCount = comments.length;
   // Open roots in the current view (the fetched, filter-applied list).
+  // The count label is filter-aware: under the Resolved filter the list
+  // holds only resolved roots, so "0 open threads" would misreport the
+  // issue's open total — show the resolved count instead.
   const openThreadCount = comments.filter((c) => !c.resolved_at).length;
+  const countLabel =
+    resolvedFilter === "resolved"
+      ? `${comments.length} resolved thread${comments.length === 1 ? "" : "s"}`
+      : `${openThreadCount} open thread${openThreadCount === 1 ? "" : "s"}`;
   const showResolvedFilter = activeTab === "all" || activeTab === "comments";
 
   return (
@@ -731,9 +739,7 @@ export default function ActivitySection({
                   </button>
                 ))}
               </div>
-              <span className="text-[10px] text-ink-muted">
-                {openThreadCount} open thread{openThreadCount === 1 ? "" : "s"}
-              </span>
+              <span className="text-[10px] text-ink-muted">{countLabel}</span>
             </div>
           )}
           {loading ? (
