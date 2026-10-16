@@ -47,6 +47,9 @@ package service
 //	             "key_results":[{"id","title","kind","unit","start_value",
 //	                              "target_value","current_value",
 //	                              "created_at","updated_at",
+//	                              "check_ins":[{"id","previous_value",
+//	                                           "new_value","note","author_id",
+//	                                           "author_email","created_at"}],
 //	                              "linked_issues":[{"project_identifier",
 //	                                                "issue_display_id"}]}]}]
 //	}
@@ -111,7 +114,10 @@ const exportSchemaNote = "glance workspace data archive, format glance-export/1.
 	"Project updates carry id, project_id, author_id, author_email, status, body, created_at, updated_at. " +
 	"Objectives carry id, title, description, owner_id, owner_email, start_date, target_date, status, " +
 	"created_at, updated_at, with nested key_results (id, title, kind, unit, start/target/current values, " +
-	"created_at, updated_at) and per-KR linked_issues keyed by project identifier + issue display_id " +
+	"created_at, updated_at, check_ins, linked_issues). Metric KRs carry ALL check-ins oldest-first " +
+	"(no cap — the API list endpoint's cap-100 does not apply to the archive); each check-in carries " +
+	"id, previous_value (null for the seed), new_value, note, author_id, author_email, created_at. " +
+	"Issue KRs carry no check-ins (they have none). Per-KR linked_issues are keyed by project identifier + issue display_id " +
 	"(the stable cross-archive key — issue UUIDs are remapped on import, display IDs are not). " +
 	"Key result links to soft-deleted issues are excluded, matching the live-set semantics. " +
 	"Page-issue links carry id, project_identifier, page_id, page_title, issue_display_id, " +
@@ -361,20 +367,40 @@ type exportKRLink struct {
 	IssueDisplayID    string `json:"issue_display_id"`
 }
 
+// exportKRCheckin is one check-in entry of a metric key result
+// (C42T2): the append-only history of current_value changes. Values
+// are json.Number so NUMERIC precision survives the round-trip
+// exactly (the same discipline as KR values). The author is carried
+// as id + email, the same field discipline as the objective owner:
+// the importer resolves the author by email and leaves it null when
+// unmapped — never a fabricated author. PreviousValue is nil for
+// the seed entry (there is no previous value at creation).
+type exportKRCheckin struct {
+	ID            string       `json:"id"`
+	PreviousValue *json.Number `json:"previous_value"`
+	NewValue      json.Number  `json:"new_value"`
+	Note          *string      `json:"note"`
+	AuthorID      *string      `json:"author_id"`
+	AuthorEmail   *string      `json:"author_email"`
+	CreatedAt     time.Time    `json:"created_at"`
+}
+
 // exportKeyResult is one key result (C35T2). Values are json.Number
 // so NUMERIC precision survives the round-trip exactly (the same
-// discipline as issue custom values).
+// discipline as issue custom values). Metric KRs carry ALL their
+// check-ins in CheckIns, oldest-first; issue KRs carry none.
 type exportKeyResult struct {
-	ID           string         `json:"id"`
-	Title        string         `json:"title"`
-	Kind         string         `json:"kind"`
-	Unit         *string        `json:"unit"`
-	StartValue   json.Number    `json:"start_value"`
-	TargetValue  json.Number    `json:"target_value"`
-	CurrentValue json.Number    `json:"current_value"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	LinkedIssues []exportKRLink `json:"linked_issues"`
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Kind         string            `json:"kind"`
+	Unit         *string           `json:"unit"`
+	StartValue   json.Number       `json:"start_value"`
+	TargetValue  json.Number       `json:"target_value"`
+	CurrentValue json.Number       `json:"current_value"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	CheckIns     []exportKRCheckin `json:"check_ins"`
+	LinkedIssues []exportKRLink    `json:"linked_issues"`
 }
 
 // exportObjective is one workspace objective (C35T2) with nested key
@@ -1047,9 +1073,11 @@ func streamObjectives(ctx context.Context, ew *exportStreamWriter, tx pgx.Tx, ws
 }
 
 // fillObjectiveKeyResults loads one objective's key results with
-// their issue links. Links to soft-deleted issues are excluded —
+// their check-ins (metric KRs only, ALL rows oldest-first — the API
+// list endpoint's cap-100 does NOT apply to the archive) and their
+// issue links. Links to soft-deleted issues are excluded —
 // they are not live data, and the importer cannot restore a link to
-// an issue the archive never carries.
+// an issue the archive never carries. Issue KRs carry no check-ins.
 func fillObjectiveKeyResults(ctx context.Context, tx pgx.Tx, o *exportObjective) error {
 	o.KeyResults = []exportKeyResult{}
 	krRows, err := tx.Query(ctx,
@@ -1081,17 +1109,60 @@ func fillObjectiveKeyResults(ctx context.Context, tx pgx.Tx, o *exportObjective)
 		return err
 	}
 	for i := range o.KeyResults {
-		if o.KeyResults[i].Kind != "issue" {
-			o.KeyResults[i].LinkedIssues = []exportKRLink{}
+		if o.KeyResults[i].Kind == "issue" {
+			o.KeyResults[i].CheckIns = []exportKRCheckin{}
+			links, err := loadKRLinks(ctx, tx, o.KeyResults[i].ID)
+			if err != nil {
+				return err
+			}
+			o.KeyResults[i].LinkedIssues = links
 			continue
 		}
-		links, err := loadKRLinks(ctx, tx, o.KeyResults[i].ID)
+		o.KeyResults[i].LinkedIssues = []exportKRLink{}
+		checkIns, err := loadKRCheckins(ctx, tx, o.KeyResults[i].ID)
 		if err != nil {
 			return err
 		}
-		o.KeyResults[i].LinkedIssues = links
+		o.KeyResults[i].CheckIns = checkIns
 	}
 	return nil
+}
+
+// loadKRCheckins loads ALL of one metric KR's check-ins, oldest
+// first, for a stable round-trip. No cap: the archive must carry the
+// full history, unlike the API list endpoint (cap-100). The id
+// tiebreaker keeps the order deterministic when rows share a
+// timestamp (backfilled / imported rows can).
+func loadKRCheckins(ctx context.Context, tx pgx.Tx, krID string) ([]exportKRCheckin, error) {
+	out := []exportKRCheckin{}
+	rows, err := tx.Query(ctx,
+		`SELECT ci.id::text, ci.previous_value::text, ci.new_value::text,
+		        ci.note, ci.author_id::text, u.email::text, ci.created_at
+		 FROM key_result_checkins ci
+		 LEFT JOIN users u ON u.id = ci.author_id
+		 WHERE ci.key_result_id = $1::uuid
+		 ORDER BY ci.created_at ASC, ci.id ASC`,
+		krID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c exportKRCheckin
+		var previous *string
+		var newValue string
+		if err := rows.Scan(&c.ID, &previous, &newValue, &c.Note,
+			&c.AuthorID, &c.AuthorEmail, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		if previous != nil {
+			n := json.Number(*previous)
+			c.PreviousValue = &n
+		}
+		c.NewValue = json.Number(newValue)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // loadKRLinks loads one issue KR's links as (project identifier,

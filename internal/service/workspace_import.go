@@ -57,7 +57,13 @@ package service
 //     is resolved BY EMAIL: an unmapped owner degrades to a null
 //     owner with an honest note — never a fabricated owner — and the
 //     objective still imports. Metric KRs restore fully
-//     (title/kind/unit/start/target/current/status-adjacent dates).
+//     (title/kind/unit/start/target/current/status-adjacent dates),
+//     plus their check-in history (C42T2): each check-in restores
+//     with its previous/new values, note, author (resolved by email,
+//     null when unmapped — never fabricated) and created_at, via the
+//     same insert-with-fallback + dedup discipline as every other
+//     row. Restoring history never changes the KR's current_value
+//     (history is a log, not state). Issue KRs carry no check-ins.
 //     Issue-KR links resolve by project identifier + issue display_id
 //     (the stable cross-archive key, immune to the UUID clone remap);
 //     an unresolvable link skips with a note naming the KR and the KR
@@ -222,7 +228,7 @@ var archiveImportSections = []string{
 	"modules", "module_issues", "pages", "project_updates", "issues", "issue_assignees",
 	"issue_labels", "issue_custom_values", "comments", "attachments",
 	"page_issue_links",
-	"objectives", "key_results", "key_result_issue_links",
+	"objectives", "key_results", "key_result_issue_links", "key_result_checkins",
 }
 
 // archiveLink is a deferred UUID→UUID reference applied after its
@@ -245,7 +251,7 @@ type archiveImporter struct {
 	// known UUID sets in the target scope (preloaded + imported).
 	projects, labels, states, estimates, estimatePoints,
 	customFields, cycles, modules, pages, projectUpdates, issues, comments,
-	objectives, keyResults map[string]bool
+	objectives, keyResults, checkins map[string]bool
 	maxSeq map[string]int // resolved project UUID -> max restored issue sequence_id
 
 	cycleLinks, moduleLinks      []archiveLink
@@ -272,7 +278,7 @@ func newArchiveImporter(ctx context.Context, tx pgx.Tx, wsID, slug, actorID stri
 		projects: sets(), labels: sets(), states: sets(), estimates: sets(),
 		estimatePoints: sets(), customFields: sets(), cycles: sets(),
 		modules: sets(), pages: sets(), projectUpdates: sets(), issues: sets(), comments: sets(),
-		objectives: sets(), keyResults: sets(),
+		objectives: sets(), keyResults: sets(), checkins: sets(),
 		maxSeq: map[string]int{},
 	}
 }
@@ -407,6 +413,7 @@ func (imp *archiveImporter) preload() error {
 		&imp.comments:       `SELECT c.id::text FROM comments c JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.objectives:     `SELECT id::text FROM objectives WHERE workspace_id = $1::uuid`,
 		&imp.keyResults:     `SELECT kr.id::text FROM key_results kr JOIN objectives o ON o.id = kr.objective_id WHERE o.workspace_id = $1::uuid`,
+		&imp.checkins:       `SELECT ci.id::text FROM key_result_checkins ci JOIN key_results kr ON kr.id = ci.key_result_id JOIN objectives o ON o.id = kr.objective_id WHERE o.workspace_id = $1::uuid`,
 	}
 	for set, q := range queries {
 		rows, err := imp.tx.Query(imp.ctx, q, imp.wsID)
@@ -1706,8 +1713,11 @@ func (imp *archiveImporter) importObjective(o *exportObjective) error {
 // carrying unit/current_value (meaningless for issue KRs — progress
 // never reads them) is normalized to the service's canonical form
 // (unit NULL, current 0) with an honest note, the same
-// note-and-continue discipline as archiveDate. Links are processed
-// even when the KR already exists, so retries complete them.
+// note-and-continue discipline as archiveDate. Links and check-ins
+// are processed even when the KR already exists, so retries complete
+// them. Check-ins restore after the KR insert (C42T2); a KR that
+// was skipped imports no check-ins, and restoring history never
+// changes the KR's current_value.
 func (imp *archiveImporter) importKeyResult(o *exportObjective, kr *exportKeyResult) error {
 	if !validArchiveUUID(kr.ID) {
 		imp.skip("key_results", kr.Title, "key result skipped: malformed archived id")
@@ -1801,6 +1811,87 @@ func (imp *archiveImporter) importKeyResult(o *exportObjective, kr *exportKeyRes
 			return err
 		}
 	}
+	for i := range kr.CheckIns {
+		if err := imp.importKRCheckin(kr, &kr.CheckIns[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// importKRCheckin restores one check-in entry of a metric KR (C42T2).
+// The author resolves BY EMAIL (the same discipline as the objective
+// owner): an unmapped author degrades to a null author with an honest
+// note — never a fabricated author — and the check-in still imports.
+// An absent check_ins field in an old archive decodes to nil, so
+// this loop simply never runs (backfill covers those KRs later).
+// A non-numeric previous/new value skips the entry: a hand-crafted
+// archive must not smuggle in a row the service could never have
+// created. Check-ins on an issue KR skip with a note (issue KRs
+// never record check-ins). The insert touches only the check-ins
+// table — the KR's current_value is never rewritten by history.
+func (imp *archiveImporter) importKRCheckin(kr *exportKeyResult, c *exportKRCheckin) error {
+	if kr.Kind == "issue" {
+		imp.skip("key_result_checkins", kr.Title,
+			fmt.Sprintf("key result %q: check-in %q skipped: issue key results never record check-ins", kr.Title, c.ID))
+		return nil
+	}
+	if !validArchiveUUID(c.ID) {
+		imp.skip("key_result_checkins", kr.Title, "check-in skipped: malformed archived id")
+		return nil
+	}
+	if imp.alreadyImported(imp.checkins, c.ID) {
+		imp.skip("key_result_checkins", kr.Title, "check-in skipped: already exists in this workspace")
+		return nil
+	}
+	if _, err := c.NewValue.Float64(); err != nil {
+		imp.skip("key_result_checkins", kr.Title,
+			fmt.Sprintf("key result %q: check-in %q skipped: new_value %q is not numeric", kr.Title, c.ID, c.NewValue.String()))
+		return nil
+	}
+	var previous any
+	if c.PreviousValue != nil {
+		if _, err := c.PreviousValue.Float64(); err != nil {
+			imp.skip("key_result_checkins", kr.Title,
+				fmt.Sprintf("key result %q: check-in %q skipped: previous_value %q is not numeric", kr.Title, c.ID, c.PreviousValue.String()))
+			return nil
+		}
+		previous = c.PreviousValue.String()
+	}
+	var authorID any
+	if c.AuthorEmail != nil && *c.AuthorEmail != "" {
+		var found string
+		err := imp.tx.QueryRow(imp.ctx,
+			`SELECT id::text FROM users WHERE email = $1`, *c.AuthorEmail).Scan(&found)
+		if err == nil {
+			authorID = found
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		} else {
+			imp.skip("key_result_checkins", kr.Title,
+				fmt.Sprintf("key result %q: check-in %q author %q has no user in this instance (author left empty)", kr.Title, c.ID, *c.AuthorEmail))
+		}
+	}
+	// A null email means a null author (the author's user row was
+	// deleted, ON DELETE SET NULL): imported as null, no note — the
+	// archive faithfully carries the deletion.
+	_, inserted, err := imp.insertWithFallback(imp.checkins, "key_result_checkins", c.ID,
+		func(id string) error {
+			_, err := imp.tx.Exec(imp.ctx,
+				`INSERT INTO key_result_checkins (id, key_result_id, author_id,
+				                                  previous_value, new_value, note, created_at)
+				 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::numeric, $6, $7)`,
+				id, imp.resolveID(kr.ID), authorID, previous, c.NewValue.String(), c.Note, c.CreatedAt)
+			return err
+		})
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		imp.skip("key_result_checkins", kr.Title, "check-in skipped: already exists in this workspace")
+		return nil
+	}
+	imp.rep.Imported["key_result_checkins"]++
 	return nil
 }
 
