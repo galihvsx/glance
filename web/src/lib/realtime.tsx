@@ -344,8 +344,76 @@ export async function resyncWorkspace(
   });
 }
 
-interface UseProjectRealtimeOpts extends RealtimeContext {
-  issueUuid?: string;
+// Reconnect dispatch (C43T0 review fix): the WS client keeps only the
+// last-registered onReconnect, and React runs child passive effects
+// before parent ones — so two scopes registering different handlers
+// race by mount order. On a fresh project-page load, WorkspaceScope's
+// workspace-only handler overwrote ProjectScope's composed handler and
+// resyncProject silently never ran on reconnect (a regression vs
+// pre-C43, where ProjectScope alone owned onReconnect). Instead both
+// scopes register the SAME stable dispatcher below; it reads the
+// currently-registered resync callbacks at reconnect time, so effect
+// order no longer matters. Each registration returns an unregister
+// cleanup that clears only its own registration (identity guard), so a
+// stale cleanup can never clear a newer registration.
+interface WorkspaceReconnectRegistration {
+  queryClient: QueryClient;
+  slug: string;
+}
+
+interface ProjectReconnectRegistration {
+  queryClient: QueryClient;
+  slug: string;
+  identifier: string;
+}
+
+let workspaceReconnect: WorkspaceReconnectRegistration | null = null;
+let projectReconnect: ProjectReconnectRegistration | null = null;
+
+export function registerWorkspaceReconnect(
+  reg: WorkspaceReconnectRegistration,
+): () => void {
+  workspaceReconnect = reg;
+  return () => {
+    if (workspaceReconnect === reg) workspaceReconnect = null;
+  };
+}
+
+export function registerProjectReconnect(
+  reg: ProjectReconnectRegistration,
+): () => void {
+  projectReconnect = reg;
+  return () => {
+    if (projectReconnect === reg) projectReconnect = null;
+  };
+}
+
+// handleReconnect is the single onReconnect handler both scopes
+// register (getRealtimeClient merges options; last-writer-wins is
+// harmless because the function reference is identical). Runs the
+// project resync then the workspace resync — the same order as the
+// pre-fix composed handler. Exported for tests.
+export async function handleReconnect(since: string | null): Promise<void> {
+  if (projectReconnect) {
+    await resyncProject(
+      projectReconnect.queryClient,
+      {
+        slug: projectReconnect.slug,
+        identifier: projectReconnect.identifier,
+      },
+      since,
+    );
+  }
+  if (workspaceReconnect) {
+    await resyncWorkspace(
+      workspaceReconnect.queryClient,
+      { slug: workspaceReconnect.slug },
+      since,
+    );
+  }
+}
+
+interface UseProjectRealtimeOpts extends RealtimeContext {  issueUuid?: string;
   /**
    * Current user id (from useAuth() at the call site — the /me session
    * user, no new endpoint). When set, also subscribes to the user:{id}

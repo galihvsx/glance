@@ -14,8 +14,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getRealtimeClient } from "../lib/ws";
 import { useAuth } from "../lib/auth";
 import {
-  resyncProject,
-  resyncWorkspace,
+  handleReconnect,
+  registerProjectReconnect,
   useProjectRealtime,
 } from "../lib/realtime";
 
@@ -30,31 +30,22 @@ export default function ProjectScope() {
   const { user } = useAuth();
 
   // Own the socket lifecycle + reconnect resync for this project scope.
-  // (getRealtimeClient merges options, so mount order vs. pages that only
-  // subscribe doesn't matter.)
+  // (getRealtimeClient merges options, so mount order vs. scopes that
+  // only subscribe doesn't matter.)
   //
-  // The singleton keeps only the last-registered onReconnect, so while
-  // ProjectScope is mounted its handler composes BOTH resyncs: the
-  // project keys (resyncProject) plus the workspace keys
-  // (resyncWorkspace — the sidebar's initiatives/objectives lists live
-  // on project pages too). On unmount (e.g. navigating to a workspace
-  // page, where WorkspaceScope stays mounted) restore WorkspaceScope's
-  // workspace-only handler so a stale project resync never fires.
+  // Both scopes register the SAME stable handleReconnect dispatcher
+  // (realtime.tsx) — the WS client keeps only the last-registered
+  // onReconnect and React runs child effects before parent ones, so
+  // registering different handlers per scope raced by mount order
+  // (review fix: on a fresh project-page load the workspace-only
+  // handler overwrote the composed one and resyncProject never ran).
+  // The dispatcher reads the currently-registered callbacks at
+  // reconnect time. This scope's cleanup unregisters only its own
+  // project callback (identity guard in registerProjectReconnect).
   useEffect(() => {
-    const client = getRealtimeClient({
-      onReconnect: (since) =>
-        void (async () => {
-          await resyncProject(queryClient, { slug, identifier }, since);
-          await resyncWorkspace(queryClient, { slug }, since);
-        })(),
-    });
+    const client = getRealtimeClient({ onReconnect: handleReconnect });
     client.connect();
-    return () => {
-      getRealtimeClient({
-        onReconnect: (since) =>
-          void resyncWorkspace(queryClient, { slug }, since),
-      });
-    };
+    return registerProjectReconnect({ queryClient, slug, identifier });
   }, [queryClient, slug, identifier]);
 
   useProjectRealtime({ slug, identifier, userId: user?.id });

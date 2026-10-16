@@ -11,6 +11,9 @@ import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import {
   handleRealtimeEvent,
+  handleReconnect,
+  registerProjectReconnect,
+  registerWorkspaceReconnect,
   resyncProject,
   resyncWorkspace,
   useProjectRealtime,
@@ -468,6 +471,77 @@ describe("resyncWorkspace (C43T0)", () => {
     expect(keys).toContainEqual(["objectives", "acme"]);
     expect(keys).toContainEqual(["notifications"]);
     expect(keys).toHaveLength(16);
+  });
+});
+
+describe("handleReconnect dispatch (C43T0 review fix)", () => {
+  it("workspace-only registration resyncs workspace keys, never project keys", async () => {
+    const { qc, keys } = spiedClient();
+    const unregister = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "acme",
+    });
+    try {
+      await handleReconnect(null);
+      expect(keys).toContainEqual(["objectives", "acme"]);
+      expect(keys).toContainEqual(["notifications"]);
+      expect(keys).not.toContainEqual(["issues", "acme", "ENG"]);
+      expect(keys).not.toContainEqual(["cycles", "acme", "ENG"]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("both registrations resync both key sets", async () => {
+    const { qc, keys } = spiedClient();
+    const unregisterWs = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "acme",
+    });
+    const unregisterPr = registerProjectReconnect({
+      queryClient: qc,
+      slug: "acme",
+      identifier: "ENG",
+    });
+    try {
+      await handleReconnect(null);
+      expect(keys).toContainEqual(["issues", "acme", "ENG"]);
+      expect(keys).toContainEqual(["objectives", "acme"]);
+    } finally {
+      unregisterWs();
+      unregisterPr();
+    }
+  });
+
+  it("stale cleanup never clears a newer registration", async () => {
+    const { qc, keys } = spiedClient();
+    const unregisterOld = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "acme",
+    });
+    const unregisterNew = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "beta",
+    });
+    try {
+      unregisterOld(); // stale cleanup: must NOT clear the beta registration
+      await handleReconnect(null);
+      expect(keys).toContainEqual(["objectives", "beta"]);
+      expect(keys).not.toContainEqual(["objectives", "acme"]);
+    } finally {
+      unregisterNew();
+    }
+  });
+
+  it("after unregister, reconnect resyncs nothing", async () => {
+    const { qc, keys } = spiedClient();
+    const unregister = registerWorkspaceReconnect({
+      queryClient: qc,
+      slug: "acme",
+    });
+    unregister();
+    await handleReconnect(null);
+    expect(keys).toHaveLength(0);
   });
 });
 

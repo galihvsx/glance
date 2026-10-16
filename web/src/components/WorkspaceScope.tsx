@@ -10,7 +10,7 @@ import { Outlet, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { getRealtimeClient } from "../lib/ws";
 import { useAuth } from "../lib/auth";
-import { resyncWorkspace, useWorkspaceRealtime } from "../lib/realtime";
+import { handleReconnect, registerWorkspaceReconnect, useWorkspaceRealtime } from "../lib/realtime";
 import ConnectionDot from "./ConnectionDot";
 
 export default function WorkspaceScope() {
@@ -22,15 +22,14 @@ export default function WorkspaceScope() {
 
   // Own the socket lifecycle + reconnect resync for workspace keys.
   // (getRealtimeClient merges options, so mount order vs. scopes that
-  // only subscribe doesn't matter. ProjectScope overrides onReconnect
-  // with the composed project+workspace resync while it is mounted and
-  // restores this workspace-only handler on unmount.)
+  // only subscribe doesn't matter. Both scopes register the SAME stable
+  // handleReconnect dispatcher — see ProjectScope's comment for why
+  // per-scope handlers raced. This scope's cleanup unregisters only its
+  // own workspace callback.)
   useEffect(() => {
-    const client = getRealtimeClient({
-      onReconnect: (since) =>
-        void resyncWorkspace(queryClient, { slug }, since),
-    });
+    const client = getRealtimeClient({ onReconnect: handleReconnect });
     client.connect();
+    return registerWorkspaceReconnect({ queryClient, slug });
   }, [queryClient, slug]);
 
   useWorkspaceRealtime({ slug, userId: user?.id });
