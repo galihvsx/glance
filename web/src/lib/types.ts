@@ -470,7 +470,10 @@ export type ObjectiveStatus = "active" | "completed" | "archived";
 
 /** One workspace-scoped objective (goal). Progress is COMPUTED
  *  server-side (mean of KR progress, 0 when no KRs) and never stored.
- *  `key_results` is populated only by the detail endpoint. */
+ *  `key_results` is populated only by the detail endpoint.
+ *  `progress_history` is the objective's progress-over-time series
+ *  (one point per distinct metric-KR check-in timestamp, capped at
+ *  the last 60 points); empty when no metric-KR check-in exists. */
 export interface Objective {
   id: string;
   workspace_id: string;
@@ -483,10 +486,19 @@ export interface Objective {
   status: ObjectiveStatus;
   /** Mean of KR progress, 0–1 (0 when no KRs). */
   progress: number;
+  /** Progress-over-time series, 0–1 per point. Omitted when empty. */
+  progress_history?: ObjectiveProgressPoint[];
   key_result_count: number;
   key_results?: KeyResult[];
   created_at: string;
   updated_at: string;
+}
+
+/** One point of an objective's progress-over-time series: the
+ *  objective's computed progress (0–1) at timestamp `t`. */
+export interface ObjectiveProgressPoint {
+  t: string;
+  progress: number;
 }
 
 /** KR kind: metric (start → target → current, manual) or issue

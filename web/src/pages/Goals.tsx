@@ -23,6 +23,7 @@ import type {
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import GoalProgressBar from "../components/goals/GoalProgressBar";
+import GoalSparkline from "../components/goals/GoalSparkline";
 import { objectiveStatusColor } from "../components/goals/okrFormat";
 import { Button } from "../components/ui/button";
 import {
@@ -82,6 +83,11 @@ function ObjectiveCard({
       <div className="mt-2.5">
         <GoalProgressBar progress={objective.progress} />
       </div>
+      {(objective.progress_history?.length ?? 0) > 0 && (
+        <div className="mt-2">
+          <GoalSparkline points={objective.progress_history ?? []} />
+        </div>
+      )}
     </OrgCard>
   );
 }

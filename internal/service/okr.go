@@ -39,6 +39,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -90,21 +91,34 @@ var keyResultKinds = map[string]bool{
 
 // Objective is one workspace-scoped goal. Progress is computed (mean
 // of KR progress, 0 when no KRs) and KeyResultCount is live;
-// KeyResults is populated only by GetObjective.
+// KeyResults is populated only by GetObjective. ProgressHistory is
+// the objective's progress-over-time series (one point per distinct
+// metric-KR check-in timestamp, capped at the last 60 points),
+// populated by ListObjectives and GetObjective; empty when no
+// metric-KR check-in exists.
 type Objective struct {
-	ID             string      `json:"id"`
-	WorkspaceID    string      `json:"workspace_id"`
-	Title          string      `json:"title"`
-	Description    *string     `json:"description,omitempty"`
-	Owner          *ActorRef   `json:"owner"`
-	StartDate      *string     `json:"start_date,omitempty"`
-	TargetDate     *string     `json:"target_date,omitempty"`
-	Status         string      `json:"status"`
-	Progress       float64     `json:"progress"`
-	KeyResultCount int64       `json:"key_result_count"`
-	KeyResults     []KeyResult `json:"key_results,omitempty"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	ID              string                   `json:"id"`
+	WorkspaceID     string                   `json:"workspace_id"`
+	Title           string                   `json:"title"`
+	Description     *string                  `json:"description,omitempty"`
+	Owner           *ActorRef                `json:"owner"`
+	StartDate       *string                  `json:"start_date,omitempty"`
+	TargetDate      *string                  `json:"target_date,omitempty"`
+	Status          string                   `json:"status"`
+	Progress        float64                  `json:"progress"`
+	ProgressHistory []ObjectiveProgressPoint `json:"progress_history,omitempty"`
+	KeyResultCount  int64                    `json:"key_result_count"`
+	KeyResults      []KeyResult              `json:"key_results,omitempty"`
+	CreatedAt       time.Time                `json:"created_at"`
+	UpdatedAt       time.Time                `json:"updated_at"`
+}
+
+// ObjectiveProgressPoint is one point of an objective's
+// progress-over-time series: the objective's computed progress
+// (0..1, same mean-of-KRs formula as Progress) at timestamp T.
+type ObjectiveProgressPoint struct {
+	T        time.Time `json:"t"`
+	Progress float64   `json:"progress"`
 }
 
 // KeyResult is one measurable result under an objective. Progress is
@@ -485,6 +499,207 @@ func fillObjectiveProgress(objs []*Objective, entries map[string]krProgressEntry
 	}
 }
 
+// historyKR is one key result's replay input for
+// buildObjectiveProgressHistory: its kind, metric span, current
+// value, current issue-KR progress, and creation time.
+type historyKR struct {
+	ID            string
+	Kind          string
+	StartValue    float64
+	TargetValue   float64
+	CurrentValue  float64
+	IssueProgress float64 // current progress for issue KRs; unused for metric
+	CreatedAt     time.Time
+}
+
+// historyCheckin is one metric-KR check-in row's replay input.
+// PreviousValue is nil on the seed row (value at creation).
+type historyCheckin struct {
+	KeyResultID   string
+	PreviousValue *float64
+	NewValue      float64
+	CreatedAt     time.Time
+}
+
+// maxObjectiveHistoryPoints caps the progress_history payload: only
+// the last 60 points are kept.
+const maxObjectiveHistoryPoints = 60
+
+// buildObjectiveProgressHistory replays one objective's metric-KR
+// check-in rows chronologically into its progress-over-time series.
+//
+//   - A metric KR's value starts at its seed row's new_value (the
+//     first previous-NULL row in chronological order) and each later
+//     check-in sets that KR's value at its timestamp. A metric KR
+//     with no seed row falls back to its current value.
+//   - Issue KRs have no check-in rows; their contribution stays at
+//     their current progress for the whole replay.
+//   - A KR contributes only from its creation onward: the point at
+//     timestamp T is the mean progress of KRs created at or before
+//     T, using the same formula as fillObjectiveProgress (metric via
+//     metricKRProgress, issue via current done/total, 0 when no KRs
+//     exist at T).
+//   - Check-ins sharing a timestamp collapse to a single point at
+//     the post-event state (all of that timestamp's events applied
+//     before the point is emitted).
+//   - Check-in rows for KRs not in krs are skipped (orphan defense:
+//     key_result_checkins.key_result_id is ON DELETE CASCADE, so
+//     surviving rows normally all resolve — a deleted KR's rows are
+//     gone and the replay over surviving rows equals current state).
+//
+// The input slices are not mutated.
+func buildObjectiveProgressHistory(krs []historyKR, checkins []historyCheckin) []ObjectiveProgressPoint {
+	type krState struct {
+		kr    historyKR
+		value float64 // metric KR's replayed current value
+	}
+	// Chronological replay order; stable so same-timestamp rows
+	// keep caller order (the DB loader orders by created_at, id).
+	ordered := make([]historyCheckin, len(checkins))
+	copy(ordered, checkins)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].CreatedAt.Before(ordered[j].CreatedAt)
+	})
+
+	states := make([]*krState, 0, len(krs))
+	byID := make(map[string]*krState, len(krs))
+	for _, kr := range krs {
+		st := &krState{kr: kr, value: kr.CurrentValue}
+		// Seed value (value at creation) wins over the current
+		// value as the replay's starting point.
+		for _, ci := range ordered {
+			if ci.KeyResultID == kr.ID && ci.PreviousValue == nil {
+				st.value = ci.NewValue
+				break
+			}
+		}
+		states = append(states, st)
+		byID[kr.ID] = st
+	}
+
+	out := []ObjectiveProgressPoint{}
+	for i := 0; i < len(ordered); {
+		t := ordered[i].CreatedAt
+		// Apply every event at this timestamp before emitting.
+		for ; i < len(ordered) && ordered[i].CreatedAt.Equal(t); i++ {
+			if st, ok := byID[ordered[i].KeyResultID]; ok {
+				st.value = ordered[i].NewValue
+			}
+		}
+		var sum float64
+		var n int
+		for _, st := range states {
+			if st.kr.CreatedAt.After(t) {
+				continue
+			}
+			var p float64
+			switch st.kr.Kind {
+			case "metric":
+				p = metricKRProgress(st.kr.StartValue, st.kr.TargetValue, st.value)
+			case "issue":
+				p = st.kr.IssueProgress
+			}
+			sum += p
+			n++
+		}
+		progress := 0.0
+		if n > 0 {
+			progress = sum / float64(n)
+		}
+		out = append(out, ObjectiveProgressPoint{T: t, Progress: progress})
+	}
+	if len(out) > maxObjectiveHistoryPoints {
+		out = out[len(out)-maxObjectiveHistoryPoints:]
+	}
+	return out
+}
+
+// fillObjectiveProgressHistory populates ProgressHistory on each
+// objective from its metric-KR check-in rows, in two queries total
+// (no per-objective N+1): one for the objectives' KRs with current
+// issue-KR progress, one for their check-in rows.
+func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs []*Objective) error {
+	if len(objs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(objs))
+	byID := make(map[string]*Objective, len(objs))
+	for _, ob := range objs {
+		ids = append(ids, ob.ID)
+		byID[ob.ID] = ob
+	}
+	done := doneStateGroups
+	rows, err := pool.Query(ctx,
+		`SELECT kr.id::text, kr.objective_id::text, kr.kind,
+			kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
+			kr.created_at,
+			COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
+			COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+		 FROM key_results kr
+		 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
+		 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+		 LEFT JOIN states s ON s.id = i.state_id
+		 WHERE kr.objective_id::text = ANY($1::text[])
+		 GROUP BY kr.id, kr.objective_id, kr.kind,
+			kr.start_value, kr.target_value, kr.current_value, kr.created_at`,
+		ids, done)
+	if err != nil {
+		return err
+	}
+	krsByObjective := map[string][]historyKR{}
+	for rows.Next() {
+		var kr historyKR
+		var obID string
+		var total, doneCount int64
+		if err := rows.Scan(&kr.ID, &obID, &kr.Kind, &kr.StartValue,
+			&kr.TargetValue, &kr.CurrentValue, &kr.CreatedAt,
+			&total, &doneCount); err != nil {
+			rows.Close()
+			return err
+		}
+		if kr.Kind == "issue" && total > 0 {
+			kr.IssueProgress = float64(doneCount) / float64(total)
+		}
+		krsByObjective[obID] = append(krsByObjective[obID], kr)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	ciRows, err := pool.Query(ctx,
+		`SELECT ci.key_result_id::text, ci.previous_value::float8,
+			ci.new_value::float8, ci.created_at, kr.objective_id::text
+		 FROM key_result_checkins ci
+		 JOIN key_results kr ON kr.id = ci.key_result_id
+		 WHERE kr.objective_id::text = ANY($1::text[])
+		 ORDER BY ci.created_at, ci.id`,
+		ids)
+	if err != nil {
+		return err
+	}
+	defer ciRows.Close()
+	checkinsByObjective := map[string][]historyCheckin{}
+	for ciRows.Next() {
+		var ci historyCheckin
+		var obID string
+		if err := ciRows.Scan(&ci.KeyResultID, &ci.PreviousValue,
+			&ci.NewValue, &ci.CreatedAt, &obID); err != nil {
+			return err
+		}
+		checkinsByObjective[obID] = append(checkinsByObjective[obID], ci)
+	}
+	if err := ciRows.Err(); err != nil {
+		return err
+	}
+	for _, ob := range objs {
+		ob.ProgressHistory = buildObjectiveProgressHistory(
+			krsByObjective[ob.ID], checkinsByObjective[ob.ID])
+	}
+	return nil
+}
+
 // loadKeyResults loads an objective's KRs ordered by creation with
 // computed progress attached.
 func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID string) ([]KeyResult, error) {
@@ -646,6 +861,9 @@ func ListObjectives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 		return nil, err
 	}
 	fillObjectiveProgress(out, entries)
+	if err := fillObjectiveProgressHistory(ctx, pool, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -682,6 +900,9 @@ func GetObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, obje
 		return nil, err
 	}
 	fillObjectiveProgress([]*Objective{ob}, entries)
+	if err := fillObjectiveProgressHistory(ctx, pool, []*Objective{ob}); err != nil {
+		return nil, err
+	}
 	return ob, nil
 }
 
