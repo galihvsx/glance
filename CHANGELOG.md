@@ -289,6 +289,45 @@ queued onboarding follow-up (invites endpoint).
   refetches on open). Tests: realtime.test.ts 18 → 21, incl. a
   resync-exclusion guard.
 
+**OKR history completion (cycle 42)**
+- Progress-over-time chart (C42T0): GoalDetail's KR check-in history
+  gains a pure-SVG chart above the timeline, from the SAME check-ins
+  query (no new fetch — a test asserts exactly 1 check-ins GET).
+  Points are every check-in's `new_value` chronological (seed first);
+  dashed labelled reference lines for `start_value` / `target_value`;
+  Y domain = min/max ∪ {start, target}; first/last date axis labels.
+  Guards, all tested: zero time range (backfilled/imported rows can
+  share one timestamp) → index-spread, never divide by zero; zero
+  value range → flat midline; descending KRs handled by the domain;
+  single point → dot + reference lines, no line; empty → no chart
+  (the timeline's "No check-ins yet." stands). `<title>` +
+  `aria-label` describe the trend. Timeline rows/order/copy
+  unchanged. Tests: GoalDetail.test.tsx 23 → 31.
+- Backfill KR history seeds (C42T1): migration `000061` inserts one
+  seed row per metric KR with zero check-ins (pre-cycle-40 KRs, whose
+  timeline showed "No check-ins yet"): previous NULL, new =
+  `current_value`, note `'Backfilled history'`, author NULL (the
+  creator is not recorded on the KR row — nothing to recover),
+  `created_at = kr.created_at`. Idempotent (`NOT EXISTS` guard —
+  precedent 000011); down migration deletes exactly the
+  previous-NULL + note-marker rows. Test re-executes the statement
+  (000011 pattern): one seed, second run adds nothing, issue KRs get
+  nothing, KRs with existing check-ins untouched.
+- Workspace import seeds check-ins (C42T2): export carries each
+  metric KR's FULL check-in history (`check_ins`, oldest-first, no
+  cap-100 — the API list cap does not apply to the archive; values as
+  `json.Number`; author as id + email). Import restores them via the
+  established `insertWithFallback` + dedup discipline; author
+  resolves by email, null when unmapped — never fabricated;
+  non-numeric values skip with a note; hand-crafted check-ins on
+  issue KRs are refused. Restoring history never changes the KR's
+  `current_value`; retries complete missing check-ins without
+  duplicates; old archives without `check_ins` still import (the
+  backfill covers those KRs later). Known minor interaction: a
+  re-import after the backfill ran can leave two seed rows (the
+  backfill seed + the archived seed, different UUIDs) — an extra
+  "started at" row, no data loss.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
