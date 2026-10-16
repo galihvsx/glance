@@ -70,7 +70,7 @@ package service
 // Before inserting, the run loads every live issue description of the
 // project and parses out previously-imported Linear identifiers. The
 // parser reads the identifier out of the `*Imported from [...](...)`
-// marker and requires the closing paren, so ENG-1 can never match
+// marker, requires the closing paren, and requires the URL to start with https://linear.app/, so ENG-1 can never match
 // ENG-12. A re-run skips already-imported issues and reports them as
 // `skipped`. Honest limitations (same as GitHub/Jira): deleting the
 // footer defeats dedupe, and issues imported before this feature are
@@ -595,9 +595,11 @@ func linearIssueFooter(identifier, url string) string {
 // parseImportedLinearIdentifiers scans issue descriptions for dedupe
 // markers and returns the set of Linear identifiers already imported.
 // Single pass — O(total length). The parser reads the identifier out of
-// the `*Imported from [IDENT](URL)` marker and requires the closing
-// paren, so ENG-1 can never match ENG-12 (same needle rule as the other
-// importers).
+// the `*Imported from [IDENT](URL)` marker, requires the closing
+// paren, and requires the URL to start with `https://linear.app/`, so
+// ENG-1 can never match ENG-12 (same needle rule as the other
+// importers) and a planted marker with a non-Linear URL counts for
+// nothing.
 func parseImportedLinearIdentifiers(descriptions []string) map[string]bool {
 	const prefix = "*Imported from ["
 	out := map[string]bool{}
@@ -618,10 +620,17 @@ func parseImportedLinearIdentifiers(descriptions []string) map[string]bool {
 			}
 			if j > 0 && j+1 < len(after) && after[j] == ']' && after[j+1] == '(' {
 				rest := after[j+2:]
-				if k := strings.IndexByte(rest, ')'); k >= 0 {
-					out[after[:j]] = true
-					search = rest[k+1:]
-					continue
+				// The marker URL must be a Linear URL: a planted
+				// `*Imported from [ENG-123](https://anything)*` in an
+				// issue description must never suppress the import of
+				// ENG-123 (same needle discipline as the Jira
+				// importer's site URL).
+				if strings.HasPrefix(rest, "https://linear.app/") {
+					if k := strings.IndexByte(rest, ')'); k >= 0 {
+						out[after[:j]] = true
+						search = rest[k+1:]
+						continue
+					}
 				}
 			}
 			search = after

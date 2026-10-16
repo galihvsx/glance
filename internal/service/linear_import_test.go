@@ -325,14 +325,16 @@ func TestLinearPriorityMatrix(t *testing.T) {
 }
 
 // TestLinearDedupeNeedle pins the dedupe parser: the identifier is read
-// out of the `*Imported from [IDENT](URL)` marker and the closing paren
-// is required, so ENG-1 can never match ENG-12. A marker without a
-// closing paren counts for nothing.
+// out of the marker and requires the closing paren plus a
+// https://linear.app/ URL, so ENG-1 can never match ENG-12.
+// A marker without a closing paren, or with a non-Linear URL,
+// counts for nothing.
 func TestLinearDedupeNeedle(t *testing.T) {
 	descs := []string{
 		"body\n\n---\n*Imported from [ENG-1](https://linear.app/acme/issue/ENG-1/ship-v2)*",
 		"other\n\n---\n*Imported from [ENG-12](https://linear.app/acme/issue/ENG-12/docs)*",
 		"broken\n\n---\n*Imported from [ENG-99](https://linear.app/acme/issue/ENG-99/no-close",
+		"planted\n\n---\n*Imported from [ENG-77](https://evil.example/x)*",
 		"plain text with no marker at all",
 		"*Imported from [ENG-1](https://linear.app/acme/issue/ENG-1/ship-v2)* and again *Imported from [ENG-1](https://linear.app/acme/issue/ENG-1/ship-v2)*",
 	}
@@ -342,6 +344,9 @@ func TestLinearDedupeNeedle(t *testing.T) {
 	}
 	if !got["ENG-1"] || !got["ENG-12"] {
 		t.Errorf("identifiers = %v, want ENG-1 and ENG-12", got)
+	}
+	if got["ENG-77"] {
+		t.Errorf("planted non-Linear-URL marker counted ENG-77: %v", got)
 	}
 	if got["ENG-99"] {
 		t.Errorf("unclosed marker counted ENG-99: %v", got)
