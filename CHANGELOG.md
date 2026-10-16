@@ -163,6 +163,52 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Workspace audit log (cycle 37, Plane parity)**
+- Workspace audit log backend (C37T0): migration
+  `000058_workspace_audit_log` (workspace-scoped, append-only by
+  convention; actor_email snapshot survives account deletion) + service
+  (`RecordWorkspaceAuditTx` same-tx / pool best-effort variants,
+  `ListWorkspaceAuditLog`) + emitters wired into the existing write
+  paths for 14 control-plane actions — `member.invited`,
+  `member.added`, `member.role_changed` (only on a real change),
+  `member.removed`, `project.created`, `project.archived`,
+  `project.restored`, `project.deleted`, `workspace.settings_updated`
+  (changed-field names only), `integration.webhook_created` /
+  `webhook_deleted` (host only — never the full URL),
+  `integration.github_configured`, `integration.slack_configured` /
+  `slack_disconnected` (boolean meta only — never the secret/URL).
+  Routes: `GET /api/v1/workspaces/{slug}/audit-log` (filters: action,
+  actor_id, actor email substring, entity_type, since/until) +
+  `GET .../audit-log/export?format=csv` (10,000-row cap, `X-Truncated`
+  header, `audit-log-<slug>-<date>.csv`). Admin-only reads (role 20);
+  non-member → 404, member non-admin → 403. openapi.
+- Workspace audit log UI (C37T1): Settings → Audit log section
+  (admin-only; non-admins never see it or fetch): newest-first table
+  (When / Actor / Action / Entity / IP), draft/applied filters
+  (Category narrows the Action dropdown — the backend has no category
+  param — Actor email, Entity type, Since/Until as RFC 3339 UTC),
+  pagination, row-click detail panel (pretty-printed meta JSON, IP,
+  entity, actor), Export CSV button (same applied filters),
+  loading/error/empty states. Null IP renders as "—". 16 new vitest.
+- Tamper-evidence hardening (C37T2): migration `000059` adds a
+  `BEFORE UPDATE OR DELETE` trigger on `workspace_audit_log` that
+  rejects direct DML (depth-1) while allowing the table's own FK
+  lifecycle (workspace DELETE cascades its rows, user DELETE NULLs
+  `actor_id` only). Archive export/import explicitly excludes the audit
+  log (documented + tested — history is not portable; importing audit
+  rows would fabricate witnessed history). Emitter meta secret review:
+  pass, no leaks. 5 tamper/archive tests.
+- Honest v1 limitations: no `token_created` / `token_revoked` events —
+  API tokens are user-scoped (no workspace attribution; fanning one
+  token event out to every workspace would fabricate history); token
+  lifecycle belongs in a future global auth log, same as global
+  sign-in/out events. IP is NULL for all v1 rows (no service function
+  carries the request IP; column + field exist for future plumbing).
+  No retention purge / auto-expiry (append-only, full stop — retention
+  is a future decision). No real-time broadcast for audit entries.
+  The trigger guards the application path, not DDL/TRUNCATE (a role
+  with DDL privilege can drop the trigger).
+
 **Pages ↔ Work items (cycle 36, Plane parity)**
 - Page↔issue links backend (C36T0): migration `000057_page_issue_links`
   (`page_issue_links` with UNIQUE(page_id, issue_id) duplicate backstop,
