@@ -235,6 +235,43 @@
         "responses": { "200": { "description": "JSON archive download (Content-Disposition: attachment)", "content": { "application/json": { "schema": { "type": "object", "properties": { "format": { "type": "string", "example": "glance-export/1" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/audit-log": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List the workspace audit log",
+        "description": "Workspace Admin only (role 20). Append-only record of control-plane events — membership, role, project lifecycle, workspace settings, integrations — newest first. Non-members get 404, member non-admins 403. Filters: action (exact, e.g. member.invited), actor_id (uuid), actor (case-insensitive actor_email substring), entity_type, since/until (RFC 3339).",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 25 } },
+          { "name": "action", "in": "query", "schema": { "type": "string" } },
+          { "name": "actor_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "actor", "in": "query", "schema": { "type": "string", "description": "Case-insensitive actor_email substring" } },
+          { "name": "entity_type", "in": "query", "schema": { "type": "string" } },
+          { "name": "since", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "until", "in": "query", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": { "200": { "description": "Paginated audit entries", "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceAuditEntry" } }, "total": { "type": "integer" }, "page": { "type": "integer" }, "per_page": { "type": "integer" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/audit-log/export": {
+      "get": {
+        "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Export the workspace audit log as CSV",
+        "description": "Workspace Admin only (role 20). Same filter set and gate as GET .../audit-log. CSV columns: at,actor_email,action,entity_type,entity_id,ip,meta (meta as compact JSON). Hard cap 10,000 rows; a truncated export sets the X-Truncated: true response header. Downloads as audit-log-<slug>-<YYYY-MM-DD>.csv.",
+        "parameters": [
+          { "$ref": "#/components/parameters/Slug" },
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["csv"], "default": "csv" } },
+          { "name": "action", "in": "query", "schema": { "type": "string" } },
+          { "name": "actor_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "actor", "in": "query", "schema": { "type": "string", "description": "Case-insensitive actor_email substring" } },
+          { "name": "entity_type", "in": "query", "schema": { "type": "string" } },
+          { "name": "since", "in": "query", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "until", "in": "query", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": { "200": { "description": "CSV download (Content-Disposition: attachment; X-Truncated: true when capped)", "content": { "text/csv": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/slack/test": {
       "post": {
         "tags": ["workspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3094,6 +3131,21 @@
           "action": { "type": "string" },
           "issue_id": { "type": "string", "format": "uuid", "nullable": true },
           "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WorkspaceAuditEntry": {
+        "type": "object",
+        "description": "One row of the workspace audit log: a control-plane event (membership, role, project lifecycle, workspace settings, integration). Actor fields are null when the actor's account has since been deleted; ip is null when the write path recorded none.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "at": { "type": "string", "format": "date-time" },
+          "actor_id": { "type": "string", "format": "uuid", "nullable": true },
+          "actor_email": { "type": "string", "nullable": true, "description": "Snapshot taken at write time; survives actor deletion" },
+          "action": { "type": "string", "description": "Dotted scope.verb, e.g. member.invited, project.archived, integration.webhook_created" },
+          "entity_type": { "type": "string", "description": "invite, member, project, workspace, webhook, or integration" },
+          "entity_id": { "type": "string", "description": "Entity id (user id, email for invites, project id, workspace id, webhook id, or github/slack for integration config)" },
+          "ip": { "type": "string", "nullable": true },
+          "meta": { "type": "object", "description": "Event detail. Never carries a token value, webhook secret, full webhook URL (host only), or OTP." }
         }
       },
       "WorkspaceActivityEntry": {

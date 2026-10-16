@@ -116,6 +116,7 @@ func SetWorkspaceSlackURL(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	}
 
 	var newURL any // nil interface → SQL NULL (clears the column)
+	configured := false
 	if raw != nil {
 		u := strings.TrimSpace(*raw)
 		if u != "" {
@@ -123,14 +124,35 @@ func SetWorkspaceSlackURL(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 				return nil, err
 			}
 			newURL = u
+			configured = true
 		}
 	}
+	// C37T0: whether Slack was configured before this write decides
+	// whether a clear emits slack_disconnected.
+	wasConfigured := ws.SlackConfigured
 	if err := tx.QueryRow(ctx,
 		`UPDATE workspaces SET slack_webhook_url = $1, updated_at = now()
 		  WHERE id = $2::uuid
 		  RETURNING slack_webhook_url IS NOT NULL, github_webhook_secret IS NOT NULL`,
 		newURL, ws.ID).Scan(&ws.SlackConfigured, &ws.GitHubWebhookConfigured); err != nil {
 		return nil, err
+	}
+	// C37T0: slack_configured on every successful set (including a
+	// URL rotation), slack_disconnected on a clear that actually
+	// removed a configuration. Meta carries only the boolean — never
+	// the URL (it is a secret).
+	if configured {
+		if err := recordWorkspaceAuditInTx(ctx, tx, ws.ID, actorID,
+			WorkspaceAuditIntegrationSlackConfigured, "integration", "slack",
+			map[string]any{"configured": true}); err != nil {
+			return nil, err
+		}
+	} else if wasConfigured {
+		if err := recordWorkspaceAuditInTx(ctx, tx, ws.ID, actorID,
+			WorkspaceAuditIntegrationSlackDisconnected, "integration", "slack",
+			map[string]any{"configured": false}); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
