@@ -390,6 +390,40 @@
         "responses": { "200": { "description": "Restored project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/updates": {
+      "get": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List project status updates",
+        "description": "Flat timeline, newest first. Viewer (10)+. The first item is the project's latest status (Overview header chip).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Updates", "content": { "application/json": { "schema": { "type": "object", "properties": { "updates": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectUpdate" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Post a project status update",
+        "description": "Member (15)+. Status is one of on_track, at_risk, off_track; body is plain text (NOT markdown) and must be non-empty.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["status", "body"], "properties": { "status": { "type": "string", "enum": ["on_track", "at_risk", "off_track"] }, "body": { "type": "string", "description": "Plain-text status message" } } } } } },
+        "responses": { "201": { "description": "Created update", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectUpdate" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/updates/{updateID}": {
+      "patch": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Edit a project status update",
+        "description": "Author or admin. Tri-state: a missing key leaves the field untouched; a present status must be on_track, at_risk, or off_track; a present body must be non-empty. A PATCH with neither key is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "updateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "status": { "type": "string", "enum": ["on_track", "at_risk", "off_track"] }, "body": { "type": "string", "description": "Plain-text status message" } } } } } },
+        "responses": { "200": { "description": "Updated update", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectUpdate" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a project status update",
+        "description": "Hard delete; author or admin.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "updateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/imports": {
       "post": {
         "tags": ["import"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2713,6 +2747,18 @@
           "content": { "type": "string", "nullable": true },
           "created_by": { "type": "string", "format": "uuid" },
           "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProjectUpdate": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["on_track", "at_risk", "off_track"] },
+          "body": { "type": "string", "description": "Plain-text status message (NOT markdown)" },
+          "author": { "$ref": "#/components/schemas/User", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "PageComment": {
