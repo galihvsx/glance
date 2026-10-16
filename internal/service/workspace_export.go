@@ -40,6 +40,8 @@ package service
 //	                          "resolved_by","resolved_by_email"}],
 //	              "attachments":[{"id","filename","content_type","size_bytes",
 //	                               "uploaded_by","created_at"}]}],
+//	  "page_issue_links": [{"id","project_identifier","page_id","page_title",
+//	             "issue_display_id","created_by","created_by_email","created_at"}],
 //	  "objectives": [{"id","title","description","owner_id","owner_email",
 //	             "start_date","target_date","status","created_at","updated_at",
 //	             "key_results":[{"id","title","kind","unit","start_value",
@@ -67,7 +69,7 @@ package service
 //     data); soft-deleted issues and comments are excluded, matching
 //     every list endpoint's live-set semantics.
 //   - NOT exported: the Slack webhook URL (secret), issue activity
-//     history, reactions, votes, issue links, intake items, webhooks
+//     history, reactions, votes, issue links (issue↔issue), intake items, webhooks
 //     configuration, notification prefs, API tokens, page revisions,
 //     sessions/OTP material. The archive covers the current data model,
 //     not audit history or integration config.
@@ -97,7 +99,7 @@ const ExportFormatVersion = "glance-export/1"
 // human- and machine-readable contract a future importer builds against.
 const exportSchemaNote = "glance workspace data archive, format glance-export/1. " +
 	"Single JSON document; sections stream in the order: workspace, members, projects, states, " +
-	"labels, estimates, custom_fields, cycles, modules, pages, project_updates, issues, objectives. " +
+	"labels, estimates, custom_fields, cycles, modules, pages, project_updates, issues, page_issue_links, objectives. " +
 	"Empty sections are []. UUIDs are stable identity for re-linking on import; display_id is " +
 	"informational only. Issues nest comments, custom_values, assignees, labels and attachments. " +
 	"Project updates carry id, project_id, author_id, author_email, status, body, created_at, updated_at. " +
@@ -106,10 +108,14 @@ const exportSchemaNote = "glance workspace data archive, format glance-export/1.
 	"created_at, updated_at) and per-KR linked_issues keyed by project identifier + issue display_id " +
 	"(the stable cross-archive key — issue UUIDs are remapped on import, display IDs are not). " +
 	"Key result links to soft-deleted issues are excluded, matching the live-set semantics. " +
+	"Page-issue links carry id, project_identifier, page_id, page_title, issue_display_id, " +
+	"created_by, created_by_email, created_at. The page is keyed by id-then-title and the issue " +
+	"by display_id — the stable cross-archive keys (page/issue UUIDs are remapped on import, " +
+	"display IDs are not). Links to soft-deleted issues are excluded, matching the live-set semantics. " +
 	"Draft issues are included; soft-deleted issues and comments are excluded. " +
 	"Attachments carry metadata only (filename, content_type, size_bytes, uploaded_by, timestamps): " +
 	"binaries are NOT included and the server-side stored_path is never exported. " +
-	"Not exported: Slack webhook URL (secret), issue activity history, reactions, votes, issue links, " +
+	"Not exported: Slack webhook URL (secret), issue activity history, reactions, votes, issue links (issue↔issue), " +
 	"intake items, webhooks config, notification prefs, API tokens, page revisions, sessions/OTP. " +
 	"An archive importer is available at POST /api/v1/workspaces/{slug}/import (admin only); " +
 	"it honors the format version pin and refuses unknown versions."
@@ -312,6 +318,25 @@ type exportProjectUpdate struct {
 	Body        string    `json:"body"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// exportPageIssueLink is one page↔issue link (C36T2). The page is
+// carried as id + title (the importer resolves id-then-title) and the
+// issue as project identifier + display_id (the stable cross-archive
+// key — issue UUIDs are remapped on import, display IDs are not),
+// the same key discipline as KR-issue links. The creator is carried
+// as id + email, the same field discipline as project updates: the
+// importer resolves the creator by UUID and leaves it null when
+// unmapped — never a fabricated creator.
+type exportPageIssueLink struct {
+	ID                string    `json:"id"`
+	ProjectIdentifier string    `json:"project_identifier"`
+	PageID            string    `json:"page_id"`
+	PageTitle         string    `json:"page_title"`
+	IssueDisplayID    string    `json:"issue_display_id"`
+	CreatedBy         *string   `json:"created_by"`
+	CreatedByEmail    *string   `json:"created_by_email"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // exportKRLink is one issue link of an issue key result, keyed by
@@ -684,6 +709,36 @@ func exportWorkspaceArchive(ctx context.Context, tx pgx.Tx, wsID string, w io.Wr
 		return err
 	}
 	if err := streamIssues(ctx, ew, tx, wsID); err != nil {
+		return err
+	}
+
+	// Page-issue links stream after issues: their issue side resolves
+	// against the issues section, and the importer processes sections
+	// in archive order, so links must come after issues. Links to
+	// soft-deleted issues are excluded — they are not live data, and
+	// the importer cannot restore a link to an issue the archive
+	// never carries (the same discipline as KR-issue links).
+	if err := ew.raw(`,"page_issue_links":`); err != nil {
+		return err
+	}
+	if err := streamArray(ctx, ew, tx,
+		`SELECT pil.id::text, p.identifier, pil.page_id::text, pg.title,
+		        (p.identifier || '-' || i.sequence_id),
+		        pil.created_by::text, u.email::text, pil.created_at
+		 FROM page_issue_links pil
+		 JOIN pages pg ON pg.id = pil.page_id
+		 JOIN projects p ON p.id = pg.project_id
+		 JOIN issues i ON i.id = pil.issue_id AND i.deleted_at IS NULL
+		 LEFT JOIN users u ON u.id = pil.created_by
+		 WHERE p.workspace_id = $1::uuid
+		 ORDER BY p.identifier, pg.created_at, i.sequence_id, pil.created_at`,
+		[]any{wsID},
+		func(r pgx.Row) (exportPageIssueLink, error) {
+			var l exportPageIssueLink
+			err := r.Scan(&l.ID, &l.ProjectIdentifier, &l.PageID, &l.PageTitle,
+				&l.IssueDisplayID, &l.CreatedBy, &l.CreatedByEmail, &l.CreatedAt)
+			return l, err
+		}); err != nil {
 		return err
 	}
 
