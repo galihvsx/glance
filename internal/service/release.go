@@ -69,8 +69,13 @@ type Release struct {
 	Status      string     `json:"status"`
 	ReleaseDate *time.Time `json:"release_date,omitempty"`
 	IssueCount  int64      `json:"issue_count"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// ProgressSnapshot counts the release's live (non-deleted) issues by
+	// state group, using the same six groups as cycle snapshots
+	// (snapshotGroups in cycle.go). Every group is present even when
+	// zero. Live-computed on List/Get — never stored.
+	ProgressSnapshot map[string]int64 `json:"progress_snapshot"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 }
 
 // ReleaseInput carries release creation fields. ReleaseDate is a
@@ -108,10 +113,6 @@ func resolveReleaseProject(ctx context.Context, q queryRower, wsSlug, identifier
 const releaseColumns = `id::text, project_id::text, name, description, status,
 	release_date, created_at, updated_at`
 
-// releaseColumnsCounted adds the live issue count for list/get responses.
-const releaseColumnsCounted = releaseColumns + `,
-	(SELECT COUNT(*) FROM issues i WHERE i.release_id = releases.id AND i.deleted_at IS NULL)`
-
 func scanRelease(row pgx.Row) (Release, error) {
 	var r Release
 	err := row.Scan(
@@ -121,13 +122,81 @@ func scanRelease(row pgx.Row) (Release, error) {
 	return r, err
 }
 
-func scanReleaseCounted(row pgx.Row) (Release, error) {
+// emptyProgressSnapshot returns the all-zero snapshot: every
+// snapshotGroups entry present, never missing.
+func emptyProgressSnapshot() map[string]int64 {
+	snap := make(map[string]int64, len(snapshotGroups))
+	for _, g := range snapshotGroups {
+		snap[g] = 0
+	}
+	return snap
+}
+
+// releaseSnapshotColumns is the SELECT list for the live release
+// snapshot: the release columns, the live issue count, and one
+// COUNT(*) FILTER per state group — the same six groups as
+// cycleProgressSnapshot, pinned from snapshotGroups in cycle.go (the
+// detail view's progressCounts in web/src/pages/Releases.tsx folds
+// these six groups into open/started/done: triage+backlog+unstarted →
+// open, started → in progress, completed+cancelled → done).
+const releaseSnapshotColumns = `r.id::text, r.project_id::text, r.name, r.description, r.status,
+	r.release_date, r.created_at, r.updated_at,
+	COUNT(i.id),
+	COUNT(*) FILTER (WHERE s."group" = 'triage'),
+	COUNT(*) FILTER (WHERE s."group" = 'backlog'),
+	COUNT(*) FILTER (WHERE s."group" = 'unstarted'),
+	COUNT(*) FILTER (WHERE s."group" = 'started'),
+	COUNT(*) FILTER (WHERE s."group" = 'completed'),
+	COUNT(*) FILTER (WHERE s."group" = 'cancelled')`
+
+// scanReleaseSnapshot scans one row of releaseSnapshotColumns: the
+// release, its live issue count, and its six-group progress snapshot.
+func scanReleaseSnapshot(row pgx.Row) (Release, error) {
 	var r Release
+	var triage, backlog, unstarted, started, completed, cancelled int64
 	err := row.Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.Description, &r.Status,
 		&r.ReleaseDate, &r.CreatedAt, &r.UpdatedAt, &r.IssueCount,
+		&triage, &backlog, &unstarted, &started, &completed, &cancelled,
 	)
-	return r, err
+	if err != nil {
+		return Release{}, err
+	}
+	r.ProgressSnapshot = map[string]int64{
+		"triage":    triage,
+		"backlog":   backlog,
+		"unstarted": unstarted,
+		"started":   started,
+		"completed": completed,
+		"cancelled": cancelled,
+	}
+	return r, nil
+}
+
+// releaseSnapshotJoins is the shared FROM/JOIN for the live snapshot
+// queries: releases LEFT JOINed to their live issues and the issues'
+// states. LEFT JOIN (not INNER) keeps IssueCount identical to the old
+// correlated-subquery count — every live issue counts, even if its
+// state row were ever missing; the state FK makes that unreachable.
+const releaseSnapshotJoins = `FROM releases r
+	LEFT JOIN issues i ON i.release_id = r.id AND i.deleted_at IS NULL
+	LEFT JOIN states s ON s.id = i.state_id`
+
+// fillReleaseSnapshot attaches the live issue count + progress snapshot
+// to an already-resolved release (the Update path), in one aggregate
+// query.
+func fillReleaseSnapshot(ctx context.Context, pool *pgxpool.Pool, r *Release) error {
+	snap, err := scanReleaseSnapshot(pool.QueryRow(ctx,
+		`SELECT `+releaseSnapshotColumns+` `+releaseSnapshotJoins+`
+		  WHERE r.id = $1::uuid
+		  GROUP BY r.id`,
+		r.ID))
+	if err != nil {
+		return err
+	}
+	r.IssueCount = snap.IssueCount
+	r.ProgressSnapshot = snap.ProgressSnapshot
+	return nil
 }
 
 // resolveRelease loads a release of the project or ErrReleaseNotFound.
@@ -204,28 +273,34 @@ func CreateRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 		return nil, err
 	}
+	// A new release has no issues: the all-zero snapshot is exact, no
+	// query needed.
+	r.ProgressSnapshot = emptyProgressSnapshot()
 	announceReleaseUpdated(ctx, pool, r.ID, projectID)
 	return &r, nil
 }
 
-// ListReleases returns the project's releases with live issue counts,
-// ordered by creation. Any role may read.
+// ListReleases returns the project's releases with live issue counts
+// and live six-group progress snapshots, ordered by creation. Any role
+// may read. One aggregate query for the whole list — no per-release
+// queries.
 func ListReleases(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string) ([]Release, error) {
 	projectID, _, err := resolveReleaseProject(ctx, pool, wsSlug, identifier, actorID, false)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT `+releaseColumnsCounted+`
-		 FROM releases WHERE project_id = $1::uuid
-		 ORDER BY created_at`, projectID)
+		`SELECT `+releaseSnapshotColumns+` `+releaseSnapshotJoins+`
+		 WHERE r.project_id = $1::uuid
+		 GROUP BY r.id
+		 ORDER BY r.created_at`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Release{}
 	for rows.Next() {
-		r, err := scanReleaseCounted(rows)
+		r, err := scanReleaseSnapshot(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -234,8 +309,8 @@ func ListReleases(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, a
 	return out, rows.Err()
 }
 
-// GetRelease returns one release with its live issue count. Any role may
-// read.
+// GetRelease returns one release with its live issue count and live
+// six-group progress snapshot. Any role may read. One aggregate query.
 func GetRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, releaseID string) (*Release, error) {
 	projectID, _, err := resolveReleaseProject(ctx, pool, wsSlug, identifier, actorID, false)
 	if err != nil {
@@ -244,9 +319,10 @@ func GetRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if !isUUIDFormat(releaseID) {
 		return nil, ErrInvalidReleaseID
 	}
-	r, err := scanReleaseCounted(pool.QueryRow(ctx,
-		`SELECT `+releaseColumnsCounted+`
-		 FROM releases WHERE id = $1::uuid AND project_id = $2::uuid`,
+	r, err := scanReleaseSnapshot(pool.QueryRow(ctx,
+		`SELECT `+releaseSnapshotColumns+` `+releaseSnapshotJoins+`
+		 WHERE r.id = $1::uuid AND r.project_id = $2::uuid
+		 GROUP BY r.id`,
 		releaseID, projectID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -311,6 +387,11 @@ func UpdateRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		if isUniqueViolation(err) {
 			return nil, ErrReleaseConflict
 		}
+		return nil, err
+	}
+	// The update touches no issues, but the response must not carry a
+	// stale/missing snapshot: attach the live counts in one query.
+	if err := fillReleaseSnapshot(ctx, pool, &r); err != nil {
 		return nil, err
 	}
 	announceReleaseUpdated(ctx, pool, r.ID, projectID)

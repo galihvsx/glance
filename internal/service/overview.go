@@ -13,6 +13,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,6 +45,18 @@ type OverviewCycle struct {
 	Total     int64  `json:"total"`
 }
 
+// OverviewRelease is one upcoming release on the overview: identity +
+// status + date + live issue count + the same six-group progress
+// snapshot ListReleases returns.
+type OverviewRelease struct {
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	Status           string           `json:"status"`
+	ReleaseDate      *time.Time       `json:"release_date,omitempty"`
+	IssueCount       int64            `json:"issue_count"`
+	ProgressSnapshot map[string]int64 `json:"progress_snapshot"`
+}
+
 // ProjectOverview is the response of GET .../projects/{identifier}/overview.
 type ProjectOverview struct {
 	Project  *ProjectSummary   `json:"project"`
@@ -57,6 +70,10 @@ type ProjectOverview struct {
 	// state×priority split), so the overview computes the open-only
 	// split itself in one aggregate query.
 	OpenByPriority map[string]int64 `json:"open_by_priority"`
+	// Releases is the project's upcoming (planned) releases, ordered by
+	// release_date nulls-last then name, capped at 5. Empty (never nil)
+	// when the project has no planned releases.
+	Releases []OverviewRelease `json:"releases"`
 }
 
 // GetProjectOverview composes the overview payload. Member (15)+ — the
@@ -92,6 +109,10 @@ func GetProjectOverview(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 	if err != nil {
 		return nil, err
 	}
+	releases, err := overviewReleases(ctx, pool, projectID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &ProjectOverview{
 		Project: &ProjectSummary{
@@ -106,6 +127,7 @@ func GetProjectOverview(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 		Activity:       activity,
 		Cycle:          cycle,
 		OpenByPriority: openByPriority,
+		Releases:       releases,
 	}, nil
 }
 
@@ -139,7 +161,56 @@ func openIssuePriorityCounts(ctx context.Context, pool *pgxpool.Pool, projectID 
 	return m, rows.Err()
 }
 
-// currentOverviewCycle returns the project's current cycle with its
+// overviewReleases returns the project's upcoming (planned) releases
+// with live issue counts and six-group progress snapshots, ordered by
+// release_date nulls-last then name, capped at 5. One aggregate query —
+// no per-release fan-out. The snapshot uses the same six state groups
+// as cycle snapshots (snapshotGroups in cycle.go).
+func overviewReleases(ctx context.Context, pool *pgxpool.Pool, projectID string) ([]OverviewRelease, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT r.id::text, r.name, r.status, r.release_date,
+		        COUNT(i.id),
+		        COUNT(*) FILTER (WHERE s."group" = 'triage'),
+		        COUNT(*) FILTER (WHERE s."group" = 'backlog'),
+		        COUNT(*) FILTER (WHERE s."group" = 'unstarted'),
+		        COUNT(*) FILTER (WHERE s."group" = 'started'),
+		        COUNT(*) FILTER (WHERE s."group" = 'completed'),
+		        COUNT(*) FILTER (WHERE s."group" = 'cancelled')
+		   FROM releases r
+		   LEFT JOIN issues i ON i.release_id = r.id AND i.deleted_at IS NULL
+		   LEFT JOIN states s ON s.id = i.state_id
+		  WHERE r.project_id = $1::uuid AND r.status = 'planned'
+		  GROUP BY r.id
+		  ORDER BY r.release_date NULLS LAST, r.name
+		  LIMIT 5`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OverviewRelease{}
+	for rows.Next() {
+		var rel OverviewRelease
+		var triage, backlog, unstarted, started, completed, cancelled int64
+		if err := rows.Scan(
+			&rel.ID, &rel.Name, &rel.Status, &rel.ReleaseDate, &rel.IssueCount,
+			&triage, &backlog, &unstarted, &started, &completed, &cancelled,
+		); err != nil {
+			return nil, err
+		}
+		rel.ProgressSnapshot = map[string]int64{
+			"triage":    triage,
+			"backlog":   backlog,
+			"unstarted": unstarted,
+			"started":   started,
+			"completed": completed,
+			"cancelled": cancelled,
+		}
+		out = append(out, rel)
+	}
+	return out, rows.Err()
+}
+
 // completed/total issue counts, or the most recently started cycle
 // when none is current, or (nil, nil) when the project has no cycles.
 // One aggregate query — no per-cycle fan-out.
