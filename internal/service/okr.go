@@ -1136,6 +1136,7 @@ func LinkIssueToKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 		krID, issueID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
 	return nil
 }
 
@@ -1164,5 +1165,6 @@ func UnlinkIssueFromKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, a
 		krID, issueID); err != nil {
 		return err
 	}
+	announceObjectiveUpdated(ctx, wsSlug, ob.ID)
 	return nil
 }

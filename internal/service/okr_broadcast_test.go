@@ -215,6 +215,61 @@ func TestObjectiveBroadcastDeleteKeyResult(t *testing.T) {
 	assertSingleObjectiveEvent(t, fake, slug, ob.ID)
 }
 
+func TestObjectiveBroadcastLinkUnlinkIssue(t *testing.T) {
+	ctx, pool, slug, actor := setupOKRTest(t)
+
+	ident := uniqueTestIdentifier()
+	createTestProject(t, pool, slug, actor, "Alpha", ident)
+	backlogID := backlogStateID(t, pool, slug, ident, actor)
+	iss, err := CreateIssue(ctx, pool, slug, ident, actor, CreateIssueInput{Name: "i1", StateID: &backlogID})
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	ob, err := CreateObjective(ctx, pool, slug, actor, ObjectiveInput{Title: "Ship"})
+	if err != nil {
+		t.Fatalf("CreateObjective: %v", err)
+	}
+	kr, err := CreateKeyResult(ctx, pool, slug, actor, ob.ID, KeyResultInput{
+		Title: "Ship issues", Kind: "issue", TargetValue: fptr(100),
+	})
+	if err != nil {
+		t.Fatalf("CreateKeyResult issue: %v", err)
+	}
+	fake := installCapturingBroadcaster(t)
+
+	// Link: linking an issue changes the issue KR's progress, so it
+	// announces exactly one objective.updated with the parent id.
+	if err := LinkIssueToKeyResult(ctx, pool, slug, actor, ob.ID, kr.ID, iss.ID); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	assertSingleObjectiveEvent(t, fake, slug, ob.ID)
+
+	// Unlink: same — exactly one more event.
+	if err := UnlinkIssueFromKeyResult(ctx, pool, slug, actor, ob.ID, kr.ID, iss.ID); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if n := len(fake.snapshot()); n != 2 {
+		t.Fatalf("captured %d events after link+unlink, want 2: %+v", n, fake.snapshot())
+	}
+	assertObjectiveEventAt(t, fake, 1, slug, ob.ID)
+
+	// Failed link (metric KR) announces nothing.
+	mkr, err := CreateKeyResult(ctx, pool, slug, actor, ob.ID, KeyResultInput{
+		Title: "Metric", Kind: "metric", TargetValue: fptr(10),
+	})
+	if err != nil {
+		t.Fatalf("CreateKeyResult metric: %v", err)
+	}
+	if err := LinkIssueToKeyResult(ctx, pool, slug, actor, ob.ID, mkr.ID, iss.ID); !errors.Is(err, ErrInvalidKeyResult) {
+		t.Fatalf("metric link err = %v, want ErrInvalidKeyResult", err)
+	}
+	// The metric-KR create announced once more; the failed link added none.
+	if n := len(fake.snapshot()); n != 3 {
+		t.Fatalf("captured %d events after failed link, want 3: %+v", n, fake.snapshot())
+	}
+}
+
 func TestObjectiveBroadcastNilBroadcasterSilent(t *testing.T) {
 	ctx, pool, slug, actor := setupOKRTest(t)
 	prev := Realtime
