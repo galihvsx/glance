@@ -163,6 +163,55 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**OKRs — Objectives + Key Results (cycle 35, beyond Plane)**
+- OKR backend (C35T0): migration `000056_okrs` (`objectives` with
+  UNIQUE(workspace_id, title), status CHECK active/completed/archived,
+  owner FK SET NULL; `key_results` with kind CHECK metric/issue,
+  CHECK(target_value <> start_value); `key_result_issues` composite PK)
+  + `GET/POST .../objectives`, `GET/PATCH/DELETE
+  .../objectives/{id}`, `POST .../objectives/{id}/key-results`,
+  `PATCH/DELETE .../objectives/{id}/key-results/{krID}`,
+  `POST/DELETE .../objectives/{id}/key-results/{krID}/issues[/{issueID}]`
+  (guest 5+ reads, member 15+ mutations; PATCH tri-state; duplicate
+  title → 409; kind immutable; target==start → 400; metric-only fields
+  on an issue KR → 400; link idempotent; cross-workspace link → 404).
+  Progress is COMPUTED, never stored: metric KRs
+  clamp((current−start)/(target−start), 0, 1) (descending targets
+  work); issue KRs = done-group linked issues ÷ linked issues (0 with
+  no links); objective = mean of KR progress. openapi. Service + HTTP
+  tests.
+- OKR UI (C35T1): Goals list + detail pages implementing
+  `prototype/goals.html` — sidebar "Goals" entry under Initiatives
+  (non-archived-count badge), routes `/w/:slug/goals` + `/:id`,
+  objective cards (title, owner, target date, status badge, progress
+  bar, KR count), create dialog (owner picker, dates, status; 409
+  surfaced inline), detail page (header + status changer + edit/delete,
+  KR list with per-KR bars, metric inline current-value update, issue-KR
+  project-first link picker + unlink confirm, add-KR form with
+  zero-span client guard, edit form with no kind control), guest
+  read-only gating (server 403 backstop), loading / error / empty
+  states. 31 new vitest.
+- Workspace archive round-trip (C35T2): exporter includes `objectives`
+  per workspace (nested KRs + KR-issue links keyed by project
+  identifier + issue display_id — immune to the UUID clone remap,
+  streamed last so links resolve against imported issues); importer
+  restores them (owner by email; unmapped owner → null + note; metric
+  KRs fully restored; issue KRs restore resolvable links, unresolvable
+  → KR imports link-less + note; zero-span KR skipped + note; title
+  conflict with a different objective → objective + KRs skipped, never
+  merged). 5 archive tests (round-trip, unmapped owner, unresolvable
+  link, zero-span skipped, title conflict).
+- Cycle 35 is a deliberate beyond-Plane cycle (parity gaps exhausted;
+  c34 closed the last verified one): Plane has no OKR feature — its
+  Initiatives are containers and Milestones are date alignment, neither
+  carries measurable targets.
+- Honest v1 limitations: no KR check-in history / comments; no
+  confidence (RAG) scores; flat objectives (no sub-objectives, no
+  objective↔initiative alignment links); KRs carry no target dates
+  (only the objective does); no OKR notifications; no quarter presets
+  (free start/target dates); no CSV export (workspace archive only);
+  no AI-suggested KRs.
+
 **Project status updates (cycle 34)**
 - Project updates backend (C34T0): migration `000055_project_updates`
   (`project_id` CASCADE, `author_id` SET NULL, `status` CHECK
