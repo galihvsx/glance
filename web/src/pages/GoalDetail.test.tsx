@@ -160,7 +160,22 @@ const checkins: KeyResultCheckin[] = [
 
 // Which check-ins fixture the history endpoint returns.
 const testCheckins = vi.hoisted(() => ({
-  value: "full" as "full" | "empty" | "error" | "pending",
+  value: "full" as
+    | "full"
+    | "empty"
+    | "error"
+    | "pending"
+    | "falling"
+    | "single"
+    | "equal-timestamps"
+    | "descending"
+    | "flat",
+}));
+// Which KR start/target variant the objective endpoint returns
+// (ascending = the base fixture; descending = target below start;
+// flat = start == target == current, for the zero-value-range guard).
+const testKR = vi.hoisted(() => ({
+  value: "ascending" as "ascending" | "descending" | "flat",
 }));
 const testRole = vi.hoisted(() => ({ value: 15 }));
 // Which objective fixture the detail endpoint returns.
@@ -208,10 +223,29 @@ function defaultGet(path: string): Promise<unknown> {
       created_at: "",
       updated_at: "",
     });
-  if (path === `/api/v1/workspaces/${SLUG}/objectives/${OBJ_ID}`)
-    return Promise.resolve(
-      testObjective.value === "full" ? objective : emptyObjective,
-    );
+  if (path === `/api/v1/workspaces/${SLUG}/objectives/${OBJ_ID}`) {
+    if (testObjective.value === "empty")
+      return Promise.resolve(emptyObjective);
+    if (testKR.value === "descending")
+      return Promise.resolve({
+        ...objective,
+        key_results: objective.key_results.map((kr) =>
+          kr.id === "kr-1"
+            ? { ...kr, start_value: 100, target_value: 20, current_value: 40 }
+            : kr,
+        ),
+      });
+    if (testKR.value === "flat")
+      return Promise.resolve({
+        ...objective,
+        key_results: objective.key_results.map((kr) =>
+          kr.id === "kr-1"
+            ? { ...kr, start_value: 25, target_value: 25, current_value: 25 }
+            : kr,
+        ),
+      });
+    return Promise.resolve(objective);
+  }
   if (path === `/api/v1/workspaces/${SLUG}/members`)
     return Promise.resolve({ members });
   if (path === `/api/v1/workspaces/${SLUG}/projects`)
@@ -228,6 +262,146 @@ function defaultGet(path: string): Promise<unknown> {
       return Promise.reject(new mockApi.ApiError(500, "boom"));
     if (testCheckins.value === "pending")
       return new Promise<unknown>(() => {});
+    if (testCheckins.value === "falling")
+      // Newest first; chronological: 30 → 20 → 10.
+      return Promise.resolve({
+        check_ins: [
+          {
+            id: "ci-3",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 20,
+            new_value: 10,
+            note: null,
+            created_at: "2026-10-16T10:00:00Z",
+          },
+          {
+            id: "ci-2",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 30,
+            new_value: 20,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+          {
+            id: "ci-1",
+            key_result_id: "kr-1",
+            author: null,
+            previous_value: null,
+            new_value: 30,
+            note: null,
+            created_at: "2026-10-14T10:00:00Z",
+          },
+        ],
+      });
+    if (testCheckins.value === "single")
+      return Promise.resolve({
+        check_ins: [
+          {
+            id: "ci-1",
+            key_result_id: "kr-1",
+            author: null,
+            previous_value: null,
+            new_value: 5,
+            note: null,
+            created_at: "2026-10-14T10:00:00Z",
+          },
+        ],
+      });
+    if (testCheckins.value === "equal-timestamps")
+      // All three share one timestamp — the chart must spread them
+      // by index instead of dividing by a zero time range.
+      // Chronological: 0 → 10 → 20.
+      return Promise.resolve({
+        check_ins: [
+          {
+            id: "ci-3",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 10,
+            new_value: 20,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+          {
+            id: "ci-2",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 0,
+            new_value: 10,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+          {
+            id: "ci-1",
+            key_result_id: "kr-1",
+            author: null,
+            previous_value: null,
+            new_value: 0,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+        ],
+      });
+    if (testCheckins.value === "descending")
+      // Descending KR (start 100 → target 20); chronological:
+      // 100 → 70 → 40.
+      return Promise.resolve({
+        check_ins: [
+          {
+            id: "ci-3",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 70,
+            new_value: 40,
+            note: null,
+            created_at: "2026-10-16T10:00:00Z",
+          },
+          {
+            id: "ci-2",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 100,
+            new_value: 70,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+          {
+            id: "ci-1",
+            key_result_id: "kr-1",
+            author: null,
+            previous_value: null,
+            new_value: 100,
+            note: null,
+            created_at: "2026-10-14T10:00:00Z",
+          },
+        ],
+      });
+    if (testCheckins.value === "flat")
+      // Zero value range: every plotted value equals start == target.
+      return Promise.resolve({
+        check_ins: [
+          {
+            id: "ci-2",
+            key_result_id: "kr-1",
+            author: { id: "u-1", display_name: "galih" },
+            previous_value: 25,
+            new_value: 25,
+            note: null,
+            created_at: "2026-10-15T10:00:00Z",
+          },
+          {
+            id: "ci-1",
+            key_result_id: "kr-1",
+            author: null,
+            previous_value: null,
+            new_value: 25,
+            note: null,
+            created_at: "2026-10-14T10:00:00Z",
+          },
+        ],
+      });
     return Promise.resolve({ check_ins: checkins });
   }
   throw new Error(`unexpected GET ${path}`);
@@ -237,6 +411,7 @@ beforeEach(() => {
   testRole.value = 15;
   testObjective.value = "full";
   testCheckins.value = "full";
+  testKR.value = "ascending";
   mockApi.get.mockImplementation(defaultGet);
   mockApi.post.mockImplementation(() => Promise.resolve({}));
   mockApi.patch.mockImplementation(() => Promise.resolve({}));
@@ -667,5 +842,139 @@ describe("GoalDetail KR check-in history", () => {
     const call = mockApi.patch.mock
       .calls[0] as unknown as [string, Record<string, unknown>];
     expect("checkin_note" in call[1]).toBe(false);
+  });
+});
+
+describe("GoalDetail KR progress chart", () => {
+  it("renders a rising chart above the timeline from the same query", async () => {
+    renderPage();
+    const chart = await screen.findByTestId("kr-progress-chart");
+    const svg = screen.getByRole("img", {
+      name: "Progress over time: 0 → 34",
+    });
+    expect(svg.querySelector("title")?.textContent).toBe(
+      "Progress over time: 0 → 34",
+    );
+    expect(within(chart).getByText("Start 0")).toBeTruthy();
+    expect(within(chart).getByText("Target 40")).toBeTruthy();
+    // First/last date axis labels.
+    expect(within(chart).getByText("14 Oct 2026")).toBeTruthy();
+    expect(within(chart).getByText("16 Oct 2026")).toBeTruthy();
+    // Three points (seed + two check-ins), joined by a line.
+    expect(
+      within(chart).getAllByTestId("kr-chart-point"),
+    ).toHaveLength(3);
+    expect(within(chart).getByTestId("kr-chart-line")).toBeTruthy();
+    // Timeline behavior unchanged: same 3 rows, newest first.
+    expect(screen.getAllByTestId("kr-checkin-row")).toHaveLength(3);
+    // The chart reuses the timeline's query — no second fetch.
+    const checkinGets = mockApi.get.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("/check-ins"),
+    );
+    expect(checkinGets).toHaveLength(1);
+  });
+
+  it("renders a falling trend", async () => {
+    testCheckins.value = "falling";
+    renderPage();
+    expect(
+      await screen.findByRole("img", {
+        name: "Progress over time: 30 → 10",
+      }),
+    ).toBeTruthy();
+    const chart = screen.getByTestId("kr-progress-chart");
+    expect(
+      within(chart).getAllByTestId("kr-chart-point"),
+    ).toHaveLength(3);
+  });
+
+  it("renders a single point as a dot with reference lines, no line", async () => {
+    testCheckins.value = "single";
+    renderPage();
+    expect(
+      await screen.findByRole("img", {
+        name: "Progress over time: 5 → 5",
+      }),
+    ).toBeTruthy();
+    const chart = screen.getByTestId("kr-progress-chart");
+    expect(
+      within(chart).getAllByTestId("kr-chart-point"),
+    ).toHaveLength(1);
+    expect(within(chart).queryByTestId("kr-chart-line")).toBeNull();
+    expect(within(chart).getByText("Start 0")).toBeTruthy();
+    expect(within(chart).getByText("Target 40")).toBeTruthy();
+  });
+
+  it("renders no chart when there are no check-ins", async () => {
+    testCheckins.value = "empty";
+    renderPage();
+    expect(await screen.findByText("No check-ins yet.")).toBeTruthy();
+    expect(screen.queryByTestId("kr-progress-chart")).toBeNull();
+  });
+
+  it("spreads points evenly when all timestamps are equal", async () => {
+    testCheckins.value = "equal-timestamps";
+    renderPage();
+    expect(
+      await screen.findByRole("img", {
+        name: "Progress over time: 0 → 20",
+      }),
+    ).toBeTruthy();
+    const dots = within(
+      screen.getByTestId("kr-progress-chart"),
+    ).getAllByTestId("kr-chart-point");
+    expect(dots).toHaveLength(3);
+    // Index-spread: left edge, centre, right edge — no NaN, no
+    // pile-up at one x.
+    const xs = dots.map((d) => d.getAttribute("cx"));
+    expect(xs).toEqual(["44", "178", "312"]);
+    expect(xs.every((x) => Number.isFinite(Number(x)))).toBe(true);
+  });
+
+  it("handles a descending KR (target below start)", async () => {
+    testKR.value = "descending";
+    testCheckins.value = "descending";
+    renderPage();
+    expect(
+      await screen.findByRole("img", {
+        name: "Progress over time: 100 → 40",
+      }),
+    ).toBeTruthy();
+    const chart = screen.getByTestId("kr-progress-chart");
+    expect(within(chart).getByText("Start 100")).toBeTruthy();
+    expect(within(chart).getByText("Target 20")).toBeTruthy();
+    expect(
+      within(chart).getAllByTestId("kr-chart-point"),
+    ).toHaveLength(3);
+  });
+
+  it("renders dashed reference lines for start and target", async () => {
+    renderPage();
+    const chart = await screen.findByTestId("kr-progress-chart");
+    const start = within(chart).getByTestId("kr-chart-ref-start");
+    const target = within(chart).getByTestId("kr-chart-ref-target");
+    expect(start.getAttribute("stroke-dasharray")).toBe("4 3");
+    expect(target.getAttribute("stroke-dasharray")).toBe("4 3");
+    // Ascending KR: the target line sits above the start line.
+    expect(Number(target.getAttribute("y1"))).toBeLessThan(
+      Number(start.getAttribute("y1")),
+    );
+  });
+
+  it("renders a flat midline when all values are equal", async () => {
+    testKR.value = "flat";
+    testCheckins.value = "flat";
+    renderPage();
+    expect(
+      await screen.findByRole("img", {
+        name: "Progress over time: 25 → 25",
+      }),
+    ).toBeTruthy();
+    const dots = within(
+      screen.getByTestId("kr-progress-chart"),
+    ).getAllByTestId("kr-chart-point");
+    expect(dots).toHaveLength(2);
+    // Midline: top margin 8 + plot height 90 / 2 = 53.
+    expect(dots.map((d) => d.getAttribute("cy"))).toEqual(["53", "53"]);
   });
 });
