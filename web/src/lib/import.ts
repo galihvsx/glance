@@ -6,7 +6,7 @@
 // import → result shape, and the ImportSection UI renders them through
 // the same preview-table / result-summary components.
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { fetchLabels, fetchStates, type TaxLabel, type TaxState } from "./taxonomy";
 import type { WorkspaceMember } from "./types";
 
@@ -344,6 +344,140 @@ export function validateJiraForm(
     return "Project key must start with a letter and contain only letters and digits (e.g. “PROJ”).";
   }
   return null;
+}
+
+// ---------- Linear import (C31T0 backend) ----------
+//
+// Three-phase like the Jira importer: teams (picker data) → preview
+// (first 10 mapped issues) → import. The API key travels in the JSON
+// body only, is sent to api.linear.app as a Bearer token, and is never
+// stored. Error honesty (pinned by the backend): a bad key maps to a
+// generic 502 "linear authentication failed" (never the key, never
+// Linear's message); rate-limit exhaustion is 429 with retry_after in
+// the error details.
+
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export interface LinearTeamsResult {
+  teams: LinearTeam[];
+}
+
+export interface LinearImportInput {
+  api_key: string;
+  team_id: string;
+  max?: number;
+}
+
+export interface LinearImportPreviewIssue {
+  identifier: string;
+  title: string;
+  state: string;
+  priority: number;
+  labels: string[];
+  assignee_email: string | null;
+  assignee_matched: boolean;
+  due_date: string | null;
+  url: string;
+}
+
+export interface LinearImportPreview {
+  issues: LinearImportPreviewIssue[];
+  total: number;
+  assignee_misses: number;
+}
+
+export interface LinearImportIssueError {
+  identifier: string;
+  message: string;
+}
+
+export interface LinearImportResult {
+  created: number;
+  skipped: number;
+  failed: number;
+  errors: LinearImportIssueError[];
+  assignee_misses: number;
+}
+
+export function fetchLinearTeams(
+  slug: string,
+  identifier: string,
+  apiKey: string,
+): Promise<LinearTeamsResult> {
+  return api.post<LinearTeamsResult>(
+    `${importBase(slug, identifier)}/linear/teams`,
+    { api_key: apiKey },
+  );
+}
+
+export function previewLinearImport(
+  slug: string,
+  identifier: string,
+  input: LinearImportInput,
+): Promise<LinearImportPreview> {
+  return api.post<LinearImportPreview>(
+    `${importBase(slug, identifier)}/linear/preview`,
+    input,
+  );
+}
+
+export function runLinearImport(
+  slug: string,
+  identifier: string,
+  input: LinearImportInput,
+): Promise<LinearImportResult> {
+  return api.post<LinearImportResult>(
+    `${importBase(slug, identifier)}/linear`,
+    input,
+  );
+}
+
+// validateLinearForm is the pure client-side gate for the Linear import
+// form: the API key is required (Linear has no anonymous API access)
+// and a team must be picked. The server re-validates strictly; this is
+// just fast feedback. Returns the error message or null when OK.
+export function validateLinearForm(apiKey: string, teamId: string): string | null {
+  if (!apiKey.trim()) return "API key is required.";
+  if (!teamId.trim()) return "Choose a team.";
+  return null;
+}
+
+// linearRetryAfterSeconds extracts the backend's retry_after (seconds)
+// from a 429 ApiError's details, or null when there is none. The
+// backend sends it both as a Retry-After header and in the error
+// envelope's details; the api wrapper only surfaces the latter.
+export function linearRetryAfterSeconds(err: unknown): number | null {
+  if (!(err instanceof ApiError)) return null;
+  const d = err.details;
+  if (typeof d !== "object" || d === null || !("retry_after" in d)) return null;
+  const v = (d as { retry_after: unknown }).retry_after;
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  if (typeof v === "string" && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+  return null;
+}
+
+// linearErrMsg maps Linear backend errors to the honest copy the card
+// shows: the generic 502 auth failure becomes "check your API key",
+// 429 surfaces the retry-after when the backend sent one, everything
+// else passes the backend message through.
+export function linearErrMsg(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      const retryAfter = linearRetryAfterSeconds(err);
+      return retryAfter !== null
+        ? `Linear rate limit exceeded — try again in ${retryAfter} seconds.`
+        : "Linear rate limit exceeded — please wait a bit and try again.";
+    }
+    if (err.status === 502 && err.message === "linear authentication failed") {
+      return "Linear authentication failed — check your API key";
+    }
+    return err.message;
+  }
+  return fallback;
 }
 
 // ---------- Plane import (C14 backend) ----------

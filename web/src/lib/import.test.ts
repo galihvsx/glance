@@ -1,11 +1,18 @@
-// Import client helpers (C8T2 GitHub + C9T1 Jira + C10T0 Trello): form
-// validation + CSV mapping builder.
-import { describe, expect, it } from "vitest";
+// Import client helpers (C8T2 GitHub + C9T1 Jira + C10T0 Trello + C31T1
+// Linear): form validation + CSV mapping builder.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api";
 import {
   buildCsvMapping,
   buildPlaneResolutions,
+  fetchLinearTeams,
+  linearErrMsg,
+  linearRetryAfterSeconds,
+  previewLinearImport,
+  runLinearImport,
   validateGitHubForm,
   validateJiraForm,
+  validateLinearForm,
   validatePlaneFile,
   validateTrelloForm,
 } from "./import";
@@ -163,6 +170,121 @@ describe("buildPlaneResolutions", () => {
       cycles: {},
       modules: {},
     });
+  });
+});
+
+describe("validateLinearForm", () => {
+  it("requires the API key and a team", () => {
+    expect(validateLinearForm("", "team-1")).toBe("API key is required.");
+    expect(validateLinearForm("  ", "team-1")).toBe("API key is required.");
+    expect(validateLinearForm("lin_key", "")).toBe("Choose a team.");
+    expect(validateLinearForm("lin_key", "  ")).toBe("Choose a team.");
+  });
+
+  it("accepts a key and a team id", () => {
+    expect(validateLinearForm("lin_key", "team-1")).toBeNull();
+  });
+});
+
+describe("linearRetryAfterSeconds", () => {
+  it("extracts retry_after from a 429 ApiError's details", () => {
+    const err = new ApiError(429, "linear rate limit exceeded: slow down", "rate_limited", {
+      retry_after: 60,
+    });
+    expect(linearRetryAfterSeconds(err)).toBe(60);
+  });
+
+  it("returns null when there is no usable retry_after", () => {
+    expect(linearRetryAfterSeconds(new ApiError(502, "linear authentication failed"))).toBeNull();
+    expect(linearRetryAfterSeconds(new ApiError(429, "slow down", undefined, {}))).toBeNull();
+    expect(
+      linearRetryAfterSeconds(new ApiError(429, "slow down", undefined, { retry_after: "soon" })),
+    ).toBeNull();
+    expect(linearRetryAfterSeconds(new Error("boom"))).toBeNull();
+    expect(linearRetryAfterSeconds(null)).toBeNull();
+  });
+});
+
+describe("linearErrMsg", () => {
+  it("maps the generic 502 auth failure to the friendly message", () => {
+    expect(
+      linearErrMsg(new ApiError(502, "linear authentication failed", "bad_gateway"), "Preview failed"),
+    ).toBe("Linear authentication failed — check your API key");
+  });
+
+  it("surfaces retry-after on 429", () => {
+    const err = new ApiError(429, "linear rate limit exceeded: slow down", "rate_limited", {
+      retry_after: 60,
+    });
+    expect(linearErrMsg(err, "Preview failed")).toBe(
+      "Linear rate limit exceeded — try again in 60 seconds.",
+    );
+    expect(
+      linearErrMsg(new ApiError(429, "linear rate limit exceeded"), "Preview failed"),
+    ).toBe("Linear rate limit exceeded — please wait a bit and try again.");
+  });
+
+  it("passes other ApiError messages through and falls back otherwise", () => {
+    expect(linearErrMsg(new ApiError(400, "team not found"), "Preview failed")).toBe("team not found");
+    expect(linearErrMsg(new Error("boom"), "Preview failed")).toBe("Preview failed");
+  });
+});
+
+describe("Linear helpers (C31T1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(payload: unknown) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(payload),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("fetchLinearTeams posts the key to the teams endpoint", async () => {
+    const fetchMock = stubFetch({ teams: [{ id: "t1", key: "ENG", name: "Engineering" }] });
+    const res = await fetchLinearTeams("acme", "ENG", "lin_key");
+    expect(res).toEqual({ teams: [{ id: "t1", key: "ENG", name: "Engineering" }] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(path).toBe("/api/v1/workspaces/acme/projects/ENG/imports/linear/teams");
+    expect(JSON.parse(init.body)).toEqual({ api_key: "lin_key" });
+  });
+
+  it("previewLinearImport posts key + team + max to the preview endpoint", async () => {
+    const fetchMock = stubFetch({ issues: [], total: 0, assignee_misses: 0 });
+    const res = await previewLinearImport("acme", "ENG", {
+      api_key: "lin_key",
+      team_id: "t1",
+      max: 50,
+    });
+    expect(res).toEqual({ issues: [], total: 0, assignee_misses: 0 });
+    const [path, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(path).toBe("/api/v1/workspaces/acme/projects/ENG/imports/linear/preview");
+    expect(JSON.parse(init.body)).toEqual({ api_key: "lin_key", team_id: "t1", max: 50 });
+  });
+
+  it("runLinearImport posts key + team + max to the import endpoint", async () => {
+    const fetchMock = stubFetch({
+      created: 3,
+      skipped: 1,
+      failed: 0,
+      errors: [],
+      assignee_misses: 1,
+    });
+    const res = await runLinearImport("acme", "ENG", {
+      api_key: "lin_key",
+      team_id: "t1",
+      max: 50,
+    });
+    expect(res.created).toBe(3);
+    const [path, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(path).toBe("/api/v1/workspaces/acme/projects/ENG/imports/linear");
+    expect(JSON.parse(init.body)).toEqual({ api_key: "lin_key", team_id: "t1", max: 50 });
   });
 });
 
