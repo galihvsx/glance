@@ -229,7 +229,7 @@ function defaultGet(path: string): Promise<unknown> {
     if (testKR.value === "descending")
       return Promise.resolve({
         ...objective,
-        key_results: objective.key_results.map((kr) =>
+        key_results: (objective.key_results ?? []).map((kr) =>
           kr.id === "kr-1"
             ? { ...kr, start_value: 100, target_value: 20, current_value: 40 }
             : kr,
@@ -238,7 +238,7 @@ function defaultGet(path: string): Promise<unknown> {
     if (testKR.value === "flat")
       return Promise.resolve({
         ...objective,
-        key_results: objective.key_results.map((kr) =>
+        key_results: (objective.key_results ?? []).map((kr) =>
           kr.id === "kr-1"
             ? { ...kr, start_value: 25, target_value: 25, current_value: 25 }
             : kr,
