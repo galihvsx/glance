@@ -1432,7 +1432,7 @@ function LinearPanel({ slug, identifier }: { slug: string; identifier: string })
   const input = {
     api_key: apiKey,
     team_id: teamId,
-    max: Math.max(1, parseInt(max, 10) || 100),
+    max: Math.min(500, Math.max(1, parseInt(max, 10) || 100)) // backend hard cap is 500,
   };
 
   const loadTeams = async () => {
@@ -1556,7 +1556,7 @@ function LinearPanel({ slug, identifier }: { slug: string; identifier: string })
               id="linear-max"
               type="number"
               min={1}
-              max={1000}
+              max={500}
               value={max}
               onChange={(e) => setMax(e.target.value)}
             />
