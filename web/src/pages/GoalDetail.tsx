@@ -147,6 +147,194 @@ function MetricCurrentUpdate({
   );
 }
 
+/** Short axis date for the progress chart: "14 Oct 2026". Falls back
+ *  to the raw string when it doesn't parse (never blank). */
+function formatChartDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const month = d.toLocaleString("en-GB", { month: "short" });
+  return `${d.getDate()} ${month} ${d.getFullYear()}`;
+}
+
+/** Progress-over-time chart for one metric KR (C42T0): pure SVG on
+ *  top of the SAME check-ins query the timeline uses — no new fetch,
+ *  no new dependencies. Points are every check-in's new_value in
+ *  chronological order (the query returns newest-first, so reverse);
+ *  the seed row is the first point. Dashed reference lines mark
+ *  start_value + target_value from the KR object. Guards: zero time
+ *  range (backfilled/imported rows can share one timestamp) spreads
+ *  points evenly by index, never dividing by zero; zero value range
+ *  renders a flat midline; descending KRs (target < start) fall out
+ *  of the domain; a single point renders a dot + reference lines;
+ *  empty renders nothing (the caller only mounts this when check-ins
+ *  exist). Colors are existing ink/accent tokens only. */
+function KRProgressChart({
+  kr,
+  checkins,
+}: {
+  kr: KeyResult;
+  checkins: KeyResultCheckin[];
+}) {
+  if (checkins.length === 0) return null;
+  const points = [...checkins].reverse();
+  const values = points.map((ci) => ci.new_value);
+  const times = points.map((ci) => Date.parse(ci.created_at));
+  const allTimesFinite = times.every((t) => Number.isFinite(t));
+
+  const W = 320;
+  const H = 120;
+  const LEFT = 44;
+  const RIGHT = 8;
+  const TOP = 8;
+  const BOTTOM = 22;
+  const plotW = W - LEFT - RIGHT;
+  const plotH = H - TOP - BOTTOM;
+
+  const tMin = Math.min(...times);
+  const tMax = Math.max(...times);
+  const timeRange = allTimesFinite ? tMax - tMin : 0;
+
+  const lo = Math.min(...values, kr.start_value, kr.target_value);
+  const hi = Math.max(...values, kr.start_value, kr.target_value);
+  const valueRange = hi - lo;
+
+  const x = (i: number) => {
+    if (timeRange > 0) {
+      return LEFT + ((times[i] - tMin) / timeRange) * plotW;
+    }
+    return points.length === 1
+      ? LEFT + plotW / 2
+      : LEFT + (i / (points.length - 1)) * plotW;
+  };
+  const y = (v: number) =>
+    valueRange > 0 ? TOP + ((hi - v) / valueRange) * plotH : TOP + plotH / 2;
+
+  const path = points
+    .map(
+      (_, i) =>
+        `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(values[i]).toFixed(1)}`,
+    )
+    .join(" ");
+  const first = values[0];
+  const last = values[values.length - 1];
+  const label = `Progress over time: ${formatKRValue(first)} → ${formatKRValue(last)}`;
+
+  // Reference-line label sits just above its line, or just below
+  // when the line is at the top edge (so it never clips).
+  const refLabelY = (v: number) => {
+    const lineY = y(v);
+    return lineY - 4 >= TOP + 2 ? lineY - 4 : lineY + 12;
+  };
+
+  return (
+    <div className="mt-2" data-testid="kr-progress-chart">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="h-auto w-full"
+        role="img"
+        aria-label={label}
+      >
+        <title>{label}</title>
+        <text
+          x={LEFT - 6}
+          y={TOP + 3}
+          textAnchor="end"
+          fontSize={11}
+          className="fill-ink-muted tabular-nums"
+        >
+          {formatKRValue(hi)}
+        </text>
+        <text
+          x={LEFT - 6}
+          y={TOP + plotH + 3}
+          textAnchor="end"
+          fontSize={11}
+          className="fill-ink-muted tabular-nums"
+        >
+          {formatKRValue(lo)}
+        </text>
+        <line
+          data-testid="kr-chart-ref-start"
+          x1={LEFT}
+          x2={W - RIGHT}
+          y1={y(kr.start_value)}
+          y2={y(kr.start_value)}
+          className="stroke-ink-muted"
+          strokeWidth={1}
+          strokeDasharray="4 3"
+        />
+        <text
+          x={W - RIGHT}
+          y={refLabelY(kr.start_value)}
+          textAnchor="end"
+          fontSize={11}
+          className="fill-ink-muted tabular-nums"
+        >
+          Start {formatKRValue(kr.start_value)}
+        </text>
+        <line
+          data-testid="kr-chart-ref-target"
+          x1={LEFT}
+          x2={W - RIGHT}
+          y1={y(kr.target_value)}
+          y2={y(kr.target_value)}
+          className="stroke-ink-muted"
+          strokeWidth={1}
+          strokeDasharray="4 3"
+        />
+        <text
+          x={W - RIGHT}
+          y={refLabelY(kr.target_value)}
+          textAnchor="end"
+          fontSize={11}
+          className="fill-ink-muted tabular-nums"
+        >
+          Target {formatKRValue(kr.target_value)}
+        </text>
+        {points.length > 1 ? (
+          <path
+            data-testid="kr-chart-line"
+            d={path}
+            fill="none"
+            className="stroke-accent-blue"
+            strokeWidth={2}
+          />
+        ) : null}
+        {points.map((ci, i) => (
+          <circle
+            key={ci.id}
+            data-testid="kr-chart-point"
+            cx={x(i)}
+            cy={y(values[i])}
+            r={3}
+            className="fill-accent-blue"
+          />
+        ))}
+        <text
+          x={LEFT}
+          y={H - 6}
+          textAnchor="start"
+          fontSize={11}
+          className="fill-ink-muted tabular-nums"
+        >
+          {formatChartDate(points[0].created_at)}
+        </text>
+        {points.length > 1 ? (
+          <text
+            x={W - RIGHT}
+            y={H - 6}
+            textAnchor="end"
+            fontSize={11}
+            className="fill-ink-muted tabular-nums"
+          >
+            {formatChartDate(points[points.length - 1].created_at)}
+          </text>
+        ) : null}
+      </svg>
+    </div>
+  );
+}
+
 /** Check-in history timeline for one metric KR (newest first, as
  *  returned by the API). Fetched only for metric KRs — the parent
  *  never mounts this for issue KRs, so no fetch fires for them.
@@ -187,7 +375,9 @@ function KRCheckinHistory({
       ) : checkinsQuery.data.length === 0 ? (
         <p className="mt-2 text-[12px] text-ink-muted">No check-ins yet.</p>
       ) : (
-        <ul className="mt-2 space-y-2 border-l-2 border-raised pl-3">
+        <>
+          <KRProgressChart kr={kr} checkins={checkinsQuery.data} />
+          <ul className="mt-2 space-y-2 border-l-2 border-raised pl-3">
           {checkinsQuery.data.map((ci) => {
             // The seed entry (previous_value null) renders as
             // "started at {value}", never as a delta. No-op updates
@@ -232,7 +422,8 @@ function KRCheckinHistory({
               </li>
             );
           })}
-        </ul>
+          </ul>
+        </>
       )}
     </div>
   );
