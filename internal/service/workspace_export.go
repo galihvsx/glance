@@ -39,7 +39,14 @@ package service
 //	                          "created_at","updated_at","resolved_at",
 //	                          "resolved_by","resolved_by_email"}],
 //	              "attachments":[{"id","filename","content_type","size_bytes",
-//	                               "uploaded_by","created_at"}]}]
+//	                               "uploaded_by","created_at"}]}],
+//	  "objectives": [{"id","title","description","owner_id","owner_email",
+//	             "start_date","target_date","status","created_at","updated_at",
+//	             "key_results":[{"id","title","kind","unit","start_value",
+//	                              "target_value","current_value",
+//	                              "created_at","updated_at",
+//	                              "linked_issues":[{"project_identifier",
+//	                                                "issue_display_id"}]}]}]
 //	}
 //
 // Empty sections encode as [] (never null) so a future importer needs no
@@ -90,10 +97,15 @@ const ExportFormatVersion = "glance-export/1"
 // human- and machine-readable contract a future importer builds against.
 const exportSchemaNote = "glance workspace data archive, format glance-export/1. " +
 	"Single JSON document; sections stream in the order: workspace, members, projects, states, " +
-	"labels, estimates, custom_fields, cycles, modules, pages, project_updates, issues. " +
+	"labels, estimates, custom_fields, cycles, modules, pages, project_updates, issues, objectives. " +
 	"Empty sections are []. UUIDs are stable identity for re-linking on import; display_id is " +
 	"informational only. Issues nest comments, custom_values, assignees, labels and attachments. " +
 	"Project updates carry id, project_id, author_id, author_email, status, body, created_at, updated_at. " +
+	"Objectives carry id, title, description, owner_id, owner_email, start_date, target_date, status, " +
+	"created_at, updated_at, with nested key_results (id, title, kind, unit, start/target/current values, " +
+	"created_at, updated_at) and per-KR linked_issues keyed by project identifier + issue display_id " +
+	"(the stable cross-archive key — issue UUIDs are remapped on import, display IDs are not). " +
+	"Key result links to soft-deleted issues are excluded, matching the live-set semantics. " +
 	"Draft issues are included; soft-deleted issues and comments are excluded. " +
 	"Attachments carry metadata only (filename, content_type, size_bytes, uploaded_by, timestamps): " +
 	"binaries are NOT included and the server-side stored_path is never exported. " +
@@ -300,6 +312,55 @@ type exportProjectUpdate struct {
 	Body        string    `json:"body"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// exportKRLink is one issue link of an issue key result, keyed by
+// project identifier + issue display_id — the stable cross-archive
+// key. Issue UUIDs are NOT used: the importer remaps UUIDs on
+// clone-restore, while identifier + sequence (display_id) survive
+// the round-trip unchanged. (Existing cycle/module memberships key
+// links by raw issue UUID and resolve them through the importer's
+// remap; OKR links deliberately use the display key instead, so a
+// link still resolves when the issue was restored under a different
+// UUID by any path.)
+type exportKRLink struct {
+	ProjectIdentifier string `json:"project_identifier"`
+	IssueDisplayID    string `json:"issue_display_id"`
+}
+
+// exportKeyResult is one key result (C35T2). Values are json.Number
+// so NUMERIC precision survives the round-trip exactly (the same
+// discipline as issue custom values).
+type exportKeyResult struct {
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	Kind         string         `json:"kind"`
+	Unit         *string        `json:"unit"`
+	StartValue   json.Number    `json:"start_value"`
+	TargetValue  json.Number    `json:"target_value"`
+	CurrentValue json.Number    `json:"current_value"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	LinkedIssues []exportKRLink `json:"linked_issues"`
+}
+
+// exportObjective is one workspace objective (C35T2) with nested key
+// results. The owner is carried as id + email, the same field
+// discipline as project updates: the importer resolves the owner by
+// email and leaves owner null when unmapped — never a fabricated
+// owner.
+type exportObjective struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Description *string           `json:"description"`
+	OwnerID     *string           `json:"owner_id"`
+	OwnerEmail  *string           `json:"owner_email"`
+	StartDate   *string           `json:"start_date"`
+	TargetDate  *string           `json:"target_date"`
+	Status      string            `json:"status"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	KeyResults  []exportKeyResult `json:"key_results"`
 }
 
 type exportAssignee struct {
@@ -626,6 +687,16 @@ func exportWorkspaceArchive(ctx context.Context, tx pgx.Tx, wsID string, w io.Wr
 		return err
 	}
 
+	// Objectives stream last: their KR-issue links resolve against
+	// the issues section, and the importer processes sections in
+	// archive order, so links must come after issues.
+	if err := ew.raw(`,"objectives":`); err != nil {
+		return err
+	}
+	if err := streamObjectives(ctx, ew, tx, wsID); err != nil {
+		return err
+	}
+
 	if err := ew.raw("}"); err != nil {
 		return err
 	}
@@ -860,7 +931,131 @@ func streamIssues(ctx context.Context, ew *exportStreamWriter, tx pgx.Tx, wsID s
 	return ew.raw("]")
 }
 
-// fillIssueRelations loads one issue's nested export relations.
+// streamObjectives streams workspace objectives with nested key
+// results + KR-issue links (C35T2). Base rows are collected first
+// (see streamEstimates: no nested queries on an open rows); each
+// objective's KRs and each KR's links are then loaded one at a time.
+func streamObjectives(ctx context.Context, ew *exportStreamWriter, tx pgx.Tx, wsID string) error {
+	var objectives []exportObjective
+	collectErr := func() error {
+		rows, err := tx.Query(ctx,
+			`SELECT o.id::text, o.title, o.description, o.owner_id::text, ow.email::text,
+			        to_char(o.start_date, 'YYYY-MM-DD'), to_char(o.target_date, 'YYYY-MM-DD'),
+			        o.status, o.created_at, o.updated_at
+			 FROM objectives o
+			 LEFT JOIN users ow ON ow.id = o.owner_id
+			 WHERE o.workspace_id = $1::uuid
+			 ORDER BY o.created_at, o.id`,
+			wsID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var o exportObjective
+			if err := rows.Scan(&o.ID, &o.Title, &o.Description, &o.OwnerID, &o.OwnerEmail,
+				&o.StartDate, &o.TargetDate, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
+				return err
+			}
+			objectives = append(objectives, o)
+		}
+		return rows.Err()
+	}()
+	if collectErr != nil {
+		return collectErr
+	}
+	if err := ew.raw("["); err != nil {
+		return err
+	}
+	for i := range objectives {
+		if err := fillObjectiveKeyResults(ctx, tx, &objectives[i]); err != nil {
+			return err
+		}
+		if i > 0 {
+			if err := ew.raw(","); err != nil {
+				return err
+			}
+		}
+		if err := ew.value(objectives[i]); err != nil {
+			return err
+		}
+	}
+	return ew.raw("]")
+}
+
+// fillObjectiveKeyResults loads one objective's key results with
+// their issue links. Links to soft-deleted issues are excluded —
+// they are not live data, and the importer cannot restore a link to
+// an issue the archive never carries.
+func fillObjectiveKeyResults(ctx context.Context, tx pgx.Tx, o *exportObjective) error {
+	o.KeyResults = []exportKeyResult{}
+	krRows, err := tx.Query(ctx,
+		`SELECT kr.id::text, kr.title, kr.kind, kr.unit,
+		        kr.start_value::text, kr.target_value::text, kr.current_value::text,
+		        kr.created_at, kr.updated_at
+		 FROM key_results kr
+		 WHERE kr.objective_id = $1::uuid
+		 ORDER BY kr.created_at, kr.id`,
+		o.ID)
+	if err != nil {
+		return err
+	}
+	for krRows.Next() {
+		var kr exportKeyResult
+		var start, target, current string
+		if err := krRows.Scan(&kr.ID, &kr.Title, &kr.Kind, &kr.Unit,
+			&start, &target, &current, &kr.CreatedAt, &kr.UpdatedAt); err != nil {
+			krRows.Close()
+			return err
+		}
+		kr.StartValue = json.Number(start)
+		kr.TargetValue = json.Number(target)
+		kr.CurrentValue = json.Number(current)
+		o.KeyResults = append(o.KeyResults, kr)
+	}
+	krRows.Close()
+	if err := krRows.Err(); err != nil {
+		return err
+	}
+	for i := range o.KeyResults {
+		if o.KeyResults[i].Kind != "issue" {
+			o.KeyResults[i].LinkedIssues = []exportKRLink{}
+			continue
+		}
+		links, err := loadKRLinks(ctx, tx, o.KeyResults[i].ID)
+		if err != nil {
+			return err
+		}
+		o.KeyResults[i].LinkedIssues = links
+	}
+	return nil
+}
+
+// loadKRLinks loads one issue KR's links as (project identifier,
+// issue display_id) pairs.
+func loadKRLinks(ctx context.Context, tx pgx.Tx, krID string) ([]exportKRLink, error) {
+	links := []exportKRLink{}
+	rows, err := tx.Query(ctx,
+		`SELECT p.identifier, (p.identifier || '-' || i.sequence_id)
+		 FROM key_result_issues kri
+		 JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+		 JOIN projects p ON p.id = i.project_id
+		 WHERE kri.key_result_id = $1::uuid
+		 ORDER BY i.sequence_id`,
+		krID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var l exportKRLink
+		if err := rows.Scan(&l.ProjectIdentifier, &l.IssueDisplayID); err != nil {
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
+}
 func fillIssueRelations(ctx context.Context, tx pgx.Tx, is *exportIssue) error {
 	var err error
 
