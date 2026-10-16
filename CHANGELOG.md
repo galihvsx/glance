@@ -225,6 +225,33 @@ queued onboarding follow-up (invites endpoint).
   `?release=` id fires no fetch — closing the cycle 38 observation.
   Prototype: `prototype/subissues.html`.
 
+**OKR check-in history (cycle 40)**
+- Check-in history backend (C40T0): migration
+  `000060_key_result_checkins` (append-only by convention;
+  `key_result_id` CASCADE, `author_id` SET NULL, `previous_value`
+  nullable, `new_value`, `note` max 1000 chars, `created_at`; index on
+  `(key_result_id, created_at DESC)`). Metric KRs seed one entry at
+  creation (`previous_value` NULL, `new_value` = the inserted
+  `current_value` — 0 when omitted, not `start_value`); every
+  `current_value` change on a metric KR records an entry (old → new,
+  optional `checkin_note`, author) in the same transaction as the
+  UPDATE. No entry on no-op updates, title/unit/target-only changes,
+  or issue KRs. New endpoint `GET .../key-results/:krID/check-ins`
+  (member 15+, newest first, capped at 100, `[]` for issue KRs;
+  author `{id, display_name}`, null when the user was deleted).
+  openapi updated. `workspace_import` does not seed (restore path —
+  imported KRs show empty history until their first post-import value
+  change). KR comments remain excluded; no progress-over-time chart.
+- Check-in UI (C40T1): the GoalDetail metric-KR editor gains an
+  optional "Note (optional)" input, sent as `checkin_note` (omitted
+  entirely when empty); each metric KR shows a "Check-in history"
+  timeline (newest first, `previous → new` with signed delta, note,
+  author + time; the seed entry renders "started at {value}", never as
+  a delta; "Deleted user" for a null author, matching the existing
+  convention). History mounts for members only (the endpoint is member
+  15+) and never fetches for issue KRs; loading / error / empty
+  states covered. Prototype: `prototype/checkins.html`.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
