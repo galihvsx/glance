@@ -11,11 +11,13 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { formatDateTime } from "../lib/format";
 import { toast } from "../components/ui/toast";
 import type {
   Issue,
   IssueListResult,
   KeyResult,
+  KeyResultCheckin,
   KeyResultKind,
   Objective,
   ObjectiveStatus,
@@ -80,24 +82,28 @@ function friendlyError(err: unknown, fallback: string): string {
 const DONE_GROUPS = new Set(["completed", "cancelled"]);
 
 /** Inline current-value editor for a metric KR (prototype language:
- *  "Current value [ input ] Update · start → target"). */
+ *  "Current value [ input ] Update · start → target"), extended with
+ *  the optional check-in note. The note is passed through to the
+ *  caller as-is; the caller trims it and omits the checkin_note key
+ *  when it is empty. */
 function MetricCurrentUpdate({
   kr,
   onUpdate,
   pending,
 }: {
   kr: KeyResult;
-  onUpdate: (currentValue: number) => void;
+  onUpdate: (currentValue: number, note: string) => void;
   pending: boolean;
 }) {
   const [value, setValue] = useState(formatKRValue(kr.current_value));
+  const [note, setNote] = useState("");
   return (
     <form
       className="mt-2 flex flex-wrap items-center gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         const parsed = Number(value);
-        if (Number.isFinite(parsed)) onUpdate(parsed);
+        if (Number.isFinite(parsed)) onUpdate(parsed, note);
       }}
     >
       <Label htmlFor={`kr-current-${kr.id}`} className="text-[11px]">
@@ -111,6 +117,18 @@ function MetricCurrentUpdate({
         onChange={(e) => setValue(e.target.value)}
         className="h-7 w-28 text-[12px]"
       />
+      <Label htmlFor={`kr-note-${kr.id}`} className="text-[11px]">
+        Note (optional)
+      </Label>
+      <Input
+        id={`kr-note-${kr.id}`}
+        type="text"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="Why this changed"
+        maxLength={1000}
+        className="h-7 min-w-40 flex-1 text-[12px]"
+      />
       <Button
         type="submit"
         size="sm"
@@ -119,12 +137,104 @@ function MetricCurrentUpdate({
       >
         {pending ? "Updating…" : "Update"}
       </Button>
-      <span className="text-[11px] text-ink-muted tabular-nums">
+      <span className="w-full text-[11px] text-ink-muted">
         start {formatKRValue(kr.start_value)} → target{" "}
         {formatKRValue(kr.target_value)}
-        {kr.unit ? ` ${kr.unit}` : ""}
+        {kr.unit ? ` ${kr.unit}` : ""} · The note is attached to this
+        check-in only. Leave it empty to record just the value.
       </span>
     </form>
+  );
+}
+
+/** Check-in history timeline for one metric KR (newest first, as
+ *  returned by the API). Fetched only for metric KRs — the parent
+ *  never mounts this for issue KRs, so no fetch fires for them.
+ *  The list endpoint is member (15)+, so the parent only mounts
+ *  this for members; guests see no history section. */
+function KRCheckinHistory({
+  slug,
+  objectiveId,
+  kr,
+}: {
+  slug: string;
+  objectiveId: string;
+  kr: KeyResult;
+}) {
+  const checkinsQuery = useQuery({
+    queryKey: ["kr-checkins", slug, objectiveId, kr.id],
+    queryFn: () =>
+      api
+        .get<{ check_ins: KeyResultCheckin[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/objectives/${encodeURIComponent(objectiveId)}/key-results/${encodeURIComponent(kr.id)}/check-ins`,
+        )
+        .then((d) => d.check_ins),
+  });
+
+  return (
+    <div className="mt-3">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+        Check-in history
+      </h4>
+      {checkinsQuery.status === "pending" ? (
+        <p className="mt-2 text-[12px] text-ink-muted">
+          Loading check-in history…
+        </p>
+      ) : checkinsQuery.status === "error" ? (
+        <p className="mt-2 text-[12px] text-accent-red">
+          Couldn&apos;t load check-in history.
+        </p>
+      ) : checkinsQuery.data.length === 0 ? (
+        <p className="mt-2 text-[12px] text-ink-muted">No check-ins yet.</p>
+      ) : (
+        <ul className="mt-2 space-y-2 border-l-2 border-raised pl-3">
+          {checkinsQuery.data.map((ci) => {
+            // The seed entry (previous_value null) renders as
+            // "started at {value}", never as a delta. No-op updates
+            // record nothing, so a ±0 row never appears.
+            const isSeed = ci.previous_value === null;
+            const delta = isSeed
+              ? null
+              : ci.new_value - (ci.previous_value as number);
+            return (
+              <li key={ci.id} data-testid="kr-checkin-row">
+                <p className="text-[12px] text-ink tabular-nums">
+                  {isSeed ? (
+                    <span>started at {formatKRValue(ci.new_value)}</span>
+                  ) : (
+                    <>
+                      <span>
+                        {formatKRValue(ci.previous_value as number)} →{" "}
+                        {formatKRValue(ci.new_value)}
+                      </span>{" "}
+                      <span className="font-semibold tabular-nums">
+                        {delta !== null && delta > 0
+                          ? `+${formatKRValue(delta)}`
+                          : delta !== null
+                            ? `−${formatKRValue(-delta)}`
+                            : ""}
+                      </span>
+                    </>
+                  )}
+                </p>
+                {ci.note ? (
+                  <p className="mt-0.5 text-[12px] text-ink-secondary">
+                    {ci.note}
+                  </p>
+                ) : null}
+                <p
+                  className="mt-0.5 text-[11px] text-ink-muted"
+                  title={ci.created_at}
+                >
+                  {ci.author?.display_name ?? "Deleted user"} ·{" "}
+                  {formatDateTime(ci.created_at)}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -203,6 +313,9 @@ export default function GoalDetail() {
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["objective", slug, id] });
     void queryClient.invalidateQueries({ queryKey: ["objectives", slug] });
+    void queryClient.invalidateQueries({
+      queryKey: ["kr-checkins", slug, id],
+    });
   };
 
   const updateMutation = useMutation({
@@ -275,6 +388,7 @@ export default function GoalDetail() {
         unit?: string;
         target_value?: number;
         current_value?: number;
+        checkin_note?: string;
       };
     }) => api.patch<KeyResult>(`${base}/key-results/${v.krId}`, v.patch),
     onSuccess: () => {
@@ -614,12 +728,20 @@ export default function GoalDetail() {
                         key={`${kr.id}:${kr.current_value}`}
                         kr={kr}
                         pending={updateKRMutation.isPending}
-                        onUpdate={(currentValue) =>
+                        onUpdate={(currentValue, note) => {
+                          // Empty / whitespace-only notes send no
+                          // checkin_note key at all (never null/"").
+                          const trimmedNote = note.trim();
                           updateKRMutation.mutate({
                             krId: kr.id,
-                            patch: { current_value: currentValue },
-                          })
-                        }
+                            patch: {
+                              current_value: currentValue,
+                              ...(trimmedNote
+                                ? { checkin_note: trimmedNote }
+                                : {}),
+                            },
+                          });
+                        }}
                       />
                     ) : kr.kind === "metric" ? (
                       <p className="mt-2 text-[11px] text-ink-muted tabular-nums">
@@ -628,6 +750,17 @@ export default function GoalDetail() {
                         {formatKRValue(kr.target_value)}
                         {kr.unit ? ` ${kr.unit}` : ""}
                       </p>
+                    ) : null}
+                    {/* Check-in history: metric KRs only, members
+                        only (the list endpoint is member 15+). Issue
+                        KRs show no history section at all, and no
+                        history fetch fires for them. */}
+                    {kr.kind === "metric" && canEdit ? (
+                      <KRCheckinHistory
+                        slug={slug}
+                        objectiveId={id}
+                        kr={kr}
+                      />
                     ) : null}
                     {kr.kind === "issue" && (
                       <div className="mt-2">
