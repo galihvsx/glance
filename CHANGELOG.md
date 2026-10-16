@@ -163,6 +163,40 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Linear importer (cycle 31)**
+- Linear backend (C31T0): GraphQL client (`POST
+  https://api.linear.app/graphql`, Bearer key, pinned host, https-only,
+  no redirects, 8MB cap, cursor pagination) + `POST
+  .../imports/linear/teams` (team picker data), `.../linear/preview`
+  (first 10 mapped + total + assignee misses, no writes),
+  `.../linear` (import → created/skipped/failed/errors). Mapping:
+  `state.type` → glance group (`canceled` → `cancelled`,
+  unknown → `unstarted`; unmatched names create states in the mapped
+  group), priority inversion (Linear 1=urgent … 4=low), labels created
+  default gray, assignees best-effort by email (misses counted, never
+  fatal), comments attributed with original timestamps (Markdown
+  kept), `dueDate` → `target_date`, flat issues (no sub-issues/parents/
+  cycles). Dedupe via footer marker `*Imported from [ENG-123](url)*`
+  (closing paren + `https://linear.app/` URL required — a planted
+  marker with a non-Linear URL counts for nothing). Token body-only,
+  never persisted/logged/echoed; bad key → 502 generic; two-phase
+  (all HTTP before one tx). Max hard cap 500. `docs/linear-import.md`,
+  openapi.yaml.
+- Linear UI (C31T1): ImportSection Linear card — password key input
+  (cleared after every run, never persisted), Load-teams picker
+  (KEY — Name), preview table (identifier link, title, state, priority,
+  labels, assignee match/miss, due date), import confirm + result card
+  (created/skipped/failed/assignee misses + per-issue errors), honest
+  copy ("Sent to api.linear.app only, never stored"). 20 new vitest
+  (12 lib + 8 component). Max input clamped to the backend cap 500.
+- Honest v1 limitations: one-way, one-shot import (re-runs import only
+  NEW issues, never update previously imported ones); assignee matching
+  best-effort by email; deleting the footer marker defeats dedupe;
+  Linear Markdown stored as-is (rendering fidelity may differ).
+- Cycle 31 closes the last named deferred importer gap (deferred in
+  c25/c26/c27); galih runs the loop's sprint board on Linear, so this
+  is the dogfood path for migrating Linear-tracked work into glance.
+
 **Risk radar (cycle 30)**
 - Risk backend (C30T1): `GetRiskReport` — documented weighted composite
   `risk_score = round(35×overdue_ratio + 25×stalled_share +
