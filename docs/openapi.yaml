@@ -1696,6 +1696,58 @@
         "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/issues": {
+      "get": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List a page's linked issues",
+        "description": "Linked issues: display_id, title, state, priority, ordered by issue created_at. Archived and draft issues are included. Any member (guest 5+).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Linked issues", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/LinkedIssue" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link an issue to a page",
+        "description": "409 on duplicate link or cross-project issue; 404 on unknown issue. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_id"], "properties": { "issue_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "201": { "description": "Created link", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PageIssueLink" } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/issues/{issueID}": {
+      "delete": {
+        "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unlink an issue from a page",
+        "description": "404 when the pair has no link. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "issueID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Link removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/pages": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List an issue's linked pages",
+        "description": "Linked pages: title, updated_at, ordered by page updated_at desc. Any member (guest 5+).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Linked pages", "content": { "application/json": { "schema": { "type": "object", "properties": { "pages": { "type": "array", "items": { "$ref": "#/components/schemas/LinkedPage" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link a page to an issue",
+        "description": "The same link as POST .../pages/{pageID}/issues, from the other direction. 409 on duplicate link or cross-project page; 404 on unknown page. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["page_id"], "properties": { "page_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "201": { "description": "Created link", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PageIssueLink" } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/pages/{pageID}": {
+      "delete": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unlink a page from an issue",
+        "description": "404 when the pair has no link. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Link removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/reactions": {
       "post": {
         "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3375,6 +3427,38 @@
           "id": { "type": "string", "format": "uuid" },
           "target_issue_id": { "type": "string", "format": "uuid" },
           "kind": { "type": "string" }
+        }
+      },
+      "PageIssueLink": {
+        "type": "object",
+        "description": "One page↔issue link row (C36T0). A link is a pointer, not a copy.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "page_id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "LinkedIssue": {
+        "type": "object",
+        "description": "A page's linked issue (C36T0): display_id, title, state, priority, ordered by issue created_at.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "display_id": { "type": "string" },
+          "title": { "type": "string" },
+          "state": { "type": "string", "description": "State name" },
+          "state_id": { "type": "string", "format": "uuid" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 }
+        }
+      },
+      "LinkedPage": {
+        "type": "object",
+        "description": "An issue's linked page (C36T0): title, updated_at, ordered by page updated_at desc.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "ExternalRef": {
