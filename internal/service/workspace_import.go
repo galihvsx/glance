@@ -11,7 +11,7 @@ package service
 // Design — v1 "restore-by-UUID" with deterministic clone remap:
 //   - Sections are processed in dependency order (members, projects,
 //     states, labels, estimates, custom_fields, cycles, modules, pages,
-//     project_updates, issues). The archive streams via json.Decoder: memory stays O(one
+//     project_updates, issues, objectives). The archive streams via json.Decoder: memory stays O(one
 //     row) — the only in-memory growth is the small UUID bookkeeping
 //     sets, the archived→final UUID remap, plus deferred cross-section
 //     links (pairs of UUID strings, the same granularity the exporter
@@ -53,7 +53,20 @@ package service
 //     back to the importing admin (NOT NULL, and dropping whole issues
 //     over an unmapped author would silently lose data), page authors
 //     and module leads become NULL (both nullable).
-//   - Attachments are SKIPPED entirely: the archive carries metadata
+//   - Objectives (C35T2) restore with nested key results. The owner
+//     is resolved BY EMAIL: an unmapped owner degrades to a null
+//     owner with an honest note — never a fabricated owner — and the
+//     objective still imports. Metric KRs restore fully
+//     (title/kind/unit/start/target/current/status-adjacent dates).
+//     Issue-KR links resolve by project identifier + issue display_id
+//     (the stable cross-archive key, immune to the UUID clone remap);
+//     an unresolvable link skips with a note naming the KR and the KR
+//     imports with no links — never dropped silently, never a
+//     fabricated link. A KR whose target equals its start violates
+//     the zero-span CHECK and is skipped with a note naming the KR.
+//     A title conflict with a DIFFERENT objective skips the archived
+//     objective and its KRs with honest notes — the importer never
+//     merges KRs into an unrelated objective.
 //     only (binaries were never exported). Each one is counted in the
 //     report — never silently dropped.
 //   - NOT imported (never exported either): Slack webhook URL (secret),
@@ -191,6 +204,7 @@ var archiveImportSections = []string{
 	"estimate_points", "custom_fields", "cycles", "cycle_issues",
 	"modules", "module_issues", "pages", "project_updates", "issues", "issue_assignees",
 	"issue_labels", "issue_custom_values", "comments", "attachments",
+	"objectives", "key_results", "key_result_issue_links",
 }
 
 // archiveLink is a deferred UUID→UUID reference applied after its
@@ -212,7 +226,8 @@ type archiveImporter struct {
 	remap   map[string]string // archived row UUID -> final target-scope UUID (clone remap)
 	// known UUID sets in the target scope (preloaded + imported).
 	projects, labels, states, estimates, estimatePoints,
-	customFields, cycles, modules, pages, projectUpdates, issues, comments map[string]bool
+	customFields, cycles, modules, pages, projectUpdates, issues, comments,
+	objectives, keyResults map[string]bool
 	maxSeq map[string]int // resolved project UUID -> max restored issue sequence_id
 
 	cycleLinks, moduleLinks      []archiveLink
@@ -239,6 +254,7 @@ func newArchiveImporter(ctx context.Context, tx pgx.Tx, wsID, slug, actorID stri
 		projects: sets(), labels: sets(), states: sets(), estimates: sets(),
 		estimatePoints: sets(), customFields: sets(), cycles: sets(),
 		modules: sets(), pages: sets(), projectUpdates: sets(), issues: sets(), comments: sets(),
+		objectives: sets(), keyResults: sets(),
 		maxSeq: map[string]int{},
 	}
 }
@@ -371,6 +387,8 @@ func (imp *archiveImporter) preload() error {
 		&imp.projectUpdates: `SELECT pu.id::text FROM project_updates pu JOIN projects p ON p.id = pu.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.issues:         `SELECT i.id::text FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.workspace_id = $1::uuid`,
 		&imp.comments:       `SELECT c.id::text FROM comments c JOIN issues i ON i.id = c.issue_id JOIN projects p ON p.id = i.project_id WHERE p.workspace_id = $1::uuid`,
+		&imp.objectives:     `SELECT id::text FROM objectives WHERE workspace_id = $1::uuid`,
+		&imp.keyResults:     `SELECT kr.id::text FROM key_results kr JOIN objectives o ON o.id = kr.objective_id WHERE o.workspace_id = $1::uuid`,
 	}
 	for set, q := range queries {
 		rows, err := imp.tx.Query(imp.ctx, q, imp.wsID)
@@ -536,6 +554,10 @@ func (imp *archiveImporter) decode(r io.Reader) error {
 			}
 		case "issues":
 			if err := decodeArchiveSection(dec, imp.importIssue); err != nil {
+				return err
+			}
+		case "objectives":
+			if err := decodeArchiveSection(dec, imp.importObjective); err != nil {
 				return err
 			}
 		default:
@@ -1566,6 +1588,250 @@ func (imp *archiveImporter) importComment(is *exportIssue, c *exportComment) err
 	imp.rep.Imported["comments"]++
 	if c.ParentID != nil {
 		imp.commentParents = append(imp.commentParents, archiveLink{parent: *c.ParentID, child: finalID})
+	}
+	return nil
+}
+
+// importObjective restores one objective with its nested key
+// results (C35T2). The owner is resolved BY EMAIL: an unmapped owner
+// degrades to null with an honest note — never a fabricated owner —
+// and the objective still imports. A title conflict with a DIFFERENT
+// objective skips the objective; its KRs then hit the
+// "objective was not imported" check below, so no KR is silently
+// dropped or merged into the unrelated objective. KRs are processed
+// even when the objective already exists, so a retry after a partial
+// failure completes the missing KRs (the same discipline as issue
+// nested rows).
+func (imp *archiveImporter) importObjective(o *exportObjective) error {
+	insertable := true
+	if !validArchiveUUID(o.ID) {
+		imp.skip("objectives", o.Title, "objective skipped: malformed archived id")
+		insertable = false
+	} else if strings.TrimSpace(o.Title) == "" {
+		imp.skip("objectives", o.ID, "objective skipped: title is empty")
+		insertable = false
+	} else {
+		switch o.Status {
+		case "active", "completed", "archived":
+		default:
+			imp.skip("objectives", o.Title,
+				fmt.Sprintf("objective skipped: unknown status %q", o.Status))
+			insertable = false
+		}
+	}
+	if insertable {
+		var ownerID any
+		if o.OwnerEmail != nil && *o.OwnerEmail != "" {
+			var found string
+			err := imp.tx.QueryRow(imp.ctx,
+				`SELECT id::text FROM users WHERE email = $1`, *o.OwnerEmail).Scan(&found)
+			if err == nil {
+				ownerID = found
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			} else {
+				imp.skip("objectives", o.Title,
+					fmt.Sprintf("objective owner %q has no user in this instance (owner left empty)", *o.OwnerEmail))
+			}
+		}
+		startDate := imp.archiveDate("objectives", o.Title, "start_date", o.StartDate)
+		targetDate := imp.archiveDate("objectives", o.Title, "target_date", o.TargetDate)
+		if imp.alreadyImported(imp.objectives, o.ID) {
+			imp.skip("objectives", o.Title, "objective skipped: already exists in this workspace")
+		} else {
+			conflict, err := imp.nameConflict(
+				`SELECT id::text FROM objectives WHERE workspace_id = $1::uuid AND title = $2`,
+				imp.wsID, o.Title, o.ID)
+			if err != nil {
+				return err
+			}
+			if conflict {
+				imp.skip("objectives", o.Title,
+					fmt.Sprintf("objective %q skipped: another objective already has this title in the workspace", o.Title))
+			} else {
+				_, inserted, err := imp.insertWithFallback(imp.objectives, "objectives", o.ID,
+					func(id string) error {
+						_, err := imp.tx.Exec(imp.ctx,
+							`INSERT INTO objectives (id, workspace_id, title, description, owner_id,
+							                         start_date, target_date, status, created_at, updated_at)
+							 VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6::date, $7::date, $8, $9, $10)`,
+							id, imp.wsID, o.Title, o.Description, ownerID,
+							startDate, targetDate, o.Status, o.CreatedAt, o.UpdatedAt)
+						return err
+					})
+				if err != nil {
+					return err
+				}
+				if !inserted {
+					imp.skip("objectives", o.Title, "objective skipped: already exists in this workspace")
+				} else {
+					imp.rep.Imported["objectives"]++
+				}
+			}
+		}
+	}
+	for i := range o.KeyResults {
+		if err := imp.importKeyResult(o, &o.KeyResults[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// importKeyResult restores one key result under its objective. A KR
+// whose target equals its start violates the zero-span CHECK and is
+// skipped with a note naming the KR — never imported. An issue KR
+// carrying unit/current_value (meaningless for issue KRs — progress
+// never reads them) is normalized to the service's canonical form
+// (unit NULL, current 0) with an honest note, the same
+// note-and-continue discipline as archiveDate. Links are processed
+// even when the KR already exists, so retries complete them.
+func (imp *archiveImporter) importKeyResult(o *exportObjective, kr *exportKeyResult) error {
+	if !validArchiveUUID(kr.ID) {
+		imp.skip("key_results", kr.Title, "key result skipped: malformed archived id")
+		return nil
+	}
+	objectiveID := imp.resolveID(o.ID)
+	if !imp.objectives[objectiveID] {
+		imp.skip("key_results", kr.Title, "key result skipped: its objective was not imported into this workspace")
+		return nil
+	}
+	if strings.TrimSpace(kr.Title) == "" {
+		imp.skip("key_results", kr.ID, "key result skipped: title is empty")
+		return nil
+	}
+	switch kr.Kind {
+	case "metric", "issue":
+	default:
+		imp.skip("key_results", kr.Title,
+			fmt.Sprintf("key result %q skipped: unknown kind %q", kr.Title, kr.Kind))
+		return nil
+	}
+	start, err := kr.StartValue.Float64()
+	if err != nil {
+		imp.skip("key_results", kr.Title,
+			fmt.Sprintf("key result %q skipped: start_value %q is not numeric", kr.Title, kr.StartValue.String()))
+		return nil
+	}
+	target, err := kr.TargetValue.Float64()
+	if err != nil {
+		imp.skip("key_results", kr.Title,
+			fmt.Sprintf("key result %q skipped: target_value %q is not numeric", kr.Title, kr.TargetValue.String()))
+		return nil
+	}
+	current, err := kr.CurrentValue.Float64()
+	if err != nil {
+		imp.skip("key_results", kr.Title,
+			fmt.Sprintf("key result %q skipped: current_value %q is not numeric", kr.Title, kr.CurrentValue.String()))
+		return nil
+	}
+	// The zero-span CHECK (target <> start): a KR that can never move
+	// is rejected at write by the service, so the importer must not
+	// smuggle one in — skip with a note naming the KR.
+	if target == start {
+		imp.skip("key_results", kr.Title,
+			fmt.Sprintf("key result %q skipped: target equals start (zero-span key results cannot move)", kr.Title))
+		return nil
+	}
+	var unit any
+	currentStr := kr.CurrentValue.String()
+	if kr.Kind == "issue" {
+		if kr.Unit != nil {
+			imp.skip("key_results", kr.Title,
+				fmt.Sprintf("key result %q: unit %q ignored (issue key results carry no unit)", kr.Title, *kr.Unit))
+		}
+		if current != 0 {
+			imp.skip("key_results", kr.Title,
+				fmt.Sprintf("key result %q: current value ignored (issue key result progress derives from linked issues)", kr.Title))
+		}
+		currentStr = "0"
+	} else if kr.Unit != nil {
+		if u := strings.TrimSpace(*kr.Unit); u != "" {
+			unit = u
+		}
+	}
+	if imp.alreadyImported(imp.keyResults, kr.ID) {
+		imp.skip("key_results", kr.Title, "key result skipped: already exists in this workspace")
+	} else {
+		_, inserted, err := imp.insertWithFallback(imp.keyResults, "key_results", kr.ID,
+			func(id string) error {
+				_, err := imp.tx.Exec(imp.ctx,
+					`INSERT INTO key_results (id, objective_id, title, kind, unit,
+					                           start_value, target_value, current_value,
+					                           created_at, updated_at)
+					 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::numeric, $7::numeric, $8::numeric, $9, $10)`,
+					id, objectiveID, kr.Title, kr.Kind, unit,
+					kr.StartValue.String(), kr.TargetValue.String(), currentStr,
+					kr.CreatedAt, kr.UpdatedAt)
+				return err
+			})
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			imp.skip("key_results", kr.Title, "key result skipped: already exists in this workspace")
+		} else {
+			imp.rep.Imported["key_results"]++
+		}
+	}
+	for i := range kr.LinkedIssues {
+		if err := imp.importKRLink(kr, &kr.LinkedIssues[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// importKRLink restores one issue-KR link, resolving the issue by
+// project identifier + display_id — the stable cross-archive key.
+// An unresolvable link skips with a note naming the KR; the KR
+// itself still imports (with no links). Links on a metric KR are
+// invalid (the service rejects them) and skip with a note.
+func (imp *archiveImporter) importKRLink(kr *exportKeyResult, l *exportKRLink) error {
+	if kr.Kind != "issue" {
+		imp.skip("key_result_issue_links", kr.Title,
+			fmt.Sprintf("key result %q: link to %q skipped: metric key results cannot link issues", kr.Title, l.IssueDisplayID))
+		return nil
+	}
+	prefix := l.ProjectIdentifier + "-"
+	if !strings.HasPrefix(l.IssueDisplayID, prefix) {
+		imp.skip("key_result_issue_links", kr.Title,
+			fmt.Sprintf("key result %q: link to %q skipped: display id does not match project %q", kr.Title, l.IssueDisplayID, l.ProjectIdentifier))
+		return nil
+	}
+	seq, err := strconv.Atoi(strings.TrimPrefix(l.IssueDisplayID, prefix))
+	if err != nil || seq < 0 {
+		imp.skip("key_result_issue_links", kr.Title,
+			fmt.Sprintf("key result %q: link to %q skipped: unparseable display id", kr.Title, l.IssueDisplayID))
+		return nil
+	}
+	var issueID string
+	err = imp.tx.QueryRow(imp.ctx,
+		`SELECT i.id::text
+		 FROM issues i JOIN projects p ON p.id = i.project_id
+		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2
+		   AND i.sequence_id = $3 AND i.deleted_at IS NULL`,
+		imp.wsID, l.ProjectIdentifier, seq).Scan(&issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			imp.skip("key_result_issue_links", kr.Title,
+				fmt.Sprintf("key result %q: link to %q skipped: issue not found in this workspace (key result imported with no links)", kr.Title, l.IssueDisplayID))
+			return nil
+		}
+		return err
+	}
+	tag, err := imp.tx.Exec(imp.ctx,
+		`INSERT INTO key_result_issues (key_result_id, issue_id)
+		 VALUES ($1::uuid, $2::uuid) ON CONFLICT (key_result_id, issue_id) DO NOTHING`,
+		imp.resolveID(kr.ID), issueID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		imp.rep.Imported["key_result_issue_links"]++
+	} else {
+		imp.skip("key_result_issue_links", kr.Title,
+			fmt.Sprintf("key result %q: link to %q skipped: already linked", kr.Title, l.IssueDisplayID))
 	}
 	return nil
 }
