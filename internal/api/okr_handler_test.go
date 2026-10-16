@@ -274,3 +274,191 @@ func TestObjectiveHTTP(t *testing.T) {
 		t.Fatalf("second delete objective: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// TestKeyResultCheckinsHTTP is the C40T0 endpoint smoke test:
+// create → check-ins (seed present), update value + note → 2
+// entries, no-op update → still 2, note validation → 400,
+// issue KR → {"check_ins": []}, malformed id → 400, guest → 403.
+func TestKeyResultCheckinsHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterObjectiveRoutes(e, &IssueHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("okr-ci-http"), "test-agent", uniqueIP())
+	slug := uniqueSlug("okr-ci-http")
+	createWorkspaceHTTP(t, e, cookie, "OKR Co", slug)
+	base := "/api/v1/workspaces/" + slug + "/objectives"
+
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie, `{"title":"Grow"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create objective: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var ob struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ob); err != nil {
+		t.Fatalf("decode objective: %v", err)
+	}
+	krBase := base + "/" + ob.ID + "/key-results"
+
+	// Create metric KR → 201.
+	rec = postAuthedJSON(t, e, http.MethodPost, krBase, cookie,
+		`{"title":"NPS","kind":"metric","start_value":0,"target_value":100,"current_value":25}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create KR: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var mkr struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &mkr); err != nil {
+		t.Fatalf("decode KR: %v", err)
+	}
+	checkinsURL := krBase + "/" + mkr.ID + "/check-ins"
+
+	decodeCheckins := func(recBody []byte) []struct {
+		ID          string `json:"id"`
+		KeyResultID string `json:"key_result_id"`
+		Author      *struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"author"`
+		PreviousValue *float64 `json:"previous_value"`
+		NewValue      float64  `json:"new_value"`
+		Note          *string  `json:"note"`
+		CreatedAt     string   `json:"created_at"`
+	} {
+		t.Helper()
+		var body struct {
+			CheckIns []struct {
+				ID          string `json:"id"`
+				KeyResultID string `json:"key_result_id"`
+				Author      *struct {
+					ID          string `json:"id"`
+					DisplayName string `json:"display_name"`
+				} `json:"author"`
+				PreviousValue *float64 `json:"previous_value"`
+				NewValue      float64  `json:"new_value"`
+				Note          *string  `json:"note"`
+				CreatedAt     string   `json:"created_at"`
+			} `json:"check_ins"`
+		}
+		if err := json.Unmarshal(recBody, &body); err != nil {
+			t.Fatalf("decode check-ins: %v", err)
+		}
+		if body.CheckIns == nil {
+			t.Fatalf("check_ins is null, want []")
+		}
+		return body.CheckIns
+	}
+
+	// Seed entry present.
+	rec = getAuthed(t, e, http.MethodGet, checkinsURL, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list check-ins: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	ins := decodeCheckins(rec.Body.Bytes())
+	if len(ins) != 1 || ins[0].PreviousValue != nil || ins[0].NewValue != 25 || ins[0].Note != nil {
+		t.Fatalf("seed via HTTP = %+v, want 1 entry prev nil new 25 note nil", ins)
+	}
+	if ins[0].Author == nil || ins[0].Author.DisplayName == "" || ins[0].KeyResultID != mkr.ID {
+		t.Fatalf("seed author/shape = %+v", ins[0])
+	}
+
+	// Update value + note → 2 entries, newest first.
+	rec = postAuthedJSON(t, e, http.MethodPatch, krBase+"/"+mkr.ID, cookie,
+		`{"current_value":50,"checkin_note":"  Q1 push  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch value+note: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, checkinsURL, cookie)
+	ins = decodeCheckins(rec.Body.Bytes())
+	if len(ins) != 2 {
+		t.Fatalf("check-ins after change = %d, want 2", len(ins))
+	}
+	if ins[0].PreviousValue == nil || *ins[0].PreviousValue != 25 || ins[0].NewValue != 50 {
+		t.Fatalf("latest via HTTP = %+v, want prev 25 new 50", ins[0])
+	}
+	if ins[0].Note == nil || *ins[0].Note != "Q1 push" {
+		t.Fatalf("latest note via HTTP = %v, want Q1 push", ins[0].Note)
+	}
+
+	// No-op update → still 2 entries.
+	rec = postAuthedJSON(t, e, http.MethodPatch, krBase+"/"+mkr.ID, cookie, `{"current_value":50}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-op patch: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, checkinsURL, cookie)
+	ins = decodeCheckins(rec.Body.Bytes())
+	if len(ins) != 2 {
+		t.Fatalf("check-ins after no-op = %d, want 2", len(ins))
+	}
+
+	// 1001-char note → 400.
+	rec = postAuthedJSON(t, e, http.MethodPatch, krBase+"/"+mkr.ID, cookie,
+		`{"current_value":60,"checkin_note":"`+strings.Repeat("x", 1001)+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("long note: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Issue KR → {"check_ins": []}.
+	rec = postAuthedJSON(t, e, http.MethodPost, krBase, cookie,
+		`{"title":"Ship","kind":"issue","target_value":100}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create issue KR: status = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var ikr struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &ikr); err != nil {
+		t.Fatalf("decode issue KR: %v", err)
+	}
+	rec = getAuthed(t, e, http.MethodGet, krBase+"/"+ikr.ID+"/check-ins", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue KR check-ins: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeCheckins(rec.Body.Bytes()); len(got) != 0 {
+		t.Fatalf("issue KR check-ins = %d, want 0", len(got))
+	}
+	if !strings.Contains(rec.Body.String(), `"check_ins":[]`) {
+		t.Fatalf("issue KR body = %s, want check_ins:[] (not null)", rec.Body.String())
+	}
+
+	// Malformed KR id → 400; unknown KR → 404.
+	rec = getAuthed(t, e, http.MethodGet, krBase+"/not-a-uuid/check-ins", cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed KR: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, krBase+"/00000000-0000-0000-0000-000000000000/check-ins", cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown KR: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Guest member: check-ins read → 403.
+	guestEmail := uniqueEmail("okr-ci-guest")
+	guestCookie := loginTestUser(t, e, pool, guestEmail, "test-agent", uniqueIP())
+	ctx := context.Background()
+	var adminID, guestID string
+	if err := pool.QueryRow(ctx,
+		`SELECT m.user_id::text FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
+		  WHERE w.slug = $1 AND m.role = 20`, slug).Scan(&adminID); err != nil {
+		t.Fatalf("admin id: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM users WHERE email = $1`, guestEmail).Scan(&guestID); err != nil {
+		t.Fatalf("guest id: %v", err)
+	}
+	if err := service.UpsertMember(ctx, pool, slug, adminID, guestID, service.RoleGuest); err != nil {
+		t.Fatalf("UpsertMember: %v", err)
+	}
+	rec = getAuthed(t, e, http.MethodGet, checkinsURL, guestCookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest check-ins: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Non-member → 404.
+	otherCookie := loginTestUser(t, e, pool, uniqueEmail("okr-ci-outsider"), "test-agent", uniqueIP())
+	rec = getAuthed(t, e, http.MethodGet, checkinsURL, otherCookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-member check-ins: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

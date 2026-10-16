@@ -9,7 +9,8 @@ package service
 // above Initiatives (containers) and Releases (date-aligned
 // milestones): it answers "are we hitting the goal?" with numbers.
 //
-// Schema: 000056 (objectives + key_results + key_result_issues).
+// Schema: 000056 (objectives + key_results + key_result_issues) +
+// 000060 (key_result_checkins: append-only metric-KR value history).
 // Progress is COMPUTED, never stored.
 //
 // Conventions (mirror initiatives):
@@ -40,6 +41,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -168,13 +170,63 @@ type KeyResultInput struct {
 
 // KeyResultPatch is a partial key result update: nil fields are
 // untouched; a non-nil Unit pointer to "" clears unit (NULL). Kind is
-// immutable — a non-nil Kind is ErrInvalidKeyResult.
+// immutable — a non-nil Kind is ErrInvalidKeyResult. CheckinNote is
+// the optional note attached to the check-in row recorded when
+// CurrentValue changes (trimmed, empty → NULL, max 1000 chars —
+// longer is ErrInvalidKeyResult); it is ignored when no check-in row
+// is recorded (no value change, title/unit/target-only change).
 type KeyResultPatch struct {
 	Title        *string
 	Unit         *string
 	TargetValue  *float64
 	CurrentValue *float64
 	Kind         *string
+	CheckinNote  *string
+}
+
+// maxCheckinNoteLen is the check-in note cap in characters (runes).
+const maxCheckinNoteLen = 1000
+
+// CheckinAuthor is the author of a check-in entry: id + display name
+// (users.name falling back to users.email — the same display-name
+// rule as the workload report). This is NOT the ActorRef shape used
+// by issue comments (id/name/email): the frozen C40 API contract
+// specifies {id, display_name} for check-in authors.
+type CheckinAuthor struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// KeyResultCheckin is one append-only check-in entry: a metric KR's
+// current_value moving from PreviousValue to NewValue, with the
+// actor who made the change and an optional note. PreviousValue is
+// NULL on the seed entry written at KR creation (there is no
+// previous value yet). Author is nil when the author's user row was
+// deleted (ON DELETE SET NULL). There is no update/delete path.
+type KeyResultCheckin struct {
+	ID            string         `json:"id"`
+	KeyResultID   string         `json:"key_result_id"`
+	Author        *CheckinAuthor `json:"author"`
+	PreviousValue *float64       `json:"previous_value"`
+	NewValue      float64        `json:"new_value"`
+	Note          *string        `json:"note"`
+	CreatedAt     time.Time      `json:"created_at"`
+}
+
+// normalizeCheckinNote trims a check-in note, mapping empty /
+// whitespace-only to NULL, and rejects notes over the cap.
+func normalizeCheckinNote(note *string) (*string, error) {
+	if note == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*note)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if utf8.RuneCountInString(trimmed) > maxCheckinNoteLen {
+		return nil, ErrInvalidKeyResult
+	}
+	return &trimmed, nil
 }
 
 // resolveObjectiveWorkspace resolves (workspaceID, role) for the
@@ -774,13 +826,36 @@ func CreateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 		unit = nil
 		current = 0
 	}
+	// The KR insert + its seed check-in row are one transaction:
+	// a metric KR is never observable without its creation entry.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	var id string
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO key_results (objective_id, title, kind, unit, start_value, target_value, current_value)
 		 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
 		 RETURNING id::text`,
 		ob.ID, title, in.Kind, unit, start, target, current).Scan(&id)
 	if err != nil {
+		return nil, err
+	}
+	if in.Kind == "metric" {
+		// Seed entry: previous_value NULL (no previous value at
+		// creation), new_value = the current_value actually
+		// inserted (0 when CurrentValue was omitted — the service
+		// default, not start_value), note NULL, author = actor.
+		// Issue KRs seed nothing.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO key_result_checkins (key_result_id, author_id, previous_value, new_value, note)
+			 VALUES ($1::uuid, $2::uuid, NULL, $3, NULL)`,
+			id, actorID, current); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return loadKeyResultWithProgress(ctx, pool, ob.ID, id)
@@ -808,7 +883,11 @@ func loadKeyResultWithProgress(ctx context.Context, q *pgxpool.Pool, objectiveID
 // Kind is immutable (a non-nil Kind is ErrInvalidKeyResult);
 // metric-only fields on an issue KR are ErrInvalidKeyResult;
 // target_value == start_value is ErrInvalidKeyResult. An empty patch
-// is ErrNothingToUpdate.
+// is ErrNothingToUpdate. When CurrentValue changes on a metric KR,
+// a check-in row (old → new, note = checkin_note, author = actor) is
+// inserted in the same transaction as the UPDATE; no-op value
+// updates, title/unit/target-only changes, and issue KRs record
+// nothing. A checkin_note over 1000 chars is ErrInvalidKeyResult.
 func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, objectiveID, krID string, patch KeyResultPatch) (*KeyResult, error) {
 	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
 	if err != nil {
@@ -830,6 +909,10 @@ func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	}
 	if patch.TargetValue != nil && *patch.TargetValue == kr.StartValue {
 		return nil, ErrInvalidKeyResult
+	}
+	note, err := normalizeCheckinNote(patch.CheckinNote)
+	if err != nil {
+		return nil, err
 	}
 
 	var sets []string
@@ -863,13 +946,32 @@ func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	}
 	sets = append(sets, "updated_at = now()")
 
+	// The UPDATE + its check-in row (when one is recorded) are one
+	// transaction: a value change is never observable without its
+	// history entry.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 	var id string
-	err = pool.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`UPDATE key_results SET `+strings.Join(sets, ", ")+`
 		 WHERE id = `+arg(krID)+`::uuid AND objective_id = `+arg(ob.ID)+`::uuid
 		 RETURNING id::text`,
 		args...).Scan(&id)
 	if err != nil {
+		return nil, err
+	}
+	if patch.CurrentValue != nil && *patch.CurrentValue != kr.CurrentValue && kr.Kind == "metric" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO key_result_checkins (key_result_id, author_id, previous_value, new_value, note)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5)`,
+			krID, actorID, kr.CurrentValue, *patch.CurrentValue, note); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return loadKeyResultWithProgress(ctx, pool, ob.ID, id)
@@ -895,6 +997,66 @@ func DeleteKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 		return err
 	}
 	return nil
+}
+
+// ListKeyResultCheckins returns a key result's check-in history,
+// newest first, capped at 100. Member (15)+. For issue KRs it
+// returns an empty list, not an error (issue KRs never record
+// check-ins). The author display name is resolved via a JOIN to
+// users at read time (name falling back to email); author is nil
+// when the author's user row was deleted.
+func ListKeyResultCheckins(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, objectiveID, krID string) ([]*KeyResultCheckin, error) {
+	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
+	if err != nil {
+		return nil, err
+	}
+	ob, err := resolveObjective(ctx, pool, wsID, objectiveID)
+	if err != nil {
+		return nil, err
+	}
+	kr, err := resolveKeyResult(ctx, pool, ob.ID, krID)
+	if err != nil {
+		return nil, err
+	}
+	out := []*KeyResultCheckin{}
+	if kr.Kind == "issue" {
+		return out, nil
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT ci.id::text, ci.key_result_id::text,
+			ci.author_id::text, COALESCE(u.name, u.email::text),
+			ci.previous_value::float8, ci.new_value::float8, ci.note, ci.created_at
+		 FROM key_result_checkins ci
+		 LEFT JOIN users u ON u.id = ci.author_id
+		 WHERE ci.key_result_id = $1::uuid
+		 ORDER BY ci.created_at DESC, ci.id DESC
+		 LIMIT 100`,
+		krID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ci KeyResultCheckin
+		var authorID *string
+		var displayName *string
+		if err := rows.Scan(&ci.ID, &ci.KeyResultID, &authorID, &displayName,
+			&ci.PreviousValue, &ci.NewValue, &ci.Note, &ci.CreatedAt); err != nil {
+			return nil, err
+		}
+		if authorID != nil {
+			name := ""
+			if displayName != nil {
+				name = *displayName
+			}
+			ci.Author = &CheckinAuthor{ID: *authorID, DisplayName: name}
+		}
+		out = append(out, &ci)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // resolveLinkIssue validates that issueID names a live issue of the
