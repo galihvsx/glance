@@ -209,6 +209,59 @@ describe("Goals empty state", () => {
   });
 });
 
+describe("Goals list sparkline (C43T2)", () => {
+  it("renders one sparkline per objective with history, from the list response", async () => {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path === `/api/v1/workspaces/${SLUG}`)
+        return Promise.resolve({ ...workspace, role: 15 });
+      if (path === `/api/v1/workspaces/${SLUG}/objectives`)
+        return Promise.resolve({
+          objectives: [
+            {
+              ...objective,
+              progress: 0.75,
+              progress_history: [
+                { t: "2026-10-16T00:00:00Z", progress: 0 },
+                { t: "2026-10-17T00:00:00Z", progress: 0.75 },
+              ],
+            },
+            {
+              ...objective,
+              id: "obj-2",
+              title: "No history yet",
+              progress: 0,
+              key_result_count: 0,
+            },
+          ],
+        });
+      if (path === `/api/v1/workspaces/${SLUG}/members`)
+        return Promise.resolve({ members });
+      throw new Error(`unexpected GET ${path}`);
+    });
+    renderPage();
+    expect(await screen.findByText("Ship glance v0.4.0")).toBeTruthy();
+    expect(screen.getAllByTestId("goal-sparkline")).toHaveLength(1);
+    expect(
+      screen.getByRole("img", { name: "Progress history: 0% → 75%" }),
+    ).toBeTruthy();
+  });
+
+  it("fetches the list once and never fetches per-goal check-ins", async () => {
+    renderPage();
+    await screen.findByText("Ship glance v0.4.0");
+    const objectivesGets = mockApi.get.mock.calls.filter(
+      (c) =>
+        typeof c[0] === "string" &&
+        c[0] === `/api/v1/workspaces/${SLUG}/objectives`,
+    );
+    expect(objectivesGets).toHaveLength(1);
+    const checkinGets = mockApi.get.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("/check-ins"),
+    );
+    expect(checkinGets).toHaveLength(0);
+  });
+});
+
 describe("Goals create flow", () => {
   it("posts the objective with owner, dates, and status", async () => {
     renderPage();
