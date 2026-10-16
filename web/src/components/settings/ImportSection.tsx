@@ -1,9 +1,10 @@
 // Issue import UI (C4T8 CSV backend + C8T2 GitHub importer + C9T1 Jira
-// Cloud importer + C10T0 Trello importer + C14T5 Plane export importer).
+// Cloud importer + C10T0 Trello importer + C14T5 Plane export importer
+// + C31T1 Linear importer).
 //
 // Project settings → Import tab: a source selector (Jira / GitHub /
-// Trello / CSV file / Plane export) with the shared preview → import →
-// result flow.
+// Linear / Trello / CSV file / Plane export) with the shared preview →
+// import → result flow.
 // The CSV mapping form follows the backend's ImportMapping contract
 // (title required, the rest optional); the GitHub form collects
 // owner/repo/token + filters; the Jira form collects site/email/API
@@ -17,25 +18,30 @@
 // after the import runs.
 
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch, KanbanSquare, Plane } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cloud, FileUp, GitBranch, KanbanSquare, Layers, Plane } from "lucide-react";
 import { ApiError } from "../../lib/api";
 import {
   analyzePlaneImport,
   buildCsvMapping,
   buildPlaneResolutions,
   fetchImportTemplate,
+  fetchLinearTeams,
   fetchPlaneRefData,
+  linearErrMsg,
   previewCsvImport,
+  previewLinearImport,
   previewGitHubImport,
   previewJiraImport,
   previewTrelloImport,
   runCsvImport,
   runGitHubImport,
   runJiraImport,
+  runLinearImport,
   runPlaneImport,
   runTrelloImport,
   validateGitHubForm,
   validateJiraForm,
+  validateLinearForm,
   validatePlaneFile,
   validateTrelloForm,
   type GitHubImportPreview,
@@ -48,6 +54,11 @@ import {
   type JiraImportPreview,
   type JiraImportPreviewRow,
   type JiraImportResult,
+  type LinearImportIssueError,
+  type LinearImportPreview,
+  type LinearImportPreviewIssue,
+  type LinearImportResult,
+  type LinearTeam,
   type PlaneImportAnalysis,
   type PlaneImportGap,
   type PlaneImportReport,
@@ -87,7 +98,7 @@ function errMsg(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-type Source = "csv" | "github" | "jira" | "trello" | "plane";
+type Source = "csv" | "github" | "jira" | "linear" | "trello" | "plane";
 
 // ---------- shared bits ----------
 
@@ -1288,6 +1299,350 @@ function TrelloPanel({ slug, identifier }: { slug: string; identifier: string })
   );
 }
 
+// ---------- Linear panel (C31T1) ----------
+
+// Linear priority ids (0–4) mapped to glance's 0–4 scale by the backend.
+const LINEAR_PRIORITY_NAMES = ["none", "low", "medium", "high", "urgent"];
+
+function LinearPreviewTable({ preview }: { preview: LinearImportPreview }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Identifier</TableHead>
+          <TableHead>Title</TableHead>
+          <TableHead>State</TableHead>
+          <TableHead>Priority</TableHead>
+          <TableHead>Labels</TableHead>
+          <TableHead>Assignee</TableHead>
+          <TableHead>Due date</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {preview.issues.map((r: LinearImportPreviewIssue) => (
+          <TableRow key={r.identifier}>
+            <TableCell className="font-mono">
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noreferrer"
+                className="underline decoration-dotted"
+                title={r.url}
+              >
+                {r.identifier}
+              </a>
+            </TableCell>
+            <TableCell className="max-w-64">
+              <span className="block truncate" title={r.title}>
+                {r.title}
+              </span>
+            </TableCell>
+            <TableCell>
+              <Badge variant="outline">{r.state}</Badge>
+            </TableCell>
+            <TableCell>
+              <Badge variant="outline">
+                {LINEAR_PRIORITY_NAMES[r.priority] ?? r.priority}
+              </Badge>
+            </TableCell>
+            <TableCell>
+              <div className="flex max-w-48 flex-wrap gap-1">
+                {r.labels.map((l) => (
+                  <Badge key={l} variant="outline">
+                    {l}
+                  </Badge>
+                ))}
+                {r.labels.length === 0 && <span className="text-muted-foreground">—</span>}
+              </div>
+            </TableCell>
+            <TableCell>
+              {r.assignee_email ? (
+                <div>
+                  <Badge variant="outline" title={r.assignee_email}>
+                    {r.assignee_email}
+                  </Badge>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {r.assignee_matched ? "matched a member" : "no member match"}
+                  </div>
+                </div>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </TableCell>
+            <TableCell className="font-mono text-xs">
+              {r.due_date ?? <span className="text-muted-foreground">—</span>}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function LinearRowErrors({ errors }: { errors: LinearImportIssueError[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <Alert variant="destructive" className="mt-4">
+      <AlertTriangle className="h-4 w-4" />
+      <AlertDescription>
+        <p className="font-medium">
+          {errors.length} {errors.length === 1 ? "issue error" : "issue errors"}
+        </p>
+        <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto">
+          {errors.map((e) => (
+            <li key={e.identifier} className="font-mono text-xs">
+              {e.identifier}: {e.message}
+            </li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function LinearPanel({ slug, identifier }: { slug: string; identifier: string }) {
+  const [apiKey, setApiKey] = useState("");
+  const [teams, setTeams] = useState<LinearTeam[] | null>(null);
+  const [teamId, setTeamId] = useState("");
+  const [teamsBusy, setTeamsBusy] = useState(false);
+  const [teamsError, setTeamsError] = useState<string | null>(null);
+  const [max, setMax] = useState("100");
+  const [preview, setPreview] = useState<LinearImportPreview | null>(null);
+  const [result, setResult] = useState<LinearImportResult | null>(null);
+  // The team the result came from: the key + picker are cleared after a
+  // run, so the result card keeps its own copy of the label.
+  const [resultTeam, setResultTeam] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"preview" | "import" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Teams belong to the key that fetched them: a changed key invalidates
+  // the picker until teams are re-loaded.
+  const onApiKeyChange = (v: string) => {
+    setApiKey(v);
+    setTeams(null);
+    setTeamId("");
+    setTeamsError(null);
+  };
+
+  const formError = validateLinearForm(apiKey, teamId);
+  const selectedTeam = teams?.find((t) => t.id === teamId);
+  const teamLabel = selectedTeam
+    ? `${selectedTeam.key} — ${selectedTeam.name}`
+    : "this team";
+  const input = {
+    api_key: apiKey,
+    team_id: teamId,
+    max: Math.min(500, Math.max(1, parseInt(max, 10) || 100)) // backend hard cap is 500,
+  };
+
+  const loadTeams = async () => {
+    if (!apiKey.trim()) return;
+    setTeamsBusy(true);
+    setTeamsError(null);
+    try {
+      const res = await fetchLinearTeams(slug, identifier, apiKey);
+      setTeams(res.teams ?? []);
+      setTeamId("");
+    } catch (e) {
+      setTeamsError(linearErrMsg(e, "Failed to load teams"));
+    } finally {
+      setTeamsBusy(false);
+    }
+  };
+
+  const doPreview = async () => {
+    if (formError) return;
+    setBusy("preview");
+    setError(null);
+    setResult(null);
+    try {
+      setPreview(await previewLinearImport(slug, identifier, input));
+    } catch (e) {
+      setError(linearErrMsg(e, "Preview failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doImport = async () => {
+    if (formError) return;
+    if (
+      !window.confirm(
+        `Import up to ${input.max} issues from Linear team ${teamLabel} into this project?`,
+      )
+    ) {
+      return;
+    }
+    setBusy("import");
+    setError(null);
+    setPreview(null);
+    setResultTeam(teamLabel);
+    try {
+      const res = await runLinearImport(slug, identifier, input);
+      setResult(res);
+    } catch (e) {
+      setError(linearErrMsg(e, "Import failed"));
+    } finally {
+      setBusy(null);
+      // The API key never lingers in the form after a run — and the team
+      // list it fetched goes with it.
+      setApiKey("");
+      setTeams(null);
+      setTeamId("");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Label htmlFor="linear-key">API key *</Label>
+            <Input
+              id="linear-key"
+              type="password"
+              placeholder="lin_api_… (from Linear Settings → API)"
+              value={apiKey}
+              autoComplete="off"
+              onChange={(e) => onApiKeyChange(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Sent to api.linear.app only, never stored. Get a personal API
+              key at Linear Settings → API.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="linear-team">Team *</Label>
+            <div className="flex gap-2">
+              <select
+                id="linear-team"
+                value={teamId}
+                onChange={(e) => setTeamId(e.target.value)}
+                disabled={!teams}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:opacity-50"
+              >
+                <option value="">
+                  {teams ? "Choose a team…" : "Load teams first…"}
+                </option>
+                {(teams ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.key} — {t.name}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                onClick={loadTeams}
+                disabled={!apiKey.trim() || teamsBusy}
+                className="shrink-0"
+              >
+                {teamsBusy ? <Spinner className="mr-2" /> : null}Load teams
+              </Button>
+            </div>
+            {teamsError && (
+              <p className="text-xs text-destructive">{teamsError}</p>
+            )}
+            {teams && teams.length === 0 && !teamsError && (
+              <p className="text-xs text-muted-foreground">
+                No teams found for this API key.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Label htmlFor="linear-max">Max issues</Label>
+            <Input
+              id="linear-max"
+              type="number"
+              min={1}
+              max={500}
+              value={max}
+              onChange={(e) => setMax(e.target.value)}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            States are matched to states by name; unmatched states create
+            new states. Labels are created when missing. Comments are
+            imported with attribution. Assignees are matched best-effort by
+            email — misses are reported, never fatal. Sub-issues, cycles,
+            and projects are not imported (issues import flat). Re-running
+            is safe: already-imported issues are skipped. The import is
+            one-way: later Linear edits do not sync.
+          </p>
+        </div>
+      </div>
+
+      {formError && (
+        <Alert>
+          <AlertDescription>{formError}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex gap-2">
+        <Button onClick={doPreview} disabled={!!formError || busy !== null} variant="outline">
+          {busy === "preview" ? <Spinner className="mr-2" /> : null}Preview
+        </Button>
+        <Button
+          onClick={doImport}
+          disabled={!!formError || busy !== null || !apiKey}
+        >
+          {busy === "import" ? <Spinner className="mr-2" /> : null}Import
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {preview && (
+        <Card className="rounded-lg border-border-hairline">
+          <CardHeader>
+            <CardTitle className="text-xs font-semibold">
+              Preview — {preview.issues.length} of {preview.total} issues from{" "}
+              {teamLabel}
+            </CardTitle>
+            {preview.total > preview.issues.length && (
+              <p className="text-xs font-normal text-muted-foreground">
+                Showing the first {preview.issues.length} of {preview.total} issues.
+              </p>
+            )}
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {preview.total === 0 ? (
+              <p className="text-sm text-muted-foreground">No issues in this team</p>
+            ) : (
+              <LinearPreviewTable preview={preview} />
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {result && (
+        <Card className="rounded-lg border-border-hairline">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-xs font-semibold">
+              <CheckCircle2 className="h-4 w-4 text-green-600" /> Import result —{" "}
+              {resultTeam ?? teamLabel}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <Stat label="Created" value={result.created} />
+              <Stat label="Skipped (already imported)" value={result.skipped} />
+              <Stat label="Failed" value={result.failed} />
+              <Stat label="Assignee misses" value={result.assignee_misses} />
+            </div>
+            <LinearRowErrors errors={result.errors} />
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ---------- Plane panel (C14T5) ----------
 
 // The honest-loss list (design decision 7): what a Plane export cannot
@@ -1826,6 +2181,13 @@ export default function ImportSection({
             <GitBranch className="mr-2 h-4 w-4" /> GitHub
           </Button>
           <Button
+            variant={source === "linear" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSource("linear")}
+          >
+            <Layers className="mr-2 h-4 w-4" /> Linear
+          </Button>
+          <Button
             variant={source === "csv" ? "default" : "outline"}
             size="sm"
             onClick={() => setSource("csv")}
@@ -1853,6 +2215,8 @@ export default function ImportSection({
           <JiraPanel slug={slug} identifier={identifier} />
         ) : source === "github" ? (
           <GitHubPanel slug={slug} identifier={identifier} />
+        ) : source === "linear" ? (
+          <LinearPanel slug={slug} identifier={identifier} />
         ) : source === "trello" ? (
           <TrelloPanel slug={slug} identifier={identifier} />
         ) : source === "plane" ? (
