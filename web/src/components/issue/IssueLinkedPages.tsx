@@ -247,6 +247,11 @@ export default function IssueLinkedPages({
       onError(null);
       void queryClient.invalidateQueries({ queryKey: linksKey });
     },
+    // Always refresh after settle: a 404 means the link was already gone
+    // (stale UI) and the refresh removes it — the message below says so.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: linksKey });
+    },
     onError: (e) => {
       // A 404 here means the link was already gone (stale UI) — the
       // onSettled refresh already removed it; say so honestly.
