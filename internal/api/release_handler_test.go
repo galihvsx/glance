@@ -165,3 +165,104 @@ func TestReleaseHTTP(t *testing.T) {
 		t.Fatalf("unauth: status = %d, want 401", rec.Code)
 	}
 }
+
+func TestReleaseNotesHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
+	RegisterIssueRoutes(e, &IssueHandler{Pool: pool})
+	RegisterReleaseRoutes(e, &IssueHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("release-notes-http"), "test-agent", uniqueIP())
+	slug := uniqueSlug("release-notes-http")
+	createWorkspaceHTTP(t, e, cookie, "Release Co", slug)
+	ident := uniqueProjectIdentifier("RN")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	issueBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+	releaseBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/releases"
+
+	// Create a dated release with a description.
+	rec := postAuthedJSON(t, e, http.MethodPost, releaseBase, cookie,
+		`{"name":"v2.0","description":"Second milestone","status":"planned","release_date":"2026-12-01"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create release: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode release: %v", err)
+	}
+	releaseURL := releaseBase + "/" + created.ID
+
+	// Assign one issue (lands in the default backlog-group state).
+	iss := createIssueHTTP(t, e, cookie, issueBase, "Notes issue")
+	rec = postAuthedJSON(t, e, http.MethodPost, releaseURL+"/issues", cookie,
+		`{"issue_ids":["`+iss+`"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// GET notes → 200 with the pinned shape.
+	rec = getAuthed(t, e, http.MethodGet, releaseURL+"/notes", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get notes: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var notes struct {
+		Release struct {
+			ID          string  `json:"id"`
+			Name        string  `json:"name"`
+			Status      string  `json:"status"`
+			ReleaseDate *string `json:"release_date"`
+			Description string  `json:"description"`
+		} `json:"release"`
+		Markdown string `json:"markdown"`
+		Counts   struct {
+			Completed int `json:"completed"`
+			Started   int `json:"started"`
+			Unstarted int `json:"unstarted"`
+			Total     int `json:"total"`
+		} `json:"counts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &notes); err != nil {
+		t.Fatalf("decode notes: %v", err)
+	}
+	if notes.Release.ID != created.ID || notes.Release.Name != "v2.0" ||
+		notes.Release.Status != "planned" || notes.Release.Description != "Second milestone" {
+		t.Fatalf("release = %+v", notes.Release)
+	}
+	if notes.Release.ReleaseDate == nil || *notes.Release.ReleaseDate != "2026-12-01" {
+		t.Fatalf("release_date = %v, want 2026-12-01", notes.Release.ReleaseDate)
+	}
+	if notes.Counts != struct {
+		Completed int `json:"completed"`
+		Started   int `json:"started"`
+		Unstarted int `json:"unstarted"`
+		Total     int `json:"total"`
+	}{Completed: 0, Started: 0, Unstarted: 1, Total: 1} {
+		t.Fatalf("counts = %+v", notes.Counts)
+	}
+	wantMarkdown := "# Release notes — v2.0\n\nRelease date: 2026-12-01\n\nSecond milestone\n\n## Backlog (1)\n- " + ident + "-1 Notes issue\n"
+	if notes.Markdown != wantMarkdown {
+		t.Fatalf("markdown = %q, want %q", notes.Markdown, wantMarkdown)
+	}
+
+	// Unknown release → 404.
+	rec = getAuthed(t, e, http.MethodGet, releaseBase+"/00000000-0000-0000-0000-000000000000/notes", cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown release: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Cross-workspace slug → 404, not a leak.
+	rec = getAuthed(t, e, http.MethodGet, "/api/v1/workspaces/no-such-ws/projects/"+ident+"/releases/"+created.ID+"/notes", cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-workspace: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Unauthenticated → 401.
+	rec = getPublic(t, e, releaseURL+"/notes")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth: status = %d, want 401", rec.Code)
+	}
+}

@@ -31,6 +31,7 @@ func RegisterReleaseRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/:releaseID/issues", h.listReleaseIssues)
 	g.POST("/:releaseID/issues", h.assignReleaseIssues)
 	g.DELETE("/:releaseID/issues", h.unassignReleaseIssues)
+	g.GET("/:releaseID/notes", h.getReleaseNotes)
 }
 
 // releaseError maps release sentinel errors to HTTP statuses, delegating
@@ -185,6 +186,22 @@ func (h *IssueHandler) listReleaseIssues(c *echo.Context) error {
 		return releaseError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"issues": issues})
+}
+
+// getReleaseNotes implements GET .../releases/{releaseID}/notes: the
+// point-in-time Markdown release notes plus grouping counts. Read-only;
+// the read gate is the same as listReleaseIssues (any member may read).
+func (h *IssueHandler) getReleaseNotes(c *echo.Context) error {
+	releaseID, ok := requireUUIDParam(c, "releaseID", "release id")
+	if !ok {
+		return nil
+	}
+	notes, err := service.GetReleaseNotes(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, releaseID)
+	if err != nil {
+		return releaseError(c, err)
+	}
+	return c.JSON(http.StatusOK, notes)
 }
 
 type releaseIssuesBody struct {

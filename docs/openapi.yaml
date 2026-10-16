@@ -1650,6 +1650,15 @@
         "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/releases/{releaseID}/notes": {
+      "get": {
+        "tags": ["releases"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Generate release notes",
+        "description": "Point-in-time Markdown release notes for the release's live issues, grouped by state group (completed → Completed, started → In progress, everything else → Backlog). Read-only; any workspace member may read. Re-generate after issues change — notes are a snapshot, not a stored artifact. counts.unstarted counts the Backlog section, so completed + started + unstarted == total.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "releaseID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Release notes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReleaseNotes" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/intake": {
       "get": {
         "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2725,6 +2734,31 @@
           "description": { "type": "string", "nullable": true },
           "status": { "type": "string" },
           "release_date": { "type": "string", "format": "date", "nullable": true }
+        }
+      },
+      "ReleaseNotes": {
+        "type": "object",
+        "properties": {
+          "release": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "name": { "type": "string" },
+              "status": { "type": "string" },
+              "release_date": { "type": "string", "format": "date", "nullable": true },
+              "description": { "type": "string" }
+            }
+          },
+          "markdown": { "type": "string", "description": "Pinned Markdown shape: '# Release notes — <name>', release-date line, description block when non-empty, '## Completed (n)' / '## In progress (n)' / '## Backlog (n)' sections of '- <DISPLAY_ID> <title>' lines (empty sections omitted; zero issues → '_No issues in this release._'). No timestamps." },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "completed": { "type": "integer" },
+              "started": { "type": "integer" },
+              "unstarted": { "type": "integer", "description": "Counts the Backlog section (unstarted, triage, backlog, cancelled, or unknown group), so completed + started + unstarted == total." },
+              "total": { "type": "integer" }
+            }
+          }
         }
       },
       "Template": {

@@ -483,3 +483,199 @@ func ListReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 	}
 	return out, rows.Err()
 }
+
+// ReleaseNotesRelease is the slim release summary in a notes response:
+// the release's identity plus the fields the Markdown renders. ReleaseDate
+// is a YYYY-MM-DD string (nil when the release has no date), matching the
+// date form in the Markdown's release-date line.
+type ReleaseNotesRelease struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Status      string  `json:"status"`
+	ReleaseDate *string `json:"release_date"`
+	Description string  `json:"description"`
+}
+
+// ReleaseNotesCounts partitions the release's issues the same way the
+// Markdown sections do. Unstarted counts the Backlog section: every issue
+// whose state group is neither completed nor started (unstarted, triage,
+// backlog, cancelled, or an unknown group). The key keeps the pinned
+// contract name; the value keeps completed+started+unstarted == total.
+type ReleaseNotesCounts struct {
+	Completed int `json:"completed"`
+	Started   int `json:"started"`
+	Unstarted int `json:"unstarted"`
+	Total     int `json:"total"`
+}
+
+// ReleaseNotes is the GET .../releases/{releaseID}/notes response: a
+// point-in-time snapshot, never a stored artifact. Regenerate after
+// issues change.
+type ReleaseNotes struct {
+	Release  ReleaseNotesRelease `json:"release"`
+	Markdown string              `json:"markdown"`
+	Counts   ReleaseNotesCounts  `json:"counts"`
+}
+
+// releaseNoteItem is one Markdown bullet: "- <DISPLAY_ID> <title>".
+type releaseNoteItem struct {
+	DisplayID string
+	Title     string
+}
+
+// releaseNoteRow is one scanned issue row for notes grouping: the
+// sequence id (for the derived display id), the title, and the state
+// group ("" when the state row is missing).
+type releaseNoteRow struct {
+	SequenceID int
+	Title      string
+	Group      string
+}
+
+// bucketReleaseNoteRows partitions scanned rows into the three notes
+// sections, preserving row order within each section: completed →
+// Completed, started → In progress, everything else (unstarted, triage,
+// backlog, cancelled, unknown, or missing group) → Backlog. Pure, so
+// the unknown-group branch is unit-testable: the states CHECK
+// constraint + the issues.state_id FK make an unknown group
+// unreachable from the live database, but the default branch keeps
+// notes generation total if that ever changes.
+func bucketReleaseNoteRows(ident string, rows []releaseNoteRow) (completed, started, backlog []releaseNoteItem) {
+	completed = []releaseNoteItem{}
+	started = []releaseNoteItem{}
+	backlog = []releaseNoteItem{}
+	for _, r := range rows {
+		item := releaseNoteItem{DisplayID: ident + "-" + strconv.Itoa(r.SequenceID), Title: r.Title}
+		switch r.Group {
+		case "completed":
+			completed = append(completed, item)
+		case "started":
+			started = append(started, item)
+		default:
+			backlog = append(backlog, item)
+		}
+	}
+	return completed, started, backlog
+}
+
+// buildReleaseNotesMarkdown renders the pinned Markdown shape:
+//
+//	# Release notes — <name>
+//
+//	Release date: <YYYY-MM-DD|—>
+//
+//	[<description>
+//
+//	]## Completed (n)
+//	- <DISPLAY_ID> <title>
+//	...
+//
+//	## In progress (n)
+//	...
+//
+//	## Backlog (n)
+//	...
+//
+// Empty sections are omitted; with zero issues the body is
+// "_No issues in this release._". No timestamps: the output is stable
+// and diffable. Pure function — no DB access, so the exact shape is
+// unit-testable without a database.
+func buildReleaseNotesMarkdown(name string, releaseDate *time.Time, description string, completed, started, backlog []releaseNoteItem) string {
+	var b strings.Builder
+	b.WriteString("# Release notes — " + name + "\n\n")
+	if releaseDate != nil {
+		b.WriteString("Release date: " + releaseDate.Format("2006-01-02") + "\n")
+	} else {
+		b.WriteString("Release date: —\n")
+	}
+	if desc := strings.TrimSpace(description); desc != "" {
+		b.WriteString("\n" + desc + "\n")
+	}
+	if len(completed)+len(started)+len(backlog) == 0 {
+		b.WriteString("\n_No issues in this release._\n")
+		return b.String()
+	}
+	writeSection := func(title string, items []releaseNoteItem) {
+		if len(items) == 0 {
+			return
+		}
+		b.WriteString("\n## " + title + " (" + strconv.Itoa(len(items)) + ")\n")
+		for _, it := range items {
+			b.WriteString("- " + it.DisplayID + " " + it.Title + "\n")
+		}
+	}
+	writeSection("Completed", completed)
+	writeSection("In progress", started)
+	writeSection("Backlog", backlog)
+	return b.String()
+}
+
+// GetReleaseNotes builds point-in-time Markdown release notes for the
+// release's live issues, grouped by state group: completed → Completed,
+// started → In progress, everything else (incl. unstarted, triage,
+// backlog, cancelled, unknown/missing group) → Backlog. Read-only: it
+// issues SELECTs only, never writes. Read gate = ListReleaseIssues: any
+// workspace member (guest 5+) may read; non-members get ErrNotFound;
+// unknown / cross-project release ids get ErrReleaseNotFound.
+func GetReleaseNotes(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, releaseID string) (*ReleaseNotes, error) {
+	projectID, _, err := resolveReleaseProject(ctx, pool, wsSlug, identifier, actorID, false)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := resolveRelease(ctx, pool, projectID, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	// LEFT JOIN states: an issue whose state row is gone (or whose group
+	// is an unknown value) still renders — in Backlog — rather than
+	// dropping from the notes. The sequence_id tiebreaker keeps the
+	// order deterministic when created_at ties.
+	rows, err := pool.Query(ctx,
+		`SELECT i.sequence_id, i.name, COALESCE(s."group", '')
+		 FROM issues i
+		 LEFT JOIN states s ON s.id = i.state_id
+		 WHERE i.release_id = $1::uuid AND i.deleted_at IS NULL
+		 ORDER BY i.created_at, i.sequence_id`, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	scanned := []releaseNoteRow{}
+	for rows.Next() {
+		var r releaseNoteRow
+		if err := rows.Scan(&r.SequenceID, &r.Title, &r.Group); err != nil {
+			return nil, err
+		}
+		scanned = append(scanned, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	completed, started, backlog := bucketReleaseNoteRows(ident, scanned)
+	var dateStr *string
+	if rel.ReleaseDate != nil {
+		s := rel.ReleaseDate.Format("2006-01-02")
+		dateStr = &s
+	}
+	total := len(completed) + len(started) + len(backlog)
+	return &ReleaseNotes{
+		Release: ReleaseNotesRelease{
+			ID:          rel.ID,
+			Name:        rel.Name,
+			Status:      rel.Status,
+			ReleaseDate: dateStr,
+			Description: rel.Description,
+		},
+		Markdown: buildReleaseNotesMarkdown(rel.Name, rel.ReleaseDate, rel.Description, completed, started, backlog),
+		Counts: ReleaseNotesCounts{
+			Completed: len(completed),
+			Started:   len(started),
+			Unstarted: len(backlog),
+			Total:     total,
+		},
+	}, nil
+}
