@@ -203,7 +203,8 @@ export interface ActorRef {
   email: string;
 }
 
-/** One comment node with nested replies. */
+/** One comment node with nested replies. Resolution (C32) is a
+ *  root-only property: replies always carry nulls. */
 export interface CommentNode {
   id: string;
   issue_id: string;
@@ -212,6 +213,10 @@ export interface CommentNode {
   content: unknown;
   created_at: string;
   updated_at: string;
+  /** When the thread was resolved; null while open (roots only). */
+  resolved_at?: string | null;
+  /** Who resolved the thread; null while open (roots only). */
+  resolved_by?: ActorRef | null;
   replies: CommentNode[];
 }
 

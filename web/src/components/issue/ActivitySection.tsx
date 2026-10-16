@@ -248,15 +248,30 @@ function CommentBody({
 function CommentItem({
   comment,
   onReply,
+  onToggleResolve,
+  resolvingId,
+  expanded = true,
+  onToggleExpand,
   members,
   depth = 0,
 }: {
   comment: CommentNode;
   onReply: (parentId: string) => void;
+  /** Root-only resolve/reopen (C32). Undefined for reply subtrees. */
+  onToggleResolve?: (comment: CommentNode) => void;
+  resolvingId?: string | null;
+  /** Resolved roots start collapsed; open threads are always expanded. */
+  expanded?: boolean;
+  onToggleExpand?: (id: string) => void;
   members: MentionableMember[];
   depth?: number;
 }) {
   const initial = (actorName(comment.actor)[0] ?? "?").toUpperCase();
+  const resolved = comment.resolved_at != null;
+  // The header (author, badge, actions) always stays visible; only the
+  // body + replies collapse, so Reopen stays one click away.
+  const showBody = !resolved || expanded;
+  const resolving = resolvingId === comment.id;
   return (
     <div className="grid grid-cols-[27px_1fr] gap-[9px] py-[17px]">
       <span
@@ -273,31 +288,70 @@ function CommentItem({
           <span className="text-[9px] text-ink-muted">
             {fmtFeedTime(comment.created_at)}
           </span>
+          {resolved && comment.resolved_by && (
+            <span className="rounded-full border border-border bg-raised px-1.5 py-px text-[9px] text-ink-secondary">
+              Resolved by {actorName(comment.resolved_by)} ·{" "}
+              {fmtFeedTime(comment.resolved_at as string)}
+            </span>
+          )}
           {depth === 0 && (
-            <button
-              type="button"
-              onClick={() => onReply(comment.id)}
-              className="ml-auto text-[9px] text-ink-muted hover:text-ink hover:underline"
-            >
-              Reply
-            </button>
+            <>
+              {resolved && (
+                <button
+                  type="button"
+                  onClick={() => onToggleExpand?.(comment.id)}
+                  className="text-[9px] text-ink-muted hover:text-ink hover:underline"
+                >
+                  {expanded ? "Hide thread" : "Show thread"}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={resolving}
+                onClick={() => onToggleResolve?.(comment)}
+                className="ml-auto text-[9px] text-ink-muted hover:text-ink hover:underline disabled:opacity-50"
+              >
+                {resolving
+                  ? resolved
+                    ? "Reopening…"
+                    : "Resolving…"
+                  : resolved
+                    ? "Reopen"
+                    : "Resolve"}
+              </button>
+              <button
+                type="button"
+                onClick={() => onReply(comment.id)}
+                className="text-[9px] text-ink-muted hover:text-ink hover:underline"
+              >
+                Reply
+              </button>
+            </>
           )}
         </div>
-        <p className="mt-1 text-[10px] leading-[17px] whitespace-pre-wrap text-ink-secondary">
-          <CommentBody text={tiptapText(comment.content)} members={members} />
-        </p>
-        {comment.replies.length > 0 && (
-          <div className="mt-1 border-l border-border-hairline pl-4">
-            {comment.replies.map((r) => (
-              <CommentItem
-                key={r.id}
-                comment={r}
-                onReply={onReply}
-                members={members}
-                depth={depth + 1}
-              />
-            ))}
-          </div>
+        {showBody && (
+          <>
+            <p className="mt-1 text-[10px] leading-[17px] whitespace-pre-wrap text-ink-secondary">
+              <CommentBody text={tiptapText(comment.content)} members={members} />
+            </p>
+            {comment.replies.length > 0 && (
+              <div className="mt-1 border-l border-border-hairline pl-4">
+                {comment.replies.map((r) => (
+                  <CommentItem
+                    key={r.id}
+                    comment={r}
+                    onReply={onReply}
+                    onToggleResolve={onToggleResolve}
+                    resolvingId={resolvingId}
+                    expanded={expanded}
+                    onToggleExpand={onToggleExpand}
+                    members={members}
+                    depth={depth + 1}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -323,6 +377,16 @@ function EventItem({ entry, states }: { entry: HistoryEntry; states: IssueState[
 
 const actionBtn =
   "flex h-[25px] items-center gap-1 rounded-[6px] border border-border bg-surface px-[7px] text-[10px] text-ink-secondary transition-colors hover:bg-raised hover:text-ink";
+
+/** Comment resolution filter (C32): applies to thread roots; a passing
+ *  root carries its whole reply subtree. */
+type ResolvedFilter = "all" | "open" | "resolved";
+
+const RESOLVED_FILTERS: { id: ResolvedFilter; label: string }[] = [
+  { id: "open", label: "Open" },
+  { id: "resolved", label: "Resolved" },
+  { id: "all", label: "All" },
+];
 
 /**
  * The activity section (C19T3): tab bar (All / Activity / Comments /
@@ -358,6 +422,10 @@ export default function ActivitySection({
   const [showEvents, setShowEvents] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [logSignal, setLogSignal] = useState(0);
+  // C32: resolution filter + per-thread expand state. Resolved threads
+  // start collapsed; open threads are always expanded.
+  const [resolvedFilter, setResolvedFilter] = useState<ResolvedFilter>("all");
+  const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set());
 
   // Composer state.
   const [commentDraft, setCommentDraft] = useState("");
@@ -371,9 +439,13 @@ export default function ActivitySection({
   const [mentionActive, setMentionActive] = useState(0);
 
   const commentsQuery = useQuery({
-    queryKey: ["comments", slug, identifier, uuid],
+    queryKey: ["comments", slug, identifier, uuid, resolvedFilter],
     queryFn: () =>
-      api.get<{ comments: CommentNode[] }>(`${issuePath}/comments`).then((d) => d.comments),
+      api
+        .get<{ comments: CommentNode[] }>(
+          `${issuePath}/comments?resolved=${resolvedFilter}`,
+        )
+        .then((d) => d.comments),
   });
   const historyQuery = useQuery({
     queryKey: ["history", slug, identifier, uuid],
@@ -394,8 +466,7 @@ export default function ActivitySection({
   const history = historyQuery.data ?? [];
   const mentionMembers = (membersQuery.data ?? []).filter((m) => m.id !== userId);
 
-  const commentMutation = useMutation({
-    mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
+  const commentMutation = useMutation({    mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
       api.post<CommentNode>(`${issuePath}/comments`, body),
     onSuccess: () => {
       setCommentDraft("");
@@ -410,6 +481,42 @@ export default function ActivitySection({
       onError(e instanceof Error ? e.message : "Failed to post comment");
     },
   });
+
+  // C32: resolve/reopen a thread root. Any workspace member may resolve
+  // or reopen any thread (NOT author-only); replies are never resolvable
+  // (the button only renders on roots). The refetch picks up the new
+  // resolved state + the _comment_resolved/_comment_reopened activity
+  // entry the backend writes.
+  const resolveMutation = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "resolve" | "reopen" }) =>
+      api.post<CommentNode>(
+        `${issuePath}/comments/${encodeURIComponent(id)}/${action}`,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["comments", slug, identifier, uuid] });
+      void queryClient.invalidateQueries({ queryKey: ["history", slug, identifier, uuid] });
+    },
+    onError: (e) => {
+      onError(e instanceof Error ? e.message : "Failed to update comment");
+    },
+  });
+
+  function toggleResolve(comment: CommentNode) {
+    if (resolveMutation.isPending) return;
+    resolveMutation.mutate({
+      id: comment.id,
+      action: comment.resolved_at ? "reopen" : "resolve",
+    });
+  }
+
+  function toggleExpand(id: string) {
+    setExpandedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   type FeedItem =
     | { kind: "comment"; at: string; comment: CommentNode }
@@ -535,6 +642,9 @@ export default function ActivitySection({
 
   const loading = commentsQuery.isPending || historyQuery.isPending;
   const commentCount = comments.length;
+  // Open roots in the current view (the fetched, filter-applied list).
+  const openThreadCount = comments.filter((c) => !c.resolved_at).length;
+  const showResolvedFilter = activeTab === "all" || activeTab === "comments";
 
   return (
     <section aria-label="Activity" className="mt-[27px]">
@@ -597,6 +707,35 @@ export default function ActivitySection({
         </div>
       ) : (
         <>
+          {showResolvedFilter && (
+            <div className="flex items-center gap-2 pt-3">
+              <div
+                role="group"
+                aria-label="Filter comments by resolution"
+                className="flex rounded-[6px] border border-border bg-surface p-[2px]"
+              >
+                {RESOLVED_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    aria-pressed={resolvedFilter === f.id}
+                    onClick={() => setResolvedFilter(f.id)}
+                    className={cn(
+                      "rounded-[4px] px-2 py-1 text-[10px] transition-colors",
+                      resolvedFilter === f.id
+                        ? "bg-raised font-medium text-ink"
+                        : "text-ink-muted hover:text-ink-secondary",
+                    )}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-[10px] text-ink-muted">
+                {openThreadCount} open thread{openThreadCount === 1 ? "" : "s"}
+              </span>
+            </div>
+          )}
           {loading ? (
             <div className="space-y-2 py-4">
               <Skeleton className="h-12 w-full" />
@@ -615,6 +754,17 @@ export default function ActivitySection({
                       setReplyTo(id);
                       commentRef.current?.focus();
                     }}
+                    onToggleResolve={toggleResolve}
+                    resolvingId={
+                      resolveMutation.isPending
+                        ? (resolveMutation.variables?.id ?? null)
+                        : null
+                    }
+                    expanded={
+                      !item.comment.resolved_at ||
+                      expandedThreads.has(item.comment.id)
+                    }
+                    onToggleExpand={toggleExpand}
                     members={mentionMembers}
                   />
                 ) : (
