@@ -1051,7 +1051,12 @@ type JiraImportPreviewRow struct {
 	AssigneeMatched bool     `json:"assignee_matched"`
 	Comments        int      `json:"comments"`
 	IssueType       string   `json:"issue_type"`
-	AlreadyImported bool     `json:"already_imported"`
+	// Milestone is the trimmed name of the issue's FIRST fixVersion
+	// ("" = no fixVersions, or an unmappable empty-name first version).
+	// It becomes a release on import — same concept as the GitHub
+	// preview row's milestone. Preview only; omitempty drops it.
+	Milestone       string `json:"milestone,omitempty"`
+	AlreadyImported bool   `json:"already_imported"`
 }
 
 // JiraImportPreview is the preview response: no writes happened.
@@ -1206,6 +1211,7 @@ func PreviewJiraImportWithClient(ctx context.Context, pool *pgxpool.Pool, client
 			Priority:        m.priority,
 			Comments:        issues[i].Fields.Comment.Total,
 			IssueType:       m.issueType,
+			Milestone:       m.versionName,
 			AlreadyImported: imported[m.key],
 			AssigneeMatched: m.assigneeID != nil,
 		}
