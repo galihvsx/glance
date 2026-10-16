@@ -8,6 +8,8 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Copy,
+  Download,
   FileText,
   History,
   Pencil,
@@ -16,6 +18,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { Markdown } from "../components/Markdown";
 import PageComments from "../components/page/PageComments";
 import PageReactions from "../components/page/PageReactions";
@@ -49,6 +52,7 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { Alert, AlertDescription } from "../components/ui/alert";
+import { toast } from "../components/ui/toast";
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -121,6 +125,73 @@ function flattenForPicker(nodes: PageNode[]): PageNode[] {
   };
   nodes.forEach(walk);
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Page export (C33T0) — Markdown download + copy                     */
+/* ------------------------------------------------------------------ */
+
+/** Escape a title for a YAML double-quoted scalar: `\` → `\\`, `"` → `\"`. */
+export function escapeYamlDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * Filename for a page export: lowercase, runs of non-alphanumerics
+ * (ASCII a-z0-9; anything else, incl. non-ASCII, becomes a dash) collapse
+ * to one `-`, leading/trailing dashes trimmed, `.md` appended. An empty
+ * (or symbol-only) title yields `page.md`. The charset pin also means `/`
+ * and `..` can never escape into a path.
+ */
+export function pageExportFilename(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "page"}.md`;
+}
+
+/**
+ * The exact document both Export .md and Copy Markdown produce:
+ * front-matter (`title`, `updated_at`) + the page's Markdown content.
+ * `updated_at` is the page's field as returned by the API, verbatim.
+ */
+export function buildPageExportDocument(page: Page): string {
+  return `---\ntitle: "${escapeYamlDoubleQuoted(page.title)}"\nupdated_at: "${page.updated_at}"\n---\n\n${page.content}\n`;
+}
+
+/**
+ * Copy a page's export document to the clipboard, with success/error
+ * toasts. Returns whether the copy succeeded. Uses the shared copyText
+ * helper (clipboard.writeText in secure contexts, execCommand fallback
+ * otherwise), so the copied text is byte-identical to the download.
+ */
+export async function copyPageMarkdown(page: Page): Promise<boolean> {
+  const ok = await copyText(buildPageExportDocument(page));
+  if (ok) {
+    toast.add({ title: "Markdown copied", type: "success" });
+  } else {
+    toast.add({ title: "Could not copy Markdown", type: "error" });
+  }
+  return ok;
+}
+
+/** Trigger a browser download of a page's export document. */
+function downloadPageExport(page: Page): void {
+  const blob = new Blob([buildPageExportDocument(page)], {
+    type: "text/markdown;charset=utf-8",
+  });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = pageExportFilename(page.title);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,6 +555,27 @@ export default function Pages() {
                         title="Share publicly"
                       >
                         <Share2 className="h-4 w-4" />
+                      </Button>
+                      {/* C33T0: page export — same document for download + copy. */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={pagesQuery.isLoading}
+                        onClick={() => void copyPageMarkdown(selected)}
+                        title="Copy Markdown"
+                      >
+                        <Copy className="h-4 w-4" />
+                        Copy Markdown
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={pagesQuery.isLoading}
+                        onClick={() => downloadPageExport(selected)}
+                        title="Export as Markdown"
+                      >
+                        <Download className="h-4 w-4" />
+                        Export .md
                       </Button>
                       <Button
                         variant="ghost"
