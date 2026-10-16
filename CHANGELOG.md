@@ -163,6 +163,38 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Project status updates (cycle 34)**
+- Project updates backend (C34T0): migration `000055_project_updates`
+  (`project_id` CASCADE, `author_id` SET NULL, `status` CHECK
+  on_track/at_risk/off_track, plain-text `body`, index on
+  `(project_id, created_at DESC)`) + `GET/POST .../updates`,
+  `PATCH/DELETE .../updates/{updateID}` (viewer 10+ reads, member 15+
+  mutations, author-or-admin edit/delete; invalid status / empty body →
+  400, unknown update → 404; PATCH tri-state, no-key PATCH → 400).
+  openapi. 7 service tests + 3 HTTP tests.
+- Project updates UI (C34T1): Updates section on Overview — latest-status
+  header chip (derived from the first list item; "No updates yet" empty
+  state), composer (status select + textarea, member 15+ only; viewers
+  read-only), timeline newest first (status badge, author, relative
+  time, `(edited)` marker, body as React-escaped plain text — never the
+  Markdown renderer), inline Edit / confirm Delete (author or admin).
+  11 new vitest.
+- Workspace archive round-trip (C34T2): exporter includes
+  `project_updates` per project (id, project_id, author_id,
+  author_email, status, body, timestamps); importer restores them
+  (author by email; unmapped author → skipped with a skip note naming
+  the email, never a fabricated author; null author imports as null;
+  unknown status / empty body skipped). 3 archive tests (round-trip,
+  unmapped author, invalid rows).
+- Cycle 34 closes the last verified Plane-parity gap (Plane's project
+  updates: On Track / At Risk / Off Track + message, chronological
+  timeline on Overview).
+- Honest v1 limitations: no settings toggle (Overview always shows the
+  section — Plane gates behind a toggle); no update notifications or
+  digest inclusion; no reactions or threading on updates; bodies are
+  plain text (no Markdown rendering); latest status surfaces on
+  Overview only, not the Projects list.
+
 **Clear the deferred list (cycle 33)**
 - Page export (C33T0): page-detail Export .md + Copy Markdown — the same
   document for both (front-matter `title` + `updated_at`, YAML-escaped,
