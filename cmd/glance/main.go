@@ -303,6 +303,8 @@ func main() {
 	// C28T2: recurring issue schedules (scheduled issue creation).
 	api.RegisterRecurringRoutes(e, projectHandler)
 	api.RegisterPageRoutes(e, issueHandler)
+	// C34T0: project status updates.
+	api.RegisterProjectUpdateRoutes(e, issueHandler)
 	api.RegisterReleaseRoutes(e, issueHandler)
 	api.RegisterTemplateRoutes(e, issueHandler)
 	api.RegisterCustomFieldRoutes(e, issueHandler)

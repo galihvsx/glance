@@ -70,6 +70,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	// C28T2: keep in lockstep with cmd/glance/main.go.
 	RegisterRecurringRoutes(e, projectHandler)
 	RegisterPageRoutes(e, issueHandler)
+	// C34T0: keep in lockstep with cmd/glance/main.go.
+	RegisterProjectUpdateRoutes(e, issueHandler)
 	RegisterReleaseRoutes(e, issueHandler)
 	RegisterTemplateRoutes(e, issueHandler)
 	RegisterCustomFieldRoutes(e, issueHandler)
