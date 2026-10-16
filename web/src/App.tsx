@@ -11,6 +11,7 @@ import Home from "./pages/Home";
 import Workspaces from "./pages/Workspaces";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
 import Workload from "./pages/Workload";
+import Risk from "./pages/Risk";
 import MyWork from "./pages/MyWork";
 import Projects from "./pages/Projects";
 import Issues from "./pages/Issues";
@@ -83,6 +84,8 @@ export default function App() {
                 />
                 {/* C29T1: workspace-level workload & capacity. */}
                 <Route path="/w/:slug/workload" element={<Workload />} />
+                {/* C30T3: workspace-level risk radar. */}
+                <Route path="/w/:slug/risk" element={<Risk />} />
                 <Route element={<ProjectScope />}>
                   <Route path="/w/:slug/p/:identifier" element={<Issues />} />
                   <Route

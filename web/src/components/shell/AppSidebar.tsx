@@ -27,6 +27,7 @@ import {
   MoreHorizontal,
   PanelLeftClose,
   Plus,
+  ShieldAlert,
   StickyNote,
   Target,
 } from "lucide-react";
@@ -343,6 +344,9 @@ function WorkspaceSection() {
   // C29T1: workload is workspace-scoped, so its entry lives here in the
   // workspace section next to Initiatives.
   const workloadHref = slug ? `/w/${encodeURIComponent(slug)}/workload` : "/";
+  // C30T3: risk radar is workspace-scoped, so its entry lives here next
+  // to Workload.
+  const riskHref = slug ? `/w/${encodeURIComponent(slug)}/risk` : "/";
 
   return (
     <section aria-label="Workspace">
@@ -379,6 +383,14 @@ function WorkspaceSection() {
             active={
               pathname === workloadHref ||
               pathname.startsWith(`${workloadHref}/`)
+            }
+          />
+          <NavRow
+            icon={ShieldAlert}
+            label="Risk"
+            to={riskHref}
+            active={
+              pathname === riskHref || pathname.startsWith(`${riskHref}/`)
             }
           />
         </div>
