@@ -34,6 +34,8 @@ import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Initiatives from "./pages/Initiatives";
 import InitiativeDetail from "./pages/InitiativeDetail";
+import Goals from "./pages/Goals";
+import GoalDetail from "./pages/GoalDetail";
 import Releases from "./pages/Releases";
 import Schedules from "./pages/Schedules";
 import Pages from "./pages/Pages";
@@ -82,6 +84,9 @@ export default function App() {
                   path="/w/:slug/initiatives/:id"
                   element={<InitiativeDetail />}
                 />
+                {/* C35T1: workspace-scoped OKR goals. */}
+                <Route path="/w/:slug/goals" element={<Goals />} />
+                <Route path="/w/:slug/goals/:id" element={<GoalDetail />} />
                 {/* C29T1: workspace-level workload & capacity. */}
                 <Route path="/w/:slug/workload" element={<Workload />} />
                 {/* C30T3: workspace-level risk radar. */}

@@ -459,6 +459,67 @@ export interface InitiativeRollup {
   projects: InitiativeRollupProject[];
 }
 
+// ---------- OKRs — Objectives + Key Results (C35) ----------
+
+/** Status vocabulary for objectives (mirrors initiatives). */
+export type ObjectiveStatus = "active" | "completed" | "archived";
+
+/** One workspace-scoped objective (goal). Progress is COMPUTED
+ *  server-side (mean of KR progress, 0 when no KRs) and never stored.
+ *  `key_results` is populated only by the detail endpoint. */
+export interface Objective {
+  id: string;
+  workspace_id: string;
+  title: string;
+  description?: string | null;
+  /** Owner; null when unassigned. */
+  owner?: ActorRef | null;
+  start_date?: string | null; // YYYY-MM-DD
+  target_date?: string | null; // YYYY-MM-DD
+  status: ObjectiveStatus;
+  /** Mean of KR progress, 0–1 (0 when no KRs). */
+  progress: number;
+  key_result_count: number;
+  key_results?: KeyResult[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** KR kind: metric (start → target → current, manual) or issue
+ *  (progress auto-derived from linked issues' done-group completion). */
+export type KeyResultKind = "metric" | "issue";
+
+/** A live issue linked to an issue KR — enough for the detail UI. */
+export interface LinkedIssue {
+  id: string;
+  display_id: string;
+  title: string;
+  state_group: string;
+}
+
+/** One measurable key result under an objective. Progress is COMPUTED
+ *  server-side: metric KRs clamp((current−start)/(target−start), 0, 1);
+ *  issue KRs are done-group linked issues ÷ linked issues (0 when no
+ *  links). `linked_issues` is populated only by the detail endpoint,
+ *  for issue KRs. */
+export interface KeyResult {
+  id: string;
+  objective_id: string;
+  title: string;
+  kind: KeyResultKind;
+  /** Metric only. */
+  unit?: string | null;
+  start_value: number;
+  target_value: number;
+  /** Metric only; issue KRs always carry 0. */
+  current_value: number;
+  /** Computed progress, 0–1. */
+  progress: number;
+  linked_issues?: LinkedIssue[];
+  created_at: string;
+  updated_at: string;
+}
+
 /** GET .../cycles/{id}/burndown response. */
 export interface CycleBurndown {
   cycle_id: string;
