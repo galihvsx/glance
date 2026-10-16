@@ -46,6 +46,17 @@ package service
 //     jiraMaxCommentsPerIssue) and inserted as attributed plain-text
 //     comments with their original created_at. v3 comment bodies are
 //     ADF; same extractor as descriptions.
+//   - fixVersions ← mapped to releases (a glance Release IS a project
+//     milestone): each distinct fixVersion name in the import becomes a
+//     release in the target project (name = version name, release_date
+//     = version releaseDate when present and parseable, status released
+//     when the version is released or archived, else planned); each
+//     imported issue is assigned to its version's release. Duplicate
+//     names map to ONE release; a release that already exists in the
+//     project is reused untouched. Issues with multiple fixVersions are
+//     assigned to the FIRST one (glance issues carry a single
+//     release_id). Only unmappable versions (empty name) are counted
+//     in versions_skipped.
 //   - sprints     ← SKIPPED and documented: glance cycles are managed
 //     manually; there is no sprint import. (Sprint data lives behind
 //     the Agile API / custom fields — not fetched at all.)
@@ -410,6 +421,17 @@ type jiraUser struct {
 	EmailAddress string `json:"emailAddress"`
 }
 
+// jiraVersion is one Jira project version (a fixVersion). ReleaseDate
+// is a YYYY-MM-DD calendar date string in Jira's API (not a
+// timestamp); it is parsed leniently at map time — an unparseable
+// value degrades to a NULL release_date, never a failed import.
+type jiraVersion struct {
+	Name        string `json:"name"`
+	Archived    bool   `json:"archived"`
+	Released    bool   `json:"released"`
+	ReleaseDate string `json:"releaseDate"`
+}
+
 type jiraStatus struct {
 	Name     string    `json:"name"`
 	Category jiraNamed `json:"statusCategory"`
@@ -439,6 +461,7 @@ type jiraIssueFields struct {
 	Created     string          `json:"created"`
 	Updated     string          `json:"updated"`
 	IssueType   jiraNamed       `json:"issuetype"`
+	FixVersions []jiraVersion   `json:"fixVersions"`
 }
 
 type jiraIssue struct {
@@ -468,9 +491,12 @@ type jiraCommentListResponse struct {
 
 // jiraSearchFields is the explicit field list for the search call. v3
 // changed field defaults — request exactly what the mapping needs.
+// fixVersions is what the release mapping reads (C39T0): without it
+// Jira omits versions from the response entirely.
 var jiraSearchFields = []string{
 	"summary", "description", "status", "labels", "assignee",
 	"priority", "comment", "created", "updated", "issuetype",
+	"fixVersions",
 }
 
 // ---------- fetch ----------
@@ -856,6 +882,15 @@ type jiraMappedIssue struct {
 	assigneeID  *string
 	issueType   string
 	comments    []jiraComment
+	// versionName is the trimmed name of the issue's FIRST fixVersion
+	// ("" = no fixVersions, or an unmappable empty-name first version).
+	// versionReleased / versionReleaseDate carry the release attributes
+	// for that version; releaseID is filled in Phase 2 once the
+	// release exists.
+	versionName        string
+	versionReleased    bool
+	versionReleaseDate *string // validated YYYY-MM-DD, or nil
+	releaseID          *string
 }
 
 // jiraImportRun carries per-run state: the client, lookups, and the
@@ -901,6 +936,31 @@ func (r *jiraImportRun) mapJiraIssue(ji jiraIssue) *jiraMappedIssue {
 	}
 	if f.Priority != nil {
 		m.priority = jiraPriorityValue(f.Priority.Name)
+	}
+	// fixVersions → release: glance issues carry a single release_id,
+	// so an issue with multiple fixVersions is assigned to the FIRST
+	// one (fixVersions order is the version order the reporter chose;
+	// the first is the primary target). The rest are intentionally
+	// not mapped — glance has no multi-release issue. An empty-name
+	// first version is unmappable (release name is required): it
+	// leaves versionName "" and Phase 1 counts it as skipped (not
+	// here — preview also maps, and must not inflate counts).
+	if len(f.FixVersions) > 0 {
+		v := f.FixVersions[0]
+		if t := strings.TrimSpace(v.Name); t != "" {
+			m.versionName = t
+			m.versionReleased = v.Released || v.Archived
+			// releaseDate is a YYYY-MM-DD calendar date in Jira; an
+			// unparseable value degrades to NULL (never fail the
+			// import over one version attribute, and never fabricate
+			// a date).
+			if d := strings.TrimSpace(v.ReleaseDate); d != "" {
+				if parsed, err := time.Parse("2006-01-02", d); err == nil {
+					s := parsed.Format("2006-01-02")
+					m.versionReleaseDate = &s
+				}
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, l := range f.Labels {
@@ -1008,14 +1068,16 @@ type JiraImportPreview struct {
 // (documented — there are no CSV rows here), so the frontend renders
 // all importers identically.
 type JiraImportResult struct {
-	Source         string           `json:"source"`
-	Created        int              `json:"created"`
-	Skipped        int              `json:"skipped"`
-	Failed         int              `json:"failed"`
-	LabelsCreated  []string         `json:"labels_created"`
-	StatesCreated  []string         `json:"states_created"`
-	AssigneeMisses int              `json:"assignee_misses"`
-	Errors         []ImportRowError `json:"errors"`
+	Source          string           `json:"source"`
+	Created         int              `json:"created"`
+	Skipped         int              `json:"skipped"`
+	Failed          int              `json:"failed"`
+	LabelsCreated   []string         `json:"labels_created"`
+	StatesCreated   []string         `json:"states_created"`
+	AssigneeMisses  int              `json:"assignee_misses"`
+	VersionsSkipped int              `json:"versions_skipped"`
+	ReleasesCreated int              `json:"releases_created"`
+	Errors          []ImportRowError `json:"errors"`
 }
 
 // newJiraImportRun validates input, gates membership (member 15+ via
@@ -1223,6 +1285,14 @@ func ImportJiraIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, client 
 			res.Errors = append(res.Errors, ImportRowError{Row: ord + 1, Message: "issue has no jira status"})
 			continue
 		}
+		// Only unmappable versions are counted: a fixVersion with an
+		// empty name cannot become a release (name is required); a
+		// mappable version maps, it is not skipped.
+		for _, v := range ji.Fields.FixVersions {
+			if strings.TrimSpace(v.Name) == "" {
+				res.VersionsSkipped++
+			}
+		}
 		if ji.Fields.Comment.Total > 0 {
 			comments, err := fetchJiraComments(ctx, r.client, ji.Key)
 			if err != nil {
@@ -1303,6 +1373,71 @@ func ImportJiraIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, client 
 		}
 	}
 
+	// fixVersions → releases: one release per distinct version name
+	// in the batch. A release that already exists in the project is
+	// reused untouched — the import never overwrites its status or
+	// release_date. First-seen version attributes win when one import
+	// carries the same name with conflicting releaseDate/released
+	// (Jira version names are unique per project, so this is
+	// defensive only). A failed release create fails the whole import,
+	// same as a failed label/issue insert above: it must never
+	// silently drop the issue. (Concurrent-import race note: two runs
+	// racing on the same new name can both count it as created; the
+	// ON CONFLICT guard keeps the row itself to one.)
+	releaseIDs := map[string]string{} // trimmed version name -> release id
+	releasesCreated := 0
+	for _, m := range valid {
+		if m.versionName == "" {
+			continue
+		}
+		if _, ok := releaseIDs[m.versionName]; ok {
+			continue
+		}
+		var existing string
+		err := tx.QueryRow(ctx,
+			`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = $2`,
+			r.lu.projectID, m.versionName).Scan(&existing)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		if err == nil {
+			releaseIDs[m.versionName] = existing
+			continue
+		}
+		status := "planned"
+		if m.versionReleased {
+			status = "released"
+		}
+		// release_date takes the validated YYYY-MM-DD calendar date;
+		// null stays NULL (never fabricate a zero date). A
+		// "YYYY-MM-DD" literal with ::date is timezone-independent.
+		var relDate any
+		if m.versionReleaseDate != nil {
+			relDate = *m.versionReleaseDate
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO releases (project_id, name, description, status, release_date)
+			 VALUES ($1::uuid, $2, '', $3, $4::date)
+			 ON CONFLICT (project_id, name) DO NOTHING`,
+			r.lu.projectID, m.versionName, status, relDate); err != nil {
+			return nil, err
+		}
+		var id string
+		if err := tx.QueryRow(ctx,
+			`SELECT id::text FROM releases WHERE project_id = $1::uuid AND name = $2`,
+			r.lu.projectID, m.versionName).Scan(&id); err != nil {
+			return nil, err
+		}
+		releaseIDs[m.versionName] = id
+		releasesCreated++
+	}
+	for _, m := range valid {
+		if id, ok := releaseIDs[m.versionName]; ok {
+			rid := id
+			m.releaseID = &rid
+		}
+	}
+
 	for _, m := range valid {
 		stateID := r.stateIDs[strings.ToLower(normalizeJiraStateName(m.statusName))]
 		var seq int
@@ -1314,13 +1449,17 @@ func ImportJiraIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, client 
 			return nil, fmt.Errorf("service: increment issue sequence: %w", err)
 		}
 		var issueID string
+		var relID any
+		if m.releaseID != nil {
+			relID = *m.releaseID
+		}
 		err = tx.QueryRow(ctx,
 			`INSERT INTO issues (project_id, sequence_id, name, description, priority,
-				state_id, created_by)
-			 VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6::uuid, $7::uuid)
+				state_id, created_by, release_id)
+			 VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6::uuid, $7::uuid, $8::uuid)
 			 RETURNING id::text`,
 			r.lu.projectID, seq, m.name, strconv.Quote(m.description),
-			m.priority, stateID, actorID).Scan(&issueID)
+			m.priority, stateID, actorID, relID).Scan(&issueID)
 		if err != nil {
 			return nil, err
 		}
@@ -1387,5 +1526,6 @@ func ImportJiraIssuesWithClient(ctx context.Context, pool *pgxpool.Pool, client 
 	res.AssigneeMisses = r.assigneeMisses
 	res.LabelsCreated = r.labelsCreated
 	res.StatesCreated = r.statesCreated
+	res.ReleasesCreated = releasesCreated
 	return res, nil
 }

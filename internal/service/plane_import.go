@@ -30,6 +30,17 @@ package service
 // is migration-free by design. T2 (analysis) and T3 (two-phase execute)
 // build on PlaneIssueRow / PlaneImportRowError / ParsePlaneIdentifier.
 //
+// Milestones (C39T0 finding — documented no-op): the Plane export format
+// carries NO milestone data: no per-issue milestone link and no
+// milestones collection. The observed export shape (PlaneIssueRow's 28
+// fields, both test fixtures) has no milestone key, and Plane's export
+// docs list only work items, cycles, modules, and views as exportable.
+// This importer therefore creates no releases from Plane exports —
+// do NOT invent milestone data Plane does not export. If a future
+// Plane export format gains a milestone key, decodePlaneRow already
+// tolerates unknown fields (it would silently ignore the key until
+// someone maps it deliberately).
+//
 // Safety: input is capped at planeImportMaxBytes (256 MiB) on both the
 // raw stream and any zip entry.
 
