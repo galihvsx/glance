@@ -163,6 +163,36 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Clear the deferred list (cycle 33)**
+- Page export (C33T0): page-detail Export .md + Copy Markdown — the same
+  document for both (front-matter `title` + `updated_at`, YAML-escaped,
+  + stored Markdown content), slugified ASCII filename (`page.md` fallback),
+  success/failure toasts. Frontend-only, no backend change. 13 new vitest.
+- Release notes (C33T1): `GET .../releases/{releaseID}/notes` → 200
+  `{release, markdown, counts}`; read gate = the release-issues gate (any
+  member may read; unknown/cross-workspace → 404). Markdown groups live
+  issues by state group (Completed / In progress / Backlog; cancelled and
+  unknown groups land in Backlog), `- <DISPLAY_ID> <title>` lines, empty
+  sections omitted, zero issues → `_No issues in this release._`, no
+  timestamps (stable, diffable). `counts.unstarted` counts the Backlog
+  section, so completed + started + unstarted == total. UI: release-detail
+  "Release notes" button → dialog rendering the backend Markdown verbatim
+  + Copy + Download `.md` (same ASCII slug rule as page export). openapi.
+  7 service tests + 1 HTTP test + 10 vitest. No migration, read-only.
+- Recurring double-write verification (C33T2): NO CHANGE — the c29 latent
+  note is closed as refuted/fixed: the bug was real and already fixed by
+  aa685c6 (bool-pattern helper), verified still fixed at HEAD by a
+  caller-by-caller audit (single caller each, all return nil on false) +
+  the passing `TestRecurringScheduleGuestRunNowWritesOnce` regression test
+  + single-write probes on the non-member / bad-slug / malformed-JSON paths.
+- Cycle 33 closes the deferred list outright: the c25 list had four items
+  (calendar drag-reschedule shipped in c26; page export + release notes
+  ship here), and the c29 latent-bug note is settled. Cycle 34 starts from
+  a clean beyond-Plane slate.
+- Honest v1 limitations: page export is the stored Markdown as-is (no
+  HTML/PDF rendering), single page only; release notes are a point-in-time
+  snapshot, not a stored artifact (re-generate after issues change).
+
 **Comment resolve threads (cycle 32)**
 - Resolve backend (C32T0): migration `000054_comment_resolve`
   (`resolved_at timestamptz`, `resolved_by uuid REFERENCES users(id) ON
