@@ -163,6 +163,41 @@ queued onboarding follow-up (invites endpoint).
   editing), and a schedule without `ends_on` runs until paused/deleted
   (surfaced in UI copy).
 
+**Milestones — Releases surface completion (cycle 38)**
+- Release progress snapshot (C38T0): `Release` gains
+  `progress_snapshot` — live count of the release's non-deleted issues
+  by state group (triage, backlog, unstarted, started, completed,
+  cancelled — same six groups as cycle snapshots, every group present
+  even when zero), computed in ONE aggregate query on List/Get (Create
+  returns the exact all-zero snapshot; Update attaches the live
+  snapshot, which also fixes Update's `issue_count`, previously always
+  0). No migration, no stored column. Overview gains `releases`: the
+  project's upcoming (planned) releases — id/name/status/date/
+  issue_count/snapshot, ordered by release_date nulls-last then name,
+  capped at 5, `[]` when none. openapi (incl. the import description,
+  which no longer says milestones are skipped).
+- Milestones UI (C38T1): `ReleaseCard` shows a progress bar + folded
+  counts (`OrgProgressBar` + `OrgProgressCounts`, shared
+  `snapshotProgressCounts` fold: triage+backlog+unstarted → open,
+  started → in progress, completed+cancelled → done) from the backend
+  snapshot — the card never fetches the release's issues; an empty
+  snapshot renders an all-open bar via the opt-in `emptyBar` prop
+  (Cycles callers untouched). Overview gains a Milestones section
+  (upcoming releases with progress + date; rows deep-link to the
+  release detail via `?release=<id>`, header links to Releases; the
+  empty state keeps the section visible). GitHub import result shows a
+  "Releases created" Stat. Prototype: `prototype/milestones.html`.
+- GitHub import maps milestones → releases (C38T2): each distinct
+  milestone title becomes a Release (name = title, release_date =
+  milestone `due_on` or NULL, status `planned` if open / `released`
+  if closed); each imported issue is assigned to its milestone's
+  release; duplicate titles map to ONE release; a pre-existing release
+  is reused untouched. `milestones_skipped` now counts only
+  unmappable milestones (empty title); result gains
+  `releases_created`. Import copy + docs updated. Known non-blocking
+  observation: an unknown `?release=` id fires one wasted issues fetch
+  whose error is never rendered — the list still renders.
+
 **Workspace audit log (cycle 37, Plane parity)**
 - Workspace audit log backend (C37T0): migration
   `000058_workspace_audit_log` (workspace-scoped, append-only by
