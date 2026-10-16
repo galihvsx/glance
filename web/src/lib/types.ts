@@ -524,6 +524,28 @@ export interface KeyResult {
   updated_at: string;
 }
 
+/** Author of a KR check-in entry: id + display name (users.name
+ *  falling back to users.email). Null when the author's user row was
+ *  deleted. */
+export interface CheckinAuthor {
+  id: string;
+  display_name: string;
+}
+
+/** One append-only KR check-in entry: a metric KR's current_value
+ *  moving from previous_value to new_value, with the actor and an
+ *  optional note. previous_value is null on the seed entry written
+ *  at KR creation. There is no update/delete path. */
+export interface KeyResultCheckin {
+  id: string;
+  key_result_id: string;
+  author: CheckinAuthor | null;
+  previous_value: number | null;
+  new_value: number;
+  note: string | null;
+  created_at: string;
+}
+
 /** GET .../cycles/{id}/burndown response. */
 export interface CycleBurndown {
   cycle_id: string;

@@ -17,6 +17,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import GoalDetail from "./GoalDetail";
 import type {
   Issue,
+  KeyResultCheckin,
   Objective,
   Project,
   WorkspaceMember,
@@ -124,7 +125,43 @@ const projectIssues: Issue[] = [
   },
 ];
 
-// Workspace role for the current test: 15 = member, 5 = guest.
+// Check-in history fixture for kr-1 (metric), newest first: a
+// +4 move with a note, a −5 move without a note, and the seed entry
+// (previous_value null, author null → "Deleted user").
+const checkins: KeyResultCheckin[] = [
+  {
+    id: "ci-3",
+    key_result_id: "kr-1",
+    author: { id: "u-1", display_name: "galih" },
+    previous_value: 30,
+    new_value: 34,
+    note: "Product Hunt launch",
+    created_at: "2026-10-16T10:00:00Z",
+  },
+  {
+    id: "ci-2",
+    key_result_id: "kr-1",
+    author: { id: "u-2", display_name: "ana" },
+    previous_value: 35,
+    new_value: 30,
+    note: null,
+    created_at: "2026-10-15T10:00:00Z",
+  },
+  {
+    id: "ci-1",
+    key_result_id: "kr-1",
+    author: null,
+    previous_value: null,
+    new_value: 0,
+    note: null,
+    created_at: "2026-10-14T10:00:00Z",
+  },
+];
+
+// Which check-ins fixture the history endpoint returns.
+const testCheckins = vi.hoisted(() => ({
+  value: "full" as "full" | "empty" | "error" | "pending",
+}));
 const testRole = vi.hoisted(() => ({ value: 15 }));
 // Which objective fixture the detail endpoint returns.
 const testObjective = vi.hoisted(() => ({
@@ -181,12 +218,25 @@ function defaultGet(path: string): Promise<unknown> {
     return Promise.resolve({ projects });
   if (path.includes(`/projects/ENG/issues`))
     return Promise.resolve({ results: projectIssues });
+  if (
+    path ===
+    `/api/v1/workspaces/${SLUG}/objectives/${OBJ_ID}/key-results/kr-1/check-ins`
+  ) {
+    if (testCheckins.value === "empty")
+      return Promise.resolve({ check_ins: [] });
+    if (testCheckins.value === "error")
+      return Promise.reject(new mockApi.ApiError(500, "boom"));
+    if (testCheckins.value === "pending")
+      return new Promise<unknown>(() => {});
+    return Promise.resolve({ check_ins: checkins });
+  }
   throw new Error(`unexpected GET ${path}`);
 }
 
 beforeEach(() => {
   testRole.value = 15;
   testObjective.value = "full";
+  testCheckins.value = "full";
   mockApi.get.mockImplementation(defaultGet);
   mockApi.post.mockImplementation(() => Promise.resolve({}));
   mockApi.patch.mockImplementation(() => Promise.resolve({}));
@@ -497,5 +547,125 @@ describe("GoalDetail guest gating", () => {
     expect(
       screen.getByText(/guest access.*read-only/i),
     ).toBeTruthy();
+  });
+});
+
+describe("GoalDetail KR check-in history", () => {
+  it("renders history newest first: signed deltas, note, seed entry, deleted-user author", async () => {
+    renderPage();
+    const rows = await screen.findAllByTestId("kr-checkin-row");
+    expect(rows).toHaveLength(3);
+
+    // Newest first: +4 move with a note, by galih.
+    expect(within(rows[0]).getByText("30 → 34")).toBeTruthy();
+    expect(within(rows[0]).getByText("+4")).toBeTruthy();
+    expect(within(rows[0]).getByText("Product Hunt launch")).toBeTruthy();
+    expect(within(rows[0]).getByText(/galih ·/)).toBeTruthy();
+    expect(
+      rows[0].querySelector('[title="2026-10-16T10:00:00Z"]'),
+    ).toBeTruthy();
+
+    // −5 move with no note — the note is absent, not empty.
+    expect(within(rows[1]).getByText("35 → 30")).toBeTruthy();
+    expect(within(rows[1]).getByText("−5")).toBeTruthy();
+    expect(within(rows[1]).getByText(/ana ·/)).toBeTruthy();
+    expect(
+      within(rows[1]).queryByText("Product Hunt launch"),
+    ).toBeNull();
+
+    // Seed entry: "started at {value}", never a delta, null author
+    // renders as "Deleted user" (the codebase convention).
+    expect(within(rows[2]).getByText("started at 0")).toBeTruthy();
+    expect(within(rows[2]).getByText(/Deleted user ·/)).toBeTruthy();
+    expect(rows[2].textContent).not.toContain("+");
+    expect(rows[2].textContent).not.toContain("−");
+  });
+
+  it("fetches history for metric KRs only — no fetch fires for issue KRs", async () => {
+    renderPage();
+    await screen.findAllByTestId("kr-checkin-row");
+    const checkinGets = mockApi.get.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("/check-ins"),
+    );
+    expect(checkinGets).toHaveLength(1);
+    expect(checkinGets[0][0]).toContain("/key-results/kr-1/check-ins");
+    // Exactly one history section: the metric KR's. The issue KR
+    // shows none.
+    expect(screen.getAllByText("Check-in history")).toHaveLength(1);
+  });
+
+  it("shows a loading indicator while history is fetching", async () => {
+    testCheckins.value = "pending";
+    renderPage();
+    expect(
+      await screen.findByText("Loading check-in history…"),
+    ).toBeTruthy();
+  });
+
+  it("shows an error message when history fails to load", async () => {
+    testCheckins.value = "error";
+    renderPage();
+    expect(
+      await screen.findByText("Couldn't load check-in history."),
+    ).toBeTruthy();
+  });
+
+  it("renders a sensible empty state for an empty history", async () => {
+    testCheckins.value = "empty";
+    renderPage();
+    expect(await screen.findByText("No check-ins yet.")).toBeTruthy();
+  });
+
+  it("shows no history section for guests (list endpoint is member-only)", async () => {
+    testRole.value = 5;
+    renderPage();
+    await screen.findByText("Ship glance v0.4.0");
+    expect(screen.queryByText("Check-in history")).toBeNull();
+    const checkinGets = mockApi.get.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("/check-ins"),
+    );
+    expect(checkinGets).toHaveLength(0);
+  });
+
+  it("sends checkin_note with the value PATCH when a note is given", async () => {
+    renderPage();
+    const input = await screen.findByLabelText("Current value");
+    fireEvent.change(input, { target: { value: "35" } });
+    fireEvent.change(screen.getByLabelText("Note (optional)"), {
+      target: { value: "Launch day" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() =>
+      expect(mockApi.patch).toHaveBeenCalledWith(
+        `/api/v1/workspaces/${SLUG}/objectives/${OBJ_ID}/key-results/kr-1`,
+        { current_value: 35, checkin_note: "Launch day" },
+      ),
+    );
+  });
+
+  it("omits checkin_note from the PATCH when the note is empty", async () => {
+    renderPage();
+    const input = await screen.findByLabelText("Current value");
+    fireEvent.change(input, { target: { value: "35" } });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1));
+    const call = mockApi.patch.mock
+      .calls[0] as unknown as [string, Record<string, unknown>];
+    expect(call[1]).toEqual({ current_value: 35 });
+    expect("checkin_note" in call[1]).toBe(false);
+  });
+
+  it("omits checkin_note from the PATCH when the note is whitespace-only", async () => {
+    renderPage();
+    const input = await screen.findByLabelText("Current value");
+    fireEvent.change(input, { target: { value: "35" } });
+    fireEvent.change(screen.getByLabelText("Note (optional)"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1));
+    const call = mockApi.patch.mock
+      .calls[0] as unknown as [string, Record<string, unknown>];
+    expect("checkin_note" in call[1]).toBe(false);
   });
 });
