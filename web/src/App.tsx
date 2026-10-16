@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./lib/auth";
 import { QueryProvider } from "./lib/query";
 import ProtectedRoute from "./components/ProtectedRoute";
+import WorkspaceScope from "./components/WorkspaceScope";
 import ProjectScope from "./components/ProjectScope";
 import AdminGuard from "./components/AdminGuard";
 import Admin from "./pages/Admin";
@@ -69,102 +70,106 @@ export default function App() {
                   }
                 />
                 <Route path="/w" element={<Workspaces />} />
-                <Route path="/w/:slug" element={<Projects />} />
-                <Route
-                  path="/w/:slug/settings"
-                  element={<WorkspaceSettings />}
-                />
-                <Route path="/w/:slug/my-work" element={<MyWork />} />
-                <Route
-                  path="/w/:slug/initiatives"
-                  element={<Initiatives />}
-                />
-                {/* C27T2: workspace-scoped initiative detail. */}
-                <Route
-                  path="/w/:slug/initiatives/:id"
-                  element={<InitiativeDetail />}
-                />
-                {/* C35T1: workspace-scoped OKR goals. */}
-                <Route path="/w/:slug/goals" element={<Goals />} />
-                <Route path="/w/:slug/goals/:id" element={<GoalDetail />} />
-                {/* C29T1: workspace-level workload & capacity. */}
-                <Route path="/w/:slug/workload" element={<Workload />} />
-                {/* C30T3: workspace-level risk radar. */}
-                <Route path="/w/:slug/risk" element={<Risk />} />
-                <Route element={<ProjectScope />}>
-                  <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+                {/* C43T0: every /w/:slug/* route lives under WorkspaceScope
+                    (workspace realtime mount + the single ConnectionDot). */}
+                <Route element={<WorkspaceScope />}>
+                  <Route path="/w/:slug" element={<Projects />} />
                   <Route
-                    path="/w/:slug/p/:identifier/overview"
-                    element={<Overview />}
+                    path="/w/:slug/settings"
+                    element={<WorkspaceSettings />}
                   />
+                  <Route path="/w/:slug/my-work" element={<MyWork />} />
                   <Route
-                    path="/w/:slug/p/:identifier/i/:uuid"
-                    element={<IssueDetail />}
+                    path="/w/:slug/initiatives"
+                    element={<Initiatives />}
                   />
+                  {/* C27T2: workspace-scoped initiative detail. */}
                   <Route
-                    path="/w/:slug/p/:identifier/intake"
-                    element={<Intake />}
+                    path="/w/:slug/initiatives/:id"
+                    element={<InitiativeDetail />}
                   />
-                  <Route
-                    path="/w/:slug/p/:identifier/board"
-                    element={<Board />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/spreadsheet"
-                    element={<Spreadsheet />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/calendar"
-                    element={<Calendar />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/gantt"
-                    element={<Gantt />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/roadmap"
-                    element={<Roadmap />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/analytics"
-                    element={<Analytics />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/cycles"
-                    element={<Cycles />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/modules"
-                    element={<Modules />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/releases"
-                    element={<Releases />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/schedules"
-                    element={<Schedules />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/pages"
-                    element={<Pages />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/activity"
-                    element={<Activity />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/settings"
-                    element={<ProjectSettings />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/drafts"
-                    element={<Drafts />}
-                  />
-                  <Route
-                    path="/w/:slug/p/:identifier/archived"
-                    element={<Archived />}
-                  />
+                  {/* C35T1: workspace-scoped OKR goals. */}
+                  <Route path="/w/:slug/goals" element={<Goals />} />
+                  <Route path="/w/:slug/goals/:id" element={<GoalDetail />} />
+                  {/* C29T1: workspace-level workload & capacity. */}
+                  <Route path="/w/:slug/workload" element={<Workload />} />
+                  {/* C30T3: workspace-level risk radar. */}
+                  <Route path="/w/:slug/risk" element={<Risk />} />
+                  <Route element={<ProjectScope />}>
+                    <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+                    <Route
+                      path="/w/:slug/p/:identifier/overview"
+                      element={<Overview />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/i/:uuid"
+                      element={<IssueDetail />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/intake"
+                      element={<Intake />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/board"
+                      element={<Board />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/spreadsheet"
+                      element={<Spreadsheet />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/calendar"
+                      element={<Calendar />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/gantt"
+                      element={<Gantt />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/roadmap"
+                      element={<Roadmap />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/analytics"
+                      element={<Analytics />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/cycles"
+                      element={<Cycles />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/modules"
+                      element={<Modules />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/releases"
+                      element={<Releases />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/schedules"
+                      element={<Schedules />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/pages"
+                      element={<Pages />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/activity"
+                      element={<Activity />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/settings"
+                      element={<ProjectSettings />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/drafts"
+                      element={<Drafts />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/archived"
+                      element={<Archived />}
+                    />
+                  </Route>
                 </Route>
               </Route>
             </Route>
