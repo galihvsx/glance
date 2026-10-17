@@ -5,6 +5,64 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Issue version history UI: view, diff, restore (cycle 53)**
+- Audit: cycles 49–52 built the version engine + API, but the
+  frontend had zero version surface — no lib client, no component,
+  no tab; ActivitySection's History tab shows activity rows only.
+  This cycle makes the snapshots visible.
+- Versions client (C53T0): `web/src/lib/versions.ts` — typed client
+  for the fixed contract (`GET .../versions` → `{versions}`,
+  oldest first; `GET .../versions/{n}` → bare `IssueVersion`; `POST
+  .../versions/{n}/restore` → the post-restore live `Issue`) plus
+  `diffSnapshots(prev, curr)` over the 11 scalar fields, skipping
+  identity fields, `updated_at`, `subtask_progress`, and
+  `deleted_at` (C50 exclusions). `description` compares by canonical
+  JSON (key-reorder never false-positives) and reports
+  changed/not-changed only — no word diff, no preview. `prev =
+  null` (v1) yields the "Created" marker. Null/undefined count as
+  the same "absent". `created_by` reuses `ActorRef` (backend name is
+  nullable).
+- Versions tab (C53T1): a "Versions" tab in issue detail
+  (`ActivitySection`, prototype-as-spec in the cycle dir) rendering
+  `VersionHistory` — newest-first list, `vN` + author + relative
+  time + changed-field chips (v1 "Created", zero-change versions
+  "No changes"), expandable field diff table (human labels;
+  `state_id` → state name via already-loaded states; `priority` →
+  label; `parent_id` → display id if already loaded, else
+  truncated UUID, never a per-row fetch; `description` → "changed"
+  with no preview; dates plain; booleans Yes/No) plus the
+  one-line note that labels, assignees, and custom values are not
+  part of version snapshots. Restore per row with an `AlertDialog`
+  confirm ("applies the old snapshot as a new version; history is
+  never rewritten"), visible only to writers (role >= 15, hidden
+  until the role resolves) and never on the latest version —
+  restoring the latest is not an error but writes a
+  duplicate-content version + `_restored` marker (verified in
+  `RestoreIssueVersion`'s no-diff branch), so the UI does not offer
+  it. On success: prompt invalidation of versions + issue + issues
+  + board-issues + history (no optimistic writes). 403 →
+  permission message; 404 → message + list refetch.
+- OpenAPI correctness (C53T2): bulk-delete doc fixed from
+  `{deleted: integer}` to the shipped `{results: [{id, ok,
+  error?}]}` envelope plus per-item semantics and 400/403/404
+  responses. Versions entries corrected ("description versions"
+  → "issue versions", full-snapshot wording) with the missing
+  error responses (list 404, get 400, restore 400/403) and the
+  `IssueVersion` schema rewritten field-for-field against the Go
+  struct (`version_no, snapshot: Issue, created_by: {id, name
+  nullable, email}, created_at`). A coordinator-caught fix-loop
+  corrected the restore description's undoability mechanism: the
+  pre-restore state is already the latest version (no extra
+  pre-restore snapshot is written). New
+  `TestOpenAPIResponseShapesFourEndpoints` pins the live envelopes
+  for these four endpoints — the regression net the route-coverage
+  test does not provide. Recorded for a future cycle (not fixed
+  here): the shared `Issue` schema itself drifts from the Go struct
+  (missing `project_id`/`created_by`/`deleted_at`, extra
+  `archived` boolean, `state_id` nullability) — needs a dedicated
+  cycle since it touches nearly all issue endpoints.
+- No backend changes to the versions engine, no migration.
+
 **Trash: restore deleted issues (cycle 52)**
 - Audit: delete was a one-way door — soft-deleted issues had no
   list/restore path (`RestoreIssueVersion` requires `deleted_at IS
