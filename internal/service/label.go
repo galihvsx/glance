@@ -12,6 +12,7 @@ package service
 // name is unique per workspace; parent_id forms the hierarchy.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -462,6 +463,108 @@ func snapshotCascadeVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, 
 	return snapshotVersionTx(ctx, tx, issueID, actorID, after)
 }
 
+// issueRowChangedFields diffs two scanned issue rows and returns the
+// changed_fields names (the updateIssueTx vocabulary) for every tracked
+// row column that differs. It is the cascade half of the C56T1 webhook
+// payload: the direct change ("labels"/"assignees") is never a row
+// column, so it can never appear here and can never collide with it.
+// Identity / derived / timestamp columns are excluded, mirroring
+// issueRowContentEqual: ID, ProjectID, SequenceID and CreatedBy never
+// change on these paths; CreatedAt/UpdatedAt are timestamps, not
+// content; DisplayID is derived; SubtaskProgress/DeletedAt are never
+// populated by scanIssue. ArchivedAt maps to "archived", the activity
+// field name updateIssueTx uses for the archived_at toggle. The diff
+// is computed from the rows themselves, never from a firing's return —
+// a firing that reports success but changed nothing (or vice versa)
+// cannot skew changed_fields.
+func issueRowChangedFields(before, after *Issue) []string {
+	if before == nil || after == nil {
+		return nil
+	}
+	var fields []string
+	if before.Name != after.Name {
+		fields = append(fields, "name")
+	}
+	if !bytes.Equal(before.Description, after.Description) {
+		fields = append(fields, "description")
+	}
+	if before.Priority != after.Priority {
+		fields = append(fields, "priority")
+	}
+	if before.StateID != after.StateID {
+		fields = append(fields, "state_id")
+	}
+	if !strPtrEq(before.ParentID, after.ParentID) {
+		fields = append(fields, "parent_id")
+	}
+	if before.SortOrder != after.SortOrder {
+		fields = append(fields, "sort_order")
+	}
+	if !datePtrEq(before.StartDate, after.StartDate) {
+		fields = append(fields, "start_date")
+	}
+	if !datePtrEq(before.TargetDate, after.TargetDate) {
+		fields = append(fields, "target_date")
+	}
+	if !strPtrEq(before.EstimatePointID, after.EstimatePointID) {
+		fields = append(fields, "estimate_point_id")
+	}
+	if before.IsDraft != after.IsDraft {
+		fields = append(fields, "is_draft")
+	}
+	if !archivedAtEq(before.ArchivedAt, after.ArchivedAt) {
+		fields = append(fields, "archived")
+	}
+	return fields
+}
+
+// archivedAtEq reports whether two archived_at values are equal: both
+// NULL, or both set to the same instant. datePtrEq is wrong here —
+// archived_at is a timestamp, not a DATE column, so same-day
+// different-time stamps must still count as a change.
+func archivedAtEq(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+// enqueueLabelWebhookTx enqueues exactly ONE issue.updated webhook
+// in-tx for a label/assignee attach/detach (C56T1). changed is the same
+// RowsAffected() > 0 condition that gates announceLabelChange: an
+// idempotent no-op re-attach/detach enqueues nothing. changed_fields
+// is the direct change (directField: "labels" or "assignees") plus the
+// automation-cascade row diff (issueRowChangedFields over the
+// before-image vs the post-firing row re-read in-tx). The payload
+// matches the restoreIssueTx shape: {id, display_id, changed_fields,
+// actor_id}. The enqueue sits in-tx, before commit, so a rolled-back
+// mutation never enqueues — and it is NOT also done from
+// announceLabelChange (post-commit, wrong layer). These four functions
+// previously enqueued zero webhooks, so this one enqueue is exactly-one
+// by construction. When the before-image read failed (haveBefore
+// false), the cascade diff is skipped but the direct-change webhook
+// still goes out with the display_id from the re-read row.
+func enqueueLabelWebhookTx(ctx context.Context, tx pgx.Tx, wsID, ident, issueID, actorID, directField string, before *Issue, haveBefore, changed bool) error {
+	if !changed {
+		return nil
+	}
+	after, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid`, issueID))
+	if err != nil {
+		return err
+	}
+	changedFields := []string{directField}
+	if haveBefore {
+		changedFields = append(changedFields, issueRowChangedFields(before, after)...)
+	}
+	return enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+		"id":             issueID,
+		"display_id":     ident + "-" + strconv.Itoa(after.SequenceID),
+		"changed_fields": changedFields,
+		"actor_id":       actorID,
+	})
+}
+
 // announceLabelChange announces issue.updated after a committed
 // label/assignee attach/detach (C46T1). changed is the firing's
 // RowsAffected() > 0: idempotent no-ops (0 rows) announce nothing, and
@@ -558,6 +661,11 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		}
 	}
 	changed := tag.RowsAffected() > 0
+	// C56T1: exactly one issue.updated webhook in-tx for a real attach
+	// (direct "labels" + any cascade row diff).
+	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "labels", before, haveBefore, changed); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -623,6 +731,11 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 	}
 	changed := tag.RowsAffected() > 0
+	// C56T1: exactly one issue.updated webhook in-tx for a real detach
+	// (direct "labels" + any cascade row diff).
+	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "labels", before, haveBefore, changed); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -719,6 +832,11 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 		}
 	}
 	changed := tag.RowsAffected() > 0
+	// C56T1: exactly one issue.updated webhook in-tx for a real
+	// assignment (direct "assignees" + any cascade row diff).
+	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "assignees", before, haveBefore, changed); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -807,6 +925,11 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		}
 	}
 	changed := tag.RowsAffected() > 0
+	// C56T1: exactly one issue.updated webhook in-tx for a real
+	// unassignment (direct "assignees" + any cascade row diff).
+	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "assignees", before, haveBefore, changed); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
