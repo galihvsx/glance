@@ -425,12 +425,55 @@ func resolveIssueForTaxonomy(ctx context.Context, q queryRower, wsSlug, identifi
 	return wsID, projectID, role, nil
 }
 
+// issueStateIDInTx reads one issue's state_id inside tx. The second
+// return reports whether the read succeeded; a failed read must never
+// fail the mutation — the caller proceeds and the cascade detector in
+// announceLabelChange simply skips the objective fan-out.
+func issueStateIDInTx(ctx context.Context, tx pgx.Tx, issueID string) (string, bool) {
+	var stateID string
+	if err := tx.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&stateID); err != nil {
+		return "", false
+	}
+	return stateID, true
+}
+
+// announceLabelChange announces issue.updated after a committed
+// label/assignee attach/detach (C46T1). changed is the firing's
+// RowsAffected() > 0: idempotent no-ops (0 rows) announce nothing, and
+// the announce sits strictly after tx.Commit, so a failed commit
+// announces nothing. The snapshot is read post-commit via pool (never
+// the in-tx row): deleted_at IS NULL + project filter, best-effort
+// skip on lookup failure. When the in-tx automation firing moved the
+// issue (beforeStateID != snapshot state_id — only set_state touches
+// state_id), linked objectives get objective.updated too. Exactly one
+// issue.updated per call, even when the firing cascades.
+func announceLabelChange(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident, projectID, issueID, beforeStateID string, haveBefore, changed bool) {
+	if !changed {
+		return
+	}
+	iss, err := scanIssue(pool.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+		issueID, projectID))
+	if err != nil {
+		return
+	}
+	announceIssueUpdated(wsSlug, ident, issueID, iss)
+	if haveBefore && iss.StateID != beforeStateID {
+		announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+	}
+}
+
 // AssignLabel attaches a workspace label to an issue. Idempotent:
 // assigning twice succeeds with no duplicate row. The label must belong
 // to the workspace (a foreign label is ErrLabelNotFound). Member (15)+.
 // C16T0: the attach and its issue.labels_changed automation evaluation
 // share one tx, so a rolled-back attach can never fire a rule; the
-// idempotent re-attach (0 rows) fires nothing.
+// idempotent re-attach (0 rows) fires nothing. C46T1: a real attach
+// announces issue.updated after commit (+ objective.updated if a
+// firing's set_state moved the issue); a no-op attach announces
+// nothing.
 func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, labelID, actorID string) error {
 	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
@@ -450,6 +493,11 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// C46T1: pre-mutation state for the cascade detector (only
+	// set_state touches state_id, so before != after means exactly a
+	// real cascade move).
+	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
 
 	var owner string
 	err = tx.QueryRow(ctx,
@@ -475,10 +523,12 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			[]string{lid}, nil)
 	}
+	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceNotifications(notified)
+	announceLabelChange(ctx, pool, wsSlug, ident, projectID, issueID, beforeStateID, haveBefore, changed)
 	return nil
 }
 
@@ -486,7 +536,9 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 // an absent label succeeds silently. Member (15)+. C16T0: the detach and
 // its issue.labels_changed automation evaluation share one tx, so a
 // rolled-back detach can never fire a rule; detaching an absent label
-// (0 rows) fires nothing.
+// (0 rows) fires nothing. C46T1: a real detach announces issue.updated
+// after commit (+ objective.updated on a cascade set_state move); a
+// no-op detach announces nothing.
 func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, labelID, actorID string) error {
 	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
@@ -511,6 +563,9 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	defer tx.Rollback(ctx)
 
+	// C46T1: pre-mutation state for the cascade detector.
+	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
+
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_labels WHERE issue_id = $1::uuid AND label_id = $2::uuid`,
 		issueID, lid)
@@ -522,16 +577,20 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			nil, []string{lid})
 	}
+	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceNotifications(notified)
+	announceLabelChange(ctx, pool, wsSlug, ident, projectID, issueID, beforeStateID, haveBefore, changed)
 	return nil
 }
 
 // AssignAssignee assigns a workspace member to an issue. Idempotent.
 // The assignee must be a member of the workspace (any role — guests can
-// be assigned work). Member (15)+ to mutate.
+// be assigned work). Member (15)+ to mutate. C46T1: a real assignment
+// announces issue.updated after commit (+ objective.updated on a
+// cascade set_state move); an idempotent re-assign announces nothing.
 func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, userID, actorID string) error {
 	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
@@ -551,6 +610,9 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// C46T1: pre-mutation state for the cascade detector.
+	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
 
 	var one int
 	err = tx.QueryRow(ctx,
@@ -600,16 +662,20 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 				runAutomationAssignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
+	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceNotifications(notified)
+	announceLabelChange(ctx, pool, wsSlug, ident, projectID, issueID, beforeStateID, haveBefore, changed)
 	return nil
 }
 
 // UnassignAssignee removes an assignee from an issue. Idempotent:
 // unassigning an absent assignee succeeds silently (and notifies nobody).
-// Member (15)+.
+// Member (15)+. C46T1: a real unassignment announces issue.updated after
+// commit (+ objective.updated on a cascade set_state move); a no-op
+// unassignment announces nothing.
 func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, userID, actorID string) error {
 	wsID, projectID, role, err := resolveIssueForTaxonomy(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
@@ -633,6 +699,9 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// C46T1: pre-mutation state for the cascade detector.
+	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
 
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_assignees WHERE issue_id = $1::uuid AND user_id = $2::uuid`,
@@ -670,10 +739,12 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 				runAutomationUnassignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
+	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	announceNotifications(notified)
+	announceLabelChange(ctx, pool, wsSlug, ident, projectID, issueID, beforeStateID, haveBefore, changed)
 	return nil
 }
 
