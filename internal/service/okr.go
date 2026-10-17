@@ -789,6 +789,63 @@ func buildObjectiveProgressHistoryWithIssues(krs []historyKR, checkins []history
 	return out
 }
 
+// loadIssueTransitions returns every state_id activity row for the
+// issues linked to the given objectives, grouped by issue id. Old/
+// new are JSONB scalars; #>> '{}' extracts the bare state id (the
+// analytics burndown precedent). NULL old/new (never for state_id
+// rows) decode as "" — the replay treats an unknown state as NOT
+// done, never over-claiming. Rows arrive ordered by (issue_id,
+// created_at, id).
+//
+// DISTINCT (C48T0): the join to key_result_issues fans each
+// activity row out once per KR linking its issue. DISTINCT
+// collapses those copies back to one row. ia.id is selected only
+// so DISTINCT keeps genuinely distinct rows apart (two transitions
+// can share issue/old/new/timestamp) and so ORDER BY can tie-break
+// on it; its value is unused. ORDER BY uses select-list ordinals
+// because DISTINCT requires ORDER BY expressions to appear in the
+// select list.
+func loadIssueTransitions(ctx context.Context, pool *pgxpool.Pool, objectiveIDs []string) (map[string][]historyIssueTransition, error) {
+	transByIssue := map[string][]historyIssueTransition{}
+	trRows, err := pool.Query(ctx,
+		`SELECT DISTINCT ia.issue_id::text,
+			ia.old_value #>> '{}', ia.new_value #>> '{}', ia.created_at, ia.id::text
+		 FROM issue_activities ia
+		 JOIN key_result_issues kri ON kri.issue_id = ia.issue_id
+		 JOIN key_results kr ON kr.id = kri.key_result_id
+		 JOIN issues i ON i.id = ia.issue_id AND i.deleted_at IS NULL
+		 WHERE kr.objective_id::text = ANY($1::text[]) AND ia.field = 'state_id'
+		 ORDER BY 1, 4, 5`,
+		objectiveIDs)
+	if err != nil {
+		return nil, err
+	}
+	for trRows.Next() {
+		var issueID string
+		var tr historyIssueTransition
+		var oldVal, newVal *string
+		var activityID string // selected for DISTINCT/ORDER BY only, unused
+		if err := trRows.Scan(&issueID, &oldVal, &newVal, &tr.At, &activityID); err != nil {
+			trRows.Close()
+			return nil, err
+		}
+		_ = activityID
+		if oldVal != nil {
+			tr.OldStateID = *oldVal
+		}
+		if newVal != nil {
+			tr.NewStateID = *newVal
+		}
+		transByIssue[issueID] = append(transByIssue[issueID], tr)
+	}
+	if err := trRows.Err(); err != nil {
+		trRows.Close()
+		return nil, err
+	}
+	trRows.Close()
+	return transByIssue, nil
+}
+
 // fillObjectiveProgressHistory populates ProgressHistory on each
 // objective from its metric-KR check-in rows plus its issue-KR
 // link/state-transition replay, in a fixed handful of queries
@@ -912,46 +969,12 @@ func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs 
 	}
 	linkRows.Close()
 
-	// The linked issues' state_id activity rows, batched. Old/new
-	// are JSONB scalars; #>> '{}' extracts the bare state id
-	// (the analytics burndown precedent). NULL old/new (never for
-	// state_id rows) decode as "" — the replay treats an unknown
-	// state as NOT done, never over-claiming.
-	transByIssue := map[string][]historyIssueTransition{}
-	trRows, err := pool.Query(ctx,
-		`SELECT ia.issue_id::text,
-			ia.old_value #>> '{}', ia.new_value #>> '{}', ia.created_at
-		 FROM issue_activities ia
-		 JOIN key_result_issues kri ON kri.issue_id = ia.issue_id
-		 JOIN key_results kr ON kr.id = kri.key_result_id
-		 JOIN issues i ON i.id = ia.issue_id AND i.deleted_at IS NULL
-		 WHERE kr.objective_id::text = ANY($1::text[]) AND ia.field = 'state_id'
-		 ORDER BY ia.issue_id, ia.created_at, ia.id`,
-		ids)
+	// The linked issues' state_id activity rows, batched (see
+	// loadIssueTransitions).
+	transByIssue, err := loadIssueTransitions(ctx, pool, ids)
 	if err != nil {
 		return err
 	}
-	for trRows.Next() {
-		var issueID string
-		var tr historyIssueTransition
-		var oldVal, newVal *string
-		if err := trRows.Scan(&issueID, &oldVal, &newVal, &tr.At); err != nil {
-			trRows.Close()
-			return err
-		}
-		if oldVal != nil {
-			tr.OldStateID = *oldVal
-		}
-		if newVal != nil {
-			tr.NewStateID = *newVal
-		}
-		transByIssue[issueID] = append(transByIssue[issueID], tr)
-	}
-	if err := trRows.Err(); err != nil {
-		trRows.Close()
-		return err
-	}
-	trRows.Close()
 	for _, byKR := range linksByObjective {
 		for krID, ls := range byKR {
 			for i := range ls {
