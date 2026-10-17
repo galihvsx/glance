@@ -5,6 +5,73 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**OpenAPI contract fidelity: Issue schema drift + restore-mechanism verification (cycle 54)**
+- Audit: the shared `Issue` schema in `docs/openapi.yaml` drifted
+  from the Go `Issue` struct (missing `project_id` / `created_by` /
+  `deleted_at` / `archived_at`; a response `archived` boolean the
+  struct never emits; `state_id` marked nullable against a
+  NOT NULL column), and the neighbouring schemas carried the same
+  class of drift. The spec is now corrected doc-follows-code plus
+  live-envelope regression pins. Docs-only cycle: no handler,
+  frontend, or migration changes.
+- Issue-family schemas (C54T0): `Issue` gains `project_id`,
+  `created_by`, `archived_at`, `deleted_at` (trash-list only);
+  the response `archived` boolean is deleted (it is request-only
+  via `IssuePatch`); `state_id` is non-nullable; `assignees` /
+  `labels` now use the real `IssueAssignee` `{id, name}` /
+  `IssueLabel` `{id, name, color}` shapes with documented
+  presence rules (present on list/detail/trash, absent on
+  single-issue write responses and version snapshots);
+  `IssuePatch` gains the missing tri-state `release_id`;
+  `IssueDetail` children are the real `IssueChild`
+  `{uuid, identifier, title, state}` summaries, `custom_values`
+  the real `CustomValue` shape (only set values appear), and the
+  previously undocumented `project_structure` attachment
+  (`IssueProjectStructure` + `NamedRef`) is documented;
+  `external_refs` is present only when at least one ref is
+  linked (omitempty drops the empty array). Pinned by
+  `TestOpenAPIResponseShapesIssueFamily`.
+- Restore/undo claims (C54T1): every snapshot/undo/undoable claim
+  in the spec verified against its handler. The page-restore
+  "snapshotted first" sentence is CORRECT (`insertRevision`
+  runs before the `UPDATE` in the same tx) and left untouched —
+  the cycle-53 analogy would have corrupted correct docs. The
+  one correction: issue-version restore gains a narrow
+  qualification — a sort-order rebalance writes no version
+  (deliberate maintenance-op design), so after one the latest
+  version's `sort_order` predates the live row and restoring it
+  reverts `sort_order` too. Pinned by
+  `TestIssueVersionRestoreUndoableViaLatestVersion` and
+  `TestIssueVersionLatestVersionStaleAfterRebalance`.
+- Schema sweep + list envelope (C54T2): `User` loses the phantom
+  `role` and gains `avatar_url`, `is_active`, `is_admin`,
+  `last_login_at`, `updated_at` (nullable `name`); `Label`
+  gains `workspace_id` / timestamps, non-null `color`
+  (default `#6b7280`); `State` gains `project_id` /
+  timestamps, `group` enum now includes `triage`; `Comment`
+  `author: User` → `actor: ActorRef`, gains `issue_id` and
+  list-only `replies[]`; `Attachment` gains `issue_id`,
+  `uploaded_by: ActorRef`; `SubtaskProgress` presence
+  corrected (list/detail/trash/export, not write responses);
+  `Page` / `PageRevision` gain `project_id` / `page_id` /
+  `author_id` (no `created_by`), non-null `content`, integer
+  `position`; `ShareLink` gains `id`, `scope`, `revoked_at`;
+  `IssueLink` gains `issue_id`, `created_at`, `direction`,
+  `kind` enum; the bogus `Reaction` / `Vote` schemas are
+  deleted — reactions return `ReactionGroup`, votes return
+  `IssueVotes` `{count, voted}`. The issue-list endpoint
+  finally documents the live `{results, next_cursor?, links?}`
+  envelope instead of `{issues, total}`. Pinned by
+  `TestOpenAPIResponseShapesSweep`.
+- Known drift left for a future cycle (recorded in the cycle-54
+  ledger): share list endpoints document `{shares}` but return
+  `{links}`; subscribers endpoint documents `{subscribers:
+  User[]}` but returns `Subscriber[]`; admin-users endpoints
+  diverge on shape; `ProjectUpdate.author` /
+  `PageComment.author` document `User`, Go uses `*ActorRef`;
+  issue-list query params (`page` unread, `cursor` /
+  `include_links` / `order_by` / `fields` undocumented).
+
 **Issue version history UI: view, diff, restore (cycle 53)**
 - Audit: cycles 49–52 built the version engine + API, but the
   frontend had zero version surface — no lib client, no component,
