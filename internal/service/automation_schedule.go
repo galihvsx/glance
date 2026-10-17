@@ -103,7 +103,7 @@ func RunScheduledAutomationPass(ctx context.Context, pool *pgxpool.Pool, now tim
 		}
 		// Project context for action execution (wsID + identifier +
 		// slug — the rule carries only the project id).
-		wsID, ident, err := scheduledRuleProject(ctx, pool, r.ProjectID)
+		wsID, wsSlug, ident, err := scheduledRuleProject(ctx, pool, r.ProjectID)
 		if err != nil {
 			slog.Error("automation: scheduled pass cannot resolve rule project; skipping rule",
 				"rule_id", r.ID, "error", err)
@@ -126,20 +126,20 @@ func RunScheduledAutomationPass(ctx context.Context, pool *pgxpool.Pool, now tim
 			if fired {
 				continue
 			}
-			fireScheduledRule(ctx, pool, r, trig, wsID, ident, issueID)
+			fireScheduledRule(ctx, pool, r, trig, wsID, wsSlug, ident, issueID)
 		}
 	}
 	return nil
 }
 
 // scheduledRuleProject resolves a rule's project to the (wsID,
-// identifier) action execution needs. The slug is unused by actions
-// but returned for parity with the service resolution shape.
-func scheduledRuleProject(ctx context.Context, pool *pgxpool.Pool, projectID string) (wsID, ident string, err error) {
+// wsSlug, identifier) action execution needs.
+func scheduledRuleProject(ctx context.Context, pool *pgxpool.Pool, projectID string) (wsID, wsSlug, ident string, err error) {
 	err = pool.QueryRow(ctx,
-		`SELECT p.workspace_id::text, p.identifier
-		 FROM projects p WHERE p.id = $1::uuid`, projectID).Scan(&wsID, &ident)
-	return wsID, ident, err
+		`SELECT p.workspace_id::text, w.slug, p.identifier
+		 FROM projects p JOIN workspaces w ON w.id = p.workspace_id
+		 WHERE p.id = $1::uuid`, projectID).Scan(&wsID, &wsSlug, &ident)
+	return wsID, wsSlug, ident, err
 }
 
 // matchScheduledIssues returns the ids of the project's open issues
@@ -260,7 +260,17 @@ func scheduledFireRecordedToday(ctx context.Context, pool *pgxpool.Pool, ruleID,
 // committed atomically. Failures are logged, never returned — a broken
 // firing must not abort the rest of the pass. The rule's author is the
 // actor (no triggering user exists for a scheduled pass).
-func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRule, trig AutomationTrigger, wsID, ident, issueID string) {
+//
+// C45T1: after a committed firing, if a set_state action actually moved
+// the issue (state_id before the tx != state_id after it), announce
+// issue.updated (post-commit snapshot) + objective fan-out. The
+// before/after state comparison is the detector: no other automation
+// action touches state_id, a no-op set_state leaves it equal, and a
+// failed firing (e.g. blocker guard) leaves it unchanged. A rolled-back
+// / failed commit announces nothing — the announce sits strictly after
+// tx.Commit succeeds. Snapshot lookup failures are best-effort skips,
+// never fatal to the (already committed) firing.
+func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRule, trig AutomationTrigger, wsID, wsSlug, ident, issueID string) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		slog.Error("automation: scheduled pass begin tx failed",
@@ -268,6 +278,15 @@ func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRul
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var beforeStateID string
+	haveBefore := false
+	if err := tx.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&beforeStateID); err == nil {
+		haveBefore = true
+	} else {
+		slog.Warn("automation: scheduled pass cannot read pre-firing state; skipping broadcast check",
+			"rule_id", r.ID, "issue_id", issueID, "error", err)
+	}
 	// runAutomationRuleActionsTx writes the run row inside this tx and
 	// logs action failures itself (never fatal). Notifications have no
 	// one to announce to post-commit here: the notification rows were
@@ -277,5 +296,21 @@ func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRul
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("automation: scheduled pass commit failed",
 			"rule_id", r.ID, "issue_id", issueID, "error", err)
+		return
 	}
+	if !haveBefore {
+		return
+	}
+	iss, err := scanIssue(pool.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+		issueID, r.ProjectID))
+	if err != nil {
+		return
+	}
+	if iss.StateID == beforeStateID {
+		return
+	}
+	announceIssueUpdated(wsSlug, ident, issueID, iss)
+	announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
 }
