@@ -508,10 +508,15 @@ func DeleteRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	defer tx.Rollback(ctx)
 	// The rows that will really move: live issues on this release. The
 	// same SELECT doubles as the old 409 COUNT — an empty set means
-	// nothing to move.
+	// nothing to move. FOR UPDATE locks the rows so the change check
+	// is race-free: a concurrent release/PATCH/move op serializes on
+	// the locked rows instead of interleaving between this SELECT and
+	// the UPDATE in applyReleaseChangeTx (under Read Committed the
+	// SELECT re-evaluates against the latest committed version after
+	// waiting).
 	changedRows, err := tx.Query(ctx,
 		`SELECT id::text, release_id::text, sequence_id FROM issues
-		  WHERE release_id = $1::uuid AND deleted_at IS NULL`,
+		  WHERE release_id = $1::uuid AND deleted_at IS NULL FOR UPDATE`,
 		releaseID)
 	if err != nil {
 		return err
@@ -609,11 +614,15 @@ func AssignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	defer tx.Rollback(ctx)
 	// C51T2: only the rows whose release_id will really change — rows
 	// already on the target are excluded here, so a repeat assign
-	// writes no activity rows and enqueues no webhook.
+	// writes no activity rows and enqueues no webhook. FOR UPDATE
+	// locks the rows so the change check is race-free: a concurrent
+	// release/PATCH/move op serializes on the locked rows instead of
+	// interleaving between this SELECT and the UPDATE in
+	// applyReleaseChangeTx.
 	changedRows, err := tx.Query(ctx,
 		`SELECT id::text, release_id::text, sequence_id FROM issues
 		  WHERE id = ANY($1::uuid[]) AND project_id = $2::uuid AND deleted_at IS NULL
-		    AND release_id IS DISTINCT FROM $3::uuid`,
+		    AND release_id IS DISTINCT FROM $3::uuid FOR UPDATE`,
 		issueIDs, projectID, releaseID)
 	if err != nil {
 		return err
@@ -674,9 +683,13 @@ func UnassignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, iden
 	// C51T2: only the rows whose release_id will really change — rows
 	// not on this release are excluded here, so unassigning a
 	// non-member writes no activity rows and enqueues no webhook.
+	// FOR UPDATE locks the rows so the change check is race-free: a
+	// concurrent release/PATCH/move op serializes on the locked rows
+	// instead of interleaving between this SELECT and the UPDATE in
+	// applyReleaseChangeTx.
 	changedRows, err := tx.Query(ctx,
 		`SELECT id::text, release_id::text, sequence_id FROM issues
-		  WHERE id = ANY($1::uuid[]) AND release_id = $2::uuid AND deleted_at IS NULL`,
+		  WHERE id = ANY($1::uuid[]) AND release_id = $2::uuid AND deleted_at IS NULL FOR UPDATE`,
 		issueIDs, releaseID)
 	if err != nil {
 		return err

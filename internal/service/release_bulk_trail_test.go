@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,8 +99,16 @@ func assertReleaseActivityRow(t *testing.T, pool *pgxpool.Pool, issueID string, 
 // issue.updated only, returning its id.
 func createIssueUpdatedWebhook(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slug, actor string) string {
 	t.Helper()
+	// httptest target, like the other webhook tests: the URL is never
+	// fetched here (only enqueued), and a later dispatcher pass against
+	// this closed server fails fast on connection-refused instead of
+	// stalling on a real host.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
 	wh, err := CreateWebhook(ctx, pool, slug, actor, WebhookInput{
-		URL:    "https://example.com/hook",
+		URL:    srv.URL,
 		Events: []string{EventIssueUpdated},
 	})
 	if err != nil {
