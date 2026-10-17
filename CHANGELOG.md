@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Version coverage for the remaining automation-cascade paths (cycle 50)**
+- Shared rule: after an operation fires automations, the final in-tx
+  row is snapshotted as a version iff it differs from the last
+  snapshot in that operation (content comparison excluding
+  UpdatedAt/DisplayID/SubtaskProgress) — never a duplicate-content
+  version. The four cycle-50 tasks each shipped their own copy of
+  the comparison; a follow-up consolidation keeps a single shared
+  `issueRowContentEqual` beside `snapshotVersionTx`.
+- BulkSet post-cascade snapshot (C50T0): a BulkSet label/assignee
+  cascade after `updateIssueTx` now lands in that item's version —
+  closes the known residual carried from cycle 49.
+- Label/assignee endpoints (C50T1): Assign/Unassign label/assignee
+  now snapshot the cascade row when an attached rule moves the row.
+- CreateComment cascade (C50T2): a `comment_added` firing that moves
+  the row (e.g. `set_state` / `set_priority`) now snapshots the
+  cascade row; comment-only (no firing / no-op firing) writes no
+  version.
+- Scheduled rule firings (C50T3): a scheduled firing now snapshots
+  the row change it caused, with the rule author as actor; failed /
+  no-op firings write no version.
+- No migration, no frontend changes.
+
 **Version-history integrity (cycle 49)**
 - CreateIssue v1 post-automation snapshot (C49T0): the v1 version
   snapshot now moves to AFTER the created-rules block, snapshotting a
