@@ -5,6 +5,40 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Close the remaining issue.updated fan-out gaps (cycle 46)**
+- BulkSet cascade (C46T0): `BulkSetIssues` captures a before-image
+  `state_id` under the row lock, then after `replaceIssueLabelsTx` /
+  `replaceIssueAssigneesTx` re-reads the final in-tx row — that row is
+  the announced snapshot (post-replace labels/assignees/state, exactly
+  what commits) and its `state_id` vs the before-image is the fan-out
+  detector (C45T1 before/after pattern; a net-zero round trip — direct
+  move + a rule moving it back — reports false). A cascade `set_state`
+  move now fans out `objective.updated`; the announced `issue.updated`
+  payload is no longer stale. Announce loop still after `tx.Commit`;
+  one `issue.updated` per item, one `objective.updated` per linked
+  objective across the batch. Tests: 4 new tests (labels-changed
+  cascade, assigned cascade, labels-only no cascade, direct + cascade
+  fans out once).
+- Standalone label/assignee paths (C46T1): `AssignLabel`,
+  `UnassignLabel`, `AssignAssignee`, `UnassignAssignee` in
+  `internal/service/label.go` now announce via a shared
+  `announceLabelChange` helper — after commit only, on a real change
+  (`RowsAffected() > 0`); post-commit snapshot; before/after
+  `state_id` comparison fans out `objective.updated` when an in-tx
+  automation rule's `set_state` actually moved the issue. Exactly one
+  `issue.updated` per call; no-ops (idempotent re-attach, unassign
+  absent, malformed id) and failed commits announce nothing.
+  Recurring (`CreateIssue` + attach) and intake BulkTriage accept
+  callers inherit the broadcast, as intended. Tests: 12 new tests
+  (four paths, cascade set_state per path, no-op cascade, idempotent
+  re-attach, failed mutation, recurring created→updated sequence).
+- With this cycle, every direct issue mutation path broadcasts
+  `issue.updated` after commit only, and every state-changing path
+  (direct or automation-cascade) fans out `objective.updated` to
+  linked objectives. Honest limit carried from cycle 44: issue-only
+  objectives still have no sparkline (`issue_activities` replay write
+  coverage unaudited).
+
 **Close the issue.updated emission gap (cycle 45)**
 - RestoreIssueVersion broadcast (C45T0): captures the `stateChanged`
   flag from `updateIssueTx` instead of discarding it; after commit (and
