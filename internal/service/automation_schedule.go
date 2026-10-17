@@ -36,7 +36,6 @@ package service
 // reuses automation_rules and automation_runs.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -256,37 +255,6 @@ func scheduledFireRecordedToday(ctx context.Context, pool *pgxpool.Pool, ruleID,
 	return fired, err
 }
 
-// issueRowChanged reports whether two full-row Issue images differ in
-// CONTENT. UpdatedAt is a timestamp, not content (every set_* action
-// bumps it via updated_at = now(), so comparing it would snapshot
-// even a firing that changed nothing else); DisplayID is derived
-// (set by callers inconsistently — scanIssue leaves it empty); and
-// SubtaskProgress is nil from scanIssue. All three are zeroed on
-// copies before the JSON comparison, so only real row changes count.
-func issueRowChanged(before, after *Issue) bool {
-	b := *before
-	a := *after
-	b.UpdatedAt = time.Time{}
-	a.UpdatedAt = time.Time{}
-	b.DisplayID = ""
-	a.DisplayID = ""
-	b.SubtaskProgress = nil
-	a.SubtaskProgress = nil
-	bb, err := json.Marshal(b)
-	if err != nil {
-		// Unreachable for Issue (all fields marshal); treat as
-		// changed so the snapshot attempt — which would fail the
-		// same way — surfaces as a rollback rather than a silent
-		// skip.
-		return true
-	}
-	aa, err := json.Marshal(a)
-	if err != nil {
-		return true
-	}
-	return !bytes.Equal(bb, aa)
-}
-
 // fireScheduledRule runs one (rule, issue) scheduled firing in its own
 // tx: the rule's actions, then exactly one automation_runs row,
 // committed atomically. Failures are logged, never returned — a broken
@@ -341,7 +309,7 @@ func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRul
 	_ = runAutomationRuleActionsTx(ctx, tx, wsID, r.ProjectID, ident, issueID, r.CreatedBy, r, trig)
 	// C50T3: snapshot the firing's row change in-tx, before commit —
 	// never post-commit. A failed / no-op firing leaves the row
-	// unchanged, so issueRowChanged is false and nothing is written.
+	// unchanged, so issueRowContentEqual is true and nothing is written.
 	// A snapshot error rolls the whole firing back: return without
 	// committing (the deferred rollback runs) and announce nothing.
 	if haveBefore {
@@ -351,7 +319,7 @@ func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRul
 		if err != nil {
 			slog.Warn("automation: scheduled pass cannot re-read post-firing row; skipping version snapshot",
 				"rule_id", r.ID, "issue_id", issueID, "error", err)
-		} else if issueRowChanged(before, after) {
+		} else if !issueRowContentEqual(before, after) {
 			after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
 			if err := snapshotVersionTx(ctx, tx, issueID, r.CreatedBy, after); err != nil {
 				slog.Error("automation: scheduled pass version snapshot failed; rolling back firing",

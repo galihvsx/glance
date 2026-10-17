@@ -488,12 +488,18 @@ func getComment(ctx context.Context, q queryRower, issueID, commentID string) (*
 }
 
 // issueRowContentEqual reports whether two scanned issue rows carry the
-// same CONTENT. UpdatedAt is a timestamp, not content (every automation
-// UPDATE bumps it); DisplayID is derived and set by callers
-// inconsistently; SubtaskProgress is nil from scanIssue but populated
-// by the detail/list queries — all three are zeroed on copies before
-// the compare, so a firing that only re-stamps the row (or a scan-path
-// difference) never counts as a change.
+// same CONTENT. It is the ONE shared row-content comparison for all
+// cascade-version snapshot sites (BulkSet, label/assignee endpoints,
+// CreateComment, scheduled firings — cycle 50; each previously had its
+// own copy, now consolidated here beside snapshotVersionTx).
+// UpdatedAt is a timestamp, not content (every automation UPDATE bumps
+// it); DisplayID is derived and set by callers inconsistently;
+// SubtaskProgress is nil from scanIssue but populated by the
+// detail/list queries — all three are zeroed on copies before the
+// compare, so a firing that only re-stamps the row (or a scan-path
+// difference) never counts as a change. A marshal error (unreachable
+// for Issue) returns false, so the caller attempts the snapshot and
+// the error surfaces instead of silently skipping it.
 func issueRowContentEqual(a, b *Issue) bool {
 	if a == nil || b == nil {
 		return a == b

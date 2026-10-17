@@ -12,7 +12,6 @@ package service
 // name is unique per workspace; parent_id forms the hierarchy.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -442,31 +441,6 @@ func issueBeforeImageInTx(ctx context.Context, tx pgx.Tx, issueID string) (*Issu
 	return iss, true
 }
 
-// issueRowContentChanged reports whether after differs from before over
-// row CONTENT. UpdatedAt is a timestamp, not content; DisplayID is
-// derived (set by callers inconsistently); SubtaskProgress is nil from
-// scanIssue. All three are zeroed on copies before the comparison, so
-// they can never report a spurious change.
-func issueRowContentChanged(before, after *Issue) bool {
-	b := *before
-	a := *after
-	b.UpdatedAt = time.Time{}
-	a.UpdatedAt = time.Time{}
-	b.DisplayID = ""
-	a.DisplayID = ""
-	b.SubtaskProgress = nil
-	a.SubtaskProgress = nil
-	bb, err := json.Marshal(b)
-	if err != nil {
-		return false
-	}
-	aa, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	return !bytes.Equal(bb, aa)
-}
-
 // snapshotCascadeVersionTx re-reads the issue row FOR UPDATE in-tx
 // AFTER the automation firing and snapshots it iff it differs from the
 // before-image. The comparison IS the guard: idempotent no-ops (0
@@ -481,7 +455,7 @@ func snapshotCascadeVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, 
 	if err != nil {
 		return err
 	}
-	if !issueRowContentChanged(before, after) {
+	if issueRowContentEqual(before, after) {
 		return nil
 	}
 	after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)

@@ -1449,34 +1449,6 @@ func (s BulkIssueSet) hasFields() bool {
 	return s.StateID != nil || s.Priority != nil || s.LabelIDs != nil || s.AssigneeID.Set
 }
 
-// issueContentEqual reports whether two Issue rows carry the same row
-// CONTENT, ignoring UpdatedAt (a timestamp, not content), DisplayID
-// (derived — set by callers inconsistently), and SubtaskProgress (nil
-// from scanIssue). Used by BulkSetIssues to decide whether the
-// post-cascade final row needs its own version snapshot.
-func issueContentEqual(a, b *Issue) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	ac := *a
-	bc := *b
-	ac.UpdatedAt = time.Time{}
-	bc.UpdatedAt = time.Time{}
-	ac.DisplayID = ""
-	bc.DisplayID = ""
-	ac.SubtaskProgress = nil
-	bc.SubtaskProgress = nil
-	ab, err := json.Marshal(ac)
-	if err != nil {
-		return false
-	}
-	bb, err := json.Marshal(bc)
-	if err != nil {
-		return false
-	}
-	return bytes.Equal(ab, bb)
-}
-
 // BulkSetIssues applies one set to many issues in ONE transaction with
 // full atomicity: any unknown, deleted, cross-project, or malformed id,
 // or any invalid set field, aborts the whole batch — no partial
@@ -1686,7 +1658,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// and snapshotVersionTx's sequencing cannot interleave.
 		// In-tx like every other write here, so any error rolls the
 		// snapshot back with the batch.
-		if !issueContentEqual(final, updatedRow) {
+		if !issueRowContentEqual(final, updatedRow) {
 			if err := snapshotVersionTx(ctx, tx, id, actorID, final); err != nil {
 				return 0, nil, err
 			}
