@@ -483,6 +483,21 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	// C48T1: post-created-rules fresh snapshot. The created-rules above
+	// run in the same tx as the INSERT, so the INSERT-time iss is stale
+	// whenever a rule mutated the row (set_state, set_priority, ...).
+	// Re-read the row post-commit (C45/C46 pattern: deleted_at IS NULL +
+	// project filter) and use the fresh row for BOTH the announce and
+	// the returned value. Best-effort: on lookup failure fall back to
+	// the pre-rules iss, never fail the create. scanIssue carries no
+	// derived DisplayID, so re-derive it from the fresh SequenceID.
+	if fresh, err := scanIssue(pool.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+		iss.ID, projectID)); err == nil {
+		fresh.DisplayID = ident + "-" + strconv.Itoa(fresh.SequenceID)
+		iss = fresh
+	}
 	announceIssueCreated(wsSlug, ident, iss)
 	announceNotifications(notified)
 	return iss, nil
