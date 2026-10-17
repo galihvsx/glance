@@ -93,9 +93,10 @@ var keyResultKinds = map[string]bool{
 // of KR progress, 0 when no KRs) and KeyResultCount is live;
 // KeyResults is populated only by GetObjective. ProgressHistory is
 // the objective's progress-over-time series (one point per distinct
-// metric-KR check-in timestamp, capped at the last 60 points),
+// event timestamp — a metric-KR check-in, an issue-KR link, or a
+// linked issue's state transition — capped at the last 60 points),
 // populated by ListObjectives and GetObjective; empty when no
-// metric-KR check-in exists.
+// metric-KR check-in exists and no issue is linked.
 type Objective struct {
 	ID              string                   `json:"id"`
 	WorkspaceID     string                   `json:"workspace_id"`
@@ -521,6 +522,67 @@ type historyCheckin struct {
 	CreatedAt     time.Time
 }
 
+// historyIssueTransition is one state_id activity row's replay
+// input for one linked issue: the state the issue moved from and
+// to, at the row's timestamp. Rows arrive ordered by
+// (created_at, id) from the loader; the builder re-sorts
+// defensively (stable) so caller order never matters.
+type historyIssueTransition struct {
+	At         time.Time
+	OldStateID string // "" when old_value is NULL (never for state_id rows)
+	NewStateID string // "" when new_value is NULL (never for state_id rows)
+}
+
+// historyIssueLink is one currently-linked issue's replay input
+// for an issue KR: when the issue joined the KR, when the issue
+// was created, its current state (the fallback when it has no
+// state_id rows — it never changed state since creation), and its
+// state_id activity rows.
+type historyIssueLink struct {
+	KeyResultID    string
+	IssueID        string
+	LinkCreatedAt  time.Time
+	IssueCreatedAt time.Time
+	CurrentStateID string
+	Transitions    []historyIssueTransition
+}
+
+// effectiveStart is the first timestamp at which a link contributes
+// to its KR: the link cannot count before the issue existed, before
+// the KR existed, or before the link itself (mirrors the metric
+// rule "a KR contributes only from its creation onward").
+func (l historyIssueLink) effectiveStart(krCreatedAt time.Time) time.Time {
+	start := l.LinkCreatedAt
+	if krCreatedAt.After(start) {
+		start = krCreatedAt
+	}
+	if l.IssueCreatedAt.After(start) {
+		start = l.IssueCreatedAt
+	}
+	return start
+}
+
+// stateAt reconstructs the issue's state at timestamp T: the
+// initial state is the earliest row's old_value (the state before
+// the first recorded transition); with no rows the issue never
+// changed state and its current state_id is the state at every T.
+// Transitions with timestamp <= T are applied in order, so a
+// pre-link transition shapes the state at link time without
+// emitting its own point.
+func (l historyIssueLink) stateAt(t time.Time) string {
+	if len(l.Transitions) == 0 {
+		return l.CurrentStateID
+	}
+	state := l.Transitions[0].OldStateID
+	for _, tr := range l.Transitions {
+		if tr.At.After(t) {
+			break
+		}
+		state = tr.NewStateID
+	}
+	return state
+}
+
 // maxObjectiveHistoryPoints caps the progress_history payload: only
 // the last 60 points are kept.
 const maxObjectiveHistoryPoints = 60
@@ -547,8 +609,43 @@ const maxObjectiveHistoryPoints = 60
 //     surviving rows normally all resolve — a deleted KR's rows are
 //     gone and the replay over surviving rows equals current state).
 //
-// The input slices are not mutated.
+// The input slices are not mutated. This is the legacy entry point:
+// it delegates to buildObjectiveProgressHistoryWithIssues with no
+// issue data, so issue KRs keep their constant-current-progress
+// behavior and metric-only histories stay byte-identical.
 func buildObjectiveProgressHistory(krs []historyKR, checkins []historyCheckin) []ObjectiveProgressPoint {
+	return buildObjectiveProgressHistoryWithIssues(krs, checkins, nil, nil)
+}
+
+// buildObjectiveProgressHistoryWithIssues extends
+// buildObjectiveProgressHistory with issue-KR state-transition
+// replay. Metric-KR handling is unchanged; when issueLinks is
+// non-nil, issue KRs are replayed from their links instead of
+// holding their current progress constant:
+//
+//   - A link contributes only from its effectiveStart onward:
+//     max(link created_at, KR created_at, issue created_at). An
+//     issue KR's progress at T is done/total over links with
+//     effectiveStart <= T, where an issue is done iff its
+//     reconstructed state at T (historyIssueLink.stateAt) maps to a
+//     done state in doneStates. A KR with no contributing links at
+//     T scores 0 (same as the 0-links rule in fillObjectiveProgress),
+//     so a link is never backdated to before it happened.
+//   - State→done mapping is by state id against the states table
+//     as loaded by the caller: a state_id with no surviving states
+//     row (state deleted pre-C47T0) maps to NOT done — conservative,
+//     progress is never over-claimed.
+//   - Event timestamps are the union of metric check-in timestamps,
+//     link effective-starts, and state transitions at/after their
+//     link's effective start. Pre-link transitions emit no point.
+//     Events sharing a timestamp collapse to a single point at the
+//     post-event state (all of that timestamp's events applied
+//     before the point is emitted).
+//   - The last-60 cap still applies.
+//
+// The input slices (and the links' transition slices) are not
+// mutated.
+func buildObjectiveProgressHistoryWithIssues(krs []historyKR, checkins []historyCheckin, issueLinks map[string][]historyIssueLink, doneStates map[string]bool) []ObjectiveProgressPoint {
 	type krState struct {
 		kr    historyKR
 		value float64 // metric KR's replayed current value
@@ -577,13 +674,75 @@ func buildObjectiveProgressHistory(krs []historyKR, checkins []historyCheckin) [
 		byID[kr.ID] = st
 	}
 
+	// Normalized issue links: transition slices copied + sorted,
+	// so stateAt's in-order walk is valid and caller slices are
+	// never mutated.
+	links := map[string][]historyIssueLink{}
+	if issueLinks != nil {
+		for krID, ls := range issueLinks {
+			norm := make([]historyIssueLink, len(ls))
+			copy(norm, ls)
+			for i := range norm {
+				trs := make([]historyIssueTransition, len(norm[i].Transitions))
+				copy(trs, norm[i].Transitions)
+				sort.SliceStable(trs, func(a, b int) bool {
+					return trs[a].At.Before(trs[b].At)
+				})
+				norm[i].Transitions = trs
+			}
+			links[krID] = norm
+		}
+	}
+
+	// Event timestamps: metric check-ins + issue link starts +
+	// issue transitions at/after their link's start, deduplicated
+	// by time equality (not map keys — equal instants in different
+	// locations must still collapse).
+	var events []time.Time
+	for _, ci := range ordered {
+		events = append(events, ci.CreatedAt)
+	}
+	if issueLinks != nil {
+		for _, st := range states {
+			if st.kr.Kind != "issue" {
+				continue
+			}
+			for _, l := range links[st.kr.ID] {
+				start := l.effectiveStart(st.kr.CreatedAt)
+				events = append(events, start)
+				for _, tr := range l.Transitions {
+					if !tr.At.Before(start) {
+						events = append(events, tr.At)
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Before(events[j])
+	})
+	uniqEvents := events[:0]
+	for _, t := range events {
+		if len(uniqEvents) > 0 && uniqEvents[len(uniqEvents)-1].Equal(t) {
+			continue
+		}
+		uniqEvents = append(uniqEvents, t)
+	}
+
 	out := []ObjectiveProgressPoint{}
-	for i := 0; i < len(ordered); {
-		t := ordered[i].CreatedAt
-		// Apply every event at this timestamp before emitting.
-		for ; i < len(ordered) && ordered[i].CreatedAt.Equal(t); i++ {
-			if st, ok := byID[ordered[i].KeyResultID]; ok {
-				st.value = ordered[i].NewValue
+	ciIdx := 0
+	for _, t := range uniqEvents {
+		// Apply every check-in at or before this timestamp
+		// before emitting (a check-in between two issue events
+		// is already in effect at the later event). Each
+		// check-in is applied exactly once: ciIdx only moves
+		// forward and every check-in timestamp is itself an
+		// event, so metric-only inputs behave exactly as the
+		// legacy builder (apply the timestamp's check-ins,
+		// then emit).
+		for ; ciIdx < len(ordered) && !ordered[ciIdx].CreatedAt.After(t); ciIdx++ {
+			if st, ok := byID[ordered[ciIdx].KeyResultID]; ok {
+				st.value = ordered[ciIdx].NewValue
 			}
 		}
 		var sum float64
@@ -597,7 +756,23 @@ func buildObjectiveProgressHistory(krs []historyKR, checkins []historyCheckin) [
 			case "metric":
 				p = metricKRProgress(st.kr.StartValue, st.kr.TargetValue, st.value)
 			case "issue":
-				p = st.kr.IssueProgress
+				if issueLinks == nil {
+					p = st.kr.IssueProgress
+				} else {
+					var done, total int64
+					for _, l := range links[st.kr.ID] {
+						if l.effectiveStart(st.kr.CreatedAt).After(t) {
+							continue
+						}
+						total++
+						if doneStates[l.stateAt(t)] {
+							done++
+						}
+					}
+					if total > 0 {
+						p = float64(done) / float64(total)
+					}
+				}
 			}
 			sum += p
 			n++
@@ -615,9 +790,14 @@ func buildObjectiveProgressHistory(krs []historyKR, checkins []historyCheckin) [
 }
 
 // fillObjectiveProgressHistory populates ProgressHistory on each
-// objective from its metric-KR check-in rows, in two queries total
+// objective from its metric-KR check-in rows plus its issue-KR
+// link/state-transition replay, in a fixed handful of queries
 // (no per-objective N+1): one for the objectives' KRs with current
-// issue-KR progress, one for their check-in rows.
+// issue-KR progress, one for their check-in rows, one for their
+// currently-linked issues (link + issue created_at, current
+// state), one for those issues' state_id activity rows, and one
+// for the done-group membership of every state id the replay can
+// observe.
 func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs []*Objective) error {
 	if len(objs) == 0 {
 		return nil
@@ -693,9 +873,150 @@ func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs 
 	if err := ciRows.Err(); err != nil {
 		return err
 	}
+	ciRows.Close()
+
+	// Issue-KR replay inputs, batched: currently-linked issues
+	// (link + issue created_at, current state) grouped by
+	// objective → KR.
+	linksByObjective := map[string]map[string][]historyIssueLink{}
+	linkRows, err := pool.Query(ctx,
+		`SELECT kr.objective_id::text, kri.key_result_id::text,
+			kri.issue_id::text, kri.created_at, i.created_at, i.state_id::text
+		 FROM key_result_issues kri
+		 JOIN key_results kr ON kr.id = kri.key_result_id
+		 JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+		 WHERE kr.objective_id::text = ANY($1::text[])
+		 ORDER BY kri.key_result_id, kri.created_at, kri.issue_id`,
+		ids)
+	if err != nil {
+		return err
+	}
+	for linkRows.Next() {
+		var obID string
+		var link historyIssueLink
+		if err := linkRows.Scan(&obID, &link.KeyResultID, &link.IssueID,
+			&link.LinkCreatedAt, &link.IssueCreatedAt, &link.CurrentStateID); err != nil {
+			linkRows.Close()
+			return err
+		}
+		byKR := linksByObjective[obID]
+		if byKR == nil {
+			byKR = map[string][]historyIssueLink{}
+			linksByObjective[obID] = byKR
+		}
+		byKR[link.KeyResultID] = append(byKR[link.KeyResultID], link)
+	}
+	if err := linkRows.Err(); err != nil {
+		linkRows.Close()
+		return err
+	}
+	linkRows.Close()
+
+	// The linked issues' state_id activity rows, batched. Old/new
+	// are JSONB scalars; #>> '{}' extracts the bare state id
+	// (the analytics burndown precedent). NULL old/new (never for
+	// state_id rows) decode as "" — the replay treats an unknown
+	// state as NOT done, never over-claiming.
+	transByIssue := map[string][]historyIssueTransition{}
+	trRows, err := pool.Query(ctx,
+		`SELECT ia.issue_id::text,
+			ia.old_value #>> '{}', ia.new_value #>> '{}', ia.created_at
+		 FROM issue_activities ia
+		 JOIN key_result_issues kri ON kri.issue_id = ia.issue_id
+		 JOIN key_results kr ON kr.id = kri.key_result_id
+		 JOIN issues i ON i.id = ia.issue_id AND i.deleted_at IS NULL
+		 WHERE kr.objective_id::text = ANY($1::text[]) AND ia.field = 'state_id'
+		 ORDER BY ia.issue_id, ia.created_at, ia.id`,
+		ids)
+	if err != nil {
+		return err
+	}
+	for trRows.Next() {
+		var issueID string
+		var tr historyIssueTransition
+		var oldVal, newVal *string
+		if err := trRows.Scan(&issueID, &oldVal, &newVal, &tr.At); err != nil {
+			trRows.Close()
+			return err
+		}
+		if oldVal != nil {
+			tr.OldStateID = *oldVal
+		}
+		if newVal != nil {
+			tr.NewStateID = *newVal
+		}
+		transByIssue[issueID] = append(transByIssue[issueID], tr)
+	}
+	if err := trRows.Err(); err != nil {
+		trRows.Close()
+		return err
+	}
+	trRows.Close()
+	for _, byKR := range linksByObjective {
+		for krID, ls := range byKR {
+			for i := range ls {
+				ls[i].Transitions = transByIssue[ls[i].IssueID]
+			}
+			byKR[krID] = ls
+		}
+	}
+
+	// Done-group membership for every state id the replay can
+	// observe (current states + transition endpoints). A state id
+	// absent here has no surviving states row and maps to NOT done.
+	doneStates := map[string]bool{}
+	stateIDSet := map[string]bool{}
+	for _, byKR := range linksByObjective {
+		for _, ls := range byKR {
+			for _, l := range ls {
+				stateIDSet[l.CurrentStateID] = true
+				for _, tr := range l.Transitions {
+					if tr.OldStateID != "" {
+						stateIDSet[tr.OldStateID] = true
+					}
+					if tr.NewStateID != "" {
+						stateIDSet[tr.NewStateID] = true
+					}
+				}
+			}
+		}
+	}
+	if len(stateIDSet) > 0 {
+		stateIDs := make([]string, 0, len(stateIDSet))
+		for id := range stateIDSet {
+			stateIDs = append(stateIDs, id)
+		}
+		doneRows, err := pool.Query(ctx,
+			`SELECT id::text FROM states
+			 WHERE id::text = ANY($1::text[]) AND "group" = ANY($2::text[])`,
+			stateIDs, done)
+		if err != nil {
+			return err
+		}
+		for doneRows.Next() {
+			var id string
+			if err := doneRows.Scan(&id); err != nil {
+				doneRows.Close()
+				return err
+			}
+			doneStates[id] = true
+		}
+		if err := doneRows.Err(); err != nil {
+			doneRows.Close()
+			return err
+		}
+		doneRows.Close()
+	}
+
 	for _, ob := range objs {
-		ob.ProgressHistory = buildObjectiveProgressHistory(
-			krsByObjective[ob.ID], checkinsByObjective[ob.ID])
+		links := linksByObjective[ob.ID]
+		if links == nil {
+			// Non-nil empty map: the replay path (a zero-link
+			// issue KR scores 0), not the legacy constant path.
+			links = map[string][]historyIssueLink{}
+		}
+		ob.ProgressHistory = buildObjectiveProgressHistoryWithIssues(
+			krsByObjective[ob.ID], checkinsByObjective[ob.ID], links, doneStates)
 	}
 	return nil
 }
