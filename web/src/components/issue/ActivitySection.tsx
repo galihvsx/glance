@@ -31,6 +31,7 @@ import { Label } from "../ui/label";
 import { Skeleton } from "../ui/skeleton";
 import { cn } from "cn";
 import TimeTracker from "./TimeTracker";
+import VersionHistory from "./VersionHistory";
 
 export type ActivityTab =
   | "all"
@@ -39,7 +40,8 @@ export type ActivityTab =
   | "updates"
   | "worklogs"
   | "transition"
-  | "history";
+  | "history"
+  | "versions";
 
 const TABS: { id: ActivityTab; label: string }[] = [
   { id: "all", label: "All" },
@@ -49,6 +51,7 @@ const TABS: { id: ActivityTab; label: string }[] = [
   { id: "worklogs", label: "Worklogs" },
   { id: "transition", label: "Transition" },
   { id: "history", label: "History" },
+  { id: "versions", label: "Versions" },
 ];
 
 function actorName(a: { name?: string | null; email: string }): string {
@@ -390,9 +393,10 @@ const RESOLVED_FILTERS: { id: ResolvedFilter; label: string }[] = [
 
 /**
  * The activity section (C19T3): tab bar (All / Activity / Comments /
- * Updates / Worklogs / Transition / History) with Log work / Filters /
- * Sort actions, the feed, and the comment composer (Cmd/Ctrl+Enter to
- * submit, @-mentions, format buttons).
+ * Updates / Worklogs / Transition / History / Versions) with Log work /
+ * Filters / Sort actions, the feed, and the comment composer
+ * (Cmd/Ctrl+Enter to submit, @-mentions, format buttons). The Versions
+ * tab (C53T1) renders VersionHistory instead of the feed + composer.
  */
 export default function ActivitySection({
   slug,
@@ -403,6 +407,7 @@ export default function ActivitySection({
   activeTab,
   onTabChange,
   onError,
+  parentDisplayIds,
 }: {
   slug: string;
   identifier: string;
@@ -412,6 +417,9 @@ export default function ActivitySection({
   activeTab: ActivityTab;
   onTabChange: (t: ActivityTab) => void;
   onError: (msg: string | null) => void;
+  /** Display ids for parents the detail page already loaded, passed
+   *  through to VersionHistory for parent_id rendering (C53T1). */
+  parentDisplayIds?: ReadonlyMap<string, string>;
 }) {
   const queryClient = useQueryClient();
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
@@ -548,6 +556,10 @@ export default function ActivitySection({
         break;
       case "history":
         items = ev(history);
+        break;
+      case "versions":
+        // C53T1: the Versions tab renders VersionHistory, not the feed.
+        items = [];
         break;
       case "worklogs":
         items = [];
@@ -709,7 +721,17 @@ export default function ActivitySection({
         </div>
       </div>
 
-      {activeTab === "worklogs" ? (
+      {activeTab === "versions" ? (
+        <div className="pt-4">
+          <VersionHistory
+            slug={slug}
+            identifier={identifier}
+            uuid={uuid}
+            states={states}
+            parentDisplayIds={parentDisplayIds}
+          />
+        </div>
+      ) : activeTab === "worklogs" ? (
         <div className="pt-4">
           <TimeTracker slug={slug} identifier={identifier} uuid={uuid} logSignal={logSignal} />
         </div>
