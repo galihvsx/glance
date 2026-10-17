@@ -2342,36 +2342,40 @@
       "get": {
         "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List all users",
-        "description": "Requires the server admin role.",
-        "responses": { "200": { "description": "Users", "content": { "application/json": { "schema": { "type": "object", "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" } }
+        "description": "Requires the server admin role. Paginated user directory, oldest first (created_at, id), with admin flags and workspace membership counts. Pagination follows the shared page/per_page contract: page defaults to 1, per_page defaults to 25; page < 1 or per_page outside 1-100 is rejected with 400, never silently clamped.",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 }, "description": "Page number, 1-based. Non-integer or < 1 → 400." },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "default": 25, "minimum": 1, "maximum": 100 }, "description": "Page size. Outside 1-100 → 400, never silently clamped." }
+        ],
+        "responses": { "200": { "description": "Paginated users", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "total", "page", "per_page"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/AdminUser" } }, "total": { "type": "integer", "description": "Total user count across all pages" }, "page": { "type": "integer" }, "per_page": { "type": "integer" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
     "/api/v1/admin/users/{id}": {
       "patch": {
         "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "Update a user (e.g. role)",
-        "description": "Requires the server admin role.",
+        "summary": "Set a user's instance-admin flag",
+        "description": "Requires the server admin role. Sets (or clears) the target user's instance-admin flag — the only field this endpoint changes; name and workspace roles are NOT settable here. Missing is_admin → 400. Demoting your own account → 409 (self-demotion). Demoting the last remaining admin → 409 (the instance must always have at least one admin). Unknown user → 404; malformed id → 400.",
         "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "role": { "type": "string", "description": "Server role, e.g. admin" } } } } } },
-        "responses": { "200": { "description": "Updated user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["is_admin"], "properties": { "is_admin": { "type": "boolean", "description": "true promotes to instance admin, false demotes" } } } } } },
+        "responses": { "200": { "description": "Admin flag updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/v1/admin/users/{id}/deactivate": {
       "post": {
         "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Deactivate a user",
-        "description": "Requires the server admin role.",
+        "description": "Requires the server admin role. Disables the account and revokes all its live sessions immediately. Deactivating an already-deactivated account is a 200 no-op (idempotent). Self-deactivation → 409. Unknown user → 404; malformed id → 400.",
         "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "responses": { "200": { "description": "Deactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Deactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/v1/admin/users/{id}/reactivate": {
       "post": {
         "tags": ["admin"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Reactivate a user",
-        "description": "Requires the server admin role.",
+        "description": "Requires the server admin role. Re-enables a deactivated account. Reactivating an already-active account is a 200 no-op (idempotent). Sessions revoked at deactivation stay revoked — the user logs in fresh. There is no self-reactivation guard (unlike deactivate, which 409s on self): reactivating your own account is allowed. Unknown user → 404; malformed id → 400.",
         "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "responses": { "200": { "description": "Reactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Reactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/admin/workspaces": {
@@ -3117,7 +3121,7 @@
           "project_id": { "type": "string", "format": "uuid" },
           "status": { "type": "string", "enum": ["on_track", "at_risk", "off_track"] },
           "body": { "type": "string", "description": "Plain-text status message (NOT markdown)" },
-          "author": { "$ref": "#/components/schemas/User", "nullable": true },
+          "author": { "$ref": "#/components/schemas/ActorRef", "nullable": true },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
@@ -3128,7 +3132,7 @@
           "id": { "type": "string", "format": "uuid" },
           "page_id": { "type": "string", "format": "uuid" },
           "body": { "description": "Rich-text JSON document" },
-          "author": { "$ref": "#/components/schemas/User", "nullable": true },
+          "author": { "$ref": "#/components/schemas/ActorRef", "nullable": true },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
@@ -3633,6 +3637,20 @@
           "workspaces": { "type": "integer" },
           "projects": { "type": "integer" },
           "issues": { "type": "integer" }
+        }
+      },
+      "AdminUser": {
+        "type": "object",
+        "description": "One instance-level user (service.AdminUser), as returned by GET /api/v1/admin/users. name is *string WITHOUT omitempty in Go, so the key is always present — null when the user has no display name (contrast Subscriber.name, which is omitted when unset). Every other field likewise has no omitempty, so all seven keys are always present.",
+        "required": ["id", "email", "name", "is_admin", "is_active", "workspace_count", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string", "nullable": true, "description": "Display name; always present, null when unset (no omitempty on the Go field)." },
+          "is_admin": { "type": "boolean", "description": "Instance-admin flag; the only field PATCH /api/v1/admin/users/{id} changes." },
+          "is_active": { "type": "boolean", "description": "false = deactivated: the user cannot log in." },
+          "workspace_count": { "type": "integer", "description": "Number of workspaces the user is a member of." },
+          "created_at": { "type": "string", "format": "date-time" }
         }
       },
       "IssueLink": {
