@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Version-history integrity (cycle 49)**
+- CreateIssue v1 post-automation snapshot (C49T0): the v1 version
+  snapshot now moves to AFTER the created-rules block, snapshotting a
+  fresh in-tx re-read of the row (same tx, still under the row lock).
+  A created-rule `set_state` / `set_priority` move used to leave v1
+  holding the pre-rules INSERT row, so restoring v1 silently reverted
+  the automation move; restoring v1 is now a no-op diff. C48T1's
+  post-commit re-read for announce/return, webhook/Slack payloads,
+  and failure paths are untouched.
+- updateIssueTx post-automation snapshot + return (C49T1): the version
+  snapshot is now taken AFTER all automation blocks (state rules +
+  field-level rules), snapshotting a fresh in-tx re-read, and
+  `updateIssueTx` returns that fresh row — one version per user
+  action. `UpdateIssue` announce + return, `BulkUpdateIssues`
+  announce, and the `RestoreIssueVersion` has-fields branch now all
+  carry the post-automation row. Webhook `changed_fields` stays the
+  user-patch fields; notification/Slack text stays on the user-patch
+  state. Known residual (BulkSet untouched by design): a BulkSet
+  label/assignee cascade after `updateIssueTx` still isn't in that
+  item's version — follow-up candidate.
+- MoveIssue version snapshots (C49T2): a move now writes one version
+  snapshot per moved row (root + every moved subtree member), in the
+  same tx, from the UPDATE ... RETURNING row — zero extra queries.
+  Moves previously wrote no version at all. No-op and failed moves
+  write nothing; no broadcast / return-value changes.
+
 **Realtime payload correctness (cycle 48)**
 - CreateIssue fresh snapshot (C48T1): `CreateIssue` now re-reads the row
   post-commit and uses the fresh row for BOTH the `issue.created`
