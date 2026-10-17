@@ -5,6 +5,44 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook fan-out completeness: every issue mutation enqueues issue.updated (cycle 56)**
+- Invariant: exactly one `issue.updated` webhook per user-visible
+  mutation per issue, with `changed_fields` = the union of the
+  direct change and any automation-cascade change. No-op mutations
+  (idempotent re-attach, all-noop firing, no-change patch) enqueue
+  nothing. Slack for automation moves stays out (documented scope
+  cut — a product decision, not taken here).
+- AdminStats doc (C56T0): the `AdminStats` schema now includes
+  `attachment_bytes` (`COALESCE(SUM(size_bytes), 0)` over
+  attachments), pinned by `TestOpenAPIDocShapesAdminStats`
+  (reflection against `service.AdminStats`).
+- Label/assignee attach/detach (C56T1): `AssignLabel`,
+  `UnassignLabel`, `AssignAssignee`, `UnassignAssignee` enqueue
+  one in-tx `issue.updated` webhook when the mutation really
+  changed something (same `RowsAffected() > 0` gate as the WS
+  announce). `changed_fields` = the direct entry (`labels` /
+  `assignees`) plus the cascade row diff via the shared
+  `issueRowChangedFields` helper (all 11 content columns of the
+  `Issue` struct). Pinned by 8 tests.
+- BulkSet (C56T2): labels-only / assignees-only BulkSet now
+  enqueues one webhook per changed issue. When the patch already
+  enqueued a row, BulkSet EXTENDS that row's `changed_fields`
+  in-tx to the union instead of adding a second row — the
+  two-row exception was not needed. The extend match excludes
+  rows carrying `labels`/`assignees`, so a concurrent
+  `AssignLabel` on the same issue (label paths take no row
+  lock) can never have its webhook payload rewritten.
+  Pinned by 11 tests including a decoy-row regression test.
+- Scheduled firings + PATCH path (C56T3): a scheduled-rule
+  firing that changes the row enqueues one in-tx webhook with
+  `changed_fields` = the before/after row diff (row-change
+  gate, so a `set_priority`-only firing enqueues; WS announce
+  stays state-only). `updateIssueTx`'s single enqueue now
+  carries the union of the user-patch activities fields and
+  the cascade diff, so a `priority_changed → set_state`
+  cascade surfaces both `priority` and `state_id`.
+  Pinned by 4 tests.
+
 **OpenAPI contract fidelity II: the six leftovers from cycle 54 (cycle 55)**
 - Audit: the six drift items cycle 54 deliberately left open are
   now corrected doc-follows-code plus doc-side regression pins.
