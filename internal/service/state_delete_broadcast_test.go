@@ -8,10 +8,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // issueUpdatedPayloads returns the payloads of the captured
@@ -199,4 +202,141 @@ func TestDeleteStateFailedDeleteBroadcastsNothing(t *testing.T) {
 		t.Fatalf("last state: err = %v, want ErrLastState", err)
 	}
 	assertZeroEvents(t, fake)
+}
+
+// stateIDActivityPairs returns every state_id activity row for an issue
+// as (old, new) state-id pairs, in insertion order.
+func stateIDActivityPairs(t *testing.T, pool *pgxpool.Pool, issueID string) [][2]string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT old_value, new_value FROM issue_activities
+		  WHERE issue_id = $1::uuid AND field = 'state_id' ORDER BY created_at, id`,
+		issueID)
+	if err != nil {
+		t.Fatalf("read state_id activity: %v", err)
+	}
+	defer rows.Close()
+	var pairs [][2]string
+	for rows.Next() {
+		var oldRaw, newRaw []byte
+		if err := rows.Scan(&oldRaw, &newRaw); err != nil {
+			t.Fatalf("scan state_id activity: %v", err)
+		}
+		var o, n string
+		if err := json.Unmarshal(oldRaw, &o); err != nil {
+			t.Fatalf("unmarshal old state_id: %v", err)
+		}
+		if err := json.Unmarshal(newRaw, &n); err != nil {
+			t.Fatalf("unmarshal new state_id: %v", err)
+		}
+		pairs = append(pairs, [2]string{o, n})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("state_id activity rows: %v", err)
+	}
+	return pairs
+}
+
+// TestDeleteStateReassignWritesStateIDActivity (C47T0): deleting a state
+// with reassign_to writes one state_id activity row per moved LIVE issue
+// (old = deleted state, new = reassign target) and zero rows for
+// soft-deleted issues referencing the deleted state.
+func TestDeleteStateReassignWritesStateIDActivity(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	doomed, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Doomed", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState doomed: %v", err)
+	}
+	target, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Safe", Group: "completed"})
+	if err != nil {
+		t.Fatalf("CreateState target: %v", err)
+	}
+	live1 := createTestIssue(t, pool, slug, ident, creator, "live one")
+	live2 := createTestIssue(t, pool, slug, ident, creator, "live two")
+	ghost := createTestIssue(t, pool, slug, ident, creator, "ghost")
+	// Park all three in the doomed state via direct SQL (no activity
+	// rows), then soft-delete the ghost.
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET state_id = $1::uuid WHERE id = ANY($2::uuid[])`,
+		doomed.ID, []string{live1.ID, live2.ID, ghost.ID}); err != nil {
+		t.Fatalf("park issues: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET deleted_at = now() WHERE id = $1::uuid`, ghost.ID); err != nil {
+		t.Fatalf("soft-delete ghost: %v", err)
+	}
+
+	if err := DeleteState(ctx, pool, slug, ident, doomed.ID, creator, &target.ID); err != nil {
+		t.Fatalf("DeleteState with reassign: %v", err)
+	}
+	want := [2]string{doomed.ID, target.ID}
+	for _, iss := range []string{live1.ID, live2.ID} {
+		pairs := stateIDActivityPairs(t, pool, iss)
+		if len(pairs) != 1 || pairs[0] != want {
+			t.Fatalf("state_id activity for %s = %v, want [%v]", iss, pairs, want)
+		}
+	}
+	if pairs := stateIDActivityPairs(t, pool, ghost.ID); len(pairs) != 0 {
+		t.Fatalf("state_id activity for soft-deleted issue = %v, want none", pairs)
+	}
+}
+
+// TestDeleteStateNoRefsWritesNoStateIDActivity (C47T0): deleting a state
+// no issue references writes no state_id rows.
+func TestDeleteStateNoRefsWritesNoStateIDActivity(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	iss := createTestIssue(t, pool, slug, ident, creator, "bystander")
+	empty, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Empty", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState: %v", err)
+	}
+	if err := DeleteState(ctx, pool, slug, ident, empty.ID, creator, nil); err != nil {
+		t.Fatalf("DeleteState zero refs: %v", err)
+	}
+	if pairs := stateIDActivityPairs(t, pool, iss.ID); len(pairs) != 0 {
+		t.Fatalf("state_id activity after zero-ref delete = %v, want none", pairs)
+	}
+}
+
+// TestDeleteStateFailedDeleteWritesNoStateIDActivity (C47T0): a failed
+// DeleteState (in-use without reassign → 409, tx rollback) writes no
+// state_id rows and leaves the issue in the doomed state.
+func TestDeleteStateFailedDeleteWritesNoStateIDActivity(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	doomed, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Doomed", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState doomed: %v", err)
+	}
+	iss := createTestIssue(t, pool, slug, ident, creator, "doomed issue")
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET state_id = $1::uuid WHERE id = $2::uuid`, doomed.ID, iss.ID); err != nil {
+		t.Fatalf("park issue: %v", err)
+	}
+	if err := DeleteState(ctx, pool, slug, ident, doomed.ID, creator, nil); !errors.Is(err, ErrStateInUse) {
+		t.Fatalf("in-use without reassign: err = %v, want ErrStateInUse", err)
+	}
+	if pairs := stateIDActivityPairs(t, pool, iss.ID); len(pairs) != 0 {
+		t.Fatalf("state_id activity after failed delete = %v, want none", pairs)
+	}
+	var stateID string
+	if err := pool.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, iss.ID).Scan(&stateID); err != nil {
+		t.Fatalf("refetch issue: %v", err)
+	}
+	if stateID != doomed.ID {
+		t.Fatalf("issue state = %s, want still doomed %s", stateID, doomed.ID)
+	}
 }

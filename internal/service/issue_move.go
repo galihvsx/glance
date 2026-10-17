@@ -397,6 +397,20 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 			return nil, fmt.Errorf("service: move issue activity: %w", err)
 		}
 
+		// C47T0: the remap is a real state change (the remapped id is
+		// from the target project, so it always differs across
+		// projects — the != guard is defense, not a reachable branch),
+		// so it gets a state_id activity row like every other state
+		// mutation, in the same tx. The _moved row above stays.
+		if n.stateID != newStateIDs[i] {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+				 VALUES ($1::uuid, $2::uuid, 'state_id', $3::jsonb, $4::jsonb)`,
+				n.id, actorID, toJSONBParam(n.stateID), toJSONBParam(newStateIDs[i])); err != nil {
+				return nil, fmt.Errorf("service: move issue state activity: %w", err)
+			}
+		}
+
 		if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
 			"id":             n.id,
 			"display_id":     newDisplay,
