@@ -116,6 +116,9 @@ export interface Issue {
   estimate_point_id?: string | null;
   is_draft: boolean;
   archived_at?: string | null;
+  /** Soft-delete timestamp (C52T0); set ONLY on rows from the trash
+   *  list endpoint (?deleted=1). Null/undefined = live. */
+  deleted_at?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
