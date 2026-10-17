@@ -612,7 +612,23 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	// same tx — a rolled-back comment can never fire a rule. Automation
 	// comments bypass this path (direct tx SQL under the loop guard),
 	// so they can never re-trigger.
-	if !automationActive(ctx) {
+	//
+	// C45T1: capture the pre-firing state so a set_state move by the
+	// firing can be announced after commit. Only a set_state action
+	// touches state_id, so before != after means exactly "the firing's
+	// set_state actually moved the issue" — a no-op set_state or a
+	// failed firing (e.g. blocker guard) leaves state_id equal and
+	// announces nothing.
+	var beforeStateID string
+	haveBefore := false
+	fired := !automationActive(ctx)
+	if fired {
+		if err := tx.QueryRow(ctx,
+			`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&beforeStateID); err == nil {
+			haveBefore = true
+		}
+	}
+	if fired {
 		notified = append(notified,
 			runAutomationCommentAddedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 	}
@@ -626,6 +642,20 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		map[string]string{"id": c.ID, "issue_id": issueID},
 	)
 	announceNotifications(append(notified, mentionNotified...))
+	// C45T1: announce AFTER commit only. A rolled-back comment never
+	// reaches here, and a firing that did not move the issue (no-op,
+	// failed action) compares equal and announces nothing. The
+	// snapshot lookup is best-effort: a vanished row skips rather than
+	// failing the (already committed) comment.
+	if fired && haveBefore {
+		if iss, err := scanIssue(pool.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			issueID, projectID)); err == nil && iss.StateID != beforeStateID {
+			announceIssueUpdated(wsSlug, ident, issueID, iss)
+			announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+		}
+	}
 	return c, nil
 }
 
