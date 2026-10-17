@@ -1668,6 +1668,92 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	return results, nil
 }
 
+// BulkRestoreIssues restores many soft-deleted issues in ONE transaction
+// with the same per-item savepoint semantics as BulkDeleteIssues: a live,
+// unknown, or malformed id reports a per-item error while the valid ones
+// are restored. Each restored item gets the full C52T0 trail (parent
+// re-validation, _restored activity row, version snapshot, issue.updated
+// webhook) via restoreIssueTx, then announces issue.updated + objective
+// fan-out after commit. Member (15)+.
+//
+// Per-item ordering: each item is validated against the state at its own
+// savepoint, so a batch restoring both a child and its deleted parent
+// clears the child's parent link (the parent is still deleted at the
+// child's turn) — the parent itself still restores. Like
+// BulkDeleteIssues, duplicate ids in one batch restore once; the repeat
+// reports "issue not found".
+//
+// WS announce uses the in-tx restored rows (the BulkUpdateIssues
+// precedent), not RestoreIssue's post-commit re-read: a concurrent
+// delete landing between commit and announce is a best-effort broadcast
+// race the bulk precedent already accepts. The row lock inside
+// restoreIssueTx still serializes a concurrent delete/restore of the
+// same issue — one wins, the other gets a per-item 404.
+func BulkRestoreIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, ids []string) ([]BulkItemResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, ErrBulkEmptyIDs
+	}
+	if len(ids) > maxBulkItems {
+		return nil, ErrBulkTooManyIDs
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrForbidden
+	}
+
+	results := make([]BulkItemResult, 0, len(ids))
+	restored := make([]*Issue, 0, len(ids))
+	restoredIDs := make([]string, 0, len(ids))
+	for i, id := range ids {
+		sp := fmt.Sprintf("bulk_item_%d", i)
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		iss, err := restoreIssueTx(ctx, tx, projectID, ident, id, actorID)
+		if err != nil {
+			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
+				return nil, rbErr
+			}
+			if _, relErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); relErr != nil {
+				return nil, relErr
+			}
+			msg := bulkItemErrMessage(err)
+			results = append(results, BulkItemResult{ID: id, OK: false, Error: &msg})
+			continue
+		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+sp); err != nil {
+			return nil, err
+		}
+		results = append(results, BulkItemResult{ID: id, OK: true})
+		restored = append(restored, iss)
+		restoredIDs = append(restoredIDs, iss.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	for _, iss := range restored {
+		announceIssueUpdated(wsSlug, ident, iss.ID, iss)
+	}
+	// C44T1 mirror: restored issues re-enter KR progress — one
+	// objective.updated per linked objective across the batch.
+	announceObjectivesForIssues(ctx, pool, wsSlug, restoredIDs)
+	return results, nil
+}
+
 // ---------- Task 15: issue list — filters, cursor pagination, delta sync ----------
 
 var (
