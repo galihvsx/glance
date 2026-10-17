@@ -142,7 +142,7 @@ func TestDeliverRowBlocksPrivateTarget(t *testing.T) {
 	d.lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
 		return []net.IP{net.ParseIP("127.0.0.1")}, nil
 	}
-	if err := d.Run(ctx); err != nil {
+	if err := d.runScoped(ctx, outboxRowWebhookID(t, pool, ctx, outboxID)); err != nil {
 		t.Fatalf("dispatcher run: %v", err)
 	}
 
@@ -174,7 +174,7 @@ func TestDeliverRowDNSFailureRetries(t *testing.T) {
 
 	d := NewWebhookDispatcher(pool)
 	d.lookupIP = stubResolver(t, map[string][]net.IP{})
-	if err := d.Run(ctx); err != nil {
+	if err := d.runScoped(ctx, outboxRowWebhookID(t, pool, ctx, outboxID)); err != nil {
 		t.Fatalf("dispatcher run: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestWebhookRedirectNotFollowed(t *testing.T) {
 
 	d := NewWebhookDispatcher(pool)
 	d.allowPrivateTargets = true // httptest targets are loopback by construction
-	if err := d.Run(ctx); err != nil {
+	if err := d.runScoped(ctx, outboxRowWebhookID(t, pool, ctx, outboxID)); err != nil {
 		t.Fatalf("dispatcher run: %v", err)
 	}
 

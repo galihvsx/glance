@@ -539,12 +539,26 @@ type webhookOutboxRow struct {
 // failures are collected and returned after the remaining rows deliver;
 // only database failures surface as Run errors.
 func (d *WebhookDispatcher) Run(ctx context.Context) error {
+	return d.run(ctx, "")
+}
+
+// runScoped performs one dispatch pass restricted to rows whose payload
+// names webhookID. Test-only isolation: the shared test DB accumulates
+// due rows from other tests, and an unscoped Run claims the oldest
+// webhookBatchSize rows globally, so a test's own row could starve
+// behind other tests' leftovers. Production (cmd/glance/main.go,
+// tickers) keeps calling Run, which is unscoped.
+func (d *WebhookDispatcher) runScoped(ctx context.Context, webhookID string) error {
+	return d.run(ctx, webhookID)
+}
+
+func (d *WebhookDispatcher) run(ctx context.Context, webhookID string) error {
 	if !d.inFlight.CompareAndSwap(false, true) {
 		return nil // previous pass still in flight; skip this tick
 	}
 	defer d.inFlight.Store(false)
 
-	claimed, err := d.claimDue(ctx)
+	claimed, err := d.claimDue(ctx, webhookID)
 	if err != nil {
 		return err
 	}
@@ -561,23 +575,34 @@ func (d *WebhookDispatcher) Run(ctx context.Context) error {
 // (FOR UPDATE SKIP LOCKED — safe across dispatcher instances), marked
 // 'delivering' with a lease, and the tx commits BEFORE any HTTP happens.
 // Rows stuck 'delivering' past their lease (a crashed pass) are reclaimed
-// here; deliveries stay at-least-once.
-func (d *WebhookDispatcher) claimDue(ctx context.Context) ([]webhookOutboxRow, error) {
+// here; deliveries stay at-least-once. A non-empty webhookID scopes the
+// claim to rows whose payload names that webhook (payload->>'webhook_id'
+// = $3); an empty webhookID claims globally, which is the production
+// behavior. Ordering is unchanged either way.
+func (d *WebhookDispatcher) claimDue(ctx context.Context, webhookID string) ([]webhookOutboxRow, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("webhook: begin claim tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	rows, err := tx.Query(ctx, `
+	query := `
 		SELECT id, payload, attempts
 		FROM outbox
 		WHERE event LIKE $2
 		  AND next_retry_at <= now()
-		  AND (status = 'pending' OR status = 'delivering')
+		  AND (status = 'pending' OR status = 'delivering')`
+	args := []any{webhookBatchSize, webhookEventPrefix + "%"}
+	if webhookID != "" {
+		query += `
+		  AND payload->>'webhook_id' = $3`
+		args = append(args, webhookID)
+	}
+	query += `
 		ORDER BY id
 		LIMIT $1
-		FOR UPDATE SKIP LOCKED`, webhookBatchSize, webhookEventPrefix+"%")
+		FOR UPDATE SKIP LOCKED`
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("webhook: claim due rows: %w", err)
 	}
