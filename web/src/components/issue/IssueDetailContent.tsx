@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -377,6 +377,19 @@ export default function IssueDetailContent({
 
   const issue = issueQuery.data;
   const states = statesQuery.data ?? [];
+  // C53T1: display ids for parents the detail page already loaded
+  // (the live parent, via parentQuery) — VersionHistory renders a
+  // snapshot parent_id as its display id when known, else a truncated
+  // UUID, and never fetches per-row.
+  const parentDisplayIds = useMemo(
+    () =>
+      new Map(
+        parentQuery.data
+          ? [[parentQuery.data.id, parentQuery.data.display_id]]
+          : [],
+      ),
+    [parentQuery.data],
+  );
   const { totalSeconds: trackedSeconds } = useTimeSummary(slug, identifier, uuid);
 
   useRecordRecentIssue(issue, slug, identifier);
@@ -993,6 +1006,7 @@ export default function IssueDetailContent({
                 activeTab={activityTab}
                 onTabChange={setActivityTab}
                 onError={setError}
+                parentDisplayIds={parentDisplayIds}
               />
             </>
           )}
