@@ -1449,6 +1449,34 @@ func (s BulkIssueSet) hasFields() bool {
 	return s.StateID != nil || s.Priority != nil || s.LabelIDs != nil || s.AssigneeID.Set
 }
 
+// issueContentEqual reports whether two Issue rows carry the same row
+// CONTENT, ignoring UpdatedAt (a timestamp, not content), DisplayID
+// (derived — set by callers inconsistently), and SubtaskProgress (nil
+// from scanIssue). Used by BulkSetIssues to decide whether the
+// post-cascade final row needs its own version snapshot.
+func issueContentEqual(a, b *Issue) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ac := *a
+	bc := *b
+	ac.UpdatedAt = time.Time{}
+	bc.UpdatedAt = time.Time{}
+	ac.DisplayID = ""
+	bc.DisplayID = ""
+	ac.SubtaskProgress = nil
+	bc.SubtaskProgress = nil
+	ab, err := json.Marshal(ac)
+	if err != nil {
+		return false
+	}
+	bb, err := json.Marshal(bc)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ab, bb)
+}
+
 // BulkSetIssues applies one set to many issues in ONE transaction with
 // full atomicity: any unknown, deleted, cross-project, or malformed id,
 // or any invalid set field, aborts the whole batch — no partial
@@ -1601,8 +1629,9 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// per-field activity rows, version snapshot, state-change
 		// notifications, webhook fan-out. A patch with no changed fields
 		// returns the current row without writing (labels/assignees-only
-		// sets are fine).
-		_, itemNotified, _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		// sets are fine). The returned row is the comparison baseline
+		// for the C50T0 post-cascade snapshot below.
+		updatedRow, itemNotified, _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1644,6 +1673,24 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return 0, nil, err
 		}
 		final.DisplayID = ident + "-" + strconv.Itoa(final.SequenceID)
+		// C50T0: the replace fns above may have fired a cascade rule
+		// that moved the row AFTER updateIssueTx snapshotted it. If
+		// the final row's content differs from the row updateIssueTx
+		// returned, write one extra version carrying the post-cascade
+		// row. If equal, snapshot nothing: updateIssueTx's snapshot
+		// (or no snapshot, for a labels-only no-change patch) already
+		// stands. No FOR UPDATE on this re-read: the C46T0
+		// before-image SELECT ... FOR UPDATE above (same tx, same
+		// row) already holds the row lock until commit, and
+		// updateIssueTx re-took it — so this read is lock-covered
+		// and snapshotVersionTx's sequencing cannot interleave.
+		// In-tx like every other write here, so any error rolls the
+		// snapshot back with the batch.
+		if !issueContentEqual(final, updatedRow) {
+			if err := snapshotVersionTx(ctx, tx, id, actorID, final); err != nil {
+				return 0, nil, err
+			}
+		}
 		announced = append(announced, final)
 		if final.StateID != preStateID {
 			stateChangedIDs = append(stateChangedIDs, id)
