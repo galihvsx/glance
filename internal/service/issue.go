@@ -1916,20 +1916,47 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	announced := make([]*Issue, 0, len(norm))
 	stateChangedIDs := make([]string, 0, len(norm))
 	for _, id := range norm {
-		// C46T0: capture the before-image state under the row lock
-		// (same tx, same lock updateIssueTx takes below, so this
-		// is exactly the state the batch starts from). The
-		// cascade detector compares the final re-read against
-		// THIS, not against updateIssueTx's returned row: that
-		// row predates updateIssueTx's own automation cascade,
-		// so a net-zero round trip (direct move + a rule moving
-		// it back) would otherwise false-positive.
-		var preStateID string
-		if err := tx.QueryRow(ctx,
-			`SELECT state_id::text FROM issues
+		// C46T0: capture the before-image under the row lock (same tx,
+		// same lock updateIssueTx takes below, so this is exactly
+		// the state the batch starts from). The cascade detector
+		// compares the final re-read against THIS, not against
+		// updateIssueTx's returned row: that row predates
+		// updateIssueTx's own automation cascade, so a net-zero
+		// round trip (direct move + a rule moving it back) would
+		// otherwise false-positive. C56T2: the before-image is the
+		// FULL row now, not just state_id — the webhook
+		// changed_fields union diffs it against the final row via
+		// issueRowChangedFields.
+		before, err := scanIssue(tx.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
 			 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
 			 FOR UPDATE`,
-			id, projectID).Scan(&preStateID); err != nil {
+			id, projectID))
+		if err != nil {
+			return 0, nil, err
+		}
+		preStateID := before.StateID
+		// C56T2: the patch fields updateIssueTx will actually
+		// change, in updateIssueTx's own activity order (priority
+		// before state_id). updateIssueTx compares its patch
+		// against the same locked row (== before), so these two
+		// conditions mirror its add() calls exactly: patchFields
+		// non-empty ⟺ updateIssueTx enqueues a webhook below.
+		var patchFields []string
+		if set.Priority != nil && *set.Priority != before.Priority {
+			patchFields = append(patchFields, "priority")
+		}
+		if stateID != nil && *stateID != before.StateID {
+			patchFields = append(patchFields, "state_id")
+		}
+		// C56T2: outbox watermark taken BEFORE updateIssueTx
+		// runs, so the rows it enqueues for this item are exactly
+		// the ones with id > watermark (matched by issue id +
+		// domain event in bulkSetWebhookTx). Per-item, because one
+		// batch tx enqueues for every item.
+		var outboxWatermark int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX(id), 0) FROM outbox`).Scan(&outboxWatermark); err != nil {
 			return 0, nil, err
 		}
 		var patch IssuePatch
@@ -1951,6 +1978,17 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return 0, nil, err
 		}
 		notified = append(notified, itemNotified...)
+		// C56T2: the replace fns report no changed flag (their
+		// notification return is nil whenever no rule fires, even
+		// on a real set change), so read the pre-replace sets here
+		// — after updateIssueTx (which never touches labels /
+		// assignees) and before the replaces — and compare against
+		// the batch targets. Labels/assignees are not row columns,
+		// so the before/final row diff below can never see them.
+		setFields, err := bulkSetChangedSetFieldsTx(ctx, tx, id, set.LabelIDs != nil, labelIDs, assigneeID)
+		if err != nil {
+			return 0, nil, err
+		}
 		if set.LabelIDs != nil {
 			ln, err := replaceIssueLabelsTx(ctx, tx, wsID, projectID, ident, id, actorID, labelIDs)
 			if err != nil {
@@ -2006,6 +2044,14 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 				return 0, nil, err
 			}
 		}
+		// C56T2: exactly-one issue.updated webhook for this item —
+		// fresh enqueue when the patch enqueued nothing, in-tx
+		// extension of updateIssueTx's row when the set/cascade
+		// changes add fields beyond the patch. No-op items (empty
+		// union) enqueue nothing.
+		if err := bulkSetWebhookTx(ctx, tx, wsID, id, actorID, outboxWatermark, patchFields, setFields, before, final); err != nil {
+			return 0, nil, err
+		}
 		announced = append(announced, final)
 		if final.StateID != preStateID {
 			stateChangedIDs = append(stateChangedIDs, id)
@@ -2022,6 +2068,207 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	// linked objective across the batch.
 	announceObjectivesForIssues(ctx, pool, wsSlug, stateChangedIDs)
 	return len(norm), norm, nil
+}
+
+// unionChangedFields merges field lists preserving first-seen order,
+// dropping duplicates. The order is the caller's contract: patch
+// fields (updateIssueTx order), then set fields, then cascade diff.
+func unionChangedFields(lists ...[]string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, list := range lists {
+		for _, f := range list {
+			if !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
+	}
+	return out
+}
+
+// sameFieldSet reports whether two field lists hold the same set,
+// ignoring order and duplicates.
+func sameFieldSet(a, b []string) bool {
+	if len(unionChangedFields(a)) != len(unionChangedFields(b)) {
+		return false
+	}
+	seen := make(map[string]bool, len(a))
+	for _, f := range a {
+		seen[f] = true
+	}
+	for _, f := range b {
+		if !seen[f] {
+			return false
+		}
+	}
+	return true
+}
+
+// bulkSetChangedSetFieldsTx compares the issue's pre-replace label /
+// assignee sets against the batch targets and returns the direct
+// set-change fields ("labels" / "assignees"). Only the sets the batch
+// actually touches are read. Labels/assignees are not row columns, so
+// the before/final row diff in bulkSetWebhookTx can never report them
+// — they must be tracked separately, here.
+func bulkSetChangedSetFieldsTx(ctx context.Context, tx pgx.Tx, issueID string, labelsSet bool, labelIDs []string, assigneeID PatchField[string]) ([]string, error) {
+	var fields []string
+	if labelsSet {
+		var current []string
+		rows, err := tx.Query(ctx,
+			`SELECT label_id::text FROM issue_labels WHERE issue_id = $1::uuid ORDER BY label_id::text`, issueID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			current = append(current, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		// labelIDs is the canonical target (deduped + sorted, same
+		// as the current query's ORDER BY), so a plain sorted
+		// comparison decides changed-ness.
+		if !equalStringSlices(current, labelIDs) {
+			fields = append(fields, "labels")
+		}
+	}
+	if assigneeID.Set {
+		var current []string
+		rows, err := tx.Query(ctx,
+			`SELECT user_id::text FROM issue_assignees WHERE issue_id = $1::uuid ORDER BY user_id::text`, issueID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			current = append(current, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		var want []string
+		if assigneeID.Value != nil {
+			want = []string{*assigneeID.Value}
+		}
+		if !equalStringSlices(current, want) {
+			fields = append(fields, "assignees")
+		}
+	}
+	return fields, nil
+}
+
+// bulkSetWebhookTx enqueues exactly ONE issue.updated webhook in-tx
+// for one BulkSetIssues item (C56T2). changed_fields is the union of
+// the direct patch fields (patchFields — what updateIssueTx already
+// enqueued, empty when the patch changed nothing), the direct
+// labels/assignees set changes (setFields), and the cascade-caused
+// row diff (issueRowChangedFields over the pre-batch before-image vs
+// the final row — REUSED from C56T1, never re-derived).
+//
+// Exactly-one rule vs updateIssueTx's enqueue:
+//   - Patch enqueued nothing + union non-empty → ONE fresh row
+//     carrying the union (the labels-only / assignees-only case).
+//   - Patch enqueued + union adds nothing beyond the patch → the
+//     existing row is left byte-identical (patch-only case).
+//   - Patch enqueued + union adds fields → the already-enqueued
+//     row(s) are EXTENDED in place: one UPDATE per subscribed
+//     webhook rewriting only payload.data.changed_fields. The rows
+//     are uncommitted (same tx), invisible to the dispatcher, so
+//     the rewrite cannot race a delivery — and no second row is
+//     ever added, so the two-row exception from the plan is NOT
+//     needed. (Deliberate limit: a webhook created concurrently
+//     mid-batch, after updateIssueTx ran, is not covered by the
+//     extend — same race as any two enqueue sites in one tx.)
+//   - Patch enqueued + no rows found (no webhook was subscribed
+//     when updateIssueTx ran) → ONE fresh row with the full union,
+//     so a webhook created mid-batch still sees the mutation.
+//   - Empty union → nothing enqueued (no-op BulkSet).
+func bulkSetWebhookTx(ctx context.Context, tx pgx.Tx, wsID, issueID, actorID string, outboxWatermark int64, patchFields, setFields []string, before, final *Issue) error {
+	changedFields := unionChangedFields(patchFields, setFields, issueRowChangedFields(before, final))
+	if len(changedFields) == 0 {
+		return nil
+	}
+	payload := map[string]any{
+		"id":             issueID,
+		"display_id":     final.DisplayID,
+		"changed_fields": changedFields,
+		"actor_id":       actorID,
+	}
+	if len(patchFields) == 0 {
+		return enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, payload)
+	}
+	// Find exactly the rows this item's updateIssueTx enqueued: id >
+	// the per-item watermark, this issue, this domain event, and NO
+	// taxonomy field (labels/assignees) in changed_fields. The
+	// taxonomy exclusion is load-bearing: PATCH/restore/BulkSet
+	// writers lock the issue row, so a concurrent mutation of THIS
+	// issue by one of them is blocked — but the label/assignee
+	// writers (AssignLabel/UnassignLabel/AssignAssignee/
+	// UnassignAssignee) take NO FOR UPDATE lock (plain SELECT
+	// before-image + INSERT into the membership table), so a
+	// concurrent AssignLabel on THIS issue can commit an outbox row
+	// above the watermark while this tx runs. That row is safe from
+	// the extend because updateIssueTx's row for a BulkSet item can
+	// NEVER carry labels/assignees (it never touches them; BulkSet's
+	// patch is priority/state only), while every label/assignee-path
+	// row ALWAYS carries its direct taxonomy field (C56T1 prepends
+	// it). So the guard makes the extend match only rows
+	// updateIssueTx could have written for this item. A skipped
+	// decoy row falls through to the len(rowIDs)==0 fresh-enqueue
+	// fallback below, and the union lands in a fresh row.
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM outbox
+		  WHERE id > $1 AND event = $2
+		    AND payload->>'event' = $3
+		    AND payload->'data'->>'id' = $4
+		    AND NOT (payload->'data'->'changed_fields' ? 'labels'
+		      OR payload->'data'->'changed_fields' ? 'assignees')
+		  ORDER BY id`,
+		outboxWatermark, WebhookDeliverEvent, EventIssueUpdated, issueID)
+	if err != nil {
+		return err
+	}
+	var rowIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		rowIDs = append(rowIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(rowIDs) == 0 {
+		return enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, payload)
+	}
+	if sameFieldSet(changedFields, patchFields) {
+		return nil
+	}
+	for _, rid := range rowIDs {
+		if _, err := tx.Exec(ctx,
+			`UPDATE outbox
+			  SET payload = jsonb_set(payload, '{data,changed_fields}', $1::jsonb)
+			WHERE id = $2`,
+			toJSONBParam(changedFields), rid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // normalizeIDs lowercases/trims raw id strings; malformed entries are
