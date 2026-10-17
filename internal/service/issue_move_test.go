@@ -528,3 +528,129 @@ func TestMoveIssueErrors(t *testing.T) {
 		t.Fatalf("lowercase target: new_display_id = %q", res.NewDisplayID)
 	}
 }
+
+// stateIDActivity reads the single state_id activity row for an issue,
+// failing unless there is exactly one. Values are the JSON-decoded
+// old/new state ids.
+func stateIDActivity(t *testing.T, pool *pgxpool.Pool, issueID string) (oldVal, newVal string) {
+	t.Helper()
+	var oldRaw, newRaw []byte
+	rows, err := pool.Query(context.Background(),
+		`SELECT old_value, new_value FROM issue_activities
+		  WHERE issue_id = $1::uuid AND field = 'state_id' ORDER BY created_at, id`,
+		issueID)
+	if err != nil {
+		t.Fatalf("read state_id activity: %v", err)
+	}
+	defer rows.Close()
+	var pairs [][2]string
+	for rows.Next() {
+		if err := rows.Scan(&oldRaw, &newRaw); err != nil {
+			t.Fatalf("scan state_id activity: %v", err)
+		}
+		var o, n string
+		if err := json.Unmarshal(oldRaw, &o); err != nil {
+			t.Fatalf("unmarshal old state_id: %v", err)
+		}
+		if err := json.Unmarshal(newRaw, &n); err != nil {
+			t.Fatalf("unmarshal new state_id: %v", err)
+		}
+		pairs = append(pairs, [2]string{o, n})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("state_id activity rows: %v", err)
+	}
+	if len(pairs) != 1 {
+		t.Fatalf("state_id activity rows = %d, want exactly 1 (%v)", len(pairs), pairs)
+	}
+	return pairs[0][0], pairs[0][1]
+}
+
+// TestMoveIssueWritesStateIDActivityOnRemap (C47T0): a move whose state
+// remaps writes exactly one state_id activity row (old = source state,
+// new = remapped state) alongside the untouched _moved row. Covers both
+// remap shapes: same-name match (different row id in the target
+// project) and backlog fallback (no name match).
+func TestMoveIssueWritesStateIDActivityOnRemap(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	wsSlug, srcIdent, dstIdent, owner := moveTestSetup(t, pool, "stateact")
+
+	// Same-name match: source "In Progress" → target "In Progress"
+	// (different row id), so state_id still changes.
+	srcInProg := stateIDByName(t, pool, wsSlug, srcIdent, owner, "In Progress")
+	iss, err := CreateIssue(ctx, pool, wsSlug, srcIdent, owner, CreateIssueInput{
+		Name: "Move me", StateID: &srcInProg,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if n := countActivities(t, pool, iss.ID, "state_id"); n != 0 {
+		t.Fatalf("state_id rows before move = %d, want 0", n)
+	}
+	res := mustMove(t, pool, wsSlug, srcIdent, iss.ID, owner, dstIdent)
+	dstInProg := stateIDByName(t, pool, wsSlug, dstIdent, owner, "In Progress")
+	oldVal, newVal := stateIDActivity(t, pool, iss.ID)
+	if oldVal != srcInProg || newVal != dstInProg {
+		t.Fatalf("state_id activity = %s → %s, want %s → %s", oldVal, newVal, srcInProg, dstInProg)
+	}
+	if res.Issue.StateID != dstInProg {
+		t.Fatalf("issue state_id = %q, want %q", res.Issue.StateID, dstInProg)
+	}
+	if n := countActivities(t, pool, iss.ID, "_moved"); n != 1 {
+		t.Fatalf("_moved rows = %d, want 1 (untouched)", n)
+	}
+
+	// Backlog fallback: source-only state → target backlog.
+	review, err := CreateState(ctx, pool, wsSlug, srcIdent, owner, StateInput{Name: "Review", Group: "unstarted", Color: "#fff"})
+	if err != nil {
+		t.Fatalf("CreateState: %v", err)
+	}
+	iss2, err := CreateIssue(ctx, pool, wsSlug, srcIdent, owner, CreateIssueInput{
+		Name: "Move me 2", StateID: &review.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue 2: %v", err)
+	}
+	res2 := mustMove(t, pool, wsSlug, srcIdent, iss2.ID, owner, dstIdent)
+	if !res2.StateRemapped {
+		t.Fatal("state_remapped = false, want true (fallback)")
+	}
+	dstBacklog := stateIDByName(t, pool, wsSlug, dstIdent, owner, "Backlog")
+	oldVal, newVal = stateIDActivity(t, pool, iss2.ID)
+	if oldVal != review.ID || newVal != dstBacklog {
+		t.Fatalf("state_id activity = %s → %s, want %s → %s", oldVal, newVal, review.ID, dstBacklog)
+	}
+	if n := countActivities(t, pool, iss2.ID, "_moved"); n != 1 {
+		t.Fatalf("_moved rows = %d, want 1 (untouched)", n)
+	}
+}
+
+// TestMoveIssueFailedMoveWritesNoActivity (C47T0): a failed move
+// (validation error → tx rollback) writes no activity rows at all.
+func TestMoveIssueFailedMoveWritesNoActivity(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	wsSlug, srcIdent, _, owner := moveTestSetup(t, pool, "stateactfail")
+
+	iss := createTestIssue(t, pool, wsSlug, srcIdent, owner, "Doomed move")
+	before := countActivities(t, pool, iss.ID, "")
+	_, err := MoveIssue(ctx, pool, wsSlug, srcIdent, iss.ID, owner,
+		MoveIssueInput{TargetProjectIdentifier: "NOPE404"})
+	if !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("unknown target: err = %v, want ErrProjectNotFound", err)
+	}
+	if got := countActivities(t, pool, iss.ID, ""); got != before {
+		t.Fatalf("activity rows after failed move = %d, want %d (no partial writes)", got, before)
+	}
+	if n := countActivities(t, pool, iss.ID, "state_id"); n != 0 {
+		t.Fatalf("state_id rows after failed move = %d, want 0", n)
+	}
+	if n := countActivities(t, pool, iss.ID, "_moved"); n != 0 {
+		t.Fatalf("_moved rows after failed move = %d, want 0", n)
+	}
+	// The issue is still in the source project, untouched.
+	if _, err := GetIssue(ctx, pool, wsSlug, srcIdent, iss.ID, owner); err != nil {
+		t.Fatalf("GetIssue after failed move: %v", err)
+	}
+}

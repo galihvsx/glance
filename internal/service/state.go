@@ -187,6 +187,10 @@ func UpdateState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 // + objective.updated fan-out for its linked objectives. Soft-deleted
 // issues are moved but never announced. Zero refs / 409 / failed delete:
 // nothing is announced.
+//
+// C47T0: the reassign also writes one state_id activity row per moved
+// LIVE issue (old = deleted state, new = reassignTo) in the same tx;
+// soft-deleted issues get no row.
 func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, stateID, actorID string, reassignTo *string) error {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -286,6 +290,19 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 		movedRows.Close()
 		if err := movedRows.Err(); err != nil {
 			return err
+		}
+		// C47T0: one state_id activity row per moved LIVE issue
+		// (old = deleted state, new = reassignTo), in the same tx,
+		// using the movedLiveIDs collection above — soft-deleted
+		// issues get no row. Without these rows a replay over
+		// issue_activities would miss every reassign.
+		for _, movedID := range movedLiveIDs {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+				 VALUES ($1::uuid, $2::uuid, 'state_id', $3::jsonb, $4::jsonb)`,
+				movedID, actorID, toJSONBParam(stateID), toJSONBParam(*reassignTo)); err != nil {
+				return err
+			}
 		}
 	}
 	ct, err := tx.Exec(ctx, `DELETE FROM states WHERE id = $1::uuid`, stateID)
