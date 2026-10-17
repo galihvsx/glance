@@ -5,6 +5,52 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Trash: restore deleted issues (cycle 52)**
+- Audit: delete was a one-way door — soft-deleted issues had no
+  list/restore path (`RestoreIssueVersion` requires `deleted_at IS
+  NULL`; no `deleted_at IS NOT NULL` reads anywhere in
+  `internal/service/`). An accidental or bulk delete was
+  unrecoverable through the app. This cycle makes Trash
+  restore-only: there is still no hard/permanent delete anywhere.
+- Trash API core (C52T0): `GET .../issues?deleted=1` returns
+  deleted-only rows (`deleted_at DESC`, same pagination envelope;
+  deliberately deleted-only, unlike `?archived=1` which only
+  *includes* archived rows) and `POST .../issues/:uuid/restore`
+  un-deletes one issue. The restore trail mirrors delete:
+  `_restored` activity row + version snapshot + webhook
+  `issue.updated` (changed_fields `["deleted_at"]`, plus
+  `"parent_id"` when the parent was cleared) + WS `issue.updated`
+  (post-commit re-read) + objective fan-out (restored issues
+  re-enter KR progress). State re-validated (deleted state rejects
+  the restore); a deleted/missing parent is cleared in-tx with a
+  `parent_id` activity row, a live parent is kept. A live issue
+  restores as 404 ("not in trash"), guests get 403. No migration.
+  Note: `_restored` is shared with `RestoreIssueVersion` — payloads
+  distinguish (`{"restored_at": ...}` trash vs `{"version_no": n}`
+  version).
+- Bulk restore (C52T1): `POST .../issues/bulk-restore` mirrors
+  `BulkDeleteIssues` (one tx, per-item savepoints, per-item
+  failures, 100-item cap, Idempotency-Key) — each restored item
+  gets the full C52T0 trail. Edges verified in code + tests:
+  archived-project restore follows the same rule as every other
+  mutation (no block); delete→restore→delete→restore round-trips
+  with no clobbered rows; concurrent restore/delete serializes on
+  the row lock; a deleted project restores as 404 (hard delete +
+  FK cascades); children detached by the delete stay detached; a
+  `[child, parent]` batch clears the child's link deterministically.
+  Bulk WS announce uses the in-tx rows (BulkUpdateIssues
+  precedent), not the single-restore post-commit re-read.
+- Trash page (C52T2): `/w/:slug/p/:identifier/trash` (Trash tab
+  after Archived) mirroring `Archived.tsx` — plain-text titles
+  (a still-deleted row's detail route 404s), `Deleted` badge +
+  `deleted_at` relative time, per-row Restore with no confirm
+  dialog, bulk checkboxes + Select-all + "Restore selected"
+  (per-item failures stay selected for retry), client-side search
+  filter, empty state. "Deleted by" is not shown (no `deleted_by`
+  field — same documented limitation as Archived's "Archived by").
+  Restore invalidates trash + issues/board/drafts/calendar query
+  caches.
+
 **Issue-history trails for the remaining direct-row mutations (cycle 51)**
 - Audit: every `UPDATE issues` / `INSERT INTO issues` site in
   `internal/service/` was checked against the triple trail (version
