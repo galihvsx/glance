@@ -52,6 +52,8 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/:uuid", h.getIssue)
 	g.PATCH("/:uuid", h.updateIssue)
 	g.DELETE("/:uuid", h.deleteIssue)
+	// C52T0: restore a soft-deleted issue from trash.
+	g.POST("/:uuid/restore", h.restoreIssue)
 	// C8T4: clone endpoint. The static "clone" segment keeps this distinct
 	// from PATCH /:uuid by Echo's specificity rules (kept adjacent for
 	// readability, same style as /export and /bulk).
@@ -423,9 +425,13 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
 		Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
 		Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
-		Draft:          draft,
-		SequenceID:     sequenceID,
-		Fields:         fields,
+		// C52T0: deleted-only (trash) list. Same lenient truthy parsing
+		// as archived: "1"/"true" select trash, anything else means
+		// the normal list.
+		Deleted:    qp.Get("deleted") == "true" || qp.Get("deleted") == "1",
+		Draft:      draft,
+		SequenceID: sequenceID,
+		Fields:     fields,
 		// C21T2: batched project-structure on the list endpoint — the
 		// cycle/module/release membership rides on every returned row in
 		// ONE query, replacing the spreadsheet's old per-row
@@ -440,6 +446,27 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	in, err := parseIssueListInput(qp)
 	if err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	}
+
+	// C52T0: ?deleted=1 is the trash list — deleted-only, most recently
+	// deleted first. It branches here, before the normal list: the
+	// other filters/order are ignored in trash mode, and
+	// ?include_links= (the Gantt contract) does not apply to deleted
+	// rows. The service's Deleted flag exists only to carry the parse
+	// result to this branch; it never reaches the export path.
+	if in.Deleted {
+		res, err := service.ListDeletedIssues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in.Cursor, in.PerPage)
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrInvalidCursor):
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid cursor", nil)
+			case errors.Is(err, service.ErrInvalidListFilter):
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid filter", nil)
+			}
+			return issueError(c, err)
+		}
+		return c.JSON(http.StatusOK, res)
 	}
 
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
@@ -671,6 +698,24 @@ func (h *IssueHandler) deleteIssue(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// restoreIssue implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/restore
+// (C52T0): un-deletes a soft-deleted issue and returns the restored
+// issue with 200. A live issue restores as 404 ("not in trash"), exactly
+// as a second DELETE reads as not-found; unknown ids are 404; guests
+// get 403. No Idempotency-Key (delete precedent): a replayed restore
+// is a 404, not a replayed success.
+func (h *IssueHandler) restoreIssue(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	iss, err := service.RestoreIssue(c.Request().Context(), h.Pool, slug, ident, uuid, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, iss)
 }
 
 // ---------- Task 17: bulk operations ----------

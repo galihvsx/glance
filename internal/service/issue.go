@@ -102,6 +102,11 @@ type Issue struct {
 	// select subtaskProgressAgg; omitempty keeps every other response
 	// shape byte-identical.
 	SubtaskProgress *SubtaskProgress `json:"subtask_progress,omitempty"`
+	// DeletedAt is populated ONLY by ListDeletedIssues (C52T0, the trash
+	// list): the soft-delete timestamp the Trash page sorts and renders
+	// by. Nil everywhere else — scanIssue never selects deleted_at, so
+	// omitempty keeps every other response shape byte-identical.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // CreateIssueInput carries the fields for a new issue. Nil pointers mean
@@ -1074,6 +1079,170 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	// KR progress, state unchanged).
 	announceDetachedChildren(ctx, pool, wsSlug, ident, projectID, detached)
 	return nil
+}
+
+// RestoreIssue un-deletes a soft-deleted issue (sets deleted_at back to
+// NULL) and writes the restore trail, atomically. It is the mirror of
+// DeleteIssue: a live issue restores as ErrIssueNotFound ("not in trash"),
+// exactly as a second DELETE reads as not-found. Member (15)+; guests
+// ErrForbidden.
+func RestoreIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*Issue, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	_, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < RoleMember {
+		return nil, ErrForbidden
+	}
+
+	restored, err := restoreIssueTx(ctx, tx, projectID, ident, issueID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	// C45/C46 pattern: re-read post-commit (deleted_at IS NULL) for the
+	// announce, and skip on a vanishing row rather than failing the
+	// (already committed) restore.
+	if fresh, err := scanIssue(pool.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+		restored.ID, projectID)); err == nil {
+		fresh.DisplayID = ident + "-" + strconv.Itoa(fresh.SequenceID)
+		announceIssueUpdated(wsSlug, ident, fresh.ID, fresh)
+	}
+	// C44T1 mirror: a restored issue re-enters KR progress — fan out
+	// objective.updated for its (still-linked) objectives.
+	announceObjectivesForIssue(ctx, pool, wsSlug, restored.ID)
+	return restored, nil
+}
+
+// restoreIssueTx is the tx-scoped core of RestoreIssue: clear deleted_at
+// plus the restore trail (parent re-validation, _restored activity row,
+// version snapshot, issue.updated webhook). It returns the restored row
+// (DisplayID derived, ParentID reflecting any parent clearing). It
+// neither begins nor commits — callers own the transaction. Role checks
+// stay with the callers. Written as a tx-scoped helper (like
+// deleteIssueTx) so BulkRestoreIssues (C52T1) can reuse it per item
+// inside its savepoint loop.
+func restoreIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string) (*Issue, error) {
+	// The UPDATE itself locks the row: a concurrent delete/restore of
+	// the same issue serializes here — one wins, the other sees no row
+	// (its deleted_at predicate no longer matches) and gets
+	// ErrIssueNotFound.
+	restored, err := scanIssue(tx.QueryRow(ctx,
+		`UPDATE issues SET deleted_at = NULL, updated_at = now()
+		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NOT NULL
+		 RETURNING `+issueColumns,
+		issueID, projectID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrIssueNotFound
+		}
+		return nil, err
+	}
+
+	// State re-validation (RestoreIssueVersion precedent): the issue's
+	// state must still exist in the project. If it was deleted since the
+	// delete, reject the restore — do NOT silently move the issue to
+	// another state; the caller re-creates or re-states explicitly.
+	// In practice DeleteState forces a reassign of every referencing
+	// issue (live or soft-deleted) before the state row can go, and the
+	// issues.state_id FK blocks a raw state delete, so this is
+	// defense-in-depth against a corrupt/orphaned state reference.
+	// A failure here rolls the tx back: deleted_at stays set.
+	if _, err := checkStateInProject(ctx, tx, projectID, restored.StateID); err != nil {
+		return nil, err
+	}
+
+	// Parent re-validation: if parent_id is set, the parent must be a
+	// live issue of this project. A deleted/missing parent is cleared
+	// in-tx with a parent_id activity row (old = stale parent, new =
+	// SQL NULL — same shape as C51T1's detach row); a live parent is
+	// kept. No cycle check: the parent link predates the delete and was
+	// valid when set, and nothing re-parents the restored issue, so no
+	// new cycle can form here.
+	parentCleared := false
+	if restored.ParentID != nil {
+		var one int
+		err := tx.QueryRow(ctx,
+			`SELECT 1 FROM issues
+			 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			*restored.ParentID, projectID).Scan(&one)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !isInvalidUUID(err) {
+			return nil, err
+		}
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			staleParent := *restored.ParentID
+			if _, err := tx.Exec(ctx,
+				`UPDATE issues SET parent_id = NULL, updated_at = now()
+				 WHERE id = $1::uuid`,
+				restored.ID); err != nil {
+				return nil, err
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+				 VALUES ($1::uuid, $2::uuid, 'parent_id', $3::jsonb, $4::jsonb)`,
+				restored.ID, actorID, toJSONBParam(derefPtr(&staleParent)), toJSONBParam(derefPtr((*string)(nil)))); err != nil {
+				return nil, err
+			}
+			restored.ParentID = nil
+			parentCleared = true
+		}
+	}
+
+	// Trail, mirroring delete (C51T1 shape): a _restored activity row.
+	// NOTE: RestoreIssueVersion already writes a _restored row with a
+	// {"version_no": n} payload for version restores; this trash
+	// restore reuses the same field with a {"restored_at": ...}
+	// payload (the _deleted row's shape). Consumers distinguishing
+	// the two restores must key on the payload, not the field alone.
+	newVal, _ := json.Marshal(map[string]any{"restored_at": time.Now().UTC()})
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO issue_activities (issue_id, actor_id, field, new_value)
+		 VALUES ($1::uuid, $2::uuid, '_restored', $3::jsonb)`,
+		restored.ID, actorID, string(newVal)); err != nil {
+		return nil, err
+	}
+
+	restored.DisplayID = ident + "-" + strconv.Itoa(restored.SequenceID)
+	if err := snapshotVersionTx(ctx, tx, restored.ID, actorID, restored); err != nil {
+		return nil, err
+	}
+
+	// Webhook fan-out as issue.updated: the restored issue re-enters
+	// every consumer's working set. changed_fields carries deleted_at
+	// (the field a consumer needs to invalidate a cached deleted view)
+	// plus parent_id when the parent was cleared above.
+	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	changedFields := []string{"deleted_at"}
+	if parentCleared {
+		changedFields = append(changedFields, "parent_id")
+	}
+	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+		"id":             restored.ID,
+		"display_id":     restored.DisplayID,
+		"changed_fields": changedFields,
+		"actor_id":       actorID,
+	}); err != nil {
+		return nil, err
+	}
+	return restored, nil
 }
 
 // rebalanceSpacing is the even gap RebalanceSortOrder leaves between
@@ -2176,6 +2345,12 @@ type ListIssuesInput struct {
 	// Archived includes archived issues. Default (false) excludes them:
 	// archived issues are out of the working set.
 	Archived bool
+	// Deleted (C52T0, ?deleted=1) selects the trash list: deleted-only
+	// rows. It is honored ONLY by the list handler, which branches to
+	// ListDeletedIssues before calling ListIssues — it never reaches
+	// issueListConds, so the export path (which shares those conds)
+	// can never leak deleted rows.
+	Deleted bool
 	// IncludeProjectStructure attaches the cycle/module/release membership
 	// (?include_project_structure=1, C21T2) to every returned row in ONE
 	// batched query — the batched replacement for the spreadsheet's old
@@ -2648,4 +2823,144 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		}
 	}
 	return res, nil
+}
+
+// ---------- C52T0: trash list ----------
+
+// ListDeletedIssues returns the project's soft-deleted issues only
+// (deleted_at IS NOT NULL), most recently deleted first
+// (deleted_at DESC, id DESC tiebreak). This deliberately differs from
+// ?archived=1, which *includes* archived rows alongside live ones:
+// deleted rows are excluded everywhere else, so "include deleted"
+// would leak them into normal lists — trash is a separate,
+// deleted-only view.
+//
+// Pagination mirrors the normal list (cursor + per_page, same
+// per-page clamping, same ListIssuesResult envelope with
+// next_cursor). The cursor is minted for order "-deleted_at" with
+// the row's deleted_at as its value. All other list filters are
+// ignored in trash mode: the trash is one flat recency-ordered view,
+// not a filtered working set. Any workspace member (guest 5+) may
+// read, same as the normal list — no role gate.
+func ListDeletedIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, cursor string, perPage int) (*ListIssuesResult, error) {
+	ident, err := normalizeIdentifier(identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	perPage, err = deletedListPerPage(perPage)
+	if err != nil {
+		return nil, err
+	}
+
+	var cursorAt *time.Time
+	var cursorID string
+	if cursor != "" {
+		c, err := decodeListCursor(cursor, "-deleted_at")
+		if err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, c.Value)
+		if err != nil {
+			return nil, ErrInvalidCursor
+		}
+		cursorAt = &t
+		cursorID = c.ID
+	}
+
+	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same row shape as the normal list (description omitted — trash
+	// mode has no ?fields= support), plus deleted_at for the
+	// DeletedAt field and the next-page cursor.
+	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, NULL::jsonb,
+		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
+		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
+		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` + subtaskProgressAgg + ` AS subtask_progress, i.deleted_at`
+
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	conds := []string{"i.project_id = " + arg(projectID) + "::uuid", "i.deleted_at IS NOT NULL"}
+	if cursorAt != nil {
+		// Tuple comparison on (deleted_at, id): strictly after the
+		// cursor row in the page order — same shape as the normal
+		// list's cursor predicate.
+		conds = append(conds, fmt.Sprintf("(i.deleted_at, i.id) < (%s::timestamptz, %s::uuid)",
+			arg(*cursorAt), arg(cursorID)))
+	}
+
+	query := `SELECT ` + cols + ` FROM issues i WHERE ` + strings.Join(conds, " AND ") +
+		` ORDER BY i.deleted_at DESC, i.id DESC LIMIT ` + arg(perPage+1)
+
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []IssueListItem{}
+	for rows.Next() {
+		var item IssueListItem
+		var desc []byte
+		var assigneesJSON, labelsJSON, progressJSON []byte
+		var deletedAt time.Time
+		if err := rows.Scan(
+			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
+			&desc,
+			&item.Priority, &item.StateID, &item.ParentID, &item.SortOrder,
+			&item.StartDate, &item.TargetDate, &item.EstimatePointID,
+			&item.IsDraft, &item.ArchivedAt,
+			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
+			&assigneesJSON, &labelsJSON, &progressJSON, &deletedAt,
+		); err != nil {
+			return nil, err
+		}
+		if desc != nil {
+			item.Description = json.RawMessage(desc)
+		}
+		if err := unmarshalRelations(assigneesJSON, labelsJSON, &item); err != nil {
+			return nil, err
+		}
+		if err := unmarshalSubtaskProgress(progressJSON, &item); err != nil {
+			return nil, err
+		}
+		item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
+		item.DeletedAt = &deletedAt
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	res := &ListIssuesResult{Issues: items}
+	if len(items) > perPage {
+		items = items[:perPage]
+		last := items[len(items)-1]
+		res.Issues = items
+		res.NextCursor = encodeListCursor("-deleted_at", last.DeletedAt.UTC().Format(time.RFC3339Nano), last.ID)
+	}
+	return res, nil
+}
+
+// deletedListPerPage applies the normal list's per-page rule (same
+// clamping as ListIssues): negative is a filter error, zero means the
+// default, over-max clamps to the max.
+func deletedListPerPage(perPage int) (int, error) {
+	switch {
+	case perPage < 0:
+		return 0, ErrInvalidListFilter
+	case perPage == 0:
+		return defaultListPerPage, nil
+	case perPage > maxListPerPage:
+		return maxListPerPage, nil
+	default:
+		return perPage, nil
+	}
 }
