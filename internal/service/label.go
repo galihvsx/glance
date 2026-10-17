@@ -12,11 +12,13 @@ package service
 // name is unique per workspace; parent_id forms the hierarchy.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -425,17 +427,65 @@ func resolveIssueForTaxonomy(ctx context.Context, q queryRower, wsSlug, identifi
 	return wsID, projectID, role, nil
 }
 
-// issueStateIDInTx reads one issue's state_id inside tx. The second
-// return reports whether the read succeeded; a failed read must never
-// fail the mutation — the caller proceeds and the cascade detector in
-// announceLabelChange simply skips the objective fan-out.
-func issueStateIDInTx(ctx context.Context, tx pgx.Tx, issueID string) (string, bool) {
-	var stateID string
-	if err := tx.QueryRow(ctx,
-		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&stateID); err != nil {
-		return "", false
+// issueBeforeImageInTx reads the full issue row inside tx, as the
+// before-image for the cascade detector and the version snapshot. The
+// second return reports whether the read succeeded; a failed read must
+// never fail the mutation — the caller proceeds, the cascade detector
+// in announceLabelChange simply skips the objective fan-out, and no
+// snapshot is taken (there is nothing to compare against).
+func issueBeforeImageInTx(ctx context.Context, tx pgx.Tx, issueID string) (*Issue, bool) {
+	iss, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid`, issueID))
+	if err != nil {
+		return nil, false
 	}
-	return stateID, true
+	return iss, true
+}
+
+// issueRowContentChanged reports whether after differs from before over
+// row CONTENT. UpdatedAt is a timestamp, not content; DisplayID is
+// derived (set by callers inconsistently); SubtaskProgress is nil from
+// scanIssue. All three are zeroed on copies before the comparison, so
+// they can never report a spurious change.
+func issueRowContentChanged(before, after *Issue) bool {
+	b := *before
+	a := *after
+	b.UpdatedAt = time.Time{}
+	a.UpdatedAt = time.Time{}
+	b.DisplayID = ""
+	a.DisplayID = ""
+	b.SubtaskProgress = nil
+	a.SubtaskProgress = nil
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	aa, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	return !bytes.Equal(bb, aa)
+}
+
+// snapshotCascadeVersionTx re-reads the issue row FOR UPDATE in-tx
+// AFTER the automation firing and snapshots it iff it differs from the
+// before-image. The comparison IS the guard: idempotent no-ops (0
+// rows), firings whose actions are all no-ops, and automationActive
+// nesting (no firing runs) all leave the row unchanged, so none of
+// them snapshots. A snapshot lands in the same tx and rolls back with
+// it — never post-commit. The snapshot carries the derived DisplayID,
+// like every other snapshot call site.
+func snapshotCascadeVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, ident string, before *Issue) error {
+	after, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid FOR UPDATE`, issueID))
+	if err != nil {
+		return err
+	}
+	if !issueRowContentChanged(before, after) {
+		return nil
+	}
+	after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
+	return snapshotVersionTx(ctx, tx, issueID, actorID, after)
 }
 
 // announceLabelChange announces issue.updated after a committed
@@ -494,10 +544,14 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	}
 	defer tx.Rollback(ctx)
 
-	// C46T1: pre-mutation state for the cascade detector (only
+	// C46T1: pre-mutation before-image for the cascade detector (only
 	// set_state touches state_id, so before != after means exactly a
-	// real cascade move).
-	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
+	// real cascade move) and the C50T1 cascade version snapshot.
+	before, haveBefore := issueBeforeImageInTx(ctx, tx, issueID)
+	beforeStateID := ""
+	if haveBefore {
+		beforeStateID = before.StateID
+	}
 
 	var owner string
 	err = tx.QueryRow(ctx,
@@ -522,6 +576,12 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	if tag.RowsAffected() > 0 && !automationActive(ctx) {
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			[]string{lid}, nil)
+	}
+	// C50T1: snapshot the cascade row iff the firing moved it.
+	if haveBefore {
+		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
+			return err
+		}
 	}
 	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
@@ -563,8 +623,13 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	defer tx.Rollback(ctx)
 
-	// C46T1: pre-mutation state for the cascade detector.
-	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
+	// C46T1: pre-mutation before-image for the cascade detector and
+	// the C50T1 cascade version snapshot.
+	before, haveBefore := issueBeforeImageInTx(ctx, tx, issueID)
+	beforeStateID := ""
+	if haveBefore {
+		beforeStateID = before.StateID
+	}
 
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_labels WHERE issue_id = $1::uuid AND label_id = $2::uuid`,
@@ -576,6 +641,12 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if tag.RowsAffected() > 0 && !automationActive(ctx) {
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			nil, []string{lid})
+	}
+	// C50T1: snapshot the cascade row iff the firing moved it.
+	if haveBefore {
+		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
+			return err
+		}
 	}
 	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
@@ -611,8 +682,13 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 	}
 	defer tx.Rollback(ctx)
 
-	// C46T1: pre-mutation state for the cascade detector.
-	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
+	// C46T1: pre-mutation before-image for the cascade detector and
+	// the C50T1 cascade version snapshot.
+	before, haveBefore := issueBeforeImageInTx(ctx, tx, issueID)
+	beforeStateID := ""
+	if haveBefore {
+		beforeStateID = before.StateID
+	}
 
 	var one int
 	err = tx.QueryRow(ctx,
@@ -662,6 +738,12 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 				runAutomationAssignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
+	// C50T1: snapshot the cascade row iff the firing moved it.
+	if haveBefore {
+		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
+			return err
+		}
+	}
 	changed := tag.RowsAffected() > 0
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -700,8 +782,13 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	}
 	defer tx.Rollback(ctx)
 
-	// C46T1: pre-mutation state for the cascade detector.
-	beforeStateID, haveBefore := issueStateIDInTx(ctx, tx, issueID)
+	// C46T1: pre-mutation before-image for the cascade detector and
+	// the C50T1 cascade version snapshot.
+	before, haveBefore := issueBeforeImageInTx(ctx, tx, issueID)
+	beforeStateID := ""
+	if haveBefore {
+		beforeStateID = before.StateID
+	}
 
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM issue_assignees WHERE issue_id = $1::uuid AND user_id = $2::uuid`,
@@ -737,6 +824,12 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		if !automationActive(ctx) {
 			notified = append(notified,
 				runAutomationUnassignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+		}
+	}
+	// C50T1: snapshot the cascade row iff the firing moved it.
+	if haveBefore {
+		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
+			return err
 		}
 	}
 	changed := tag.RowsAffected() > 0
