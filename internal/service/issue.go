@@ -414,12 +414,11 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, err
 	}
 
-	// Version 1: the post-create full row. DisplayID is derived before the
-	// marshal so the snapshot is complete.
+	// DisplayID is derived here so the webhook/Slack payloads below
+	// carry it. The v1 version snapshot is NOT taken here: it moves
+	// to after the created-rules block below (C49T0), so it captures
+	// the post-automation row instead of the pre-rules INSERT row.
 	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
-	if err := snapshotVersionTx(ctx, tx, iss.ID, actorID, iss); err != nil {
-		return nil, err
-	}
 
 	// Intake opt-in (Task 20): land the new issue in the inbox as pending,
 	// atomically with the issue itself.
@@ -478,6 +477,26 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	var notified []*Notification
 	if !automationActive(ctx) {
 		notified = runAutomationCreatedRulesTx(ctx, tx, wsID, projectID, ident, iss.ID, actorID)
+	}
+
+	// C49T0: Version 1 snapshots the POST-automation row. The created
+	// rules above may have mutated the row (set_state, set_priority,
+	// ...), so the INSERT-time iss is stale. Re-read the row in-tx
+	// (same tx, still under the row lock — do NOT reuse the stale iss,
+	// do NOT snapshot post-commit) and snapshot THAT row, so restoring
+	// v1 reproduces the post-rules state instead of silently reverting
+	// the automation move.
+	freshInTx, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
+		 FOR UPDATE`,
+		iss.ID, projectID))
+	if err != nil {
+		return nil, err
+	}
+	freshInTx.DisplayID = ident + "-" + strconv.Itoa(freshInTx.SequenceID)
+	if err := snapshotVersionTx(ctx, tx, iss.ID, actorID, freshInTx); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
