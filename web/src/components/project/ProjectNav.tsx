@@ -44,6 +44,7 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Settings", to: `${base}/settings` },
     { label: "Drafts", to: `${base}/drafts` },
     { label: "Archived", to: `${base}/archived` },
+    { label: "Trash", to: `${base}/trash` },
   ];
   const bar = (
     <nav className="flex items-center gap-1 border-b">

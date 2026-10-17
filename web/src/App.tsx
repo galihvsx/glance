@@ -32,6 +32,7 @@ import Activity from "./pages/Activity";
 import ProjectSettings from "./pages/ProjectSettings";
 import Drafts from "./pages/Drafts";
 import Archived from "./pages/Archived";
+import Trash from "./pages/Trash";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
 import Initiatives from "./pages/Initiatives";
@@ -175,6 +176,10 @@ export default function App() {
                     <Route
                       path="/w/:slug/p/:identifier/archived"
                       element={<Archived />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/trash"
+                      element={<Trash />}
                     />
                   </Route>
                 </Route>
