@@ -3,6 +3,54 @@
 All notable changes to glance are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+**Close the issue.updated emission gap (cycle 45)**
+- RestoreIssueVersion broadcast (C45T0): captures the `stateChanged`
+  flag from `updateIssueTx` instead of discarding it; after commit (and
+  only when `patch.hasFields()`) mirrors `UpdateIssue` exactly —
+  `announceIssueUpdated` unconditionally +
+  `announceObjectivesForIssue` iff `stateChanged`. No-diff restores
+  announce nothing; failed restores return pre-commit. Tests:
+  `TestRestoreBroadcast*` 5/5.
+- Automation set_state broadcast (C45T1): scheduled firings
+  (`fireScheduledRule`) + comment-triggered firings (`CreateComment`)
+  announce `issue.updated` + objective fan-out after commit when a
+  `set_state` action actually moved the issue — detected by comparing
+  `state_id` before vs after the firing tx (only `set_state` touches
+  `state_id`, so before≠after means exactly a real move). The announce
+  sits strictly after `tx.Commit` succeeds; rolled-back / failed
+  commits announce nothing; post-commit snapshot lookup failures are
+  best-effort skips, never fatal. `runAutomationRuleActionsTx`
+  signature untouched; depth-1 loop guard untouched; `set_state`
+  ONLY — other automation actions stay unannounced. Verify-don't-touch
+  confirmed in code: UpdateIssue / BulkUpdate / BulkSet outer
+  announces + `updateIssueTx`'s final in-tx `state_id` re-read cover
+  every in-tx firing, CreateIssue created-rules are covered by its
+  post-commit `announceIssueCreated` — no duplicate announces added.
+  Tests: 10 new tests (scheduled move / no-op / non-set_state /
+  blocker-rejected, comment move / no-op / no-rule / non-set_state /
+  blocker-rejected, UpdateIssue cascade announces exactly once).
+- DeleteState reassign broadcast (C45T2): the reassign UPDATE uses
+  `RETURNING id::text, deleted_at IS NULL`; after commit, per moved
+  live issue, post-commit snapshot + `announceIssueUpdated` +
+  `announceObjectivesForIssue`. Zero refs / 409 / failed commit
+  announce nothing; soft-deleted issues moved by the bulk UPDATE are
+  never announced. Tests: `TestDeleteState*` + `TestStateMutations*`
+  5/5.
+- Known follow-ups (verified in code, out of scope — candidates for a
+  later cycle): BulkSet label/assign cascade — `stateChanged` is
+  computed by `updateIssueTx` BEFORE `replaceIssueLabelsTx` /
+  `replaceIssueAssigneesTx` run their `labels_changed` / `assigned`
+  rules, so a cascade `set_state` move there gets `issue.updated`
+  (stale pre-move snapshot) but NO `objective.updated`; standalone
+  `label.go` Assign/UnassignLabel/Assignee paths run automation rules
+  but announce no `issue.updated` at all (zero `announceIssueUpdated`
+  in `internal/api/`). Also observed: CreateIssue announces
+  `issue.created` with the pre-created-rules snapshot (stale `StateID`
+  after a created-rule `set_state` move) — benign per the
+  clients-refetch broadcast contract.
+
 ## [v0.3.0] - 2026-10-17
 
 "Depth" milestone: the next tier of the Plane parity backlog — modules,
