@@ -374,16 +374,14 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	patch := diffIssuePatch(cur, &snap)
 	var updated *Issue
 	var notified []*Notification
+	var stateChanged bool
 	if patch.hasFields() {
 		// Reuses the PATCH machinery: per-field activity rows plus the
 		// new version snapshot, all inside this tx. State changes and
 		// webhook fan-out ride along; broadcast after commit.
-		// C44T1: restore is explicitly NOT fanned out to objectives —
-		// it emits no issue.updated today either, and adding
-		// objective.updated alone would diverge the two streams;
-		// the stateChanged flag is discarded (follow-up with the
-		// issue.updated gap).
-		updated, notified, _, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+		// C45T0: mirror UpdateIssue — capture stateChanged and fan
+		// out issue.updated + objective.updated after commit.
+		updated, notified, stateChanged, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
 		if err != nil {
 			return nil, err
 		}
@@ -409,6 +407,16 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 		return nil, err
 	}
 	announceNotifications(notified)
+	// C45T0: mirror UpdateIssue exactly, after commit only. The
+	// no-diff branch (patch empty) announces nothing — nothing
+	// changed. A failed restore returns before commit, so it
+	// announces nothing either.
+	if patch.hasFields() {
+		announceIssueUpdated(wsSlug, ident, issueID, updated)
+		if stateChanged {
+			announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+		}
+	}
 	return updated, nil
 }
 
