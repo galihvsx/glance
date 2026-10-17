@@ -189,6 +189,16 @@ func main() {
 	retentionTicker := &ticker.RetentionTicker{Pool: pool}
 	retentionTicker.Start(ctx)
 
+	// Outbox retention (C57T1): once a day, prune done/failed outbox
+	// rows processed longer ago than the retention window (30 days,
+	// service.OutboxRetentionDays). Pending (undelivered work) and
+	// delivering (claim leases) rows are never touched — the safety
+	// lives in service.PruneOutbox's WHERE clause. Same in-process,
+	// one-instance design as the other tickers; prune failures are
+	// logged, never fatal.
+	outboxRetentionTicker := &ticker.OutboxRetentionTicker{Pool: pool}
+	outboxRetentionTicker.Start(ctx)
+
 	// Scheduled workspace backups (C15T2): on GLANCE_BACKUP_INTERVAL,
 	// back up every workspace (gzipped glance-export/1 archives into
 	// GLANCE_BACKUP_DIR, GLANCE_BACKUP_RETENTION newest runs kept per
