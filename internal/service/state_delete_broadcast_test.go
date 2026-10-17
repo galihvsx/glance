@@ -340,3 +340,156 @@ func TestDeleteStateFailedDeleteWritesNoStateIDActivity(t *testing.T) {
 		t.Fatalf("issue state = %s, want still doomed %s", stateID, doomed.ID)
 	}
 }
+
+// countIssueVersions returns the number of version rows for an issue,
+// via direct SQL so it also works for soft-deleted issues (ListVersions
+// rejects those: its resolver filters deleted_at IS NULL).
+func countIssueVersions(t *testing.T, pool *pgxpool.Pool, issueID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM issue_versions WHERE issue_id = $1::uuid`, issueID).Scan(&n); err != nil {
+		t.Fatalf("count versions: %v", err)
+	}
+	return n
+}
+
+// latestVersionSnapshotByID decodes the newest version snapshot of an issue
+// plus its author, via direct SQL (works for soft-deleted issues too).
+func latestVersionSnapshotByID(t *testing.T, pool *pgxpool.Pool, issueID string) (Issue, string) {
+	t.Helper()
+	var snapRaw []byte
+	var author string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT snapshot, created_by::text FROM issue_versions
+		  WHERE issue_id = $1::uuid ORDER BY version_no DESC LIMIT 1`, issueID).Scan(&snapRaw, &author); err != nil {
+		t.Fatalf("latest version: %v", err)
+	}
+	var snap Issue
+	if err := json.Unmarshal(snapRaw, &snap); err != nil {
+		t.Fatalf("decode latest snapshot: %v", err)
+	}
+	return snap, author
+}
+
+// TestDeleteStateReassignWritesVersionPerMovedLiveIssue (C51T0):
+// deleting a state with reassign_to appends exactly ONE new version per
+// moved LIVE issue, carrying the NEW StateID and authored by the deleter;
+// a soft-deleted issue moved by the same UPDATE gains NO version.
+func TestDeleteStateReassignWritesVersionPerMovedLiveIssue(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	doomed, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Doomed", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState doomed: %v", err)
+	}
+	target, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Safe", Group: "completed"})
+	if err != nil {
+		t.Fatalf("CreateState target: %v", err)
+	}
+	live1 := createTestIssue(t, pool, slug, ident, creator, "live one")
+	live2 := createTestIssue(t, pool, slug, ident, creator, "live two")
+	ghost := createTestIssue(t, pool, slug, ident, creator, "ghost")
+	// Park all three in the doomed state via direct SQL (no versions),
+	// then soft-delete the ghost.
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET state_id = $1::uuid WHERE id = ANY($2::uuid[])`,
+		doomed.ID, []string{live1.ID, live2.ID, ghost.ID}); err != nil {
+		t.Fatalf("park issues: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET deleted_at = now() WHERE id = $1::uuid`, ghost.ID); err != nil {
+		t.Fatalf("soft-delete ghost: %v", err)
+	}
+	before := map[string]int{
+		live1.ID: countIssueVersions(t, pool, live1.ID),
+		live2.ID: countIssueVersions(t, pool, live2.ID),
+		ghost.ID: countIssueVersions(t, pool, ghost.ID),
+	}
+
+	if err := DeleteState(ctx, pool, slug, ident, doomed.ID, creator, &target.ID); err != nil {
+		t.Fatalf("DeleteState with reassign: %v", err)
+	}
+	for _, iss := range []string{live1.ID, live2.ID} {
+		if got := countIssueVersions(t, pool, iss); got != before[iss]+1 {
+			t.Fatalf("versions for %s = %d, want baseline %d + 1", iss, got, before[iss])
+		}
+		snap, author := latestVersionSnapshotByID(t, pool, iss)
+		if snap.StateID != target.ID {
+			t.Fatalf("latest snapshot StateID for %s = %s, want reassigned %s", iss, snap.StateID, target.ID)
+		}
+		if author != creator {
+			t.Fatalf("latest snapshot author for %s = %s, want deleter %s", iss, author, creator)
+		}
+	}
+	if got := countIssueVersions(t, pool, ghost.ID); got != before[ghost.ID] {
+		t.Fatalf("versions for soft-deleted issue = %d, want baseline %d (no version)", got, before[ghost.ID])
+	}
+}
+
+// TestDeleteStateZeroRefsWritesNoVersions (C51T0): deleting a state no
+// issue references writes no versions anywhere.
+func TestDeleteStateZeroRefsWritesNoVersions(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	bystander := createTestIssue(t, pool, slug, ident, creator, "bystander")
+	before := countIssueVersions(t, pool, bystander.ID)
+	empty, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Empty", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState: %v", err)
+	}
+	if err := DeleteState(ctx, pool, slug, ident, empty.ID, creator, nil); err != nil {
+		t.Fatalf("DeleteState zero refs: %v", err)
+	}
+	if got := countIssueVersions(t, pool, bystander.ID); got != before {
+		t.Fatalf("versions after zero-ref delete = %d, want baseline %d", got, before)
+	}
+}
+
+// TestDeleteStateFailedDeleteWritesNoVersions (C51T0): a failed
+// DeleteState — in-use without reassign (409), invalid reassign target,
+// last state — writes no versions and leaves the issue in the doomed
+// state (tx rollback).
+func TestDeleteStateFailedDeleteWritesNoVersions(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	slug, ident, creator := setupStateProject(t, pool)
+
+	doomed, err := CreateState(ctx, pool, slug, ident, creator,
+		StateInput{Name: "Doomed", Group: "backlog"})
+	if err != nil {
+		t.Fatalf("CreateState doomed: %v", err)
+	}
+	iss := createTestIssue(t, pool, slug, ident, creator, "doomed issue")
+	if _, err := pool.Exec(ctx,
+		`UPDATE issues SET state_id = $1::uuid WHERE id = $2::uuid`, doomed.ID, iss.ID); err != nil {
+		t.Fatalf("park issue: %v", err)
+	}
+	before := countIssueVersions(t, pool, iss.ID)
+
+	if err := DeleteState(ctx, pool, slug, ident, doomed.ID, creator, nil); !errors.Is(err, ErrStateInUse) {
+		t.Fatalf("in-use without reassign: err = %v, want ErrStateInUse", err)
+	}
+	bogus := "00000000-0000-0000-0000-000000000000"
+	if err := DeleteState(ctx, pool, slug, ident, doomed.ID, creator, &bogus); !errors.Is(err, ErrInvalidReassign) {
+		t.Fatalf("bogus reassign: err = %v, want ErrInvalidReassign", err)
+	}
+	if got := countIssueVersions(t, pool, iss.ID); got != before {
+		t.Fatalf("versions after failed deletes = %d, want baseline %d", got, before)
+	}
+	var stateID string
+	if err := pool.QueryRow(ctx,
+		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, iss.ID).Scan(&stateID); err != nil {
+		t.Fatalf("refetch issue: %v", err)
+	}
+	if stateID != doomed.ID {
+		t.Fatalf("issue state = %s, want still doomed %s", stateID, doomed.ID)
+	}
+}

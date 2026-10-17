@@ -191,6 +191,10 @@ func UpdateState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 // C47T0: the reassign also writes one state_id activity row per moved
 // LIVE issue (old = deleted state, new = reassignTo) in the same tx;
 // soft-deleted issues get no row.
+//
+// C51T0: the reassign also appends one version snapshot per moved LIVE
+// issue (new StateID, authored by the deleter) in the same tx;
+// soft-deleted issues get no version.
 func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, stateID, actorID string, reassignTo *string) error {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -301,6 +305,27 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 				`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
 				 VALUES ($1::uuid, $2::uuid, 'state_id', $3::jsonb, $4::jsonb)`,
 				movedID, actorID, toJSONBParam(stateID), toJSONBParam(*reassignTo)); err != nil {
+				return err
+			}
+		}
+		// C51T0: one version snapshot per moved LIVE issue, in the
+		// same tx (rolls back with a failed delete), authored by the
+		// deleter. The reassign UPDATE above already holds each moved
+		// row's lock until commit (UPDATE takes a row lock held to tx
+		// end), so the FOR UPDATE re-read below cannot race another
+		// writer — it re-reads the post-reassign row in-tx and
+		// snapshots it. Soft-deleted issues get no version (same rule
+		// as the activity rows above). Every moved live issue changed
+		// state_id by construction (reassignTo != deleted state), so
+		// the snapshot is unconditional — no content-equality guard.
+		for _, movedID := range movedLiveIDs {
+			iss, err := scanIssue(tx.QueryRow(ctx,
+				`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid FOR UPDATE`, movedID))
+			if err != nil {
+				return err
+			}
+			iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
+			if err := snapshotVersionTx(ctx, tx, movedID, actorID, iss); err != nil {
 				return err
 			}
 		}
