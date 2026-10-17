@@ -12,6 +12,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -320,7 +323,176 @@ func TestRejectIntakeIssueDetachesChildrenWithTrail(t *testing.T) {
 	assertIssueUpdatedIDs(t, fake, child.ID)
 }
 
-// TestDuplicateIntakeIssueDetachesChildrenWithTrail: marking an intake
+// outboxWatermark returns the current max outbox id so a test can scope
+// its assertions to rows enqueued after this point (the test DB is
+// shared across runs).
+func outboxWatermark(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var w int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COALESCE(MAX(id), 0) FROM outbox`).Scan(&w); err != nil {
+		t.Fatalf("outbox watermark: %v", err)
+	}
+	return w
+}
+
+// webhookOutboxPayload is the JSON shape of a webhook.deliver outbox row:
+// the webhookDelivery struct marshalled by mail.Enqueue.
+type webhookOutboxPayload struct {
+	WebhookID string `json:"webhook_id"`
+	Event     string `json:"event"`
+	Data      struct {
+		ID            string   `json:"id"`
+		DisplayID     string   `json:"display_id"`
+		ChangedFields []string `json:"changed_fields"`
+		ActorID       string   `json:"actor_id"`
+	} `json:"data"`
+}
+
+// webhookOutboxRows returns the webhook.deliver outbox rows enqueued after
+// the watermark for one webhook + domain event, in insertion order.
+func webhookOutboxRows(t *testing.T, pool *pgxpool.Pool, watermark int64, webhookID, domainEvent string) []webhookOutboxPayload {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT payload FROM outbox
+		  WHERE id > $1 AND event = 'webhook.deliver'
+		    AND payload->>'webhook_id' = $2 AND payload->>'event' = $3
+		  ORDER BY id`,
+		watermark, webhookID, domainEvent)
+	if err != nil {
+		t.Fatalf("read webhook outbox: %v", err)
+	}
+	defer rows.Close()
+	var out []webhookOutboxPayload
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan webhook outbox: %v", err)
+		}
+		var p webhookOutboxPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("unmarshal webhook outbox: %v", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("webhook outbox rows: %v", err)
+	}
+	return out
+}
+
+// TestDeleteIssueDetachEnqueuesWebhookIssueUpdated: deleting a parent
+// with one child enqueues exactly one webhook.deliver row carrying an
+// issue.updated payload for the detached child (parent_id change, same
+// shape as SetParent's), alongside the parent's own issue.deleted row.
+func TestDeleteIssueDetachEnqueuesWebhookIssueUpdated(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	creator := createTestUser(t, pool, uniqueTestEmail("detach-wh"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("detach-wh"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+	parent := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "Parent")
+	child, err := CreateIssue(ctx, pool, ws.Slug, p.Identifier, creator,
+		CreateIssueInput{Name: "Child", ParentID: &parent.ID})
+	if err != nil {
+		t.Fatalf("CreateIssue child: %v", err)
+	}
+	// httptest target, like the other webhook tests: the URL is never
+	// fetched here (only enqueued), and a later dispatcher pass against
+	// this closed server fails fast on connection-refused instead of
+	// stalling on a real host.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	wh, err := CreateWebhook(ctx, pool, ws.Slug, creator, WebhookInput{
+		URL: srv.URL, Secret: strPtr2("s3cret"),
+		Events: []string{EventIssueUpdated, EventIssueDeleted},
+	})
+	if err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+
+	watermark := outboxWatermark(t, pool)
+	if err := DeleteIssue(ctx, pool, ws.Slug, p.Identifier, parent.ID, creator); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+
+	updated := webhookOutboxRows(t, pool, watermark, wh.ID, EventIssueUpdated)
+	if len(updated) != 1 {
+		t.Fatalf("issue.updated webhook rows = %d, want exactly 1", len(updated))
+	}
+	got := updated[0]
+	if got.Data.ID != child.ID {
+		t.Fatalf("issue.updated data.id = %q, want child %q", got.Data.ID, child.ID)
+	}
+	if got.Data.DisplayID != p.Identifier+"-"+strconv.Itoa(child.SequenceID) {
+		t.Fatalf("issue.updated data.display_id = %q, want %q",
+			got.Data.DisplayID, p.Identifier+"-"+strconv.Itoa(child.SequenceID))
+	}
+	if len(got.Data.ChangedFields) != 1 || got.Data.ChangedFields[0] != "parent_id" {
+		t.Fatalf("issue.updated data.changed_fields = %v, want [parent_id]", got.Data.ChangedFields)
+	}
+	if got.Data.ActorID != creator {
+		t.Fatalf("issue.updated data.actor_id = %q, want %q", got.Data.ActorID, creator)
+	}
+	// The parent's own issue.deleted row is pre-existing behavior and
+	// must still be enqueued.
+	deleted := webhookOutboxRows(t, pool, watermark, wh.ID, EventIssueDeleted)
+	if len(deleted) != 1 || deleted[0].Data.ID != parent.ID {
+		t.Fatalf("issue.deleted webhook rows = %+v, want exactly 1 for parent %s", deleted, parent.ID)
+	}
+}
+
+// TestDeleteIssueNoChildrenEnqueuesNoDetachWebhook: deleting a
+// childless parent enqueues no issue.updated webhook row carrying a
+// parent_id change (the parent's own issue.deleted row is pre-existing
+// behavior and out of scope here).
+func TestDeleteIssueNoChildrenEnqueuesNoDetachWebhook(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	creator := createTestUser(t, pool, uniqueTestEmail("detach-wh-none"))
+	ws := createTestWorkspace(t, pool, "Acme", uniqueTestSlug("detach-wh-none"), creator)
+	p := createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
+	lonely := createTestIssue(t, pool, ws.Slug, p.Identifier, creator, "Lonely")
+	// httptest target, like the other webhook tests: the URL is never
+	// fetched here (only enqueued), and a later dispatcher pass against
+	// this closed server fails fast on connection-refused instead of
+	// stalling on a real host.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	wh, err := CreateWebhook(ctx, pool, ws.Slug, creator, WebhookInput{
+		URL: srv.URL, Secret: strPtr2("s3cret"),
+		Events: []string{EventIssueUpdated, EventIssueDeleted},
+	})
+	if err != nil {
+		t.Fatalf("CreateWebhook: %v", err)
+	}
+
+	watermark := outboxWatermark(t, pool)
+	if err := DeleteIssue(ctx, pool, ws.Slug, p.Identifier, lonely.ID, creator); err != nil {
+		t.Fatalf("DeleteIssue: %v", err)
+	}
+
+	// No detach-shaped issue.updated row: none of the issue.updated rows
+	// enqueued by the delete may carry a parent_id change.
+	for _, row := range webhookOutboxRows(t, pool, watermark, wh.ID, EventIssueUpdated) {
+		for _, f := range row.Data.ChangedFields {
+			if f == "parent_id" {
+				t.Fatalf("unexpected parent_id issue.updated webhook row: %+v", row)
+			}
+		}
+	}
+	// Sanity: the plumbing works — the parent's own issue.deleted row
+	// WAS enqueued.
+	deleted := webhookOutboxRows(t, pool, watermark, wh.ID, EventIssueDeleted)
+	if len(deleted) != 1 || deleted[0].Data.ID != lonely.ID {
+		t.Fatalf("issue.deleted webhook rows for lonely = %+v, want exactly 1 for %s", deleted, lonely.ID)
+	}
+}
+
 // parent a duplicate detaches its live children with the same trail +
 // announce.
 func TestDuplicateIntakeIssueDetachesChildrenWithTrail(t *testing.T) {

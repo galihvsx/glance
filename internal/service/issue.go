@@ -1158,7 +1158,9 @@ func RebalanceSortOrder(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 }
 
 // deleteIssueTx is the tx-scoped core of DeleteIssue: soft-delete plus the
-// _deleted activity row plus a version snapshot of the deleted state. It
+// _deleted activity row plus a version snapshot of the deleted state,
+// plus webhook fan-out (issue.deleted for the deleted issue,
+// issue.updated per detached child — SetParent/Convert parity). It
 // returns the ids of the live children detached by the delete, so callers
 // can announce them after commit. On any error it returns nil ids —
 // callers announce nothing for a rolled-back transaction. It neither
@@ -1206,6 +1208,12 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// C51T1 webhook parity: the per-child fan-out below and the
+	// issue.deleted fan-out share one workspace resolution.
+	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+	if err != nil {
+		return nil, err
+	}
 	detachedIDs := make([]string, 0, len(detached))
 	for _, child := range detached {
 		child.DisplayID = ident + "-" + strconv.Itoa(child.SequenceID)
@@ -1216,6 +1224,18 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			return nil, err
 		}
 		if err := snapshotVersionTx(ctx, tx, child.ID, actorID, child); err != nil {
+			return nil, err
+		}
+		// Webhook parity with SetParent/Convert: a detached child's
+		// parent_id change is an issue.updated event — webhook
+		// consumers subscribed to it must not silently miss it.
+		// In-tx enqueue means a rolled-back tx enqueues nothing.
+		if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+			"id":             child.ID,
+			"display_id":     child.DisplayID,
+			"changed_fields": []string{"parent_id"},
+			"actor_id":       actorID,
+		}); err != nil {
 			return nil, err
 		}
 		detachedIDs = append(detachedIDs, child.ID)
@@ -1236,10 +1256,7 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	// Fan the deletion out to webhooks as issue.deleted. No in-app
 	// notification: the matrix (Task 26) notifies on assign/unassign,
 	// comments, state changes, and intake triage only.
-	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
-	if err != nil {
-		return nil, err
-	}
+	// (wsID was resolved above for the per-child fan-out.)
 	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueDeleted, map[string]any{
 		"id":         del.ID,
 		"display_id": del.DisplayID,
