@@ -895,12 +895,6 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	}
 
 	updated.DisplayID = ident + "-" + strconv.Itoa(updated.SequenceID)
-	// Append-only version snapshot of the post-mutation row. Rides along
-	// inside the caller's tx/savepoint, so BulkUpdateIssues gets per-item
-	// versions for free.
-	if err := snapshotVersionTx(ctx, tx, updated.ID, actorID, updated); err != nil {
-		return nil, nil, false, err
-	}
 
 	// State changes notify the issue's watchers (subscribers + assignees),
 	// minus the actor. Every real field change also fans out to webhooks
@@ -993,17 +987,32 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	}); err != nil {
 		return nil, nil, false, err
 	}
-	// C44T1: report whether state_id actually changed. Re-read AFTER
-	// the automation blocks above: a field-level rule (e.g.
-	// priority_changed → set_state) can move the issue after `updated`
-	// was scanned, and only the final in-tx row is what commits.
-	// A title-only edit (or a net-zero cascade) reports false.
-	var finalStateID string
-	if err := tx.QueryRow(ctx,
-		`SELECT state_id::text FROM issues WHERE id = $1::uuid`, updated.ID).Scan(&finalStateID); err != nil {
+	// C49T1: snapshot + return the POST-automation row. Re-read the
+	// full row in-tx AFTER all automation blocks above: a cascade
+	// rule (e.g. priority_changed → set_state) can move the issue
+	// after `updated` was scanned, and only the final in-tx row is
+	// what commits. The snapshot replaces the old pre-automation one
+	// — one version per user action, not two — and the fresh row is
+	// reused for the C44T1 stateChanged computation (one fewer round
+	// trip than the old standalone state_id re-read). A title-only
+	// edit (or a net-zero cascade) still reports false.
+	// Notification/Slack text above deliberately stays on the
+	// user-patch `updated` row.
+	fresh, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues
+		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+		updated.ID, projectID))
+	if err != nil {
 		return nil, nil, false, err
 	}
-	return updated, notified, finalStateID != old.StateID, nil
+	fresh.DisplayID = ident + "-" + strconv.Itoa(fresh.SequenceID)
+	// Append-only version snapshot of the post-automation row. Rides
+	// along inside the caller's tx/savepoint, so BulkUpdateIssues gets
+	// per-item versions for free.
+	if err := snapshotVersionTx(ctx, tx, fresh.ID, actorID, fresh); err != nil {
+		return nil, nil, false, err
+	}
+	return fresh, notified, fresh.StateID != old.StateID, nil
 }
 
 // DeleteIssue soft-deletes the issue (sets deleted_at) and writes a
