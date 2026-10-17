@@ -670,7 +670,7 @@
           { "name": "search", "in": "query", "schema": { "type": "string" } },
           { "name": "deleted", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Deleted-only (trash): returns only soft-deleted issues, most recently deleted first. Deleted rows are excluded from every other list mode; this flag is the only way to see them. Other filters/order are ignored in trash mode." } }
         ],
-        "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "total": { "type": "integer" } } } } } } }
+        "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "next_cursor": { "type": "string", "description": "Opaque cursor for the next page (pass as ?cursor=); omitted on the last page." }, "links": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLink" }, "description": "Dependency edges touching the listed issues; present only with ?include_links=true, omitted otherwise." } } } } } } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -936,7 +936,7 @@
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List issue reactions",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Reactions", "content": { "application/json": { "schema": { "type": "object", "properties": { "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/Reaction" } } } } } } } }
+        "responses": { "200": { "description": "Reactions", "content": { "application/json": { "schema": { "type": "object", "properties": { "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" } } } } } } } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -956,9 +956,9 @@
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/votes": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "List issue votes",
+        "summary": "Get issue vote count and caller vote state",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Votes", "content": { "application/json": { "schema": { "type": "object", "properties": { "votes": { "type": "array", "items": { "$ref": "#/components/schemas/Vote" } }, "count": { "type": "integer" } } } } } } }
+        "responses": { "200": { "description": "Votes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueVotes" } } } } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -2659,12 +2659,17 @@
       },
       "User": {
         "type": "object",
+        "description": "The authenticated principal (auth.User), serialized directly by GET /api/v1/me and PATCH /api/v1/auth/me. There is no per-user role field: server admin-ness is is_admin, workspace roles live on memberships (WorkspaceMember).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "email": { "type": "string", "format": "email" },
-          "name": { "type": "string" },
-          "role": { "type": "string", "description": "Server role (admin or member)" },
-          "created_at": { "type": "string", "format": "date-time" }
+          "name": { "type": "string", "nullable": true, "description": "Display name; null when unset." },
+          "avatar_url": { "type": "string", "format": "uri", "nullable": true, "description": "Avatar URL; null when unset." },
+          "is_active": { "type": "boolean", "description": "False after deactivation (sessions revoked)." },
+          "is_admin": { "type": "boolean", "description": "Instance administrator: the only principals allowed behind /api/v1/admin/*." },
+          "last_login_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Last successful login; null when never logged in." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "Session": {
@@ -2955,7 +2960,7 @@
       },
       "SubtaskProgress": {
         "type": "object",
-        "description": "Computed rollup of an issue's DIRECT children (C17T2): `total` children and how many sit in a 'completed'-group state (`done`). Always present on detail and list responses.",
+        "description": "Computed rollup of an issue's DIRECT children (C17T2): `total` children and how many sit in a 'completed'-group state (`done`). Present on list/detail/trash/export responses (queries selecting the aggregate always yield a value — {total: 0, done: 0} when there are no children); absent (omitted) on single-issue write responses and version snapshots, which return the bare issue row.",
         "properties": {
           "total": { "type": "integer", "description": "Number of direct (non-deleted) child issues" },
           "done": { "type": "integer", "description": "Direct children in a 'completed'-group state" }
@@ -2973,23 +2978,18 @@
       },
       "Comment": {
         "type": "object",
+        "description": "One issue comment (service.Comment). The list endpoint returns the threaded tree: each root carries its nested replies; single-comment responses (create / edit / resolve / reopen) return the bare comment with no replies key.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
           "content": { "description": "Rich-text JSON document" },
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
-          "author": { "$ref": "#/components/schemas/User" },
+          "actor": { "$ref": "#/components/schemas/ActorRef", "description": "Who wrote the comment (id + display name + email) — not the full User shape." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" },
-          "resolved_at": { "type": "string", "format": "date-time", "nullable": true, "description": "When the thread was resolved; null while open. Only thread roots (parent_id null) ever carry a value." },
-          "resolved_by": { "$ref": "#/components/schemas/User", "nullable": true, "description": "Who resolved the thread; null while open." }
-        }
-      },
-      "Reaction": {
-        "type": "object",
-        "properties": {
-          "emoji": { "type": "string" },
-          "user_id": { "type": "string", "format": "uuid" },
-          "created_at": { "type": "string", "format": "date-time" }
+          "resolved_at": { "type": "string", "format": "date-time", "nullable": true, "description": "When the thread was resolved; always present, null while open. Only thread roots (parent_id null) ever carry a value." },
+          "resolved_by": { "$ref": "#/components/schemas/ActorRef", "nullable": true, "description": "Who resolved the thread; always present, null while open." },
+          "replies": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" }, "description": "Nested replies (each a Comment, itself with replies). Present only on GET list; absent on single-comment responses." }
         }
       },
       "ReactionGroup": {
@@ -3001,40 +3001,52 @@
           "reacted": { "type": "boolean" }
         }
       },
-      "Vote": {
+      "IssueVotes": {
         "type": "object",
+        "description": "Vote state for one issue (service.IssueVotes): total vote count plus whether the caller voted. Returned by GET issue votes.",
         "properties": {
-          "user_id": { "type": "string", "format": "uuid" },
-          "created_at": { "type": "string", "format": "date-time" }
+          "count": { "type": "integer" },
+          "voted": { "type": "boolean" }
         }
       },
       "Attachment": {
         "type": "object",
+        "description": "One uploaded file's metadata (service.Attachment). Bytes are never inlined — the download endpoint resolves them server-side from the stored path, which is never serialized.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
           "filename": { "type": "string" },
           "content_type": { "type": "string" },
           "size_bytes": { "type": "integer" },
+          "uploaded_by": { "$ref": "#/components/schemas/ActorRef", "description": "Who uploaded the file (id + display name + email)." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
       "Label": {
         "type": "object",
+        "description": "One workspace-scoped tag (service.Label), serialized directly by the label endpoints.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
-          "color": { "type": "string", "nullable": true },
-          "parent_id": { "type": "string", "format": "uuid", "nullable": true }
+          "color": { "type": "string", "description": "Hex #rrggbb; defaults to #6b7280 when omitted on create. Never null." },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Parent label for the hierarchy; omitted for root labels." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "State": {
         "type": "object",
+        "description": "One kanban column of a project (service.State), serialized directly by the state endpoints.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
-          "group": { "type": "string", "description": "backlog | unstarted | started | completed | cancelled" },
+          "group": { "type": "string", "enum": ["triage", "backlog", "unstarted", "started", "completed", "cancelled"], "description": "Plane vocabulary group; triage is a valid group (migration 000006 CHECK constraint)." },
           "color": { "type": "string" },
-          "sequence": { "type": "integer" }
+          "sequence": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "EstimateScale": {
@@ -3072,12 +3084,15 @@
       },
       "Page": {
         "type": "object",
+        "description": "One wiki/documentation page (service.Page), serialized directly by the page endpoints.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
           "title": { "type": "string" },
-          "content": { "type": "string", "nullable": true },
-          "parent_id": { "type": "string", "format": "uuid", "nullable": true },
-          "position": { "type": "number" },
+          "content": { "type": "string", "description": "Page body; empty string when unset, never null (content is TEXT NOT NULL DEFAULT '')." },
+          "parent_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Parent page; omitted for root pages." },
+          "position": { "type": "integer" },
+          "author_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Who created the page; omitted when unset (NULL on author delete)." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" },
           "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" }, "description": "Embedded on GET page detail only; reaction groups with counts and the caller's reacted state" }
@@ -3085,11 +3100,13 @@
       },
       "PageRevision": {
         "type": "object",
+        "description": "One page content snapshot (service.PageRevision), appended on every title/content update (pre-update state) and on restore.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "page_id": { "type": "string", "format": "uuid" },
           "title": { "type": "string" },
-          "content": { "type": "string", "nullable": true },
-          "created_by": { "type": "string", "format": "uuid" },
+          "content": { "type": "string", "description": "Snapshot body; never null (content is TEXT NOT NULL)." },
+          "author_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Who wrote this revision; omitted when unset." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -3574,9 +3591,13 @@
       },
       "ShareLink": {
         "type": "object",
+        "description": "One share link, management view (service.ShareLink) — never served publicly. The public endpoint returns the sanitized PublicShare envelope instead.",
         "properties": {
+          "id": { "type": "string", "format": "uuid" },
           "token": { "type": "string" },
-          "expires_at": { "type": "string", "format": "date-time", "nullable": true },
+          "scope": { "type": "string", "enum": ["issue", "page"], "description": "What the token shares." },
+          "expires_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Expiry; absent when the link never expires." },
+          "revoked_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Revocation timestamp; absent while the link is live. Revoked tokens answer 404." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -3606,10 +3627,14 @@
       },
       "IssueLink": {
         "type": "object",
+        "description": "One directed dependency edge (service.IssueLink).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "issue_id": { "type": "string", "format": "uuid" },
           "target_issue_id": { "type": "string", "format": "uuid" },
-          "kind": { "type": "string" }
+          "kind": { "type": "string", "enum": ["blocks", "relates_to", "duplicates"], "description": "Strict vocabulary; empty input stores the DB default 'blocks'." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "direction": { "type": "string", "enum": ["outgoing", "incoming"], "description": "Derived, never stored: outgoing when the addressed issue is the source, incoming when it is the target. Present only on the single-issue links endpoint; omitted in the issue-list envelope (the batch caller derives direction from the endpoints)." }
         }
       },
       "PageIssueLink": {
