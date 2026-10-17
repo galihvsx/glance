@@ -538,7 +538,10 @@ func AcceptIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 // marked rejected and the issue itself is soft-deleted (reads report
 // ErrIssueNotFound, including a second reject — which is a no-op).
 func RejectIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string) (*IntakeIssue, error) {
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
+	var detached []string
+	var capturedProjectID, capturedIdent string
+	ii, err := triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
+		capturedProjectID, capturedIdent = projectID, ident
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
 			return nil, nil, err
@@ -557,10 +560,11 @@ func RejectIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		// The issue may already be gone (deleted directly while pending):
 		// deleteIssueTx reports ErrIssueNotFound then; the triage intent
 		// ("out of the inbox") still holds, so tolerate it.
-		if err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID); err != nil &&
-			!errors.Is(err, ErrIssueNotFound) {
+		detachedIDs, err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID)
+		if err != nil && !errors.Is(err, ErrIssueNotFound) {
 			return nil, nil, err
 		}
+		detached = append(detached, detachedIDs...)
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_rejected",
 			map[string]any{"status": "rejected"}); err != nil {
 			return nil, nil, err
@@ -574,6 +578,14 @@ func RejectIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		}
 		return ii, nil, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	// C51T1: detached children announce issue.updated only — the
+	// deleted issue itself announces nothing new here (triageTx already
+	// announces intake.updated for it).
+	announceDetachedChildren(ctx, pool, wsSlug, capturedIdent, capturedProjectID, detached)
+	return ii, nil
 }
 
 // SnoozeIntakeIssue parks the intake issue until till (which must be in
@@ -626,7 +638,10 @@ func SnoozeIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 // ErrIntakeAlreadyTriaged.
 func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, targetID string) (*IntakeIssue, error) {
 	target := strings.ToLower(strings.TrimSpace(targetID))
-	return triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
+	var detached []string
+	var capturedProjectID, capturedIdent string
+	ii, err := triageTx(ctx, pool, wsSlug, identifier, actorID, func(tx pgx.Tx, projectID, ident string) (*IntakeIssue, []*Notification, error) {
+		capturedProjectID, capturedIdent = projectID, ident
 		r, err := lockIntakeIssueTx(ctx, tx, projectID, issueID)
 		if err != nil {
 			return nil, nil, err
@@ -662,10 +677,11 @@ func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 			return nil, nil, err
 		}
 
-		if err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID); err != nil &&
-			!errors.Is(err, ErrIssueNotFound) {
+		detachedIDs, err := deleteIssueTx(ctx, tx, projectID, ident, r.issueID, actorID)
+		if err != nil && !errors.Is(err, ErrIssueNotFound) {
 			return nil, nil, err
 		}
+		detached = append(detached, detachedIDs...)
 		if err := writeIntakeActivityTx(ctx, tx, r.issueID, actorID, "_intake_duplicate",
 			map[string]any{"status": "duplicate", "duplicate_to_id": target}); err != nil {
 			return nil, nil, err
@@ -679,6 +695,14 @@ func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 		}
 		return ii, nil, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	// C51T1: detached children announce issue.updated only — the
+	// deleted issue itself announces nothing new here (triageTx already
+	// announces intake.updated for it).
+	announceDetachedChildren(ctx, pool, wsSlug, capturedIdent, capturedProjectID, detached)
+	return ii, nil
 }
 
 // addIntakeIssueTx writes the pending intake_issues row for a newly

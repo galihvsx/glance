@@ -1058,7 +1058,8 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return ErrForbidden
 	}
 
-	if err := deleteIssueTx(ctx, tx, projectID, ident, issueID, actorID); err != nil {
+	detached, err := deleteIssueTx(ctx, tx, projectID, ident, issueID, actorID)
+	if err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1068,6 +1069,10 @@ func DeleteIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 	// C44T1: a deleted issue drops out of KR progress — fan out
 	// objective.updated for its (still-linked) objectives.
 	announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
+	// C51T1: detached children changed parent_id, so each announces
+	// issue.updated — no objective fan-out (parent_id does not affect
+	// KR progress, state unchanged).
+	announceDetachedChildren(ctx, pool, wsSlug, ident, projectID, detached)
 	return nil
 }
 
@@ -1154,9 +1159,12 @@ func RebalanceSortOrder(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 
 // deleteIssueTx is the tx-scoped core of DeleteIssue: soft-delete plus the
 // _deleted activity row plus a version snapshot of the deleted state. It
-// neither begins nor commits — callers own the transaction. Role checks
-// stay with the callers.
-func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string) error {
+// returns the ids of the live children detached by the delete, so callers
+// can announce them after commit. On any error it returns nil ids —
+// callers announce nothing for a rolled-back transaction. It neither
+// begins nor commits — callers own the transaction. Role checks stay
+// with the callers.
+func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string) ([]string, error) {
 	del, err := scanIssue(tx.QueryRow(ctx,
 		`UPDATE issues SET deleted_at = now(), updated_at = now()
 		 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
@@ -1164,20 +1172,53 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		issueID, projectID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return ErrIssueNotFound
+			return nil, ErrIssueNotFound
 		}
-		return err
+		return nil, err
 	}
 
 	// C5T4: soft deletes never fire the FK's ON DELETE SET NULL, so detach
 	// the deleted issue's children explicitly — a deleted parent leaves
 	// its children as top-level issues (their own deleted_at rows are
 	// untouched; only live children are detached).
-	if _, err := tx.Exec(ctx,
+	// C51T1: RETURNING the detached rows so each one gets its trail in
+	// the same tx — a parent_id activity row (old = deleted parent,
+	// new = NULL, same shape as Convert's parent_id row) + a version
+	// snapshot of the post-detach row, actor = the deleter.
+	rows, err := tx.Query(ctx,
 		`UPDATE issues SET parent_id = NULL, updated_at = now()
-		 WHERE parent_id = $1::uuid AND deleted_at IS NULL`,
-		del.ID); err != nil {
-		return err
+		 WHERE parent_id = $1::uuid AND deleted_at IS NULL
+		 RETURNING `+issueColumns,
+		del.ID)
+	if err != nil {
+		return nil, err
+	}
+	var detached []*Issue
+	for rows.Next() {
+		child, err := scanIssue(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		detached = append(detached, child)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	detachedIDs := make([]string, 0, len(detached))
+	for _, child := range detached {
+		child.DisplayID = ident + "-" + strconv.Itoa(child.SequenceID)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+			 VALUES ($1::uuid, $2::uuid, 'parent_id', $3::jsonb, $4::jsonb)`,
+			child.ID, actorID, toJSONBParam(derefPtr(&del.ID)), toJSONBParam(derefPtr((*string)(nil)))); err != nil {
+			return nil, err
+		}
+		if err := snapshotVersionTx(ctx, tx, child.ID, actorID, child); err != nil {
+			return nil, err
+		}
+		detachedIDs = append(detachedIDs, child.ID)
 	}
 
 	newVal, _ := json.Marshal(map[string]any{"deleted_at": time.Now().UTC()})
@@ -1185,28 +1226,52 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		`INSERT INTO issue_activities (issue_id, actor_id, field, new_value)
 		 VALUES ($1::uuid, $2::uuid, '_deleted', $3::jsonb)`,
 		del.ID, actorID, string(newVal)); err != nil {
-		return err
+		return nil, err
 	}
 
 	del.DisplayID = ident + "-" + strconv.Itoa(del.SequenceID)
 	if err := snapshotVersionTx(ctx, tx, del.ID, actorID, del); err != nil {
-		return err
+		return nil, err
 	}
 	// Fan the deletion out to webhooks as issue.deleted. No in-app
 	// notification: the matrix (Task 26) notifies on assign/unassign,
 	// comments, state changes, and intake triage only.
 	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueDeleted, map[string]any{
 		"id":         del.ID,
 		"display_id": del.DisplayID,
 		"actor_id":   actorID,
 	}); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return detachedIDs, nil
+}
+
+// announceDetachedChildren announces issue.updated for each detached
+// child AFTER commit only, mirroring the C45T2 pattern in state.go: the
+// post-commit snapshot is re-read, and a row that vanished after commit
+// (e.g. a child deleted later in the same bulk batch) is skipped rather
+// than failing the (already committed) delete. No objective fan-out —
+// parent_id changes do not affect KR progress.
+func announceDetachedChildren(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident, projectID string, detachedIDs []string) {
+	seen := make(map[string]bool, len(detachedIDs))
+	for _, id := range detachedIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		iss, err := scanIssue(pool.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			id, projectID))
+		if err != nil {
+			continue
+		}
+		announceIssueUpdated(wsSlug, ident, id, iss)
+	}
 }
 
 // ---------- Task 17: bulk operations ----------
@@ -1377,12 +1442,14 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 
 	results := make([]BulkItemResult, 0, len(ids))
 	deletedIDs := make([]string, 0, len(ids))
+	var detachedIDs []string
 	for i, id := range ids {
 		sp := fmt.Sprintf("bulk_item_%d", i)
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, err
 		}
-		if err := deleteIssueTx(ctx, tx, projectID, ident, id, actorID); err != nil {
+		detached, err := deleteIssueTx(ctx, tx, projectID, ident, id, actorID)
+		if err != nil {
 			if _, rbErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+sp); rbErr != nil {
 				return nil, rbErr
 			}
@@ -1398,6 +1465,7 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		}
 		results = append(results, BulkItemResult{ID: id, OK: true})
 		deletedIDs = append(deletedIDs, id)
+		detachedIDs = append(detachedIDs, detached...)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -1408,6 +1476,9 @@ func BulkDeleteIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 	// C44T1: deleted issues drop out of KR progress — one
 	// objective.updated per linked objective across the batch.
 	announceObjectivesForIssues(ctx, pool, wsSlug, deletedIDs)
+	// C51T1: detached children announce issue.updated (post-commit
+	// re-read skips children deleted later in the same batch).
+	announceDetachedChildren(ctx, pool, wsSlug, ident, projectID, detachedIDs)
 	return results, nil
 }
 
