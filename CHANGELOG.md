@@ -3,11 +3,15 @@
 All notable changes to glance are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [v0.3.0] - unreleased
+## [v0.3.0] - 2026-10-17
 
 "Depth" milestone: the next tier of the Plane parity backlog — modules,
 wiki pages, calendar, workspace settings, time tracking — plus the
 queued onboarding follow-up (invites endpoint).
+
+This release also includes everything planned for v0.2.0 ("Credibility"
+milestone), which never shipped separately — see the v0.2.0 content
+subsection at the end of this entry.
 
 ### Added
 
@@ -1428,12 +1432,12 @@ queued onboarding follow-up (invites endpoint).
   The spreadsheet drops its per-row detail-fetch N+1; columns render
   identically.
 
-## [v0.2.0] - unreleased
+### v0.2.0 content (never shipped separately — included in v0.3.0)
 
 "Credibility" milestone: the highest value-per-cost Plane parity gaps,
 plus reliability and production-readiness hardening.
 
-### Added
+#### Added
 
 **Views**
 - Spreadsheet view: full-field sortable table (10 columns, sticky header
@@ -1504,7 +1508,7 @@ plus reliability and production-readiness hardening.
 - `GET .../cycles/{id}/burndown`: read-only aggregate endpoint
   (member-scoped).
 
-### Fixed
+#### Fixed
 
 - Parallel `go test ./...` migration race: `Migrate()` now runs in one
   transaction guarded by `pg_advisory_xact_lock` (transaction-scoped,
@@ -1518,7 +1522,7 @@ plus reliability and production-readiness hardening.
   endpoints (was: silently clamped); service-layer clamp stays as
   defense-in-depth.
 
-### Security
+#### Security
 
 - `users.is_active` is now enforced: deactivated users' sessions are
   rejected and neither login path mints new ones (`ErrUserDeactivated`
