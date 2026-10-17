@@ -1003,14 +1003,6 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 			}
 		}
 	}
-	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
-		"id":             updated.ID,
-		"display_id":     updated.DisplayID,
-		"changed_fields": changedFields,
-		"actor_id":       actorID,
-	}); err != nil {
-		return nil, nil, false, err
-	}
 	// C49T1: snapshot + return the POST-automation row. Re-read the
 	// full row in-tx AFTER all automation blocks above: a cascade
 	// rule (e.g. priority_changed → set_state) can move the issue
@@ -1030,6 +1022,24 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 		return nil, nil, false, err
 	}
 	fresh.DisplayID = ident + "-" + strconv.Itoa(fresh.SequenceID)
+	// C56T3: the single issue.updated webhook enqueue, AFTER the
+	// fresh re-read above (it used to sit before it). changed_fields
+	// is the union of the user-patch activities fields (activities
+	// first, so the direct change leads) and the automation-cascade
+	// row diff (old before-image vs fresh post-automation row via the
+	// shared issueRowChangedFields helper) — so a priority_changed →
+	// set_state cascade surfaces BOTH priority and state_id. The
+	// union dedupes: a field the patch already changed appears once.
+	// Still exactly one enqueue per updateIssueTx call, still in-tx.
+	changedFields = unionChangedFields(changedFields, issueRowChangedFields(old, fresh))
+	if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+		"id":             updated.ID,
+		"display_id":     updated.DisplayID,
+		"changed_fields": changedFields,
+		"actor_id":       actorID,
+	}); err != nil {
+		return nil, nil, false, err
+	}
 	// Append-only version snapshot of the post-automation row. Rides
 	// along inside the caller's tx/savepoint, so BulkUpdateIssues gets
 	// per-item versions for free.

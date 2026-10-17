@@ -8,8 +8,9 @@ package service
 // THAT row (one version per user action, not two), and returns the fresh
 // row — so UpdateIssue announce + return, BulkUpdateIssues announce,
 // and the RestoreIssueVersion has-fields branch all carry the
-// post-automation row. Webhook changed_fields stays the user-patch
-// fields; notification/Slack text stays on the user-patch state.
+// post-automation row. Webhook changed_fields is the union of the
+// user-patch fields and the cascade diff (C56T3); notification/Slack
+// text stays on the user-patch state.
 
 import (
 	"context"
