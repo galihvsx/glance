@@ -3657,7 +3657,8 @@
           "users": { "type": "integer" },
           "workspaces": { "type": "integer" },
           "projects": { "type": "integer" },
-          "issues": { "type": "integer" }
+          "issues": { "type": "integer" },
+          "attachment_bytes": { "type": "integer", "description": "Total size in bytes of all attachments (SUM(size_bytes), 0 when none)." }
         }
       },
       "AdminUser": {

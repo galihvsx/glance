@@ -2207,6 +2207,123 @@ func TestOpenAPIDocShapesAdminAuthor(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocShapesAdminStats(t *testing.T) {
+	var spec struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+
+	// 1. GET /api/v1/admin/stats documents a 200 response whose
+	// schema is exactly the AdminStats component — the endpoint
+	// must not drift to an inline shape that bypasses the pin below.
+	ops, ok := spec.Paths["/api/v1/admin/stats"]
+	if !ok {
+		t.Fatal("spec has no path /api/v1/admin/stats")
+	}
+	var op struct {
+		Responses map[string]struct {
+			Content map[string]struct {
+				Schema struct {
+					Ref string `json:"$ref"`
+				} `json:"schema"`
+			} `json:"content"`
+		} `json:"responses"`
+	}
+	if err := json.Unmarshal(ops["get"], &op); err != nil {
+		t.Fatalf("decode GET /api/v1/admin/stats op: %v", err)
+	}
+	if got := op.Responses["200"].Content["application/json"].Schema.Ref; got != "#/components/schemas/AdminStats" {
+		t.Fatalf("GET /api/v1/admin/stats 200 schema $ref = %q, want AdminStats", got)
+	}
+
+	// 2. AdminStats schema matches service.AdminStats field-for-
+	// field, derived from the Go struct via reflection (not
+	// hard-coded) the way C55T0/T1 pinned Subscriber/AdminUser:
+	// every json tag name must be a doc property and vice versa.
+	// This is the regression pin for the attachment_bytes drift
+	// (the Go struct had attachment_bytes; the doc omitted it).
+	raw, ok := spec.Components.Schemas["AdminStats"]
+	if !ok {
+		t.Fatal("spec has no AdminStats schema")
+	}
+	var docSchema struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &docSchema); err != nil {
+		t.Fatalf("decode AdminStats schema: %v", err)
+	}
+	if docSchema.Type != "object" {
+		t.Fatalf("AdminStats schema type = %q, want object", docSchema.Type)
+	}
+	structType := reflect.TypeOf(service.AdminStats{})
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		tag := f.Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "" || name == "-" {
+			t.Fatalf("service.AdminStats field %s has no json name", f.Name)
+		}
+		if strings.Contains(tag, ",omitempty") {
+			t.Fatalf("service.AdminStats.%s tag has omitempty — doc always-present claim would be wrong", f.Name)
+		}
+		if f.Type.Kind() != reflect.Int64 {
+			t.Fatalf("service.AdminStats.%s type = %v, want int64", f.Name, f.Type)
+		}
+		wantProps[name] = true
+	}
+	if len(docSchema.Props) != len(wantProps) {
+		t.Fatalf("AdminStats doc properties = %v, want exactly %v (service.AdminStats)",
+			docKeysOf(docSchema.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := docSchema.Props[name]; !ok {
+			t.Fatalf("AdminStats doc missing property %q (struct field)", name)
+		}
+	}
+	var prop struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Nullable    bool   `json:"nullable"`
+	}
+	for name := range wantProps {
+		prop = struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+			Nullable    bool   `json:"nullable"`
+		}{}
+		if err := json.Unmarshal(docSchema.Props[name], &prop); err != nil {
+			t.Fatalf("decode AdminStats.%s: %v", name, err)
+		}
+		if prop.Type != "integer" || prop.Nullable {
+			t.Fatalf("AdminStats.%s = {%s, nullable=%v}, want {integer, false} (int64, no omitempty)", name, prop.Type, prop.Nullable)
+		}
+	}
+	// attachment_bytes carries the one-line description matching
+	// the Go field (SUM(size_bytes) over attachments); pin that it
+	// is documented, not just typed.
+	prop = struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Nullable    bool   `json:"nullable"`
+	}{}
+	if err := json.Unmarshal(docSchema.Props["attachment_bytes"], &prop); err != nil {
+		t.Fatalf("decode AdminStats.attachment_bytes: %v", err)
+	}
+	if prop.Description == "" {
+		t.Fatal("AdminStats.attachment_bytes has no description (doc must say what the bytes sum over)")
+	}
+	if !strings.Contains(prop.Description, "size_bytes") {
+		t.Fatalf("AdminStats.attachment_bytes description = %q, want it to name the summed column (size_bytes)", prop.Description)
+	}
+}
+
 func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 	var spec struct {
 		Paths      map[string]map[string]json.RawMessage `json:"paths"`
