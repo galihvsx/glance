@@ -5,6 +5,60 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**OpenAPI contract fidelity II: the six leftovers from cycle 54 (cycle 55)**
+- Audit: the six drift items cycle 54 deliberately left open are
+  now corrected doc-follows-code plus doc-side regression pins.
+  Docs-only cycle: no handler, frontend, or migration changes.
+- Share-list + subscribers (C55T0): the two share-list endpoints
+  document `{links: ShareLink[]}` (handlers always returned
+  `{links}`; the doc said `{shares}`). New `Subscriber` schema
+  matches `service.Subscriber` field-for-field (`user_id`,
+  `name` omitted when unset — `*string` + `omitempty`, never
+  null — `email`); the subscribers endpoint now refs it
+  instead of `User`. The issue-link list doc already said
+  `{links}` (no drift) and is now pinned too. Pinned by
+  `TestOpenAPIDocShapesShareSubscriber` (reflection against
+  the Go struct).
+- Admin-users + author refs (C55T1): GET `/api/v1/admin/users`
+  documents the live paged envelope `{items: AdminUser[],
+  total, page, per_page}` with the real `page`/`per_page`
+  contract (defaults 1/25, out-of-range → 400, never
+  clamped). New `AdminUser` schema matches the struct
+  field-for-field — all seven keys always present, `name`
+  null when unset (no `omitempty`). PATCH
+  `/api/v1/admin/users/{id}` takes exactly `{is_admin}`
+  (missing → 400), returns `Ok`, documents both 409 cases
+  (self-demotion, last-admin demotion), and its summary no
+  longer claims role editing. Deactivate/reactivate gained
+  their real error responses (deactivate self → 409).
+  `ProjectUpdate.author` / `PageComment.author` now ref
+  `ActorRef`, keeping `nullable: true` (author FK is
+  ON DELETE SET NULL, so a deleted author emits null).
+  Pinned by `TestOpenAPIDocShapesAdminAuthor`.
+- Issue-list params + `$ref` hoist (C55T2): the list GET
+  documents the params the handler actually reads —
+  `page` removed (never read), `search` → `q` (full-text
+  over name + description), `sort` → `order_by` with the
+  real 10-key whitelist (default `-updated_at`, invalid →
+  400), `per_page` max 200 → 100 + 400-on-out-of-range,
+  plus `label`, `assignee`, `estimate`, `cursor`, `fields`,
+  `draft`, `sequence_id`, `cycle`, `undated`, `subscribed`,
+  `archived`, `include_links`,
+  `include_project_structure`, and the eight date-range
+  params with their real operators (`updated_after` is
+  strictly `>`, due/start compare date parts). `state` is a
+  UUID (no group handling on this path). Trash-mode
+  semantics kept (other filters/order ignored; trash
+  cursors are trash-order cursors). `ArchiveImportReport`
+  is hoisted to a top-level schema (it was nested inside
+  `ImportResult.properties` while an endpoint `$ref`'d it
+  as top-level — a dangling `$ref`). New
+  `TestOpenAPIAllLocalRefsResolve` resolves EVERY local
+  `$ref` in the document, plus
+  `TestOpenAPIRefResolverCatchesDanglingRef` proving the
+  resolver can fail. Pinned by
+  `TestOpenAPIDocShapesIssueListParams`.
+
 **OpenAPI contract fidelity: Issue schema drift + restore-mechanism verification (cycle 54)**
 - Audit: the shared `Issue` schema in `docs/openapi.yaml` drifted
   from the Go `Issue` struct (missing `project_id` / `created_by` /
