@@ -10,6 +10,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -189,5 +190,227 @@ func TestOpenAPIEndpointServesSpec(t *testing.T) {
 	}
 	if !strings.HasPrefix(spec.OpenAPI, "3.0.") {
 		t.Fatalf("endpoint openapi = %q, want 3.0.x", spec.OpenAPI)
+	}
+}
+
+// Response-shape pinning test (C53T2): for bulk-delete + the three
+// versions endpoints, assert the LIVE response envelope keys match the
+// documented schema in docs/openapi.yaml. The route-coverage test above
+// checks paths exist, not shapes — this is the regression net that
+// catches the next {deleted: integer} vs {results: [...]} drift.
+// Kept to these four endpoints by design; the helper shape (decode +
+// top-level key assertions) is reusable if a future cycle wants a
+// wider shape audit.
+
+func TestOpenAPIResponseShapesFourEndpoints(t *testing.T) {
+	pool := newTestPool(t)
+	e := testSatelliteServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("openapi-shapes"), "test-agent", uniqueIP())
+	slug := uniqueSlug("openapi-shapes")
+	createWorkspaceHTTP(t, e, cookie, "Shapes Co", slug)
+	ident := uniqueProjectIdentifier("OS")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	base := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+
+	// Guest (role 5): reads versions fine, mutating calls 403.
+	guestCookie := loginTestUser(t, e, pool, uniqueEmail("openapi-shapes-guest"), "test-agent", uniqueIP())
+	guestID := authedUserID(t, e, guestCookie)
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", cookie,
+		fmt.Sprintf(`{"user_id":%q,"role":5}`, guestID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add guest: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	decode := func(rec *httptest.ResponseRecorder, v any) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+		}
+	}
+	topKeys := func(rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		decode(rec, &m)
+		return m
+	}
+	createIssue := func(name string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, base, cookie,
+			fmt.Sprintf(`{"name":%q}`, name))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %q: status = %d (body: %s)", name, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		decode(rec, &created)
+		if created.ID == "" {
+			t.Fatalf("create %q returned no id", name)
+		}
+		return created.ID
+	}
+
+	alpha := createIssue("Alpha")
+	// PATCH writes v2, so the versions list has [v1, v2] to pin against.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+alpha, cookie, `{"name":"Alpha renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch Alpha: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	beta := createIssue("Beta")
+
+	type versionShape struct {
+		VersionNo int `json:"version_no"`
+		Snapshot  struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"snapshot"`
+		CreatedBy struct {
+			ID    string `json:"id"`
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"created_by"`
+		CreatedAt string `json:"created_at"`
+	}
+
+	// 1. GET versions → 200 {versions: [IssueVersion...]}, oldest first.
+	//    Pins the documented envelope AND the IssueVersion schema keys:
+	//    version_no / snapshot / created_by{id,name,email} / created_at —
+	//    and NOT the stale {n, description, created_by: uuid} shape.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list versions: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Versions []versionShape `json:"versions"`
+	}
+	decode(rec, &list)
+	if len(list.Versions) != 2 ||
+		list.Versions[0].VersionNo != 1 || list.Versions[1].VersionNo != 2 {
+		t.Fatalf("versions = %+v, want [v1, v2]", list.Versions)
+	}
+	if list.Versions[0].Snapshot.Name != "Alpha" ||
+		list.Versions[1].Snapshot.Name != "Alpha renamed" {
+		t.Fatalf("version snapshots = %q / %q, want Alpha / Alpha renamed",
+			list.Versions[0].Snapshot.Name, list.Versions[1].Snapshot.Name)
+	}
+	for i, v := range list.Versions {
+		if v.Snapshot.ID != alpha {
+			t.Fatalf("versions[%d].snapshot.id = %q, want %q", i, v.Snapshot.ID, alpha)
+		}
+		if v.CreatedBy.ID == "" || v.CreatedBy.Email == "" || v.CreatedAt == "" {
+			t.Fatalf("versions[%d].created_by/created_at = %+v, want id+email+created_at", i, v)
+		}
+	}
+	raw := topKeys(rec)
+	if _, ok := raw["n"]; ok {
+		t.Fatalf("list versions body has stale top-level key %q (body: %s)", "n", rec.Body.String())
+	}
+
+	// Guest may read the versions list.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions", guestCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("guest list versions: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// 2. GET versions/{n} → 200 bare IssueVersion (no {versions} wrap).
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions/1", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get version 1: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var one versionShape
+	decode(rec, &one)
+	if one.VersionNo != 1 || one.Snapshot.Name != "Alpha" {
+		t.Fatalf("version 1 = %+v, want v1 snapshot Alpha", one)
+	}
+	if _, ok := topKeys(rec)["versions"]; ok {
+		t.Fatalf("get version body is wrapped in {versions} (body: %s)", rec.Body.String())
+	}
+
+	// 3. GET versions/0 → 400; GET versions/99 → 404 version not found.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions/0", cookie)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("get version 0: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions/99", cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get version 99: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var errEnv struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decode(rec, &errEnv)
+	if errEnv.Error.Code != "not_found" {
+		t.Fatalf("get version 99 error code = %q, want not_found", errEnv.Error.Code)
+	}
+
+	// 4. POST versions/{n}/restore: guest → 403, member → 200 Issue,
+	//    and the restore lands as a new version (list grows to 3).
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/versions/1/restore", guestCookie, `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest restore: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/versions/1/restore", cookie, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore v1: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var restored struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	decode(rec, &restored)
+	if restored.ID != alpha || restored.Name != "Alpha" {
+		t.Fatalf("restored = %+v, want id %s name Alpha", restored, alpha)
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions", cookie)
+	decode(rec, &list)
+	if len(list.Versions) != 3 || list.Versions[2].VersionNo != 3 {
+		t.Fatalf("versions after restore = %+v, want [v1, v2, v3]", list.Versions)
+	}
+
+	// 5. POST bulk-delete → 200 {results: [{id, ok, error?}]}, NOT
+	//    {deleted: integer}. Per-item: live id ok, unknown id fails.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/bulk-delete", cookie,
+		fmt.Sprintf(`{"ids":[%q,"00000000-0000-0000-0000-000000000000"]}`, beta))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk-delete: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	keys := topKeys(rec)
+	if _, ok := keys["deleted"]; ok {
+		t.Fatalf("bulk-delete body has stale key %q (body: %s)", "deleted", rec.Body.String())
+	}
+	var bulk struct {
+		Results []struct {
+			ID    string  `json:"id"`
+			OK    bool    `json:"ok"`
+			Error *string `json:"error"`
+		} `json:"results"`
+	}
+	decode(rec, &bulk)
+	if len(bulk.Results) != 2 {
+		t.Fatalf("bulk-delete results = %+v, want 2 items", bulk.Results)
+	}
+	if bulk.Results[0].ID != beta || !bulk.Results[0].OK || bulk.Results[0].Error != nil {
+		t.Fatalf("bulk-delete results[0] = %+v, want {id %s, ok true, no error}", bulk.Results[0], beta)
+	}
+	if bulk.Results[1].OK || bulk.Results[1].Error == nil || *bulk.Results[1].Error == "" {
+		t.Fatalf("bulk-delete results[1] = %+v, want ok false with an error", bulk.Results[1])
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+beta, cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get bulk-deleted Beta: status = %d, want 404", rec.Code)
+	}
+
+	// 6. Bulk-delete validation + role pins: empty ids → 400, guest → 403.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/bulk-delete", cookie, `{"ids":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bulk-delete empty ids: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/bulk-delete", guestCookie,
+		fmt.Sprintf(`{"ids":[%q]}`, alpha))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("guest bulk-delete: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
