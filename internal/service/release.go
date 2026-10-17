@@ -398,9 +398,101 @@ func UpdateRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	return &r, nil
 }
 
+// releaseChange is one live issue whose release_id will actually change
+// in a bulk release op: its id, its pre-update release_id (nil =
+// unassigned), and its sequence id (for the webhook display_id).
+type releaseChange struct {
+	id           string
+	oldReleaseID *string
+	sequenceID   int
+}
+
+// scanReleaseChanges drains SELECT id::text, release_id::text,
+// sequence_id rows into releaseChange values.
+func scanReleaseChanges(rows pgx.Rows) ([]releaseChange, error) {
+	defer rows.Close()
+	var out []releaseChange
+	for rows.Next() {
+		var c releaseChange
+		if err := rows.Scan(&c.id, &c.oldReleaseID, &c.sequenceID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// applyReleaseChangeTx runs the UPDATE + release_id activity rows +
+// issue.updated webhook enqueues for one bulk release op inside the
+// caller's tx, so a failure rolls both back. newReleaseID nil = detach
+// (SET NULL). changed must be exactly the rows whose release_id really
+// changes — the caller selects them first; an empty slice is a no-op.
+// The activity row shape (field 'release_id', old/new as JSON strings
+// or SQL NULL) matches the PATCH path's row in updateIssueTx, and the
+// webhook payload (id, display_id, changed_fields ["release_id"],
+// actor_id) matches its generic issue.updated enqueue.
+func applyReleaseChangeTx(ctx context.Context, tx pgx.Tx, ident, actorID, wsID string, changed []releaseChange, newReleaseID *string) error {
+	if len(changed) == 0 {
+		return nil
+	}
+	ids := make([]string, len(changed))
+	for i, c := range changed {
+		ids[i] = c.id
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE issues SET release_id = $1::uuid
+		  WHERE id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+		newReleaseID, ids); err != nil {
+		return err
+	}
+	for _, c := range changed {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO issue_activities (issue_id, actor_id, field, old_value, new_value)
+			 VALUES ($1::uuid, $2::uuid, 'release_id', $3::jsonb, $4::jsonb)`,
+			c.id, actorID, toJSONBParam(derefPtr(c.oldReleaseID)), toJSONBParam(derefPtr(newReleaseID))); err != nil {
+			return err
+		}
+		if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+			"id":             c.id,
+			"display_id":     ident + "-" + strconv.Itoa(c.sequenceID),
+			"changed_fields": []string{"release_id"},
+			"actor_id":       actorID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// announceReleaseChangedIssues announces issue.updated per changed issue
+// after commit, from a post-commit snapshot re-read. Best-effort: a row
+// that vanished after commit is skipped rather than failing the
+// (already committed) mutation. This invalidates the open issue-detail
+// + history queries, which release.updated does not. No objective
+// fan-out: a release move does not change KR progress.
+func announceReleaseChangedIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident, projectID string, changed []releaseChange) {
+	for _, c := range changed {
+		iss, err := scanIssue(pool.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			c.id, projectID))
+		if err != nil {
+			continue
+		}
+		iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
+		announceIssueUpdated(wsSlug, ident, c.id, iss)
+	}
+}
+
 // DeleteRelease removes a release. Member (15)+. A release that still has
 // issues is 409 (ErrReleaseHasIssues) unless reassign moves the issues to
 // another release of the same project, or force detaches them (SET NULL).
+//
+// C51T2: a reassign / force move writes one release_id activity row per
+// moved live issue (old = deleted release, new = target / NULL) and
+// enqueues one issue.updated webhook delivery per moved issue, in the
+// same tx as the move + the release delete — then announces
+// issue.updated per moved issue after commit.
 func DeleteRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, releaseID string, reassign *string, force bool) error {
 	projectID, _, err := resolveReleaseProject(ctx, pool, wsSlug, identifier, actorID, true)
 	if err != nil {
@@ -409,53 +501,79 @@ func DeleteRelease(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if _, err := resolveRelease(ctx, pool, projectID, releaseID); err != nil {
 		return err
 	}
-	var n int64
-	if err := pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM issues WHERE release_id = $1::uuid AND deleted_at IS NULL`,
-		releaseID).Scan(&n); err != nil {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	if n > 0 {
+	defer tx.Rollback(ctx)
+	// The rows that will really move: live issues on this release. The
+	// same SELECT doubles as the old 409 COUNT — an empty set means
+	// nothing to move. FOR UPDATE locks the rows so the change check
+	// is race-free: a concurrent release/PATCH/move op serializes on
+	// the locked rows instead of interleaving between this SELECT and
+	// the UPDATE in applyReleaseChangeTx (under Read Committed the
+	// SELECT re-evaluates against the latest committed version after
+	// waiting).
+	changedRows, err := tx.Query(ctx,
+		`SELECT id::text, release_id::text, sequence_id FROM issues
+		  WHERE release_id = $1::uuid AND deleted_at IS NULL FOR UPDATE`,
+		releaseID)
+	if err != nil {
+		return err
+	}
+	changed, err := scanReleaseChanges(changedRows)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		var newReleaseID *string
 		switch {
 		case reassign != nil:
 			target := strings.TrimSpace(*reassign)
 			if target == "" || target == releaseID {
 				return ErrInvalidRelease
 			}
-			if _, err := resolveRelease(ctx, pool, projectID, target); err != nil {
+			if _, err := resolveRelease(ctx, tx, projectID, target); err != nil {
 				return err
 			}
-			if _, err := pool.Exec(ctx,
-				`UPDATE issues SET release_id = $1::uuid
-				  WHERE release_id = $2::uuid AND deleted_at IS NULL`,
-				target, releaseID); err != nil {
-				return err
-			}
+			newReleaseID = &target
 		case force:
-			if _, err := pool.Exec(ctx,
-				`UPDATE issues SET release_id = NULL
-				  WHERE release_id = $1::uuid AND deleted_at IS NULL`,
-				releaseID); err != nil {
-				return err
-			}
+			// newReleaseID stays nil: detach (SET NULL).
 		default:
 			return ErrReleaseHasIssues
 		}
+		wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := applyReleaseChangeTx(ctx, tx, identifier, actorID, wsID, changed, newReleaseID); err != nil {
+			return err
+		}
 	}
-	_, err = pool.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`DELETE FROM releases WHERE id = $1::uuid AND project_id = $2::uuid`,
-		releaseID, projectID)
-	if err != nil {
+		releaseID, projectID); err != nil {
 		return err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Announce AFTER commit only. A failed / rolled-back tx announces
+	// nothing.
+	announceReleaseChangedIssues(ctx, pool, wsSlug, identifier, projectID, changed)
 	announceReleaseUpdated(ctx, pool, releaseID, projectID)
 	return nil
 }
 
 // AssignReleaseIssues bulk-assigns issues to a release. Every issue must be
 // a live (non-deleted) issue of the same project, otherwise
-// ErrIssueNotFound. The assign is idempotent (plain UPDATE — repeats are
-// no-ops). Member (15)+; an empty id list is ErrBulkEmptyIDs.
+// ErrIssueNotFound. The assign is idempotent (repeats are no-ops).
+// Member (15)+; an empty id list is ErrBulkEmptyIDs.
+//
+// C51T2: each actually-changed issue (not already on the target) gains
+// one release_id activity row (old → target) + one issue.updated
+// webhook delivery, in the same tx as the UPDATE — then announces
+// issue.updated per changed issue after commit.
 func AssignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, releaseID string, issueIDs []string) error {
 	if len(issueIDs) == 0 {
 		return ErrBulkEmptyIDs
@@ -489,13 +607,45 @@ func AssignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 			return ErrIssueNotFound
 		}
 	}
-	_, err = pool.Exec(ctx,
-		`UPDATE issues SET release_id = $1::uuid
-		  WHERE id = ANY($2::uuid[]) AND deleted_at IS NULL`,
-		releaseID, issueIDs)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback(ctx)
+	// C51T2: only the rows whose release_id will really change — rows
+	// already on the target are excluded here, so a repeat assign
+	// writes no activity rows and enqueues no webhook. FOR UPDATE
+	// locks the rows so the change check is race-free: a concurrent
+	// release/PATCH/move op serializes on the locked rows instead of
+	// interleaving between this SELECT and the UPDATE in
+	// applyReleaseChangeTx.
+	changedRows, err := tx.Query(ctx,
+		`SELECT id::text, release_id::text, sequence_id FROM issues
+		  WHERE id = ANY($1::uuid[]) AND project_id = $2::uuid AND deleted_at IS NULL
+		    AND release_id IS DISTINCT FROM $3::uuid FOR UPDATE`,
+		issueIDs, projectID, releaseID)
+	if err != nil {
+		return err
+	}
+	changed, err := scanReleaseChanges(changedRows)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := applyReleaseChangeTx(ctx, tx, identifier, actorID, wsID, changed, &releaseID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Announce AFTER commit only. A failed / rolled-back tx announces
+	// nothing.
+	announceReleaseChangedIssues(ctx, pool, wsSlug, identifier, projectID, changed)
 	announceReleaseUpdated(ctx, pool, releaseID, projectID)
 	return nil
 }
@@ -504,6 +654,11 @@ func AssignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 // Idempotent: removing a non-member is a no-op. Member (15)+; an empty id
 // list is ErrBulkEmptyIDs. Malformed ids are 400 (the ::uuid[] cast would
 // 500).
+//
+// C51T2: each actually-changed issue (currently on the release) gains
+// one release_id activity row (old → NULL) + one issue.updated webhook
+// delivery, in the same tx as the UPDATE — then announces issue.updated
+// per changed issue after commit.
 func UnassignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, releaseID string, issueIDs []string) error {
 	if len(issueIDs) == 0 {
 		return ErrBulkEmptyIDs
@@ -520,13 +675,44 @@ func UnassignReleaseIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, iden
 			return ErrInvalidReleaseID
 		}
 	}
-	_, err = pool.Exec(ctx,
-		`UPDATE issues SET release_id = NULL
-		  WHERE release_id = $1::uuid AND id = ANY($2::uuid[]) AND deleted_at IS NULL`,
-		releaseID, issueIDs)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback(ctx)
+	// C51T2: only the rows whose release_id will really change — rows
+	// not on this release are excluded here, so unassigning a
+	// non-member writes no activity rows and enqueues no webhook.
+	// FOR UPDATE locks the rows so the change check is race-free: a
+	// concurrent release/PATCH/move op serializes on the locked rows
+	// instead of interleaving between this SELECT and the UPDATE in
+	// applyReleaseChangeTx.
+	changedRows, err := tx.Query(ctx,
+		`SELECT id::text, release_id::text, sequence_id FROM issues
+		  WHERE id = ANY($1::uuid[]) AND release_id = $2::uuid AND deleted_at IS NULL FOR UPDATE`,
+		issueIDs, releaseID)
+	if err != nil {
+		return err
+	}
+	changed, err := scanReleaseChanges(changedRows)
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		if err := applyReleaseChangeTx(ctx, tx, identifier, actorID, wsID, changed, nil); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Announce AFTER commit only. A failed / rolled-back tx announces
+	// nothing.
+	announceReleaseChangedIssues(ctx, pool, wsSlug, identifier, projectID, changed)
 	announceReleaseUpdated(ctx, pool, releaseID, projectID)
 	return nil
 }
