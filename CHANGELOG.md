@@ -5,6 +5,22 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Realtime payload correctness (cycle 48)**
+- CreateIssue fresh snapshot (C48T1): `CreateIssue` now re-reads the row
+  post-commit and uses the fresh row for BOTH the `issue.created`
+  broadcast and the returned value, so a created-rule `set_state` /
+  `set_priority` move no longer leaves subscribers + the 201 body with
+  a stale `StateID` until refetch. Best-effort: on lookup failure it
+  falls back to the pre-rules snapshot, never failing the create.
+  `DisplayID` is re-derived from the fresh `SequenceID`.
+- OKR transitions loader dedup (C48T0): the transitions query now uses
+  `SELECT DISTINCT` (extracted into `loadIssueTransitions`), collapsing
+  the per-KR copies the `key_result_issues` join used to fan out for
+  issues linked to N KRs. `ia.id` stays in the select list so genuinely
+  distinct rows (same issue/old/new/timestamp, different id) are kept
+  apart; ordering (issue, created_at, id) is unchanged. Replay output
+  is identical — only the waste is gone.
+
 **Issue-only objectives get a progress history (cycle 47)**
 - `state_id` activity write gaps closed (C47T0): `MoveIssue` now writes
   one `state_id` activity row per moved issue (old = source state, new =
