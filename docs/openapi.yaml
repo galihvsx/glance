@@ -660,17 +660,38 @@
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List issues",
-        "description": "Supports filtering, sorting and pagination via query params (state, priority, label, assignee, cycle, search, sort, per_page, page/cursor). Honors Idempotency-Key on creation only.",
+        "description": "List the project's issues with filtering, ordering and cursor pagination. Filters: state, priority, label, assignee, estimate, cycle, q (full-text), fields, draft, sequence_id, undated, subscribed, archived, and created/updated/due/start date ranges. Ordering: order_by (default -updated_at); an invalid order_by is 400. Pagination is cursor-only (per_page 1-100, default 25; an out-of-range or non-integer per_page is 400) — there is no page param. deleted=1 selects the trash list: deleted-only, most recently deleted first. Deleted rows are excluded from every other list mode; this flag is the only way to see them. Other filters/order are ignored in trash mode.",
         "parameters": [
           { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" },
-          { "name": "per_page", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
-          { "name": "state", "in": "query", "schema": { "type": "string", "description": "State group or state id" } },
-          { "name": "priority", "in": "query", "schema": { "type": "integer" } },
-          { "name": "search", "in": "query", "schema": { "type": "string" } },
-          { "name": "deleted", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Deleted-only (trash): returns only soft-deleted issues, most recently deleted first. Deleted rows are excluded from every other list mode; this flag is the only way to see them. Other filters/order are ignored in trash mode." } }
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25, "description": "Rows per page. Out-of-range or non-integer values are 400." } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "description": "Opaque cursor from the previous page's next_cursor; bound to the order_by it was minted for. A malformed or foreign cursor is 400." } },
+          { "name": "order_by", "in": "query", "schema": { "type": "string", "enum": ["updated_at", "-updated_at", "created_at", "-created_at", "sequence_id", "-sequence_id", "sort_order", "-sort_order", "priority", "-priority"], "default": "-updated_at", "description": "Ordering key; a leading - reverses it. Invalid values are 400." } },
+          { "name": "state", "in": "query", "schema": { "type": "string", "format": "uuid", "description": "State UUID; a malformed UUID is 400." } },
+          { "name": "priority", "in": "query", "schema": { "type": "string", "description": "Comma-separated priority ints 0-4; out-of-range values are 400." } },
+          { "name": "label", "in": "query", "schema": { "type": "string", "description": "Comma-separated label UUIDs; a malformed UUID is 400." } },
+          { "name": "assignee", "in": "query", "schema": { "type": "string", "description": "Comma-separated user UUIDs; \"none\" = unassigned. A malformed UUID is 400." } },
+          { "name": "estimate", "in": "query", "schema": { "type": "string", "description": "Comma-separated estimate-point UUIDs; \"none\" = no estimate. A malformed UUID is 400." } },
+          { "name": "cycle", "in": "query", "schema": { "type": "string", "format": "uuid", "description": "Cycle UUID; a malformed UUID is 400." } },
+          { "name": "q", "in": "query", "schema": { "type": "string", "description": "Full-text search over issue name + description (English stemming)." } },
+          { "name": "fields", "in": "query", "schema": { "type": "string", "description": "Comma-separated field names; only description has an effect — description is omitted unless requested." } },
+          { "name": "draft", "in": "query", "schema": { "type": "string", "enum": ["true", "false", "1", "0"], "description": "Draft tri-state: absent = drafts excluded (working-set default); true/1 = drafts only; false/0 = explicitly exclude drafts. Any other value is 400." } },
+          { "name": "sequence_id", "in": "query", "schema": { "type": "integer", "minimum": 1, "description": "Per-project display-ID lookup (one issue); non-positive or non-integer values are 400. Bypasses the draft filter." } },
+          { "name": "undated", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Only issues with neither a target date nor a start date." } },
+          { "name": "subscribed", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Only issues the caller is subscribed to." } },
+          { "name": "archived", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Include archived issues; absent (default) excludes them." } },
+          { "name": "deleted", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Deleted-only (trash): returns only soft-deleted issues, most recently deleted first. Deleted rows are excluded from every other list mode; this flag is the only way to see them. Other filters/order are ignored in trash mode. Trash cursors are minted for trash order; a normal-list cursor is invalid here." } },
+          { "name": "include_links", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Attach the dependency edges touching the listed issues as a top-level links array. Does not apply in trash mode." } },
+          { "name": "include_project_structure", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Attach each row's cycle/module/release membership as project_structure. Ignored in trash mode." } },
+          { "name": "created_after", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches created_at >= value. Invalid values are 400." } },
+          { "name": "created_before", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches created_at < value. Invalid values are 400." } },
+          { "name": "updated_after", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches updated_at > value (strictly after). Invalid values are 400." } },
+          { "name": "updated_before", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches updated_at < value. Invalid values are 400." } },
+          { "name": "due_after", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches target_date >= value (date part). Invalid values are 400." } },
+          { "name": "due_before", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches target_date < value (date part). Invalid values are 400." } },
+          { "name": "start_after", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches start_date >= value (date part). Invalid values are 400." } },
+          { "name": "start_before", "in": "query", "schema": { "type": "string", "format": "date-time", "description": "RFC3339; matches start_date < value (date part). Invalid values are 400." } }
         ],
-        "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "next_cursor": { "type": "string", "description": "Opaque cursor for the next page (pass as ?cursor=); omitted on the last page." }, "links": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLink" }, "description": "Dependency edges touching the listed issues; present only with ?include_links=true, omitted otherwise." } } } } } } }
+        "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "next_cursor": { "type": "string", "description": "Opaque cursor for the next page (pass as ?cursor=); omitted on the last page." }, "links": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLink" }, "description": "Dependency edges touching the listed issues; present only with ?include_links=true, omitted otherwise." } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3376,18 +3397,18 @@
         "properties": {
           "created": { "type": "integer" },
           "failed": { "type": "integer" },
-    "ArchiveImportReport": {
-      "type": "object",
-      "required": ["format", "target_workspace", "imported", "skipped"],
-      "properties": {
-        "format": { "type": "string", "example": "glance-export/1" },
-        "source_workspace": { "type": "string", "description": "Slug of the workspace the archive was exported from (informational)" },
-        "target_workspace": { "type": "string", "description": "Slug of the workspace the archive was imported into" },
-        "imported": { "type": "object", "description": "Rows created per section (members, projects, states, labels, estimates, estimate_points, custom_fields, cycles, cycle_issues, modules, module_issues, pages, issues, issue_assignees, issue_labels, issue_custom_values, comments, attachments)", "additionalProperties": { "type": "integer" } },
-        "skipped": { "type": "object", "required": ["count", "reasons"], "properties": { "count": { "type": "integer", "description": "Total skipped rows (exact)" }, "reasons": { "type": "array", "items": { "type": "string" }, "description": "Bounded sample of human-readable skip reasons" } } }
-      }
-    },
           "errors": { "type": "array", "items": { "type": "object", "properties": { "row": { "type": "integer" }, "error": { "type": "string" } } } }
+        }
+      },
+      "ArchiveImportReport": {
+        "type": "object",
+        "required": ["format", "target_workspace", "imported", "skipped"],
+        "properties": {
+          "format": { "type": "string", "example": "glance-export/1" },
+          "source_workspace": { "type": "string", "description": "Slug of the workspace the archive was exported from (informational)" },
+          "target_workspace": { "type": "string", "description": "Slug of the workspace the archive was imported into" },
+          "imported": { "type": "object", "description": "Rows created per section (members, projects, states, labels, estimates, estimate_points, custom_fields, cycles, cycle_issues, modules, module_issues, pages, issues, issue_assignees, issue_labels, issue_custom_values, comments, attachments)", "additionalProperties": { "type": "integer" } },
+          "skipped": { "type": "object", "required": ["count", "reasons"], "properties": { "count": { "type": "integer", "description": "Total skipped rows (exact)" }, "reasons": { "type": "array", "items": { "type": "string" }, "description": "Bounded sample of human-readable skip reasons" } } }
         }
       },
       "GitHubImportPreview": {

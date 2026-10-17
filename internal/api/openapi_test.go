@@ -2207,6 +2207,435 @@ func TestOpenAPIDocShapesAdminAuthor(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
+	var spec struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	decodeObj := func(raw json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("decode %s: %v", string(raw), err)
+		}
+		return m
+	}
+	ops, ok := spec.Paths["/api/v1/workspaces/{slug}/projects/{identifier}/issues"]
+	if !ok {
+		t.Fatal("spec has no issue-list path")
+	}
+	op := decodeObj(ops["get"])
+
+	// 1. Endpoint description: names the real ordering + pagination
+	// params, keeps the trash-mode sentence, and no longer mentions
+	// the stale page/cursor, sort, or search phrasing.
+	var desc struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(mustJSON(t, op), &desc); err != nil {
+		t.Fatalf("decode issue-list op: %v", err)
+	}
+	for _, want := range []string{
+		"order_by",
+		"cursor",
+		"there is no page param",
+		"Other filters/order are ignored in trash mode",
+	} {
+		if !strings.Contains(desc.Description, want) {
+			t.Fatalf("issue-list description lacks %q: %q", want, desc.Description)
+		}
+	}
+	for _, stale := range []string{"page/cursor", "sort", "search"} {
+		if strings.Contains(desc.Description, stale) {
+			t.Fatalf("issue-list description still mentions stale %q: %q", stale, desc.Description)
+		}
+	}
+
+	// 2. Parameter set: exactly the 28 query params the handler
+	// reads (parseIssueListInput + the listIssues include_links
+	// branch) plus the Slug/Identifier path refs — no page,
+	// no search, no sort.
+	var params []struct {
+		Ref    string `json:"$ref"`
+		Name   string `json:"name"`
+		In     string `json:"in"`
+		Schema struct {
+			Type        string   `json:"type"`
+			Format      string   `json:"format"`
+			Minimum     *float64 `json:"minimum"`
+			Maximum     *float64 `json:"maximum"`
+			Default     any      `json:"default"`
+			Enum        []string `json:"enum"`
+			Description string   `json:"description"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(op["parameters"], &params); err != nil {
+		t.Fatalf("decode issue-list parameters: %v", err)
+	}
+	pathRefs := map[string]bool{}
+	byName := map[string]int{}
+	for i, p := range params {
+		if p.Ref != "" {
+			pathRefs[p.Ref] = true
+			continue
+		}
+		if _, dup := byName[p.Name]; dup {
+			t.Fatalf("issue-list doc duplicates parameter %q", p.Name)
+		}
+		byName[p.Name] = i
+	}
+	if !pathRefs["#/components/parameters/Slug"] || !pathRefs["#/components/parameters/Identifier"] || len(pathRefs) != 2 {
+		t.Fatalf("issue-list path params = %v, want exactly Slug + Identifier", docKeysOf(pathRefs))
+	}
+	wantParams := []string{
+		"per_page", "cursor", "order_by",
+		"state", "priority", "label", "assignee", "estimate", "cycle",
+		"q", "fields", "draft", "sequence_id",
+		"undated", "subscribed", "archived", "deleted",
+		"include_links", "include_project_structure",
+		"created_after", "created_before",
+		"updated_after", "updated_before",
+		"due_after", "due_before",
+		"start_after", "start_before",
+	}
+	if len(byName) != len(wantParams) {
+		t.Fatalf("issue-list query params = %v, want exactly %v", docKeysOf(byName), wantParams)
+	}
+	for _, name := range wantParams {
+		idx, ok := byName[name]
+		if !ok {
+			t.Fatalf("issue-list doc lacks parameter %q", name)
+		}
+		if params[idx].In != "query" {
+			t.Fatalf("issue-list param %q in = %q, want query", name, params[idx].In)
+		}
+	}
+	for _, stale := range []string{"page", "search", "sort"} {
+		if _, ok := byName[stale]; ok {
+			t.Fatalf("issue-list doc still has stale parameter %q (handler never reads it)", stale)
+		}
+	}
+	param := func(name string) struct {
+		Ref    string `json:"$ref"`
+		Name   string `json:"name"`
+		In     string `json:"in"`
+		Schema struct {
+			Type        string   `json:"type"`
+			Format      string   `json:"format"`
+			Minimum     *float64 `json:"minimum"`
+			Maximum     *float64 `json:"maximum"`
+			Default     any      `json:"default"`
+			Enum        []string `json:"enum"`
+			Description string   `json:"description"`
+		} `json:"schema"`
+	} {
+		t.Helper()
+		return params[byName[name]]
+	}
+	num := func(name, field string, got *float64, want float64) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Fatalf("issue-list param %q %s = %v, want %v", name, field, got, want)
+		}
+	}
+
+	// 3. per_page: 1-100, default 25 — the handler REJECTS
+	// out-of-range values with 400 (never clamps), so max 200
+	// in the doc used to be a lie.
+	pp := param("per_page")
+	if pp.Schema.Type != "integer" {
+		t.Fatalf("per_page type = %q, want integer", pp.Schema.Type)
+	}
+	num("per_page", "minimum", pp.Schema.Minimum, 1)
+	num("per_page", "maximum", pp.Schema.Maximum, 100)
+	if d, ok := pp.Schema.Default.(float64); !ok || d != 25 {
+		t.Fatalf("per_page default = %v (%T), want 25", pp.Schema.Default, pp.Schema.Default)
+	}
+
+	// 4. order_by: exactly the listOrders whitelist from
+	// internal/service/issue.go (default -updated_at); an
+	// invalid value is 400 ErrInvalidOrderBy. No "sort" param.
+	ob := param("order_by")
+	if ob.Schema.Type != "string" {
+		t.Fatalf("order_by type = %q, want string", ob.Schema.Type)
+	}
+	wantOrderBy := []string{
+		"updated_at", "-updated_at",
+		"created_at", "-created_at",
+		"sequence_id", "-sequence_id",
+		"sort_order", "-sort_order",
+		"priority", "-priority",
+	}
+	if !reflect.DeepEqual(ob.Schema.Enum, wantOrderBy) {
+		t.Fatalf("order_by enum = %v, want exactly the service whitelist %v", ob.Schema.Enum, wantOrderBy)
+	}
+	if d, ok := ob.Schema.Default.(string); !ok || d != "-updated_at" {
+		t.Fatalf("order_by default = %v, want -updated_at (the service default when empty)", ob.Schema.Default)
+	}
+
+	// 5. q, not search: the handler reads qp.Get("q") for the
+	// full-text filter; "search" was never read.
+	q := param("q")
+	if q.Schema.Type != "string" || !strings.Contains(q.Schema.Description, "Full-text") {
+		t.Fatalf("q param = %+v, want string full-text description", q.Schema)
+	}
+
+	// 6. Validation semantics spot-checks, each verified in code
+	// (parseIssueListInput / validateListFilterValues /
+	// ListIssues / ListDeletedIssues).
+	draft := param("draft")
+	if !reflect.DeepEqual(draft.Schema.Enum, []string{"true", "false", "1", "0"}) {
+		t.Fatalf("draft enum = %v, want the tri-state values [true false 1 0]", draft.Schema.Enum)
+	}
+	seq := param("sequence_id")
+	if seq.Schema.Type != "integer" {
+		t.Fatalf("sequence_id type = %q, want integer", seq.Schema.Type)
+	}
+	num("sequence_id", "minimum", seq.Schema.Minimum, 1)
+	if !strings.Contains(seq.Schema.Description, "Bypasses the draft filter") {
+		t.Fatalf("sequence_id description lacks the draft-bypass note: %q", seq.Schema.Description)
+	}
+	deleted := param("deleted")
+	if !reflect.DeepEqual(deleted.Schema.Enum, []string{"1", "true"}) {
+		t.Fatalf("deleted enum = %v, want [1 true]", deleted.Schema.Enum)
+	}
+	if !strings.Contains(deleted.Schema.Description, "Other filters/order are ignored in trash mode") {
+		t.Fatalf("deleted description lacks the trash-mode sentence: %q", deleted.Schema.Description)
+	}
+	for _, name := range []string{
+		"created_after", "created_before",
+		"updated_after", "updated_before",
+		"due_after", "due_before",
+		"start_after", "start_before",
+	} {
+		p := param(name)
+		if p.Schema.Format != "date-time" || !strings.Contains(p.Schema.Description, "RFC3339") {
+			t.Fatalf("%s param = %+v, want date-time + RFC3339/400 description", name, p.Schema)
+		}
+	}
+	for _, name := range []string{"state", "cycle"} {
+		if param(name).Schema.Format != "uuid" {
+			t.Fatalf("%s param format = %q, want uuid (malformed UUID is 400)", name, param(name).Schema.Format)
+		}
+	}
+	for _, name := range []string{"label", "assignee", "estimate"} {
+		if !strings.Contains(param(name).Schema.Description, "UUID") {
+			t.Fatalf("%s description lacks UUID: %q", name, param(name).Schema.Description)
+		}
+	}
+	for _, name := range []string{"assignee", "estimate"} {
+		if !strings.Contains(param(name).Schema.Description, `"none"`) {
+			t.Fatalf("%s description lacks the \"none\" sentinel: %q", name, param(name).Schema.Description)
+		}
+	}
+	for _, name := range []string{"include_links", "include_project_structure"} {
+		p := param(name)
+		if !reflect.DeepEqual(p.Schema.Enum, []string{"1", "true"}) {
+			t.Fatalf("%s enum = %v, want [1 true]", name, p.Schema.Enum)
+		}
+		if !strings.Contains(strings.ToLower(p.Schema.Description), "trash mode") {
+			t.Fatalf("%s description lacks the trash-mode note: %q", name, p.Schema.Description)
+		}
+	}
+	if !strings.Contains(param("fields").Schema.Description, "description") {
+		t.Fatalf("fields description lacks the description-only note: %q", param("fields").Schema.Description)
+	}
+	if param("cursor").Schema.Type != "string" {
+		t.Fatalf("cursor type = %q, want string", param("cursor").Schema.Type)
+	}
+
+	// 7. Responses: 400 (every invalid param above) + 404
+	// (bad slug / non-member caller) are documented.
+	responses := decodeObj(op["responses"])
+	if _, ok := responses["400"]; !ok {
+		t.Fatal("issue-list doc lacks the 400 response (invalid params are 400)")
+	}
+	if _, ok := responses["404"]; !ok {
+		t.Fatal("issue-list doc lacks the 404 response (bad slug / non-member)")
+	}
+
+	// 8. ArchiveImportReport is a real top-level schema (same
+	// fields as the old nested copy) and NOT nested under
+	// ImportResult.properties anymore.
+	raw, ok := spec.Components.Schemas["ArchiveImportReport"]
+	if !ok {
+		t.Fatal("spec has no top-level ArchiveImportReport schema")
+	}
+	var report struct {
+		Type     string                     `json:"type"`
+		Required []string                   `json:"required"`
+		Props    map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("decode ArchiveImportReport: %v", err)
+	}
+	if report.Type != "object" {
+		t.Fatalf("ArchiveImportReport type = %q, want object", report.Type)
+	}
+	wantReportProps := map[string]bool{
+		"format": true, "source_workspace": true, "target_workspace": true,
+		"imported": true, "skipped": true,
+	}
+	if len(report.Props) != len(wantReportProps) {
+		t.Fatalf("ArchiveImportReport properties = %v, want exactly %v", docKeysOf(report.Props), docKeysOf(wantReportProps))
+	}
+	for name := range wantReportProps {
+		if _, ok := report.Props[name]; !ok {
+			t.Fatalf("ArchiveImportReport lacks property %q", name)
+		}
+	}
+	wantRequired := map[string]bool{"format": true, "target_workspace": true, "imported": true, "skipped": true}
+	if len(report.Required) != len(wantRequired) {
+		t.Fatalf("ArchiveImportReport required = %v, want %v", report.Required, docKeysOf(wantRequired))
+	}
+	for _, r := range report.Required {
+		if !wantRequired[r] {
+			t.Fatalf("ArchiveImportReport required has unexpected %q", r)
+		}
+	}
+	importRaw, ok := spec.Components.Schemas["ImportResult"]
+	if !ok {
+		t.Fatal("spec has no ImportResult schema")
+	}
+	var importResult struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(importRaw, &importResult); err != nil {
+		t.Fatalf("decode ImportResult: %v", err)
+	}
+	if _, nested := importResult.Props["ArchiveImportReport"]; nested {
+		t.Fatal("ArchiveImportReport is still nested under ImportResult.properties — the hoist did not happen")
+	}
+	wantImportProps := map[string]bool{"created": true, "failed": true, "errors": true}
+	if len(importResult.Props) != len(wantImportProps) {
+		t.Fatalf("ImportResult properties = %v, want exactly %v", docKeysOf(importResult.Props), docKeysOf(wantImportProps))
+	}
+}
+
+// resolveOpenAPIRef resolves a local JSON-pointer $ref ("#/...")
+// against doc, reporting whether every pointer segment exists.
+// JSON Pointer unescaping: ~1 -> / first, then ~0 -> ~.
+func resolveOpenAPIRef(doc any, ref string) bool {
+	if !strings.HasPrefix(ref, "#/") {
+		return false
+	}
+	cur := doc
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// findDanglingLocalRefs walks the whole spec and returns every local
+// $ref that does not resolve, as "json-path -> $ref" strings. A $ref
+// that is not a string, or not a local "#/..." pointer, is reported
+// too: this spec is a single self-contained file, so every $ref in
+// it must be a resolvable local pointer.
+func findDanglingLocalRefs(doc any) []string {
+	var dangling []string
+	var walk func(v any, path string)
+	walk = func(v any, path string) {
+		switch n := v.(type) {
+		case map[string]any:
+			if raw, ok := n["$ref"]; ok {
+				if ref, ok := raw.(string); ok {
+					if !resolveOpenAPIRef(doc, ref) {
+						dangling = append(dangling, path+" -> "+ref)
+					}
+				} else {
+					dangling = append(dangling, path+" -> $ref is not a string")
+				}
+			}
+			for k, child := range n {
+				walk(child, path+"/"+k)
+			}
+		case []any:
+			for i, child := range n {
+				walk(child, fmt.Sprintf("%s[%d]", path, i))
+			}
+		}
+	}
+	walk(doc, "")
+	return dangling
+}
+
+// TestOpenAPIAllLocalRefsResolve is the C55T2 regression pin for the
+// ArchiveImportReport class of bug: the import endpoint $ref'd
+// #/components/schemas/ArchiveImportReport while the only
+// definition was nested inside ImportResult.properties, so any
+// strict OpenAPI validator resolving the $ref failed. Resolving
+// EVERY local $ref in the document makes that class of bug
+// impossible to reintroduce anywhere in the spec.
+func TestOpenAPIAllLocalRefsResolve(t *testing.T) {
+	var doc any
+	if err := json.Unmarshal(docs.OpenAPI, &doc); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	if dangling := findDanglingLocalRefs(doc); len(dangling) != 0 {
+		t.Fatalf("spec has %d dangling $ref(s):\n%s", len(dangling), strings.Join(dangling, "\n"))
+	}
+}
+
+// TestOpenAPIRefResolverCatchesDanglingRef proves the pin above can
+// fail: a resolver that always returned nil would pass
+// TestOpenAPIAllLocalRefsResolve while catching nothing. It checks
+// a synthetic doc (one valid ref, one dangling) plus the exact
+// pre-fix shape of this bug — the real spec with the top-level
+// ArchiveImportReport schema deleted.
+func TestOpenAPIRefResolverCatchesDanglingRef(t *testing.T) {
+	var synthetic any
+	if err := json.Unmarshal([]byte(`{
+		"components": { "schemas": { "Exists": { "type": "object" } } },
+		"paths": {
+			"/ok": { "get": { "responses": { "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Exists" } } } } } } },
+			"/bad": { "get": { "responses": { "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Missing" } } } } } } }
+		}
+	}`), &synthetic); err != nil {
+		t.Fatalf("decode synthetic doc: %v", err)
+	}
+	dangling := findDanglingLocalRefs(synthetic)
+	if len(dangling) != 1 || !strings.HasSuffix(dangling[0], "#/components/schemas/Missing") {
+		t.Fatalf("synthetic doc dangling = %v, want exactly the Missing $ref", dangling)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(docs.OpenAPI, &doc); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatal("spec has no components")
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		t.Fatal("spec has no component schemas")
+	}
+	delete(schemas, "ArchiveImportReport")
+	dangling = findDanglingLocalRefs(doc)
+	found := false
+	for _, d := range dangling {
+		if strings.HasSuffix(d, "#/components/schemas/ArchiveImportReport") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pre-fix-shaped doc (no top-level ArchiveImportReport) dangling = %v, want the import endpoint's $ref reported", dangling)
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
