@@ -5,6 +5,54 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Issue-only objectives get a progress history (cycle 47)**
+- `state_id` activity write gaps closed (C47T0): `MoveIssue` now writes
+  one `state_id` activity row per moved issue (old = source state, new =
+  remapped state) in the same tx, alongside the untouched `_moved` row;
+  `DeleteState` reassign writes one `state_id` row per moved LIVE issue
+  (old = deleted state, new = reassign target) in the same tx, using the
+  existing `movedLiveIDs` collection — soft-deleted issues get no row.
+  No broadcast, notification, or return-value changes. Tests: 5 new
+  (move remap row incl. backlog fallback, failed move silent, reassign
+  rows per live issue + zero for the soft-deleted ghost, zero-ref and
+  409 paths silent).
+- Link time + issue-KR replay (C47T1): migration 000062 adds
+  `created_at` to `key_result_issues`, backfilling existing rows with
+  `GREATEST(kr.created_at, issue.created_at)` — documented as a lower
+  bound, not the true link time; new links get the true time from
+  `DEFAULT now()`. `fillObjectiveProgressHistory` now replays issue-KR
+  state transitions in three extra batched queries (no N+1): per-issue
+  state-at-time reconstruction (initial state = earliest row's
+  `old_value`, else current `state_id`; pre-link transitions shape the
+  link-time state without emitting a point), contribution only from
+  `max(link, KR, issue created_at)`, done iff the reconstructed state
+  maps to a done group (a state with no surviving row maps to NOT done —
+  conservative, never over-claims), event timestamps = union of check-ins
+  + link starts + post-link transitions with same-timestamp collapse,
+  last-60 cap kept. Metric-only histories are byte-identical (legacy
+  builder kept as a wrapper; pinned by tests). Unlink removes the row,
+  so an unlinked issue vanishes from history — consistent with the
+  existing metric-KR orphan defense and current-progress computation.
+  Tests: 9 new replay tests + migration down/up round-trip test.
+- GoalDetail objective chart (C47T2): a new "Objective progress over
+  time" section renders an objective-level chart fed ONLY by
+  `objective.progress_history` (no new fetch), reusing the C42/C43
+  visual language + guards (accent-blue line, zero time range →
+  index-spread, zero value range → midline, single point → dot, empty →
+  section hidden, not an empty box). The per-KR check-in history
+  sections are unchanged; no per-KR chart is duplicated for issue KRs.
+  This is the only chart that shows anything for issue-only objectives.
+  The Goals list sparkline needs no change — it renders automatically
+  once history is non-empty. Tests: 9 new (6 component + 3 GoalDetail
+  integration incl. zero check-ins fetches).
+- Known residual (not a defect): the transitions loader joins
+  `key_result_issues` without selecting the KR, so an issue linked to N
+  KRs yields each transition N times — re-application is idempotent and
+  events dedup, so results are identical; a future cleanup may add
+  DISTINCT. Pre-T0 move/reassign transitions have no activity rows
+  (the transactions are gone) — replay over surviving rows is the
+  documented semantics, same orphan-defense principle as metric KRs.
+
 **Close the remaining issue.updated fan-out gaps (cycle 46)**
 - BulkSet cascade (C46T0): `BulkSetIssues` captures a before-image
   `state_id` under the row lock, then after `replaceIssueLabelsTx` /
