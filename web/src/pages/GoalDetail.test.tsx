@@ -182,6 +182,12 @@ const testRole = vi.hoisted(() => ({ value: 15 }));
 const testObjective = vi.hoisted(() => ({
   value: "full" as "full" | "empty",
 }));
+// Which progress_history the detail endpoint returns (C47T2):
+// "none" = field omitted (base fixture), "issue-only" = an
+// issue-only objective with a 3-point history, "empty" = [].
+const testHistory = vi.hoisted(() => ({
+  value: "none" as "none" | "issue-only" | "empty",
+}));
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn((path: string): Promise<unknown> => {
@@ -244,6 +250,21 @@ function defaultGet(path: string): Promise<unknown> {
             : kr,
         ),
       });
+    if (testHistory.value === "issue-only")
+      return Promise.resolve({
+        ...objective,
+        progress: 0.5,
+        progress_history: [
+          { t: "2026-10-14T10:00:00Z", progress: 0 },
+          { t: "2026-10-15T10:00:00Z", progress: 0.5 },
+          { t: "2026-10-16T10:00:00Z", progress: 1 },
+        ],
+        key_results: (objective.key_results ?? []).filter(
+          (kr) => kr.kind === "issue",
+        ),
+      });
+    if (testHistory.value === "empty")
+      return Promise.resolve({ ...objective, progress_history: [] });
     return Promise.resolve(objective);
   }
   if (path === `/api/v1/workspaces/${SLUG}/members`)
@@ -410,6 +431,7 @@ function defaultGet(path: string): Promise<unknown> {
 beforeEach(() => {
   testRole.value = 15;
   testObjective.value = "full";
+  testHistory.value = "none";
   testCheckins.value = "full";
   testKR.value = "ascending";
   mockApi.get.mockImplementation(defaultGet);
@@ -976,5 +998,72 @@ describe("GoalDetail KR progress chart", () => {
     expect(dots).toHaveLength(2);
     // Midline: top margin 8 + plot height 90 / 2 = 53.
     expect(dots.map((d) => d.getAttribute("cy"))).toEqual(["53", "53"]);
+  });
+});
+
+describe("GoalDetail objective progress chart", () => {
+  it("renders the objective chart for an issue-only objective from progress_history, per-KR sections unchanged", async () => {
+    testHistory.value = "issue-only";
+    renderPage();
+    const chart = await screen.findByTestId("objective-progress-chart");
+    expect(
+      screen.getByRole("img", {
+        name: "Objective progress over time: 0% → 100%",
+      }),
+    ).toBeTruthy();
+    // Heading + caption name the objective trajectory (mean across
+    // KRs), not one KR's check-ins.
+    expect(screen.getByText("Objective progress over time")).toBeTruthy();
+    expect(
+      screen.getByText(/Mean progress across all key results over time/),
+    ).toBeTruthy();
+    // Three history points, joined by a line; first/last date labels.
+    expect(
+      within(chart).getAllByTestId("objective-chart-point"),
+    ).toHaveLength(3);
+    expect(
+      within(chart).getByTestId("objective-chart-line"),
+    ).toBeTruthy();
+    expect(within(chart).getByText("14 Oct 2026")).toBeTruthy();
+    expect(within(chart).getByText("16 Oct 2026")).toBeTruthy();
+    // Per-KR sections unchanged: the issue KR still lists its linked
+    // issues and its done-count caption.
+    expect(screen.getByText("Close all Plane-parity gaps")).toBeTruthy();
+    expect(screen.getByText("1 of 2 linked issues done")).toBeTruthy();
+    expect(screen.getByText("ENG-201")).toBeTruthy();
+    expect(screen.getByText("Fix login bug")).toBeTruthy();
+    // No per-KR check-in chart is duplicated for the issue KR: no
+    // check-in history section, no KR chart, no check-ins fetch.
+    expect(screen.queryByText("Check-in history")).toBeNull();
+    expect(screen.queryByTestId("kr-progress-chart")).toBeNull();
+    const checkinGets = mockApi.get.mock.calls.filter(
+      (c) => typeof c[0] === "string" && c[0].includes("/check-ins"),
+    );
+    expect(checkinGets).toHaveLength(0);
+    // The objective chart adds no fetch of its own — it reads the
+    // detail response's progress_history.
+    const objectiveGets = mockApi.get.mock.calls.filter(
+      (c) => c[0] === `/api/v1/workspaces/${SLUG}/objectives/${OBJ_ID}`,
+    );
+    expect(objectiveGets).toHaveLength(1);
+  });
+
+  it("shows no objective chart section when history is an empty array", async () => {
+    testHistory.value = "empty";
+    renderPage();
+    await screen.findByText("Ship glance v0.4.0");
+    expect(screen.queryByTestId("objective-progress-chart")).toBeNull();
+    expect(screen.queryByText("Objective progress over time")).toBeNull();
+    // Per-KR sections unchanged: the metric KR chart still renders.
+    expect(
+      await screen.findByTestId("kr-progress-chart"),
+    ).toBeTruthy();
+  });
+
+  it("shows no objective chart section when progress_history is omitted", async () => {
+    renderPage();
+    await screen.findByText("Ship glance v0.4.0");
+    expect(screen.queryByTestId("objective-progress-chart")).toBeNull();
+    expect(screen.queryByText("Objective progress over time")).toBeNull();
   });
 });

@@ -26,6 +26,7 @@ import type {
   WorkspaceMember,
 } from "../lib/types";
 import GoalProgressBar from "../components/goals/GoalProgressBar";
+import ObjectiveProgressChart from "../components/goals/ObjectiveProgressChart";
 import {
   formatKRValue,
   formatProgressPct,
@@ -828,6 +829,31 @@ export default function GoalDetail() {
           </CardContent>
         </Card>
       </section>
+
+      {/* Objective progress over time (C47T2): fed ONLY by
+          objective.progress_history from the detail response — no
+          fetch. This is the OBJECTIVE trajectory (mean across KRs),
+          not one KR's check-ins; the per-KR check-in history sections
+          below stay exactly as-is. Empty history → no section at
+          all, not an empty chart box. This is the only chart that
+          shows anything for issue-only objectives. */}
+      {(objective.progress_history?.length ?? 0) > 0 && (
+        <section aria-label="Objective progress over time">
+          <OrgSectionHead title="Objective progress over time" />
+          <Card className="mt-3">
+            <CardContent className="p-4">
+              <p className="text-[12px] text-ink-muted">
+                Mean progress across all key results over time — each
+                point is the objective&apos;s mean key-result progress
+                at that time.
+              </p>
+              <ObjectiveProgressChart
+                points={objective.progress_history ?? []}
+              />
+            </CardContent>
+          </Card>
+        </section>
+      )}
 
       {/* Key results */}
       <section aria-label="Key results">
