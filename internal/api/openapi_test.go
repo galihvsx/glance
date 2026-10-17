@@ -414,3 +414,451 @@ func TestOpenAPIResponseShapesFourEndpoints(t *testing.T) {
 		t.Fatalf("guest bulk-delete: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// Response-shape pinning test (C54T0): for the issue-family schemas
+// (Issue / IssueDetail / IssueCreate / IssuePatch / SimilarIssue),
+// assert the LIVE response keys match the corrected docs/openapi.yaml.
+// Pins the C54T0 drift fixes: project_id + created_by present,
+// state_id a non-null string, NO archived key on any response,
+// assignees = [{id, name}] (not User), labels = [{id, name, color}]
+// (not Label), children = IssueChild summaries (not Issue),
+// custom_values = {field_id: CustomValue}, project_structure gated
+// by its flag, deleted_at trash-only, and release_id accepted by
+// PATCH (tri-state) with the effect visible via project_structure.
+
+func TestOpenAPIResponseShapesIssueFamily(t *testing.T) {
+	pool := newTestPool(t)
+	e := testSatelliteServer(t, pool)
+	// testSatelliteServer registers the issue/satellite routes only;
+	// the pins below also hit the refs, release and custom-field
+	// routes, so mount them the same way other tests do.
+	h := &IssueHandler{Pool: pool}
+	RegisterGitHubLinkRoutes(e, h)
+	RegisterReleaseRoutes(e, h)
+	RegisterCustomFieldRoutes(e, h)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("openapi-issue"), "test-agent", uniqueIP())
+	myID := authedUserID(t, e, cookie)
+	slug := uniqueSlug("openapi-issue")
+	createWorkspaceHTTP(t, e, cookie, "Issue Co", slug)
+	ident := uniqueProjectIdentifier("OI")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	projBase := "/api/v1/workspaces/" + slug + "/projects/" + ident
+	base := projBase + "/issues"
+
+	decode := func(rec *httptest.ResponseRecorder, v any) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+		}
+	}
+	topKeys := func(rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		decode(rec, &m)
+		return m
+	}
+	// mustHave/mustNotHave pin the exact key contract of one response
+	// object: a key the doc promises must be present, a key the doc
+	// says is absent (omitempty / flag-gated / request-only) must not
+	// appear at all — not even as null.
+	mustHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; !ok {
+				t.Fatalf("response missing key %q (keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	mustNotHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; ok {
+				t.Fatalf("response has forbidden key %q (body keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	exactKeys := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		mustHave(t, m, keys...)
+		if len(m) != len(keys) {
+			t.Fatalf("response keys = %v, want exactly %v", rawKeysOf(m), keys)
+		}
+	}
+	nonEmptyString := func(t *testing.T, m map[string]json.RawMessage, key string) string {
+		t.Helper()
+		var s string
+		if err := json.Unmarshal(m[key], &s); err != nil || s == "" {
+			t.Fatalf("key %q = %s, want a non-empty string", key, string(m[key]))
+		}
+		return s
+	}
+	createIssue := func(body string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, base, cookie, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: status = %d (body: %s)", body, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		decode(rec, &created)
+		if created.ID == "" {
+			t.Fatalf("create %s returned no id", body)
+		}
+		return created.ID
+	}
+	getIssueKeys := func(id, query string) map[string]json.RawMessage {
+		t.Helper()
+		rec := getAuthed(t, e, http.MethodGet, base+"/"+id+query, cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get %s%s: status = %d (body: %s)", id, query, rec.Code, rec.Body.String())
+		}
+		return topKeys(rec)
+	}
+
+	// 1. POST create → 201 bare Issue: project_id + created_by
+	// present, state_id a non-null string, NO archived / assignees /
+	// labels / subtask_progress / archived_at / deleted_at keys.
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"name":"Alpha","description":{"type":"doc","content":[]}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create Alpha: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	created := topKeys(rec)
+	mustHave(t, created, "id", "project_id", "sequence_id", "display_id",
+		"name", "description", "priority", "state_id", "sort_order",
+		"is_draft", "created_by", "created_at", "updated_at")
+	mustNotHave(t, created, "archived", "assignees", "labels",
+		"subtask_progress", "archived_at", "deleted_at",
+		"parent_id", "start_date", "target_date", "estimate_point_id")
+	alpha := nonEmptyString(t, created, "id")
+	nonEmptyString(t, created, "project_id")
+	nonEmptyString(t, created, "created_by")
+	nonEmptyString(t, created, "state_id")
+	if !strings.HasPrefix(nonEmptyString(t, created, "display_id"), ident+"-") {
+		t.Fatalf("display_id = %s, want prefix %q", string(created["display_id"]), ident+"-")
+	}
+	var desc struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(created["description"], &desc); err != nil || desc.Type != "doc" {
+		t.Fatalf("description = %s, want the sent rich-text doc", string(created["description"]))
+	}
+
+	// 2. GET detail (no flags) → IssueListItem: assignees/labels/
+	// subtask_progress present (empty), NO archived / archived_at /
+	// deleted_at, NO flag-gated attachments, and NO external_refs
+	// (omitempty drops the empty array — it appears only once a
+	// ref is linked; see 2b).
+	detail := getIssueKeys(alpha, "")
+	mustHave(t, detail, "id", "project_id", "created_by", "state_id",
+		"assignees", "labels", "subtask_progress")
+	mustNotHave(t, detail, "archived", "archived_at", "deleted_at",
+		"children", "custom_values", "project_structure", "external_refs")
+	decodeDetail := func(raw json.RawMessage, v any) {
+		t.Helper()
+		if err := json.Unmarshal(raw, v); err != nil {
+			t.Fatalf("decode %s: %v", string(raw), err)
+		}
+	}
+	var assignees []map[string]json.RawMessage
+	decodeDetail(detail["assignees"], &assignees)
+	if len(assignees) != 0 {
+		t.Fatalf("assignees = %v, want []", assignees)
+	}
+	var labels []map[string]json.RawMessage
+	decodeDetail(detail["labels"], &labels)
+	if len(labels) != 0 {
+		t.Fatalf("labels = %v, want []", labels)
+	}
+	// external_refs absence is already pinned by mustNotHave above.
+	var progress struct {
+		Total int `json:"total"`
+		Done  int `json:"done"`
+	}
+	decodeDetail(detail["subtask_progress"], &progress)
+	if progress.Total != 0 || progress.Done != 0 {
+		t.Fatalf("subtask_progress = %+v, want {total 0, done 0}", progress)
+	}
+
+	// 3. Assignee/label item shapes: assign self + a label, then the
+	// detail items must be exactly {id, name} / {id, name, color} —
+	// NOT the User / Label shapes the old spec claimed (no email,
+	// role, created_at, parent_id).
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/labels", cookie, `{"name":"Bug","color":"#ef4444"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var label struct {
+		ID string `json:"id"`
+	}
+	decode(rec, &label)
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/assignees/"+myID, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("assign self: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/labels/"+label.ID, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("assign label: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	detail = getIssueKeys(alpha, "")
+	decodeDetail(detail["assignees"], &assignees)
+	if len(assignees) != 1 {
+		t.Fatalf("assignees = %v, want 1 item", assignees)
+	}
+	exactKeys(t, assignees[0], "id", "name")
+	if nonEmptyString(t, assignees[0], "id") != myID {
+		t.Fatalf("assignee id = %s, want %s", string(assignees[0]["id"]), myID)
+	}
+	decodeDetail(detail["labels"], &labels)
+	if len(labels) != 1 {
+		t.Fatalf("labels = %v, want 1 item", labels)
+	}
+	exactKeys(t, labels[0], "id", "name", "color")
+	if nonEmptyString(t, labels[0], "color") != "#ef4444" {
+		t.Fatalf("label color = %s, want #ef4444", string(labels[0]["color"]))
+	}
+
+	// 2b. external_refs present-case: link one PR, then the detail
+	// carries exactly one ExternalRef with the full 9-key shape.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/refs", cookie,
+		`{"repo":"acme/repo","ref_type":"pr","ref_id":"42","url":"https://github.com/acme/repo/pull/42"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("link ref: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	detail = getIssueKeys(alpha, "")
+	mustHave(t, detail, "external_refs")
+	var linked []map[string]json.RawMessage
+	decodeDetail(detail["external_refs"], &linked)
+	if len(linked) != 1 {
+		t.Fatalf("external_refs = %d items, want 1", len(linked))
+	}
+	exactKeys(t, linked[0], "id", "issue_id", "provider", "repo",
+		"ref_type", "ref_id", "url", "state", "created_at")
+	if nonEmptyString(t, linked[0], "issue_id") != alpha ||
+		nonEmptyString(t, linked[0], "provider") != "github" ||
+		nonEmptyString(t, linked[0], "repo") != "acme/repo" ||
+		nonEmptyString(t, linked[0], "ref_type") != "pr" ||
+		nonEmptyString(t, linked[0], "ref_id") != "42" ||
+		nonEmptyString(t, linked[0], "state") != "open" {
+		t.Fatalf("external_ref = %v, want the linked PR", rawKeysOf(linked[0]))
+	}
+
+	// 4. List: sparse fieldsets — description ABSENT by default,
+	// present with ?fields=description. No archived key either way.
+	rec = getAuthed(t, e, http.MethodGet, base, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Results []map[string]json.RawMessage `json:"results"`
+	}
+	decode(rec, &list)
+	if len(list.Results) != 1 {
+		t.Fatalf("list results = %d items, want 1", len(list.Results))
+	}
+	mustHave(t, list.Results[0], "id", "project_id", "created_by",
+		"state_id", "assignees", "labels", "subtask_progress")
+	mustNotHave(t, list.Results[0], "archived", "description",
+		"archived_at", "deleted_at", "external_refs")
+	rec = getAuthed(t, e, http.MethodGet, base+"?fields=description", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list ?fields=description: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec, &list)
+	if len(list.Results) != 1 {
+		t.Fatalf("list ?fields=description results = %d, want 1", len(list.Results))
+	}
+	mustHave(t, list.Results[0], "description")
+
+	// 5. PATCH archived=true → archived_at set, NO archived key;
+	// PATCH archived=false → archived_at omitted again.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+alpha, cookie, `{"archived":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch archived=true: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	patched := topKeys(rec)
+	mustHave(t, patched, "archived_at")
+	nonEmptyString(t, patched, "archived_at")
+	mustNotHave(t, patched, "archived")
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+alpha, cookie, `{"archived":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch archived=false: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	mustNotHave(t, topKeys(rec), "archived", "archived_at")
+
+	// 6. PATCH release_id (tri-state): assign → visible via
+	// project_structure.release; null → cleared. The Issue body
+	// itself never carries a release_id key.
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/releases", cookie, `{"name":"v0.4.0","status":"planned"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create release: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var release struct {
+		ID string `json:"id"`
+	}
+	decode(rec, &release)
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+alpha, cookie,
+		`{"release_id":"`+release.ID+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch release_id: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	mustNotHave(t, topKeys(rec), "release_id")
+	structured := getIssueKeys(alpha, "?include_project_structure=1")
+	mustHave(t, structured, "project_structure")
+	var structure struct {
+		Modules []map[string]json.RawMessage `json:"modules"`
+		Release *struct {
+			ID string `json:"id"`
+		} `json:"release"`
+	}
+	decodeDetail(structured["project_structure"], &structure)
+	if structure.Release == nil || structure.Release.ID != release.ID {
+		t.Fatalf("project_structure.release = %+v, want id %s", structure.Release, release.ID)
+	}
+	if len(structure.Modules) != 0 {
+		t.Fatalf("project_structure.modules = %v, want []", structure.Modules)
+	}
+	var rawStructure map[string]json.RawMessage
+	decodeDetail(structured["project_structure"], &rawStructure)
+	mustNotHave(t, rawStructure, "cycle")
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+alpha, cookie, `{"release_id":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch release_id=null: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	structured = getIssueKeys(alpha, "?include_project_structure=1")
+	// Fresh map: decoding into the previous one would keep the
+	// stale "release" key (Unmarshal never deletes map keys).
+	rawStructure = map[string]json.RawMessage{}
+	decodeDetail(structured["project_structure"], &rawStructure)
+	mustNotHave(t, rawStructure, "release")
+	// Without the flag the attachment is absent entirely.
+	mustNotHave(t, getIssueKeys(alpha, ""), "project_structure")
+
+	// 7. Children are IssueChild summaries {uuid, identifier, title,
+	// state} — NOT full Issues. Custom values are absent (empty map
+	// omitted) until a field has a set value.
+	child := createIssue(`{"name":"Alpha child","parent_id":"` + alpha + `"}`)
+	withKids := getIssueKeys(alpha, "?include_children=1")
+	mustHave(t, withKids, "children")
+	var children []map[string]json.RawMessage
+	decodeDetail(withKids["children"], &children)
+	if len(children) != 1 {
+		t.Fatalf("children = %v, want 1 item", children)
+	}
+	exactKeys(t, children[0], "uuid", "identifier", "title", "state")
+	if nonEmptyString(t, children[0], "uuid") != child {
+		t.Fatalf("child uuid = %s, want %s", string(children[0]["uuid"]), child)
+	}
+	if nonEmptyString(t, children[0], "title") != "Alpha child" {
+		t.Fatalf("child title = %s, want Alpha child", string(children[0]["title"]))
+	}
+	if !strings.HasPrefix(nonEmptyString(t, children[0], "identifier"), ident+"-") {
+		t.Fatalf("child identifier = %s, want prefix %q", string(children[0]["identifier"]), ident+"-")
+	}
+	childState := nonEmptyString(t, children[0], "state")
+	if childState == nonEmptyString(t, withKids, "state_id") {
+		t.Fatalf("child state = %q, want the human state name, not a state_id", childState)
+	}
+	// No custom fields yet: the flag is a no-op for custom_values.
+	mustNotHave(t, getIssueKeys(alpha, "?include_custom=1"), "custom_values")
+
+	// 8. Custom values: field with a set value → custom_values is
+	// {field_id: {field_id, name, field_type, value}}.
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/custom-fields", cookie, `{"name":"Summary","field_type":"text"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create custom field: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var field struct {
+		ID string `json:"id"`
+	}
+	decode(rec, &field)
+	rec = postAuthedJSON(t, e, http.MethodPut, base+"/"+alpha+"/custom-values", cookie,
+		`{"values":{"`+field.ID+`":"hello"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put custom-values: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	withCustom := getIssueKeys(alpha, "?include_custom=1")
+	mustHave(t, withCustom, "custom_values")
+	var customValues map[string]map[string]json.RawMessage
+	decodeDetail(withCustom["custom_values"], &customValues)
+	cv, ok := customValues[field.ID]
+	if !ok {
+		t.Fatalf("custom_values has %d entries, want entry for field %s", len(customValues), field.ID)
+	}
+	exactKeys(t, cv, "field_id", "name", "field_type", "value")
+	if nonEmptyString(t, cv, "name") != "Summary" ||
+		nonEmptyString(t, cv, "field_type") != "text" ||
+		nonEmptyString(t, cv, "value") != "hello" {
+		t.Fatalf("custom value = %v, want {Summary, text, hello}", rawKeysOf(cv))
+	}
+
+	// 9. Similar: exact {id, display_id, name, state, similarity}
+	// keys; state is the human name; similarity > 0.3.
+	rec = getAuthed(t, e, http.MethodGet, base+"/similar?q=Alpha", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("similar: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var similar []map[string]json.RawMessage
+	decode(rec, &similar)
+	var hit map[string]json.RawMessage
+	for _, s := range similar {
+		if nonEmptyString(t, s, "name") == "Alpha" {
+			hit = s
+		}
+	}
+	if hit == nil {
+		t.Fatalf("similar has no hit named Alpha (body: %s)", rec.Body.String())
+	}
+	exactKeys(t, hit, "id", "display_id", "name", "state", "similarity")
+	var sim float64
+	if err := json.Unmarshal(hit["similarity"], &sim); err != nil || sim <= 0.3 {
+		t.Fatalf("similarity = %s, want > 0.3", string(hit["similarity"]))
+	}
+	if nonEmptyString(t, hit, "state") == "" {
+		t.Fatal("similar hit has empty state")
+	}
+
+	// 10. Trash: deleted_at present ONLY on the trash list; restore
+	// returns the bare issue with NO deleted_at / archived keys.
+	beta := createIssue(`{"name":"Beta"}`)
+	rec = postAuthedJSON(t, e, http.MethodDelete, base+"/"+beta, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete Beta: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+beta, cookie)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted Beta: status = %d, want 404", rec.Code)
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"?deleted=1", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("trash list: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var trash struct {
+		Results []map[string]json.RawMessage `json:"results"`
+	}
+	decode(rec, &trash)
+	if len(trash.Results) != 1 {
+		t.Fatalf("trash results = %d items, want 1", len(trash.Results))
+	}
+	mustHave(t, trash.Results[0], "deleted_at")
+	nonEmptyString(t, trash.Results[0], "deleted_at")
+	mustNotHave(t, trash.Results[0], "archived")
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+beta+"/restore", cookie, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore Beta: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	mustNotHave(t, topKeys(rec), "deleted_at", "archived")
+	if rec.Code = getAuthed(t, e, http.MethodGet, base+"/"+beta, cookie).Code; rec.Code != http.StatusOK {
+		t.Fatalf("get restored Beta: status = %d, want 200", rec.Code)
+	}
+}
+
+func rawKeysOf(m map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

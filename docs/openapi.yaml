@@ -2829,24 +2829,44 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
           "sequence_id": { "type": "integer" },
           "display_id": { "type": "string", "example": "GLA-123" },
           "name": { "type": "string" },
-          "description": { "description": "Rich-text JSON document" },
+          "description": { "description": "Rich-text JSON document. Omitted when unset; on the issue list only included with ?fields=description (sparse fieldsets)." },
           "priority": { "type": "integer", "description": "0-4" },
-          "state_id": { "type": "string", "format": "uuid", "nullable": true },
+          "state_id": { "type": "string", "format": "uuid", "description": "Always a UUID string, never null (states.state_id is NOT NULL; create defaults an omitted state_id to the project's backlog-group state)." },
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "sort_order": { "type": "number" },
           "start_date": { "type": "string", "format": "date", "nullable": true },
           "target_date": { "type": "string", "format": "date", "nullable": true },
           "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true },
           "is_draft": { "type": "boolean" },
-          "archived": { "type": "boolean" },
-          "assignees": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
-          "labels": { "type": "array", "items": { "$ref": "#/components/schemas/Label" } },
-          "subtask_progress": { "$ref": "#/components/schemas/SubtaskProgress", "nullable": true, "description": "Direct-child rollup; present on detail and list responses" },
+          "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Archive timestamp; omitted when live. Set/cleared via PATCH archived — no response ever emits an archived boolean." },
+          "created_by": { "type": "string", "format": "uuid" },
           "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "updated_at": { "type": "string", "format": "date-time" },
+          "assignees": { "type": "array", "items": { "$ref": "#/components/schemas/IssueAssignee" }, "description": "Always present ([]) on list/detail/trash responses; absent on single-issue write responses (create/update/clone/restore/convert/merge/move) and version snapshots, which return the bare issue row." },
+          "labels": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLabel" }, "description": "Always present ([]) on list/detail/trash responses; absent on single-issue write responses and version snapshots." },
+          "subtask_progress": { "$ref": "#/components/schemas/SubtaskProgress", "nullable": true, "description": "Direct-child rollup; present on list/detail/trash responses, absent on single-issue write responses and version snapshots." },
+          "deleted_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Soft-delete timestamp; present only on trash-list (?deleted=1) rows, omitted everywhere else." }
+        }
+      },
+      "IssueAssignee": {
+        "type": "object",
+        "description": "One assignee on an issue (service.IssueAssignee): id + display name only — not the full User shape (no email/role/created_at).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" }
+        }
+      },
+      "IssueLabel": {
+        "type": "object",
+        "description": "One label on an issue (service.IssueLabel): id + name + color — no parent_id, unlike the workspace Label shape.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "color": { "type": "string" }
         }
       },
       "IssueCreate": {
@@ -2856,7 +2876,7 @@
           "name": { "type": "string" },
           "description": { "description": "Rich-text JSON document" },
           "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
-          "state_id": { "type": "string", "format": "uuid" },
+          "state_id": { "type": "string", "format": "uuid", "description": "Omitted = the project's backlog-group state" },
           "parent_id": { "type": "string", "format": "uuid" },
           "sort_order": { "type": "number" },
           "start_date": { "type": "string", "format": "date" },
@@ -2869,29 +2889,68 @@
       },
       "IssuePatch": {
         "type": "object",
-        "description": "Partial update. Plain fields: omitted = untouched. description/parent_id/start_date/target_date/estimate_point_id are tri-state: omitted = untouched, explicit null = clear, value = assign.",
+        "description": "Partial update. Plain fields: omitted = untouched. description/parent_id/start_date/target_date/estimate_point_id/release_id are tri-state: omitted = untouched, explicit null = clear, value = assign.",
         "properties": {
           "name": { "type": "string" },
           "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
           "state_id": { "type": "string", "format": "uuid" },
           "sort_order": { "type": "number" },
           "is_draft": { "type": "boolean" },
-          "archived": { "type": "boolean" },
+          "archived": { "type": "boolean", "description": "true = archive (sets archived_at to now), false = unarchive (clears archived_at). Request-only: no response ever emits an archived key." },
           "description": { "description": "Rich-text JSON document (tri-state)" },
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "start_date": { "type": "string", "format": "date", "nullable": true },
           "target_date": { "type": "string", "format": "date", "nullable": true },
           "estimate_point_id": { "type": "string", "format": "uuid", "nullable": true },
+          "release_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Tri-state release assignment: omitted = untouched, explicit null = clear, value = move to that release (validated against the project's releases)." },
           "ignore_blockers": { "type": "boolean", "description": "Bypass the open-blocker guard when moving to a completed state. Request directive, never persisted." }
         }
       },
       "IssueDetail": {
         "allOf": [ { "$ref": "#/components/schemas/Issue" } ],
-        "description": "Issue plus subtask_progress rollup and optional attachments: children (with ?include_children=1) and custom_values keyed by field id (with ?include_custom=1).",
+        "description": "Issue plus subtask_progress rollup and optional attachments: children (with ?include_children=1), custom_values keyed by field id (with ?include_custom=1), and project_structure (with ?include_project_structure=1).",
         "properties": {
-          "children": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } },
-          "custom_values": { "type": "object", "additionalProperties": {}, "description": "Custom-field id → value" },
-          "external_refs": { "type": "array", "items": { "$ref": "#/components/schemas/ExternalRef" }, "description": "PRs/commits linked to the issue (manual links and GitHub webhook auto-links). Always present on the detail response (empty array when nothing is linked)." }
+          "children": { "type": "array", "items": { "$ref": "#/components/schemas/IssueChild" }, "description": "Direct-child summaries (uuid/identifier/title/state) — NOT full issues. Present only with ?include_children=1 and at least one child (an empty result is omitted)." },
+          "custom_values": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/CustomValue" }, "description": "Set custom-field values keyed by field id; fields with no value set are omitted. Present only with ?include_custom=1." },
+          "external_refs": { "type": "array", "items": { "$ref": "#/components/schemas/ExternalRef" }, "description": "PRs/commits linked to the issue (manual links and GitHub webhook auto-links). Present only when at least one ref is linked — omitempty drops the empty array, so an unlinked issue carries no external_refs key." },
+          "project_structure": { "$ref": "#/components/schemas/IssueProjectStructure", "description": "Cycle/module/release membership. Present only with ?include_project_structure=1." }
+        }
+      },
+      "IssueChild": {
+        "type": "object",
+        "description": "One direct-child summary (service.IssueChild) — a flat summary, not a full Issue.",
+        "properties": {
+          "uuid": { "type": "string", "format": "uuid" },
+          "identifier": { "type": "string", "description": "e.g. ENG-7" },
+          "title": { "type": "string" },
+          "state": { "type": "string", "description": "Human state name, e.g. Backlog" }
+        }
+      },
+      "CustomValue": {
+        "type": "object",
+        "description": "One set custom-field value (service.CustomValue). Only fields with a value set appear in custom_values.",
+        "properties": {
+          "field_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "field_type": { "type": "string" },
+          "value": { "description": "The stored value: string (text/date), number (number), or boolean (checkbox)." }
+        }
+      },
+      "NamedRef": {
+        "type": "object",
+        "description": "Minimal id+name reference (service.NamedRef).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" }
+        }
+      },
+      "IssueProjectStructure": {
+        "type": "object",
+        "description": "Cycle/module/release membership (service.IssueProjectStructure).",
+        "properties": {
+          "cycle": { "$ref": "#/components/schemas/NamedRef", "description": "First cycle membership by name; omitted when in no cycle." },
+          "modules": { "type": "array", "items": { "$ref": "#/components/schemas/NamedRef" }, "description": "Every module membership, by name; always present ([] when none)." },
+          "release": { "$ref": "#/components/schemas/NamedRef", "description": "Omitted when assigned to no release." }
         }
       },
       "SubtaskProgress": {
