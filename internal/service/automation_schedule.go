@@ -320,6 +320,26 @@ func fireScheduledRule(ctx context.Context, pool *pgxpool.Pool, r *AutomationRul
 			slog.Warn("automation: scheduled pass cannot re-read post-firing row; skipping version snapshot",
 				"rule_id", r.ID, "issue_id", issueID, "error", err)
 		} else if !issueRowContentEqual(before, after) {
+			// C56T3: enqueue ONE issue.updated webhook in-tx for a
+			// firing that changed the row, with changed_fields = the
+			// before/after row diff (issueRowChangedFields, shared
+			// with C56T1). The gate is row-change, not state-change:
+			// a set_priority-only firing still enqueues (its WS
+			// announce stays state-only, untouched below). A no-op
+			// firing leaves the row equal and enqueues nothing. The
+			// enqueue sits in-tx, before commit, so a rolled-back
+			// firing never enqueues. An enqueue error rolls the
+			// whole firing back, like a snapshot error.
+			if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+				"id":             issueID,
+				"display_id":     ident + "-" + strconv.Itoa(after.SequenceID),
+				"changed_fields": issueRowChangedFields(before, after),
+				"actor_id":       r.CreatedBy,
+			}); err != nil {
+				slog.Error("automation: scheduled pass webhook enqueue failed; rolling back firing",
+					"rule_id", r.ID, "issue_id", issueID, "error", err)
+				return
+			}
 			after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
 			if err := snapshotVersionTx(ctx, tx, issueID, r.CreatedBy, after); err != nil {
 				slog.Error("automation: scheduled pass version snapshot failed; rolling back firing",
