@@ -978,7 +978,7 @@
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List issue subscribers",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Subscribers", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscribers": { "type": "array", "items": { "$ref": "#/components/schemas/User" } } } } } } } }
+        "responses": { "200": { "description": "Subscribers", "content": { "application/json": { "schema": { "type": "object", "properties": { "subscribers": { "type": "array", "items": { "$ref": "#/components/schemas/Subscriber" } } } } } } } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1159,7 +1159,7 @@
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List public share links for an issue",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "shares": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
+        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "links": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
       },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1712,7 +1712,7 @@
         "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List public share links for a page",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "pageID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "shares": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
+        "responses": { "200": { "description": "Share links", "content": { "application/json": { "schema": { "type": "object", "properties": { "links": { "type": "array", "items": { "$ref": "#/components/schemas/ShareLink" } } } } } } } }
       },
       "post": {
         "tags": ["pages"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3607,6 +3607,16 @@
           "token": { "type": "string" },
           "url": { "type": "string", "format": "uri" },
           "share": { "$ref": "#/components/schemas/ShareLink" }
+        }
+      },
+      "Subscriber": {
+        "type": "object",
+        "description": "One subscribed user (service.Subscriber), as returned by GET .../issues/{uuid}/subscribers. A subscription projection, not a User: only user_id, name, email. name is *string + omitempty in Go, so the key is OMITTED when the user has no display name — it is never null.",
+        "required": ["user_id", "email"],
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "description": "Display name; omitted entirely when unset (omitempty), never null." },
+          "email": { "type": "string", "format": "email" }
         }
       },
       "AIStatus": {

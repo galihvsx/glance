@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"glance/docs"
+	"glance/internal/service"
 	"glance/internal/store"
 )
 
@@ -1399,9 +1401,8 @@ func TestOpenAPIResponseShapesSweep(t *testing.T) {
 	// 10. Share: create → {token, url, share}; the share object is
 	// exactly {id, token, scope, created_at} (expires_at/revoked_at
 	// omitted while unset); scope issue. List returns the live
-	// {links: [...]} envelope — the doc's {shares} envelope is
-	// recorded out-of-scope drift for a future cycle, so the pin
-	// asserts the live key, not the stale doc key.
+	// {links: [...]} envelope, and the doc pins the same key
+	// (C55T0 fixed the doc's stale {shares} envelope).
 	shareBase := base + "/" + alpha + "/share"
 	rec = postAuthedJSON(t, e, http.MethodPost, shareBase, cookie, `{}`)
 	if rec.Code != http.StatusCreated {
@@ -1563,4 +1564,254 @@ func TestOpenAPIResponseShapesSweep(t *testing.T) {
 	if nonEmptyString(t, singleLinks.Links[0], "direction") != "outgoing" {
 		t.Fatalf("link direction = %s, want outgoing", string(singleLinks.Links[0]["direction"]))
 	}
+}
+
+// Doc-side pinning test (C55T0): for the two share-list endpoints,
+// the subscribers endpoint, and the new Subscriber schema, assert
+// the DOCUMENTED shapes in docs/openapi.yaml match the code. This
+// is the doc-side complement to the live pins: share_handler_test
+// already pins live {links}, and TestOpenAPIResponseShapesSweep §10
+// pins the live share-list envelope — this test pins the doc so
+// the {shares} drift (doc said {shares}, handlers returned
+// {links}) cannot silently return, and pins Subscriber field-for-
+// field against the Go struct via reflection so a struct change
+// without a doc update fails. No DB: parses the embedded spec.
+
+func TestOpenAPIDocShapesShareSubscriber(t *testing.T) {
+	var spec struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	decodeObj := func(raw json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("decode %s: %v", string(raw), err)
+		}
+		return m
+	}
+	// responseSchema returns the 200 response schema of one operation.
+	responseSchema := func(path, method string) map[string]json.RawMessage {
+		t.Helper()
+		ops, ok := spec.Paths[path]
+		if !ok {
+			t.Fatalf("spec has no path %s", path)
+		}
+		raw, ok := ops[method]
+		if !ok {
+			t.Fatalf("spec path %s has no %s operation", path, method)
+		}
+		op := decodeObj(raw)
+		responses := decodeObj(op["responses"])
+		resp := decodeObj(responses["200"])
+		content := decodeObj(resp["content"])
+		media := decodeObj(content["application/json"])
+		return decodeObj(media["schema"])
+	}
+	// envelopeProp returns properties[name] of an object schema, as
+	// (properties, propSchema) maps, failing on a non-object schema.
+	envelopeProp := func(schema map[string]json.RawMessage, name string) map[string]json.RawMessage {
+		t.Helper()
+		props, ok := schema["properties"]
+		if !ok {
+			t.Fatalf("schema %s has no properties", string(mustJSON(t, schema)))
+		}
+		prop := decodeObj(props)[name]
+		if prop == nil {
+			t.Fatalf("schema properties lack %q", name)
+		}
+		return decodeObj(prop)
+	}
+	// itemsRef returns the $ref of an array property's items.
+	itemsRef := func(prop map[string]json.RawMessage) string {
+		t.Helper()
+		var arr struct {
+			Type  string `json:"type"`
+			Items struct {
+				Ref string `json:"$ref"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(mustJSON(t, prop), &arr); err != nil {
+			t.Fatalf("decode array prop: %v", err)
+		}
+		if arr.Type != "array" {
+			t.Fatalf("property type = %q, want array", arr.Type)
+		}
+		return arr.Items.Ref
+	}
+	// envelopeKeys returns the property names of an object schema.
+	envelopeKeys := func(schema map[string]json.RawMessage) map[string]bool {
+		t.Helper()
+		out := map[string]bool{}
+		for k := range decodeObj(schema["properties"]) {
+			out[k] = true
+		}
+		return out
+	}
+
+	// 1. Both share-list endpoints document {links: ShareLink[]} —
+	// NOT the stale {shares: ...} envelope the doc used to claim.
+	for _, path := range []string{
+		"/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/share",
+		"/api/v1/workspaces/{slug}/projects/{identifier}/pages/{pageID}/share",
+	} {
+		schema := responseSchema(path, "get")
+		keys := envelopeKeys(schema)
+		if !keys["links"] {
+			t.Fatalf("GET %s doc envelope keys = %v, want links", path, keys)
+		}
+		if keys["shares"] {
+			t.Fatalf("GET %s doc envelope still has stale key %q", path, "shares")
+		}
+		if got := itemsRef(envelopeProp(schema, "links")); got != "#/components/schemas/ShareLink" {
+			t.Fatalf("GET %s doc links items $ref = %q, want ShareLink", path, got)
+		}
+	}
+
+	// 2. Issue-link list endpoint: checked in code (handler returns
+	// {links}) and its doc already said {links} — pin it so the
+	// same drift class cannot appear here unnoticed.
+	linkSchema := responseSchema(
+		"/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/links", "get")
+	linkKeys := envelopeKeys(linkSchema)
+	if !linkKeys["links"] || linkKeys["shares"] {
+		t.Fatalf("GET .../links doc envelope keys = %v, want exactly links", linkKeys)
+	}
+	if got := itemsRef(envelopeProp(linkSchema, "links")); got != "#/components/schemas/IssueLink" {
+		t.Fatalf("GET .../links doc links items $ref = %q, want IssueLink", got)
+	}
+
+	// 3. Subscribers endpoint refs Subscriber, not User.
+	subSchema := responseSchema(
+		"/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/subscribers", "get")
+	subKeys := envelopeKeys(subSchema)
+	if !subKeys["subscribers"] {
+		t.Fatalf("GET .../subscribers doc envelope keys = %v, want subscribers", subKeys)
+	}
+	if got := itemsRef(envelopeProp(subSchema, "subscribers")); got != "#/components/schemas/Subscriber" {
+		t.Fatalf("GET .../subscribers doc items $ref = %q, want Subscriber", got)
+	}
+
+	// 4. Subscriber schema matches service.Subscriber field-for-
+	// field, derived from the Go struct via reflection (not
+	// hard-coded): every json tag name must be a doc property and
+	// vice versa; user_id + email are required; name is NOT
+	// required and NOT nullable — the Go field is *string +
+	// omitempty, so the key is OMITTED when nil, never null.
+	raw, ok := spec.Components.Schemas["Subscriber"]
+	if !ok {
+		t.Fatal("spec has no Subscriber schema")
+	}
+	var docSchema struct {
+		Type     string                     `json:"type"`
+		Required []string                   `json:"required"`
+		Props    map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &docSchema); err != nil {
+		t.Fatalf("decode Subscriber schema: %v", err)
+	}
+	if docSchema.Type != "object" {
+		t.Fatalf("Subscriber schema type = %q, want object", docSchema.Type)
+	}
+	structType := reflect.TypeOf(service.Subscriber{})
+	if structType.Kind() != reflect.Struct {
+		t.Fatalf("service.Subscriber kind = %v, want struct", structType.Kind())
+	}
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		tag := f.Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "" || name == "-" {
+			t.Fatalf("service.Subscriber field %s has no json name", f.Name)
+		}
+		wantProps[name] = true
+		// Presence semantics per field, from the struct tag.
+		omitempty := strings.Contains(tag, ",omitempty")
+		switch name {
+		case "name":
+			if f.Type.Kind() != reflect.Pointer {
+				t.Fatalf("service.Subscriber.Name type = %v, want *string", f.Type)
+			}
+			if !omitempty {
+				t.Fatal("service.Subscriber.Name tag lacks omitempty — doc presence claim would be wrong")
+			}
+		default:
+			if omitempty {
+				t.Fatalf("service.Subscriber.%s tag has unexpected omitempty", f.Name)
+			}
+		}
+	}
+	if len(docSchema.Props) != len(wantProps) {
+		t.Fatalf("Subscriber doc properties = %v, want exactly %v (service.Subscriber)",
+			docKeysOf(docSchema.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := docSchema.Props[name]; !ok {
+			t.Fatalf("Subscriber doc missing property %q (struct field)", name)
+		}
+	}
+	var prop struct {
+		Type     string `json:"type"`
+		Format   string `json:"format"`
+		Nullable bool   `json:"nullable"`
+	}
+	decodeProp := func(name string) {
+		t.Helper()
+		prop = struct {
+			Type     string `json:"type"`
+			Format   string `json:"format"`
+			Nullable bool   `json:"nullable"`
+		}{}
+		if err := json.Unmarshal(docSchema.Props[name], &prop); err != nil {
+			t.Fatalf("decode Subscriber.%s: %v", name, err)
+		}
+	}
+	decodeProp("user_id")
+	if prop.Type != "string" || prop.Format != "uuid" {
+		t.Fatalf("Subscriber.user_id = {%s, %s}, want {string, uuid}", prop.Type, prop.Format)
+	}
+	decodeProp("email")
+	if prop.Type != "string" || prop.Format != "email" {
+		t.Fatalf("Subscriber.email = {%s, %s}, want {string, email}", prop.Type, prop.Format)
+	}
+	decodeProp("name")
+	if prop.Type != "string" {
+		t.Fatalf("Subscriber.name type = %q, want string", prop.Type)
+	}
+	if prop.Nullable {
+		t.Fatal("Subscriber.name is nullable in the doc, but *string + omitempty means the key is omitted when nil, never null")
+	}
+	required := map[string]bool{}
+	for _, r := range docSchema.Required {
+		required[r] = true
+	}
+	if !required["user_id"] || !required["email"] {
+		t.Fatalf("Subscriber required = %v, want user_id + email", docSchema.Required)
+	}
+	if required["name"] {
+		t.Fatalf("Subscriber required = %v, want name absent (omitempty: omitted when unset)", docSchema.Required)
+	}
+}
+
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
+func docKeysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
