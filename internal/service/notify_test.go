@@ -188,7 +188,7 @@ func TestWebhookDeliveryRetried(t *testing.T) {
 
 	d := NewWebhookDispatcher(pool)
 	d.allowPrivateTargets = true // httptest targets are loopback by construction
-	if err := d.Run(ctx); err != nil {
+	if err := d.runScoped(ctx, wh.ID); err != nil {
 		t.Fatalf("dispatcher run 1: %v", err)
 	}
 	if calls.Load() != 1 {
@@ -228,7 +228,7 @@ func TestWebhookDeliveryRetried(t *testing.T) {
 		`UPDATE outbox SET next_retry_at = now() WHERE id = $1`, outboxID); err != nil {
 		t.Fatalf("force due: %v", err)
 	}
-	if err := d.Run(ctx); err != nil {
+	if err := d.runScoped(ctx, wh.ID); err != nil {
 		t.Fatalf("dispatcher run 2: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
@@ -675,7 +675,7 @@ func TestWebhookDispatchReleasesClaimTxDuringDelivery(t *testing.T) {
 	d := NewWebhookDispatcher(pool)
 	d.allowPrivateTargets = true // httptest targets are loopback by construction
 	runErr := make(chan error, 1)
-	go func() { runErr <- d.Run(ctx) }()
+	go func() { runErr <- d.runScoped(ctx, outboxRowWebhookID(t, pool, ctx, outboxID)) }()
 
 	select {
 	case <-received:
@@ -753,13 +753,13 @@ func TestWebhookDispatchSingleFlight(t *testing.T) {
 		}
 	}()
 
-	createTestWebhook(t, pool, ctx, wsSlug, actorID, srv.URL)
+	wh := createTestWebhook(t, pool, ctx, wsSlug, actorID, srv.URL)
 	outboxID := enqueueWebhookRow(t, pool, ctx, wsSlug)
 
 	d := NewWebhookDispatcher(pool)
 	d.allowPrivateTargets = true // httptest targets are loopback by construction
 	run1 := make(chan error, 1)
-	go func() { run1 <- d.Run(ctx) }()
+	go func() { run1 <- d.runScoped(ctx, wh.ID) }()
 
 	select {
 	case <-received:
@@ -775,7 +775,7 @@ func TestWebhookDispatchSingleFlight(t *testing.T) {
 	// the old behavior it would block until release, so a timeout here
 	// is the failure signal (never a deadlock).
 	run2done := make(chan error, 1)
-	go func() { run2done <- d.Run(ctx) }()
+	go func() { run2done <- d.runScoped(ctx, wh.ID) }()
 	select {
 	case err := <-run2done:
 		if err != nil {
