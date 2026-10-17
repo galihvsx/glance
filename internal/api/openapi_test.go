@@ -20,6 +20,7 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"glance/docs"
+	"glance/internal/store"
 )
 
 var openapiParamRe = regexp.MustCompile(`:([A-Za-z_]+)`)
@@ -861,4 +862,705 @@ func rawKeysOf(m map[string]json.RawMessage) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Response-shape pinning test (C54T2): for the swept issue-adjacent
+// schemas (User / Label / State / Comment / Attachment / ReactionGroup /
+// IssueVotes / SubtaskProgress / Page / PageRevision / ShareLink /
+// IssueLink) plus the carried issue-list envelope fix, assert the LIVE
+// response keys match the corrected docs/openapi.yaml. Pins the C54T2
+// drift fixes: User has no role field (is_admin/is_active/avatar_url/
+// last_login_at/updated_at instead, name nullable); Label/State carry
+// their scope + timestamp fields (Label color never null, State group
+// admits triage); Comment carries actor (ActorRef, not author/User),
+// issue_id and list-only replies; Attachment carries issue_id +
+// uploaded_by; GET reactions returns ReactionGroup[] (the old Reaction
+// {emoji,user_id,created_at} shape never existed); GET votes returns
+// {count, voted} (the old Vote[] shape never existed); SubtaskProgress
+// is present with real values on detail; Page/PageRevision content is
+// never null and carry project_id/page_id/author_id; ShareLink carries
+// id/scope/revoked_at; the list envelope is {results, next_cursor?,
+// links?} with no issues/total keys.
+
+func TestOpenAPIResponseShapesSweep(t *testing.T) {
+	pool := newTestPool(t)
+	st, err := store.NewFileAttachmentStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileAttachmentStore: %v", err)
+	}
+	e := testIssueServer(t, pool)
+	h := &IssueHandler{Pool: pool, Attachments: st, MaxUploadBytes: 25 << 20}
+	RegisterSatelliteRoutes(e, h)
+	RegisterPageRoutes(e, h)
+	RegisterStateRoutes(e, &StateHandler{Pool: pool})
+	RegisterIssueLinkRoutes(e, h)
+
+	email := uniqueEmail("openapi-sweep")
+	cookie := loginTestUser(t, e, pool, email, "test-agent", uniqueIP())
+	myID := authedUserID(t, e, cookie)
+	slug := uniqueSlug("openapi-sweep")
+	createWorkspaceHTTP(t, e, cookie, "Sweep Co", slug)
+	ident := uniqueProjectIdentifier("SW")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	projBase := "/api/v1/workspaces/" + slug + "/projects/" + ident
+	base := projBase + "/issues"
+
+	decode := func(rec *httptest.ResponseRecorder, v any) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+		}
+	}
+	topKeys := func(rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		decode(rec, &m)
+		return m
+	}
+	mustHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; !ok {
+				t.Fatalf("response missing key %q (keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	mustNotHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; ok {
+				t.Fatalf("response has forbidden key %q (body keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	exactKeys := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		mustHave(t, m, keys...)
+		if len(m) != len(keys) {
+			t.Fatalf("response keys = %v, want exactly %v", rawKeysOf(m), keys)
+		}
+	}
+	nonEmptyString := func(t *testing.T, m map[string]json.RawMessage, key string) string {
+		t.Helper()
+		var s string
+		if err := json.Unmarshal(m[key], &s); err != nil || s == "" {
+			t.Fatalf("key %q = %s, want a non-empty string", key, string(m[key]))
+		}
+		return s
+	}
+	isNull := func(t *testing.T, m map[string]json.RawMessage, key string) {
+		t.Helper()
+		if string(m[key]) != "null" {
+			t.Fatalf("key %q = %s, want null", key, string(m[key]))
+		}
+	}
+	// actorKeys pins the ActorRef shape {id, name?, email}: the id+email
+	// core, an optional name (omitempty drops a null name), and nothing
+	// else — proving the value is NOT a full User (no role/created_at).
+	actorKeys := func(t *testing.T, m map[string]json.RawMessage) {
+		t.Helper()
+		mustHave(t, m, "id", "email")
+		mustNotHave(t, m, "role", "created_at", "is_admin", "is_active")
+		if len(m) > 3 {
+			t.Fatalf("actor keys = %v, want at most {id, name, email}", rawKeysOf(m))
+		}
+	}
+	createIssue := func(body string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, base, cookie, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: status = %d (body: %s)", body, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		decode(rec, &created)
+		if created.ID == "" {
+			t.Fatalf("create %s returned no id", body)
+		}
+		return created.ID
+	}
+
+	// 1. User: GET /me → exactly the auth.User keys; NO role field.
+	// The OTP login sets no display name, so name is null (nullable).
+	rec := getAuthed(t, e, http.MethodGet, "/api/v1/me", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get /me: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	me := topKeys(rec)
+	exactKeys(t, me, "id", "email", "name", "avatar_url", "is_active",
+		"is_admin", "last_login_at", "created_at", "updated_at")
+	mustNotHave(t, me, "role")
+	if nonEmptyString(t, me, "id") != myID {
+		t.Fatalf("/me id = %s, want %s", string(me["id"]), myID)
+	}
+	if nonEmptyString(t, me, "email") != email {
+		t.Fatalf("/me email = %s, want %s", string(me["email"]), email)
+	}
+	isNull(t, me, "name")
+	var isActive, isAdmin bool
+	if err := json.Unmarshal(me["is_active"], &isActive); err != nil || !isActive {
+		t.Fatalf("/me is_active = %s, want true", string(me["is_active"]))
+	}
+	if err := json.Unmarshal(me["is_admin"], &isAdmin); err != nil || isAdmin {
+		t.Fatalf("/me is_admin = %s, want false", string(me["is_admin"]))
+	}
+
+	// 2. Label: create → exactly {id, workspace_id, name, color,
+	// created_at, updated_at} (parent_id omitted for roots, color the
+	// sent value, never null); child create carries parent_id.
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/labels", cookie, `{"name":"Bug","color":"#ef4444"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	label := topKeys(rec)
+	exactKeys(t, label, "id", "workspace_id", "name", "color", "created_at", "updated_at")
+	if nonEmptyString(t, label, "color") != "#ef4444" {
+		t.Fatalf("label color = %s, want #ef4444", string(label["color"]))
+	}
+	labelID := nonEmptyString(t, label, "id")
+	nonEmptyString(t, label, "workspace_id")
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/labels", cookie,
+		`{"name":"Bug child","parent_id":"`+labelID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create child label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	childLabel := topKeys(rec)
+	exactKeys(t, childLabel, "id", "workspace_id", "name", "color",
+		"parent_id", "created_at", "updated_at")
+	if nonEmptyString(t, childLabel, "parent_id") != labelID {
+		t.Fatalf("child label parent_id = %s, want %s", string(childLabel["parent_id"]), labelID)
+	}
+	// Default color: omitted on create → #6b7280, not null.
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/labels", cookie, `{"name":"Plain"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create plain label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if nonEmptyString(t, topKeys(rec), "color") != "#6b7280" {
+		t.Fatalf("default label color = %s, want #6b7280", string(topKeys(rec)["color"]))
+	}
+	rec = getAuthed(t, e, http.MethodGet, projBase+"/labels/"+labelID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get label: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	exactKeys(t, topKeys(rec), "id", "workspace_id", "name", "color", "created_at", "updated_at")
+
+	// 3. State: list items are exactly the service.State keys;
+	// groups are within the six-group vocabulary; creating a triage
+	// state works (the old doc omitted triage).
+	rec = getAuthed(t, e, http.MethodGet, projBase+"/states", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list states: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var stateList struct {
+		States []map[string]json.RawMessage `json:"states"`
+	}
+	decode(rec, &stateList)
+	if len(stateList.States) == 0 {
+		t.Fatal("states list is empty, want the seeded defaults")
+	}
+	validGroups := map[string]bool{"triage": true, "backlog": true, "unstarted": true,
+		"started": true, "completed": true, "cancelled": true}
+	seenGroups := map[string]bool{}
+	var completedStateID string
+	for _, s := range stateList.States {
+		exactKeys(t, s, "id", "project_id", "name", "group", "color", "sequence", "created_at", "updated_at")
+		g := nonEmptyString(t, s, "group")
+		if !validGroups[g] {
+			t.Fatalf("state group = %q, want one of the six groups", g)
+		}
+		seenGroups[g] = true
+		if g == "completed" && completedStateID == "" {
+			completedStateID = nonEmptyString(t, s, "id")
+		}
+	}
+	if !seenGroups["backlog"] || !seenGroups["completed"] {
+		t.Fatalf("state groups = %v, want backlog + completed among them", seenGroups)
+	}
+	if completedStateID == "" {
+		t.Fatal("no completed-group state in the seeded defaults")
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, projBase+"/states", cookie,
+		`{"name":"Triage","group":"triage","color":"#f59e0b"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create triage state: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	triage := topKeys(rec)
+	exactKeys(t, triage, "id", "project_id", "name", "group", "color", "sequence", "created_at", "updated_at")
+	if nonEmptyString(t, triage, "group") != "triage" {
+		t.Fatalf("triage state group = %s, want triage", string(triage["group"]))
+	}
+
+	// 4. Comment: create → bare Comment with actor (ActorRef), no
+	// author / replies keys; resolved_at + resolved_by present-but-
+	// null while open. List nests the reply under replies[]. Resolve
+	// fills resolved_at + resolved_by (ActorRef, not User).
+	alpha := createIssue(`{"name":"Alpha"}`)
+	commentBase := base + "/" + alpha + "/comments"
+	rec = postAuthedJSON(t, e, http.MethodPost, commentBase, cookie,
+		`{"content":{"type":"doc","content":[]}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create comment: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	comment := topKeys(rec)
+	exactKeys(t, comment, "id", "issue_id", "content", "actor",
+		"created_at", "updated_at", "resolved_at", "resolved_by")
+	mustNotHave(t, comment, "author", "replies")
+	if nonEmptyString(t, comment, "issue_id") != alpha {
+		t.Fatalf("comment issue_id = %s, want %s", string(comment["issue_id"]), alpha)
+	}
+	var actor map[string]json.RawMessage
+	decodeDetail := func(raw json.RawMessage, v any) {
+		t.Helper()
+		if err := json.Unmarshal(raw, v); err != nil {
+			t.Fatalf("decode %s: %v", string(raw), err)
+		}
+	}
+	decodeDetail(comment["actor"], &actor)
+	actorKeys(t, actor)
+	if nonEmptyString(t, actor, "id") != myID {
+		t.Fatalf("comment actor id = %s, want %s", string(actor["id"]), myID)
+	}
+	isNull(t, comment, "resolved_at")
+	isNull(t, comment, "resolved_by")
+	commentID := nonEmptyString(t, comment, "id")
+	rec = postAuthedJSON(t, e, http.MethodPost, commentBase, cookie,
+		`{"content":{"type":"doc"},"parent_id":"`+commentID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create reply: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	mustNotHave(t, topKeys(rec), "author", "replies")
+	rec = getAuthed(t, e, http.MethodGet, commentBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list comments: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var commentList struct {
+		Comments []map[string]json.RawMessage `json:"comments"`
+	}
+	decode(rec, &commentList)
+	if len(commentList.Comments) != 1 {
+		t.Fatalf("comments = %d roots, want 1", len(commentList.Comments))
+	}
+	root := commentList.Comments[0]
+	mustHave(t, root, "replies")
+	mustNotHave(t, root, "author")
+	var replies []map[string]json.RawMessage
+	decodeDetail(root["replies"], &replies)
+	if len(replies) != 1 {
+		t.Fatalf("replies = %d, want 1", len(replies))
+	}
+	mustNotHave(t, replies[0], "author")
+	var replyActor map[string]json.RawMessage
+	decodeDetail(replies[0]["actor"], &replyActor)
+	actorKeys(t, replyActor)
+	rec = postAuthedJSON(t, e, http.MethodPost, commentBase+"/"+commentID+"/resolve", cookie, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resolve comment: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	resolved := topKeys(rec)
+	nonEmptyString(t, resolved, "resolved_at")
+	var resolvedBy map[string]json.RawMessage
+	decodeDetail(resolved["resolved_by"], &resolvedBy)
+	actorKeys(t, resolvedBy)
+	if nonEmptyString(t, resolvedBy, "id") != myID {
+		t.Fatalf("resolved_by id = %s, want %s", string(resolvedBy["id"]), myID)
+	}
+
+	// 5. Attachment: multipart upload → exactly the service.Attachment
+	// keys (issue_id + uploaded_by present, stored_path never leaks);
+	// list carries the same shape.
+	attBase := commentBase[:len(commentBase)-len("/comments")] + "/attachments"
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xde, 0xad}
+	rec = postMultipartFile(t, e, attBase, cookie, "shot.png", "image/png", png)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	att := topKeys(rec)
+	exactKeys(t, att, "id", "issue_id", "filename", "content_type",
+		"size_bytes", "uploaded_by", "created_at")
+	mustNotHave(t, att, "stored_path")
+	if nonEmptyString(t, att, "issue_id") != alpha {
+		t.Fatalf("attachment issue_id = %s, want %s", string(att["issue_id"]), alpha)
+	}
+	if nonEmptyString(t, att, "filename") != "shot.png" {
+		t.Fatalf("attachment filename = %s, want shot.png", string(att["filename"]))
+	}
+	var uploader map[string]json.RawMessage
+	decodeDetail(att["uploaded_by"], &uploader)
+	actorKeys(t, uploader)
+	rec = getAuthed(t, e, http.MethodGet, attBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list attachments: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var attList struct {
+		Attachments []map[string]json.RawMessage `json:"attachments"`
+	}
+	decode(rec, &attList)
+	if len(attList.Attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(attList.Attachments))
+	}
+	exactKeys(t, attList.Attachments[0], "id", "issue_id", "filename",
+		"content_type", "size_bytes", "uploaded_by", "created_at")
+
+	// 6. Reactions: GET returns {reactions: [ReactionGroup]} —
+	// exactly {emoji, count, reacted}; the old Reaction shape
+	// {emoji, user_id, created_at} never appears.
+	reactBase := base + "/" + alpha + "/reactions"
+	rec = getAuthed(t, e, http.MethodGet, reactBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list reactions: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var reactList struct {
+		Reactions []map[string]json.RawMessage `json:"reactions"`
+	}
+	decode(rec, &reactList)
+	if len(reactList.Reactions) != 0 {
+		t.Fatalf("reactions = %d, want 0", len(reactList.Reactions))
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, reactBase, cookie, `{"emoji":"👍"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("add reaction: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, reactBase, cookie, `{"emoji":"👍"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("re-add reaction: status = %d, want 204 idempotent (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, reactBase, cookie)
+	decode(rec, &reactList)
+	if len(reactList.Reactions) != 1 {
+		t.Fatalf("reactions = %d, want 1", len(reactList.Reactions))
+	}
+	exactKeys(t, reactList.Reactions[0], "emoji", "count", "reacted")
+	if nonEmptyString(t, reactList.Reactions[0], "emoji") != "👍" {
+		t.Fatalf("reaction emoji = %s, want 👍", string(reactList.Reactions[0]["emoji"]))
+	}
+	var reactCount int
+	if err := json.Unmarshal(reactList.Reactions[0]["count"], &reactCount); err != nil || reactCount != 1 {
+		t.Fatalf("reaction count = %s, want 1", string(reactList.Reactions[0]["count"]))
+	}
+	var reacted bool
+	if err := json.Unmarshal(reactList.Reactions[0]["reacted"], &reacted); err != nil || !reacted {
+		t.Fatalf("reaction reacted = %s, want true", string(reactList.Reactions[0]["reacted"]))
+	}
+
+	// 7. Votes: GET returns exactly {count, voted} — never a Vote[]
+	// {user_id, created_at} shape. Toggle twice: count stays 1.
+	voteBase := base + "/" + alpha + "/votes"
+	getVotes := func() map[string]json.RawMessage {
+		t.Helper()
+		rec := getAuthed(t, e, http.MethodGet, voteBase, cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get votes: status = %d (body: %s)", rec.Code, rec.Body.String())
+		}
+		return topKeys(rec)
+	}
+	votes := getVotes()
+	exactKeys(t, votes, "count", "voted")
+	mustNotHave(t, votes, "votes")
+	var voteCount int
+	if err := json.Unmarshal(votes["count"], &voteCount); err != nil || voteCount != 0 {
+		t.Fatalf("votes count = %s, want 0", string(votes["count"]))
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, voteBase, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("vote: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, voteBase, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("re-vote: status = %d, want 204 idempotent (body: %s)", rec.Code, rec.Body.String())
+	}
+	votes = getVotes()
+	exactKeys(t, votes, "count", "voted")
+	if err := json.Unmarshal(votes["count"], &voteCount); err != nil || voteCount != 1 {
+		t.Fatalf("votes count = %s, want 1", string(votes["count"]))
+	}
+	var voted bool
+	if err := json.Unmarshal(votes["voted"], &voted); err != nil || !voted {
+		t.Fatalf("votes voted = %s, want true", string(votes["voted"]))
+	}
+	rec = postAuthedJSON(t, e, http.MethodDelete, voteBase, cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unvote: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	votes = getVotes()
+	if err := json.Unmarshal(votes["count"], &voteCount); err != nil || voteCount != 0 {
+		t.Fatalf("votes count after unvote = %s, want 0", string(votes["count"]))
+	}
+
+	// 8. SubtaskProgress: parent detail carries {total, done} with
+	// real values; moving the child to a completed state flips done.
+	parent := createIssue(`{"name":"Parent"}`)
+	child := createIssue(`{"name":"Child","parent_id":"` + parent + `"}`)
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+parent, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get parent: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	parentDetail := topKeys(rec)
+	mustHave(t, parentDetail, "subtask_progress")
+	var progress struct {
+		Total int `json:"total"`
+		Done  int `json:"done"`
+	}
+	decodeDetail(parentDetail["subtask_progress"], &progress)
+	if progress.Total != 1 || progress.Done != 0 {
+		t.Fatalf("subtask_progress = %+v, want {total 1, done 0}", progress)
+	}
+	var progressKeys map[string]json.RawMessage
+	decodeDetail(parentDetail["subtask_progress"], &progressKeys)
+	exactKeys(t, progressKeys, "total", "done")
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+child, cookie,
+		`{"state_id":"`+completedStateID+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move child to completed: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+parent, cookie)
+	decodeDetail(topKeys(rec)["subtask_progress"], &progress)
+	if progress.Total != 1 || progress.Done != 1 {
+		t.Fatalf("subtask_progress after completion = %+v, want {total 1, done 1}", progress)
+	}
+
+	// 9. Page + PageRevision: create → exactly the service.Page keys
+	// (project_id + author_id present, parent_id/reactions omitted);
+	// content "" when unset, never null. Detail embeds reactions[]
+	// only after a reaction; a title update leaves a revision with
+	// the pre-update title + author_id.
+	pageBase := projBase + "/pages"
+	rec = postAuthedJSON(t, e, http.MethodPost, pageBase, cookie, `{"title":"Guide","content":"hello"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create page: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	page := topKeys(rec)
+	exactKeys(t, page, "id", "project_id", "title", "content", "position",
+		"author_id", "created_at", "updated_at")
+	mustNotHave(t, page, "parent_id", "reactions", "created_by")
+	if nonEmptyString(t, page, "content") != "hello" {
+		t.Fatalf("page content = %s, want hello", string(page["content"]))
+	}
+	if nonEmptyString(t, page, "author_id") != myID {
+		t.Fatalf("page author_id = %s, want %s", string(page["author_id"]), myID)
+	}
+	pageID := nonEmptyString(t, page, "id")
+	rec = postAuthedJSON(t, e, http.MethodPost, pageBase, cookie, `{"title":"Empty"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create empty page: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	emptyPage := topKeys(rec)
+	if string(emptyPage["content"]) != `""` {
+		t.Fatalf("empty page content = %s, want empty string, never null", string(emptyPage["content"]))
+	}
+	rec = getAuthed(t, e, http.MethodGet, pageBase+"/"+pageID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get page: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	mustNotHave(t, topKeys(rec), "reactions")
+	rec = postAuthedJSON(t, e, http.MethodPost, pageBase+"/"+pageID+"/reactions?emoji=%F0%9F%91%8D", cookie, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("add page reaction: status = %d, want 204 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, pageBase+"/"+pageID, cookie)
+	pageDetail := topKeys(rec)
+	mustHave(t, pageDetail, "reactions")
+	var pageReactions []map[string]json.RawMessage
+	decodeDetail(pageDetail["reactions"], &pageReactions)
+	if len(pageReactions) != 1 {
+		t.Fatalf("page reactions = %d, want 1", len(pageReactions))
+	}
+	exactKeys(t, pageReactions[0], "emoji", "count", "reacted")
+	rec = postAuthedJSON(t, e, http.MethodPatch, pageBase+"/"+pageID, cookie, `{"title":"Guide v2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update page: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, pageBase+"/"+pageID+"/revisions", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list revisions: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var revList struct {
+		Revisions []map[string]json.RawMessage `json:"revisions"`
+	}
+	decode(rec, &revList)
+	if len(revList.Revisions) != 1 {
+		t.Fatalf("revisions = %d, want 1", len(revList.Revisions))
+	}
+	exactKeys(t, revList.Revisions[0], "id", "page_id", "title", "content", "author_id", "created_at")
+	mustNotHave(t, revList.Revisions[0], "created_by")
+	if nonEmptyString(t, revList.Revisions[0], "page_id") != pageID {
+		t.Fatalf("revision page_id = %s, want %s", string(revList.Revisions[0]["page_id"]), pageID)
+	}
+	if nonEmptyString(t, revList.Revisions[0], "title") != "Guide" {
+		t.Fatalf("revision title = %s, want the pre-update Guide", string(revList.Revisions[0]["title"]))
+	}
+	if nonEmptyString(t, revList.Revisions[0], "content") != "hello" {
+		t.Fatalf("revision content = %s, want hello", string(revList.Revisions[0]["content"]))
+	}
+	if nonEmptyString(t, revList.Revisions[0], "author_id") != myID {
+		t.Fatalf("revision author_id = %s, want %s", string(revList.Revisions[0]["author_id"]), myID)
+	}
+
+	// 10. Share: create → {token, url, share}; the share object is
+	// exactly {id, token, scope, created_at} (expires_at/revoked_at
+	// omitted while unset); scope issue. List returns the live
+	// {links: [...]} envelope — the doc's {shares} envelope is
+	// recorded out-of-scope drift for a future cycle, so the pin
+	// asserts the live key, not the stale doc key.
+	shareBase := base + "/" + alpha + "/share"
+	rec = postAuthedJSON(t, e, http.MethodPost, shareBase, cookie, `{}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create share: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	shareResp := topKeys(rec)
+	exactKeys(t, shareResp, "token", "url", "share")
+	shareToken := nonEmptyString(t, shareResp, "token")
+	if !strings.Contains(nonEmptyString(t, shareResp, "url"), "/s/"+shareToken) {
+		t.Fatalf("share url = %s, want it to contain /s/%s", string(shareResp["url"]), shareToken)
+	}
+	var share map[string]json.RawMessage
+	decodeDetail(shareResp["share"], &share)
+	exactKeys(t, share, "id", "token", "scope", "created_at")
+	mustNotHave(t, share, "expires_at", "revoked_at")
+	if nonEmptyString(t, share, "scope") != "issue" {
+		t.Fatalf("share scope = %s, want issue", string(share["scope"]))
+	}
+	if nonEmptyString(t, share, "token") != shareToken {
+		t.Fatalf("share.token = %s, want %s", string(share["token"]), shareToken)
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, shareBase, cookie, `{"expires_at":"2030-01-01T00:00:00Z"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create expiring share: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var expShare map[string]json.RawMessage
+	decodeDetail(topKeys(rec)["share"], &expShare)
+	mustHave(t, expShare, "expires_at")
+	nonEmptyString(t, expShare, "expires_at")
+	rec = getAuthed(t, e, http.MethodGet, shareBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list shares: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	shareList := topKeys(rec)
+	mustHave(t, shareList, "links")
+	mustNotHave(t, shareList, "shares")
+	var links []map[string]json.RawMessage
+	decodeDetail(shareList["links"], &links)
+	if len(links) != 2 {
+		t.Fatalf("share links = %d, want 2", len(links))
+	}
+
+	// 11. List envelope (carried C54T0 item): fresh project, two
+	// issues. Default list → exactly {results} (no issues/total/
+	// next_cursor/links). per_page=1 → next_cursor present; following
+	// it yields the other issue with no next_cursor. ?include_links
+	// attaches links[] (IssueLink WITHOUT direction); without the
+	// flag the key is absent. The single-issue links endpoint DOES
+	// carry direction=outgoing.
+	ident2 := uniqueProjectIdentifier("LE")
+	createProjectHTTP(t, e, cookie, slug, "Envelope", ident2)
+	projBase2 := "/api/v1/workspaces/" + slug + "/projects/" + ident2
+	base2 := projBase2 + "/issues"
+	mkIssue := func(name string) string {
+		t.Helper()
+		rec := postAuthedJSON(t, e, http.MethodPost, base2, cookie, fmt.Sprintf(`{"name":%q}`, name))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %q: status = %d (body: %s)", name, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		decode(rec, &created)
+		return created.ID
+	}
+	envA := mkIssue("Env A")
+	envB := mkIssue("Env B")
+	rec = getAuthed(t, e, http.MethodGet, base2, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list envelope: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	exactKeys(t, topKeys(rec), "results")
+	var envList struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	decode(rec, &envList)
+	if len(envList.Results) != 2 {
+		t.Fatalf("list results = %d, want 2", len(envList.Results))
+	}
+	rec = getAuthed(t, e, http.MethodGet, base2+"?per_page=1", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list per_page=1: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	page1 := topKeys(rec)
+	exactKeys(t, page1, "results", "next_cursor")
+	cursor := nonEmptyString(t, page1, "next_cursor")
+	var page1List struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	decode(rec, &page1List)
+	if len(page1List.Results) != 1 {
+		t.Fatalf("page 1 results = %d, want 1", len(page1List.Results))
+	}
+	rec = getAuthed(t, e, http.MethodGet, base2+"?per_page=1&cursor="+cursor, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list page 2: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	exactKeys(t, topKeys(rec), "results")
+	var page2List struct {
+		Results []struct {
+			ID string `json:"id"`
+		} `json:"results"`
+	}
+	decode(rec, &page2List)
+	if len(page2List.Results) != 1 {
+		t.Fatalf("page 2 results = %d, want 1", len(page2List.Results))
+	}
+	if page1List.Results[0].ID == page2List.Results[0].ID {
+		t.Fatalf("pages repeat id %s, want disjoint pages", page1List.Results[0].ID)
+	}
+	seen := map[string]bool{page1List.Results[0].ID: true, page2List.Results[0].ID: true}
+	if !seen[envA] || !seen[envB] {
+		t.Fatalf("pages cover %v, want both %s and %s", seen, envA, envB)
+	}
+	// Link A → B, then the list envelope's links[] vs the
+	// single-issue endpoint's direction-carrying links[].
+	rec = postAuthedJSON(t, e, http.MethodPost, base2+"/"+envA+"/links", cookie,
+		`{"target_issue_id":"`+envB+`","kind":"blocks"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create link: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base2+"?include_links=true", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list include_links: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	linked := topKeys(rec)
+	mustHave(t, linked, "results", "links")
+	var envLinks []map[string]json.RawMessage
+	decodeDetail(linked["links"], &envLinks)
+	if len(envLinks) != 1 {
+		t.Fatalf("list links = %d, want 1", len(envLinks))
+	}
+	exactKeys(t, envLinks[0], "id", "issue_id", "target_issue_id", "kind", "created_at")
+	mustNotHave(t, envLinks[0], "direction")
+	if nonEmptyString(t, envLinks[0], "issue_id") != envA ||
+		nonEmptyString(t, envLinks[0], "target_issue_id") != envB ||
+		nonEmptyString(t, envLinks[0], "kind") != "blocks" {
+		t.Fatalf("list link = %v, want A→B blocks", rawKeysOf(envLinks[0]))
+	}
+	rec = getAuthed(t, e, http.MethodGet, base2, cookie)
+	mustNotHave(t, topKeys(rec), "links")
+	rec = getAuthed(t, e, http.MethodGet, base2+"/"+envA+"/links", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("single-issue links: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var singleLinks struct {
+		Links []map[string]json.RawMessage `json:"links"`
+	}
+	decode(rec, &singleLinks)
+	if len(singleLinks.Links) != 1 {
+		t.Fatalf("single-issue links = %d, want 1", len(singleLinks.Links))
+	}
+	exactKeys(t, singleLinks.Links[0], "id", "issue_id", "target_issue_id",
+		"kind", "created_at", "direction")
+	if nonEmptyString(t, singleLinks.Links[0], "direction") != "outgoing" {
+		t.Fatalf("link direction = %s, want outgoing", string(singleLinks.Links[0]["direction"]))
+	}
 }
