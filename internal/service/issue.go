@@ -1530,6 +1530,22 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	announced := make([]*Issue, 0, len(norm))
 	stateChangedIDs := make([]string, 0, len(norm))
 	for _, id := range norm {
+		// C46T0: capture the before-image state under the row lock
+		// (same tx, same lock updateIssueTx takes below, so this
+		// is exactly the state the batch starts from). The
+		// cascade detector compares the final re-read against
+		// THIS, not against updateIssueTx's returned row: that
+		// row predates updateIssueTx's own automation cascade,
+		// so a net-zero round trip (direct move + a rule moving
+		// it back) would otherwise false-positive.
+		var preStateID string
+		if err := tx.QueryRow(ctx,
+			`SELECT state_id::text FROM issues
+			 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
+			 FOR UPDATE`,
+			id, projectID).Scan(&preStateID); err != nil {
+			return 0, nil, err
+		}
 		var patch IssuePatch
 		if stateID != nil {
 			patch.StateID = stateID
@@ -1543,7 +1559,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// notifications, webhook fan-out. A patch with no changed fields
 		// returns the current row without writing (labels/assignees-only
 		// sets are fine).
-		updated, itemNotified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		_, itemNotified, _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -1562,8 +1578,31 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			}
 			notified = append(notified, added...)
 		}
-		announced = append(announced, updated)
-		if stateChanged {
+		// C46T0: the replace fns above evaluate labels_changed /
+		// assigned / unassigned automations in this same tx, and a
+		// rule may fire set_state AFTER updateIssueTx ran — a
+		// cascade move updateIssueTx never saw. Re-read the final
+		// in-tx row: it is the announced snapshot (post-replace
+		// labels/assignees/state — exactly what commits) and its
+		// state_id, compared against the before-image above, is
+		// the fan-out detector (C45T1 before/after pattern: only
+		// set_state touches state_id, so before≠after means
+		// exactly one real net move, and a net-zero round trip
+		// reports false). For the non-cascade path the replaces
+		// never touch state_id, so final==end-of-updateIssueTx
+		// state and membership is identical to before. The
+		// announce loop still runs after tx.Commit, so a failed
+		// commit announces nothing.
+		final, err := scanIssue(tx.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			id, projectID))
+		if err != nil {
+			return 0, nil, err
+		}
+		final.DisplayID = ident + "-" + strconv.Itoa(final.SequenceID)
+		announced = append(announced, final)
+		if final.StateID != preStateID {
 			stateChangedIDs = append(stateChangedIDs, id)
 		}
 	}
