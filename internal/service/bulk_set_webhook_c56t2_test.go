@@ -13,7 +13,10 @@ package service
 // No-op BulkSets (same set, no patch change) enqueue nothing.
 
 import (
+	"strconv"
 	"testing"
+
+	"glance/internal/mail"
 )
 
 func TestBulkSetWebhookLabelsOnly(t *testing.T) {
@@ -237,4 +240,80 @@ func TestBulkSetWebhookLabelsOnlyTwoIssues(t *testing.T) {
 	if !seen[fx.iss.ID] || !seen[second.ID] {
 		t.Fatalf("row issue ids = %v, want both %s and %s", seen, fx.iss.ID, second.ID)
 	}
+}
+
+// TestBulkSetWebhookExtendSkipsTaxonomyDecoy pins the C56T2 fix-loop
+// guard: a concurrent AssignLabel on THIS issue commits an outbox row
+// above BulkSet's watermark with changed_fields ["labels"], and the
+// label/assignee writers take NO row lock, so the extend SELECT must
+// not match it. Deterministic pin — no real concurrency: the decoy is
+// inserted in-tx, then bulkSetWebhookTx is called directly with
+// patchFields ["priority"] (no patch row exists in this tx, so the
+// union must land in a fresh row and the decoy must stay untouched).
+func TestBulkSetWebhookExtendSkipsTaxonomyDecoy(t *testing.T) {
+	fx := setupLinkedIssue(t)
+	whID := c56t1Webhook(t, fx)
+
+	var wsID string
+	if err := fx.pool.QueryRow(fx.ctx,
+		`SELECT id::text FROM workspaces WHERE slug = $1`, fx.slug).Scan(&wsID); err != nil {
+		t.Fatalf("workspace id: %v", err)
+	}
+
+	// Watermark chosen BEFORE the decoy, as BulkSetIssues takes it
+	// before updateIssueTx runs.
+	watermark := outboxWatermark(t, fx.pool)
+
+	tx, err := fx.pool.Begin(fx.ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+
+	// Decoy: exactly what a concurrent AssignLabel on THIS issue
+	// commits — same issue, same domain event, id above the
+	// watermark, changed_fields ["labels"]. Without the taxonomy
+	// guard the extend would rewrite this row's changed_fields to
+	// the BulkSet union, corrupting the AssignLabel webhook payload.
+	if err := mail.Enqueue(fx.ctx, tx, WebhookDeliverEvent, webhookDelivery{
+		WebhookID: whID,
+		URL:       "http://example.invalid/decoy",
+		Secret:    "decoy",
+		Event:     EventIssueUpdated,
+		Data: map[string]any{
+			"id":             fx.iss.ID,
+			"display_id":     fx.ident + "-" + strconv.Itoa(fx.iss.SequenceID),
+			"changed_fields": []string{"labels"},
+			"actor_id":       fx.actor,
+		},
+	}); err != nil {
+		tx.Rollback(fx.ctx)
+		t.Fatalf("enqueue decoy: %v", err)
+	}
+
+	// BulkSet item whose patch changed priority. before/final are
+	// identical (no cascade row diff), so the union is exactly
+	// ["priority"] and the patch row is the ONLY row the extend may
+	// touch. No patch row exists in this tx — the decoy must be
+	// skipped, so the union lands in a fresh row.
+	before := *fx.iss
+	final := *fx.iss
+	if err := bulkSetWebhookTx(fx.ctx, tx, wsID, fx.iss.ID, fx.actor,
+		watermark, []string{"priority"}, nil, &before, &final); err != nil {
+		tx.Rollback(fx.ctx)
+		t.Fatalf("bulkSetWebhookTx: %v", err)
+	}
+	if err := tx.Commit(fx.ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	rows := webhookOutboxRows(t, fx.pool, watermark, whID, EventIssueUpdated)
+	if len(rows) != 2 {
+		t.Fatalf("issue.updated rows = %d, want exactly 2 (decoy + fresh union row)", len(rows))
+	}
+	// Decoy first (enqueued first), untouched.
+	c56t1AssertRowShape(t, fx, rows[0])
+	c56t1AssertChangedFields(t, rows[0].Data.ChangedFields, "labels")
+	// Fresh row carries the full union.
+	c56t1AssertRowShape(t, fx, rows[1])
+	c56t1AssertChangedFields(t, rows[1].Data.ChangedFields, "priority")
 }

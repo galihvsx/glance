@@ -2210,15 +2210,31 @@ func bulkSetWebhookTx(ctx context.Context, tx pgx.Tx, wsID, issueID, actorID str
 		return enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, payload)
 	}
 	// Find exactly the rows this item's updateIssueTx enqueued: id >
-	// the per-item watermark, this issue, this domain event. (A
-	// concurrent mutation of another issue in the same workspace
-	// enqueues with a different data.id; a concurrent mutation of
-	// THIS issue is blocked by the row lock held since before-image.)
+	// the per-item watermark, this issue, this domain event, and NO
+	// taxonomy field (labels/assignees) in changed_fields. The
+	// taxonomy exclusion is load-bearing: PATCH/restore/BulkSet
+	// writers lock the issue row, so a concurrent mutation of THIS
+	// issue by one of them is blocked — but the label/assignee
+	// writers (AssignLabel/UnassignLabel/AssignAssignee/
+	// UnassignAssignee) take NO FOR UPDATE lock (plain SELECT
+	// before-image + INSERT into the membership table), so a
+	// concurrent AssignLabel on THIS issue can commit an outbox row
+	// above the watermark while this tx runs. That row is safe from
+	// the extend because updateIssueTx's row for a BulkSet item can
+	// NEVER carry labels/assignees (it never touches them; BulkSet's
+	// patch is priority/state only), while every label/assignee-path
+	// row ALWAYS carries its direct taxonomy field (C56T1 prepends
+	// it). So the guard makes the extend match only rows
+	// updateIssueTx could have written for this item. A skipped
+	// decoy row falls through to the len(rowIDs)==0 fresh-enqueue
+	// fallback below, and the union lands in a fresh row.
 	rows, err := tx.Query(ctx,
 		`SELECT id FROM outbox
 		  WHERE id > $1 AND event = $2
 		    AND payload->>'event' = $3
 		    AND payload->'data'->>'id' = $4
+		    AND NOT (payload->'data'->'changed_fields' ? 'labels'
+		      OR payload->'data'->'changed_fields' ? 'assignees')
 		  ORDER BY id`,
 		outboxWatermark, WebhookDeliverEvent, EventIssueUpdated, issueID)
 	if err != nil {
