@@ -755,6 +755,16 @@
         "responses": { "200": { "description": "Bulk delete result", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "integer" } } } } } } } 
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-restore": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Bulk-restore many deleted issues from trash",
+        "description": "Restores many soft-deleted issues with per-item savepoint semantics: each restored item gets the full restore trail (_restored activity row, version snapshot, issue.updated webhook, WS issue.updated + objective fan-out). A live id in the batch is a per-item failure (error \"issue not found\"), not a whole-batch failure; unknown or malformed ids fail the same way. Duplicate ids restore once; the repeat reports \"issue not found\". Empty ids → 400; more than 100 ids → 400. Children detached by the delete stay detached. Member (15)+. Honors Idempotency-Key.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Per-item results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "ok": { "type": "boolean" }, "error": { "type": "string" } } } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/rebalance": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

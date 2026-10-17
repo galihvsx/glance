@@ -45,6 +45,10 @@ func RegisterIssueRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/similar", h.similarIssues)
 	g.POST("/bulk-update", h.bulkUpdateIssues)
 	g.POST("/bulk-delete", h.bulkDeleteIssues)
+	// C52T1: bulk restore from trash. Static segment wins over
+	// POST /:uuid by Echo's specificity rules (same pattern as
+	// /bulk-delete above).
+	g.POST("/bulk-restore", h.bulkRestoreIssues)
 	// C5T8: atomic bulk set. Static segment wins over PATCH /:uuid by
 	// Echo's specificity rules (kept adjacent for readability).
 	g.PATCH("/bulk", h.bulkSetIssues)
@@ -830,6 +834,26 @@ func (h *IssueHandler) bulkDeleteIssues(c *echo.Context) error {
 	}
 	return withIdempotency(c, h.Pool, "POST /issues/bulk-delete", issueError, func() (int, any, error) {
 		results, err := service.BulkDeleteIssues(c.Request().Context(), h.Pool,
+			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IDs)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, map[string]any{"results": results}, nil
+	})
+}
+
+// bulkRestoreIssues implements POST /api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-restore:
+// restores many soft-deleted issues with the same per-item savepoint
+// semantics as bulk-delete. 200 with {results:[{id, ok, error?}]}.
+// A live id in the batch is a per-item failure, not a whole-batch
+// failure. Member (15)+. Honors Idempotency-Key.
+func (h *IssueHandler) bulkRestoreIssues(c *echo.Context) error {
+	var body bulkDeleteBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	return withIdempotency(c, h.Pool, "POST /issues/bulk-restore", issueError, func() (int, any, error) {
+		results, err := service.BulkRestoreIssues(c.Request().Context(), h.Pool,
 			c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, body.IDs)
 		if err != nil {
 			return 0, nil, err

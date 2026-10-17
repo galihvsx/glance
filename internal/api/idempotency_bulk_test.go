@@ -435,3 +435,90 @@ func TestIdempotentBulkUpdate(t *testing.T) {
 		t.Fatalf("activity rows grew on replay: %d → %d (duplicate effect)", before, after)
 	}
 }
+
+// TestBulkRestorePartial (C52T1): deleted ids restore via HTTP, a live
+// id is a per-item failure, unknown ids fail per-item; restored issues
+// read as 200 again.
+func TestBulkRestorePartial(t *testing.T) {
+	_, e, cookie, base := setupBulkProject(t, "bulk-rest")
+
+	id1 := createIssueHTTP(t, e, cookie, base, "back-one")
+	id2 := createIssueHTTP(t, e, cookie, base, "back-two")
+	live := createIssueHTTP(t, e, cookie, base, "stays-live")
+	for _, id := range []string{id1, id2} {
+		if rec := postAuthedJSON(t, e, http.MethodDelete, base+"/"+id, cookie, ``); rec.Code != http.StatusNoContent {
+			t.Fatalf("delete %s: status = %d (body: %s)", id, rec.Code, rec.Body.String())
+		}
+	}
+
+	body := fmt.Sprintf(`{"ids":[%q,%q,"00000000-0000-0000-0000-000000000000",%q]}`, id1, live, id2)
+	rec := postAuthedJSON(t, e, http.MethodPost, base+"/bulk-restore", cookie, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk-restore: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	results := bulkResults(t, rec)
+	if len(results) != 4 || !results[0].OK || results[1].OK || results[1].Error == nil || results[2].OK || results[2].Error == nil || !results[3].OK {
+		t.Fatalf("results = %+v, want [ok, err, err, ok]", results)
+	}
+
+	// Restored issues read as 200 again; the live one is untouched.
+	for _, id := range []string{id1, id2, live} {
+		if rec := getAuthed(t, e, http.MethodGet, base+"/"+id, cookie); rec.Code != http.StatusOK {
+			t.Fatalf("get %s after bulk-restore: status = %d, want 200", id, rec.Code)
+		}
+	}
+}
+
+// TestBulkRestoreValidation (C52T1): empty ids and oversized batches
+// → 400 with the error envelope, not partial results.
+func TestBulkRestoreValidation(t *testing.T) {
+	_, e, cookie, base := setupBulkProject(t, "bulk-rest-val")
+
+	rec := postAuthedJSON(t, e, http.MethodPost, base+"/bulk-restore", cookie, `{"ids":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bulk-restore empty ids: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	ids := make([]string, 101)
+	for i := range ids {
+		ids[i] = `"00000000-0000-0000-0000-000000000000"`
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/bulk-restore", cookie,
+		`{"ids":[`+strings.Join(ids, ",")+`]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bulk-restore oversized batch: status = %d, want 400", rec.Code)
+	}
+}
+
+// TestIdempotentBulkRestore (C52T1): same key twice on bulk-restore →
+// the second response is byte-identical and no new activity rows are
+// written (no duplicate effect).
+func TestIdempotentBulkRestore(t *testing.T) {
+	pool, e, cookie, base := setupBulkProject(t, "idem-bulk-rest")
+
+	id1 := createIssueHTTP(t, e, cookie, base, "r1")
+	id2 := createIssueHTTP(t, e, cookie, base, "r2")
+	for _, id := range []string{id1, id2} {
+		if rec := postAuthedJSON(t, e, http.MethodDelete, base+"/"+id, cookie, ``); rec.Code != http.StatusNoContent {
+			t.Fatalf("delete %s: status = %d", id, rec.Code)
+		}
+	}
+	before := countActivities(t, pool, id1) + countActivities(t, pool, id2)
+
+	h := map[string]string{IdempotencyKeyHeader: "bulk-restore-key-1"}
+	body := fmt.Sprintf(`{"ids":[%q,%q]}`, id1, id2)
+	rec1 := postAuthedJSONHeaders(t, e, http.MethodPost, base+"/bulk-restore", cookie, body, h)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first: status = %d (body: %s)", rec1.Code, rec1.Body.String())
+	}
+	rec2 := postAuthedJSONHeaders(t, e, http.MethodPost, base+"/bulk-restore", cookie, body, h)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("replay: status = %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+	if !bytes.Equal(rec1.Body.Bytes(), rec2.Body.Bytes()) {
+		t.Fatalf("replay body differs:\nfirst:  %s\nsecond: %s", rec1.Body.Bytes(), rec2.Body.Bytes())
+	}
+	if after := countActivities(t, pool, id1) + countActivities(t, pool, id2); after != before+2 {
+		t.Fatalf("activity rows = %d, want %d (one _restored row per issue, none on replay)", after, before+2)
+	}
+}
