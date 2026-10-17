@@ -487,6 +487,36 @@ func getComment(ctx context.Context, q queryRower, issueID, commentID string) (*
 	return c, nil
 }
 
+// issueRowContentEqual reports whether two scanned issue rows carry the
+// same CONTENT. UpdatedAt is a timestamp, not content (every automation
+// UPDATE bumps it); DisplayID is derived and set by callers
+// inconsistently; SubtaskProgress is nil from scanIssue but populated
+// by the detail/list queries — all three are zeroed on copies before
+// the compare, so a firing that only re-stamps the row (or a scan-path
+// difference) never counts as a change.
+func issueRowContentEqual(a, b *Issue) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ac := *a
+	bc := *b
+	ac.UpdatedAt = time.Time{}
+	bc.UpdatedAt = time.Time{}
+	ac.DisplayID = ""
+	bc.DisplayID = ""
+	ac.SubtaskProgress = nil
+	bc.SubtaskProgress = nil
+	aj, err := json.Marshal(&ac)
+	if err != nil {
+		return false
+	}
+	bj, err := json.Marshal(&bc)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(aj, bj)
+}
+
 // CreateComment posts a comment; parentID nests it as a reply. The parent
 // must belong to the same issue and not be deleted. Member (15)+.
 func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string, content json.RawMessage, parentID *string) (*Comment, error) {
@@ -619,18 +649,50 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	// set_state actually moved the issue" — a no-op set_state or a
 	// failed firing (e.g. blocker guard) leaves state_id equal and
 	// announces nothing.
-	var beforeStateID string
+	//
+	// C50T2: capture the full-row before-image (not just state_id) so
+	// a firing that moves ANY row field (set_state, set_priority,
+	// etc.) can be snapshotted below. The C45T1 detector still
+	// compares STATE only, deriving beforeStateID from this image.
+	var before *Issue
 	haveBefore := false
 	fired := !automationActive(ctx)
 	if fired {
-		if err := tx.QueryRow(ctx,
-			`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&beforeStateID); err == nil {
+		if iss, err := scanIssue(tx.QueryRow(ctx,
+			`SELECT `+issueColumns+` FROM issues
+			 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
+			issueID, projectID)); err == nil {
+			before = iss
 			haveBefore = true
 		}
 	}
 	if fired {
 		notified = append(notified,
 			runAutomationCommentAddedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
+		// C50T2: snapshot the post-cascade row. FOR UPDATE re-read
+		// the row in-tx after the firing; if its content differs
+		// from the before-image, append one version carrying the
+		// post-cascade row, in-tx, before commit — so a rolled-back
+		// comment rolls the snapshot back with it. A comment-only
+		// write, a no-op firing, or a firing that touches no
+		// issue-row field leaves the row identical and snapshots
+		// nothing.
+		if haveBefore {
+			after, err := scanIssue(tx.QueryRow(ctx,
+				`SELECT `+issueColumns+` FROM issues
+				 WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL
+				 FOR UPDATE`,
+				issueID, projectID))
+			if err != nil {
+				return nil, err
+			}
+			if !issueRowContentEqual(before, after) {
+				after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
+				if err := snapshotVersionTx(ctx, tx, issueID, actorID, after); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -651,7 +713,7 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		if iss, err := scanIssue(pool.QueryRow(ctx,
 			`SELECT `+issueColumns+` FROM issues
 			  WHERE id = $1::uuid AND project_id = $2::uuid AND deleted_at IS NULL`,
-			issueID, projectID)); err == nil && iss.StateID != beforeStateID {
+			issueID, projectID)); err == nil && iss.StateID != before.StateID {
 			announceIssueUpdated(wsSlug, ident, issueID, iss)
 			announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
 		}
