@@ -667,7 +667,8 @@
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
           { "name": "state", "in": "query", "schema": { "type": "string", "description": "State group or state id" } },
           { "name": "priority", "in": "query", "schema": { "type": "integer" } },
-          { "name": "search", "in": "query", "schema": { "type": "string" } }
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "deleted", "in": "query", "schema": { "type": "string", "enum": ["1", "true"], "description": "Deleted-only (trash): returns only soft-deleted issues, most recently deleted first. Deleted rows are excluded from every other list mode; this flag is the only way to see them. Other filters/order are ignored in trash mode." } }
         ],
         "responses": { "200": { "description": "Issue list", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "total": { "type": "integer" } } } } } } }
       },
@@ -787,6 +788,15 @@
         "summary": "Delete an issue",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/restore": {
+      "post": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Restore a deleted issue from trash",
+        "description": "Un-deletes a soft-deleted issue (deleted_at back to NULL) and returns the restored issue. Writes a _restored activity row ({\"restored_at\": ...}), a version snapshot of the restored row, and an issue.updated webhook (changed_fields includes deleted_at). If the issue's parent was deleted or is gone, parent_id is cleared in the same transaction with a parent_id activity row; a live parent is kept. Children detached by the delete stay detached. A live issue restores as 404 (\"not in trash\"), exactly as a second DELETE reads as not-found; unknown ids are 404; guests get 403. Archived_at is left untouched: a deleted+archived issue restores into the archived view.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
+        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/clone": {
