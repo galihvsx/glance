@@ -1799,6 +1799,414 @@ func TestOpenAPIDocShapesShareSubscriber(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocShapesAdminAuthor(t *testing.T) {
+	var spec struct {
+		Paths      map[string]map[string]json.RawMessage `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	decodeObj := func(raw json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("decode %s: %v", string(raw), err)
+		}
+		return m
+	}
+	// opOf returns one operation object, failing when path/method is missing.
+	opOf := func(path, method string) map[string]json.RawMessage {
+		t.Helper()
+		ops, ok := spec.Paths[path]
+		if !ok {
+			t.Fatalf("spec has no path %s", path)
+		}
+		raw, ok := ops[method]
+		if !ok {
+			t.Fatalf("spec path %s has no %s operation", path, method)
+		}
+		return decodeObj(raw)
+	}
+	// responsesOf returns the responses map of one operation.
+	responsesOf := func(op map[string]json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		raw, ok := op["responses"]
+		if !ok {
+			t.Fatalf("operation has no responses: %s", string(mustJSON(t, op)))
+		}
+		return decodeObj(raw)
+	}
+	// respSchemaRef returns the $ref of a response's JSON schema
+	// ("" when the response has no JSON schema).
+	respSchemaRef := func(op map[string]json.RawMessage, status string) string {
+		t.Helper()
+		respRaw, ok := responsesOf(op)[status]
+		if !ok {
+			t.Fatalf("operation responses lack %q: %v", status, docKeysOf(responsesOf(op)))
+		}
+		resp := decodeObj(respRaw)
+		contentRaw, ok := resp["content"]
+		if !ok {
+			return ""
+		}
+		media := decodeObj(decodeObj(contentRaw)["application/json"])
+		var schema struct {
+			Ref string `json:"$ref"`
+		}
+		if err := json.Unmarshal(media["schema"], &schema); err != nil {
+			t.Fatalf("decode response %s schema: %v", status, err)
+		}
+		return schema.Ref
+	}
+	// respSchema returns the full schema object of a response.
+	respSchema := func(op map[string]json.RawMessage, status string) map[string]json.RawMessage {
+		t.Helper()
+		resp := decodeObj(responsesOf(op)[status])
+		content := decodeObj(resp["content"])
+		media := decodeObj(content["application/json"])
+		return decodeObj(media["schema"])
+	}
+	// wantResponse asserts a response status is documented.
+	wantResponse := func(op map[string]json.RawMessage, status, why string) {
+		t.Helper()
+		if _, ok := responsesOf(op)[status]; !ok {
+			t.Fatalf("operation responses lack %q (%s): %v", status, why, docKeysOf(responsesOf(op)))
+		}
+	}
+	// wantNoResponse asserts a response status is NOT documented.
+	wantNoResponse := func(op map[string]json.RawMessage, status, why string) {
+		t.Helper()
+		if _, ok := responsesOf(op)[status]; ok {
+			t.Fatalf("operation documents unexpected %q (%s)", status, why)
+		}
+	}
+	// propOf returns properties[name] of an object schema.
+	propOf := func(schema map[string]json.RawMessage, name string) map[string]json.RawMessage {
+		t.Helper()
+		props, ok := schema["properties"]
+		if !ok {
+			t.Fatalf("schema has no properties: %s", string(mustJSON(t, schema)))
+		}
+		prop := decodeObj(props)[name]
+		if prop == nil {
+			t.Fatalf("schema properties lack %q", name)
+		}
+		return decodeObj(prop)
+	}
+	// schemaOf returns one top-level component schema.
+	schemaOf := func(name string) map[string]json.RawMessage {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		return decodeObj(raw)
+	}
+
+	// 1. GET /api/v1/admin/users documents the page envelope
+	// {items: AdminUser[], total, page, per_page} — NOT the stale
+	// {users: User[]} the doc used to claim.
+	listOp := opOf("/api/v1/admin/users", "get")
+	listSchema := respSchema(listOp, "200")
+	if keys := docKeysOf(decodeObj(listSchema["properties"])); len(keys) != 4 {
+		t.Fatalf("GET /api/v1/admin/users doc envelope keys = %v, want exactly items/total/page/per_page", keys)
+	} else {
+		want := map[string]bool{"items": true, "total": true, "page": true, "per_page": true}
+		for _, k := range keys {
+			if !want[k] {
+				t.Fatalf("GET /api/v1/admin/users doc envelope has unexpected key %q", k)
+			}
+		}
+	}
+	itemsProp := propOf(listSchema, "items")
+	var items struct {
+		Type  string `json:"type"`
+		Items struct {
+			Ref string `json:"$ref"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(mustJSON(t, itemsProp), &items); err != nil {
+		t.Fatalf("decode items prop: %v", err)
+	}
+	if items.Type != "array" || items.Items.Ref != "#/components/schemas/AdminUser" {
+		t.Fatalf("GET /api/v1/admin/users doc items = {%q, %q}, want {array, AdminUser}", items.Type, items.Items.Ref)
+	}
+	for _, name := range []string{"total", "page", "per_page"} {
+		var prop struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(mustJSON(t, propOf(listSchema, name)), &prop); err != nil {
+			t.Fatalf("decode %s prop: %v", name, err)
+		}
+		if prop.Type != "integer" {
+			t.Fatalf("GET /api/v1/admin/users doc %s type = %q, want integer", name, prop.Type)
+		}
+	}
+	// Pagination params match pageParams (admin_handler.go):
+	// page defaults to 1, per_page to 25; page < 1 or per_page
+	// outside 1-100 is 400.
+	var params []struct {
+		Name   string `json:"name"`
+		In     string `json:"in"`
+		Schema struct {
+			Type    string   `json:"type"`
+			Default float64  `json:"default"`
+			Minimum *float64 `json:"minimum"`
+			Maximum *float64 `json:"maximum"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal(listOp["parameters"], &params); err != nil {
+		t.Fatalf("decode GET /api/v1/admin/users parameters: %v", err)
+	}
+	byName := map[string]int{}
+	for i, p := range params {
+		byName[p.Name] = i
+	}
+	pageIdx, ok := byName["page"]
+	if !ok {
+		t.Fatalf("GET /api/v1/admin/users doc lacks page param: %v", params)
+	}
+	if params[pageIdx].Schema.Type != "integer" || params[pageIdx].Schema.Default != 1 ||
+		params[pageIdx].Schema.Minimum == nil || *params[pageIdx].Schema.Minimum != 1 {
+		t.Fatalf("GET /api/v1/admin/users doc page param = %+v, want integer default 1 minimum 1", params[pageIdx].Schema)
+	}
+	perPageIdx, ok := byName["per_page"]
+	if !ok {
+		t.Fatalf("GET /api/v1/admin/users doc lacks per_page param")
+	}
+	if params[perPageIdx].Schema.Type != "integer" || params[perPageIdx].Schema.Default != 25 ||
+		params[perPageIdx].Schema.Minimum == nil || *params[perPageIdx].Schema.Minimum != 1 ||
+		params[perPageIdx].Schema.Maximum == nil || *params[perPageIdx].Schema.Maximum != 100 {
+		t.Fatalf("GET /api/v1/admin/users doc per_page param = %+v, want integer default 25 minimum 1 maximum 100", params[perPageIdx].Schema)
+	}
+	wantResponse(listOp, "400", "pageParams rejects page < 1 / per_page outside 1-100")
+
+	// 2. AdminUser schema matches service.AdminUser field-for-field,
+	// derived from the Go struct via reflection (not hard-coded).
+	// Every Go field has NO omitempty, so every key is always present
+	// and every field is required; name is *string, so it is
+	// nullable:true (key present, null when unset).
+	adminUser := schemaOf("AdminUser")
+	var adminDoc struct {
+		Type     string                     `json:"type"`
+		Required []string                   `json:"required"`
+		Props    map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(mustJSON(t, adminUser), &adminDoc); err != nil {
+		t.Fatalf("decode AdminUser schema: %v", err)
+	}
+	if adminDoc.Type != "object" {
+		t.Fatalf("AdminUser schema type = %q, want object", adminDoc.Type)
+	}
+	structType := reflect.TypeOf(service.AdminUser{})
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		tag := f.Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "" || name == "-" {
+			t.Fatalf("service.AdminUser field %s has no json name", f.Name)
+		}
+		if strings.Contains(tag, ",omitempty") {
+			t.Fatalf("service.AdminUser.%s tag has omitempty — doc always-present claim would be wrong", f.Name)
+		}
+		wantProps[name] = true
+		switch name {
+		case "id", "email":
+			if f.Type.Kind() != reflect.String {
+				t.Fatalf("service.AdminUser.%s type = %v, want string", f.Name, f.Type)
+			}
+		case "name":
+			if f.Type.Kind() != reflect.Pointer || f.Type.Elem().Kind() != reflect.String {
+				t.Fatalf("service.AdminUser.Name type = %v, want *string", f.Type)
+			}
+		case "is_admin", "is_active":
+			if f.Type.Kind() != reflect.Bool {
+				t.Fatalf("service.AdminUser.%s type = %v, want bool", f.Name, f.Type)
+			}
+		case "workspace_count":
+			if f.Type.Kind() != reflect.Int64 {
+				t.Fatalf("service.AdminUser.WorkspaceCount type = %v, want int64", f.Type)
+			}
+		case "created_at":
+			if f.Type.String() != "time.Time" {
+				t.Fatalf("service.AdminUser.CreatedAt type = %v, want time.Time", f.Type)
+			}
+		default:
+			t.Fatalf("service.AdminUser has unexpected field %s (doc must be re-checked)", f.Name)
+		}
+	}
+	if len(adminDoc.Props) != len(wantProps) {
+		t.Fatalf("AdminUser doc properties = %v, want exactly %v (service.AdminUser)",
+			docKeysOf(adminDoc.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := adminDoc.Props[name]; !ok {
+			t.Fatalf("AdminUser doc missing property %q (struct field)", name)
+		}
+	}
+	required := map[string]bool{}
+	for _, r := range adminDoc.Required {
+		required[r] = true
+	}
+	if len(required) != len(wantProps) {
+		t.Fatalf("AdminUser required = %v, want every field (no omitempty anywhere)", adminDoc.Required)
+	}
+	for name := range wantProps {
+		if !required[name] {
+			t.Fatalf("AdminUser required lacks %q (field has no omitempty: always present)", name)
+		}
+	}
+	var prop struct {
+		Type     string `json:"type"`
+		Format   string `json:"format"`
+		Nullable bool   `json:"nullable"`
+	}
+	decodeAdminProp := func(name string) {
+		t.Helper()
+		prop = struct {
+			Type     string `json:"type"`
+			Format   string `json:"format"`
+			Nullable bool   `json:"nullable"`
+		}{}
+		if err := json.Unmarshal(adminDoc.Props[name], &prop); err != nil {
+			t.Fatalf("decode AdminUser.%s: %v", name, err)
+		}
+	}
+	decodeAdminProp("id")
+	if prop.Type != "string" || prop.Format != "uuid" || prop.Nullable {
+		t.Fatalf("AdminUser.id = {%s, %s, nullable=%v}, want {string, uuid, false}", prop.Type, prop.Format, prop.Nullable)
+	}
+	decodeAdminProp("email")
+	if prop.Type != "string" || prop.Format != "email" || prop.Nullable {
+		t.Fatalf("AdminUser.email = {%s, %s, nullable=%v}, want {string, email, false}", prop.Type, prop.Format, prop.Nullable)
+	}
+	decodeAdminProp("name")
+	if prop.Type != "string" || !prop.Nullable {
+		t.Fatalf("AdminUser.name = {%s, nullable=%v}, want {string, nullable=true} (*string, no omitempty: always present, null when unset)", prop.Type, prop.Nullable)
+	}
+	for _, name := range []string{"is_admin", "is_active"} {
+		decodeAdminProp(name)
+		if prop.Type != "boolean" || prop.Nullable {
+			t.Fatalf("AdminUser.%s = {%s, nullable=%v}, want {boolean, false}", name, prop.Type, prop.Nullable)
+		}
+	}
+	decodeAdminProp("workspace_count")
+	if prop.Type != "integer" || prop.Nullable {
+		t.Fatalf("AdminUser.workspace_count = {%s, nullable=%v}, want {integer, false}", prop.Type, prop.Nullable)
+	}
+	decodeAdminProp("created_at")
+	if prop.Type != "string" || prop.Format != "date-time" || prop.Nullable {
+		t.Fatalf("AdminUser.created_at = {%s, %s, nullable=%v}, want {string, date-time, false}", prop.Type, prop.Format, prop.Nullable)
+	}
+
+	// 3. PATCH /api/v1/admin/users/{id}: request is exactly
+	// {is_admin: boolean, required}; response is Ok; the old
+	// {name, role} → User shape must be gone.
+	patchOp := opOf("/api/v1/admin/users/{id}", "patch")
+	var summary struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(mustJSON(t, patchOp), &summary); err != nil {
+		t.Fatalf("decode PATCH op: %v", err)
+	}
+	if summary.Summary != "Set a user's instance-admin flag" {
+		t.Fatalf("PATCH /api/v1/admin/users/{id} summary = %q, want the instance-admin-flag wording (role is NOT settable here)", summary.Summary)
+	}
+	var body struct {
+		Required []string                   `json:"required"`
+		Props    map[string]json.RawMessage `json:"properties"`
+	}
+	{
+		var reqBody struct {
+			Content struct {
+				JSON struct {
+					Schema struct {
+						Required []string                   `json:"required"`
+						Props    map[string]json.RawMessage `json:"properties"`
+					} `json:"schema"`
+				} `json:"application/json"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(patchOp["requestBody"], &reqBody); err != nil {
+			t.Fatalf("decode PATCH requestBody: %v", err)
+		}
+		body.Required = reqBody.Content.JSON.Schema.Required
+		body.Props = reqBody.Content.JSON.Schema.Props
+	}
+	if len(body.Props) != 1 {
+		t.Fatalf("PATCH /api/v1/admin/users/{id} request properties = %v, want exactly is_admin", docKeysOf(body.Props))
+	}
+	if _, ok := body.Props["is_admin"]; !ok {
+		t.Fatalf("PATCH /api/v1/admin/users/{id} request lacks is_admin (old name/role shape must be gone)")
+	}
+	if len(body.Required) != 1 || body.Required[0] != "is_admin" {
+		t.Fatalf("PATCH /api/v1/admin/users/{id} request required = %v, want [is_admin] (missing = 400)", body.Required)
+	}
+	var isAdminProp struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(body.Props["is_admin"], &isAdminProp); err != nil {
+		t.Fatalf("decode is_admin prop: %v", err)
+	}
+	if isAdminProp.Type != "boolean" {
+		t.Fatalf("PATCH is_admin type = %q, want boolean", isAdminProp.Type)
+	}
+	if got := respSchemaRef(patchOp, "200"); got != "#/components/schemas/Ok" {
+		t.Fatalf("PATCH /api/v1/admin/users/{id} 200 schema $ref = %q, want Ok", got)
+	}
+	wantResponse(patchOp, "400", "missing is_admin / malformed id")
+	wantResponse(patchOp, "404", "unknown user")
+	wantResponse(patchOp, "409", "self-demotion + last-admin demotion (SetUserAdmin)")
+
+	// 4. Deactivate/reactivate: both return Ok (no drift there —
+	// the doc already said Ok). Deactivate documents the 409
+	// self-deactivation case; reactivate documents NO 409 —
+	// ReactivateUser has no conflict path (no self guard, no
+	// already-active rejection), so a 409 there would be a lie.
+	deactOp := opOf("/api/v1/admin/users/{id}/deactivate", "post")
+	if got := respSchemaRef(deactOp, "200"); got != "#/components/schemas/Ok" {
+		t.Fatalf("POST .../deactivate 200 schema $ref = %q, want Ok", got)
+	}
+	wantResponse(deactOp, "400", "malformed id")
+	wantResponse(deactOp, "404", "unknown user")
+	wantResponse(deactOp, "409", "self-deactivation (DeactivateUser)")
+	reactOp := opOf("/api/v1/admin/users/{id}/reactivate", "post")
+	if got := respSchemaRef(reactOp, "200"); got != "#/components/schemas/Ok" {
+		t.Fatalf("POST .../reactivate 200 schema $ref = %q, want Ok", got)
+	}
+	wantResponse(reactOp, "400", "malformed id")
+	wantResponse(reactOp, "404", "unknown user")
+	wantNoResponse(reactOp, "409", "ReactivateUser has no conflict path")
+
+	// 5. ProjectUpdate.author + PageComment.author point at
+	// ActorRef (the Go field is *ActorRef), nullable:true —
+	// kept because the scan funcs leave Author nil when the
+	// author row is gone (FK ON DELETE SET NULL → author_id
+	// NULL → Author stays nil → marshals as "author": null,
+	// since the field has no omitempty).
+	for _, name := range []string{"ProjectUpdate", "PageComment"} {
+		schema := schemaOf(name)
+		author := propOf(schema, "author")
+		var authorProp struct {
+			Ref      string `json:"$ref"`
+			Nullable bool   `json:"nullable"`
+		}
+		if err := json.Unmarshal(mustJSON(t, author), &authorProp); err != nil {
+			t.Fatalf("decode %s.author: %v", name, err)
+		}
+		if authorProp.Ref != "#/components/schemas/ActorRef" {
+			t.Fatalf("%s.author $ref = %q, want ActorRef (Go field is *ActorRef, not *User)", name, authorProp.Ref)
+		}
+		if !authorProp.Nullable {
+			t.Fatalf("%s.author nullable = false, want true (deleted author → null)", name)
+		}
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
