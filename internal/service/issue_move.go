@@ -379,6 +379,14 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 		iss.DisplayID = newDisplay
 		moved[i] = iss
 
+		// C49T2: the move rewrites this row (project, sequence,
+		// state, estimate) — record a post-move version snapshot.
+		// iss is the RETURNING row, so no extra read is needed; the
+		// snapshot lands in the same tx and rolls back with it.
+		if err := snapshotVersionTx(ctx, tx, n.id, actorID, iss); err != nil {
+			return nil, err
+		}
+
 		if _, err := tx.Exec(ctx, `DELETE FROM cycle_issues WHERE issue_id = $1::uuid`, n.id); err != nil {
 			return nil, fmt.Errorf("service: move issue drop cycle membership: %w", err)
 		}

@@ -654,3 +654,134 @@ func TestMoveIssueFailedMoveWritesNoActivity(t *testing.T) {
 		t.Fatalf("GetIssue after failed move: %v", err)
 	}
 }
+
+// moveVersionSnapshots returns the decoded snapshots of an issue's
+// versions, oldest-first, read via ListVersions in the given project.
+func moveVersionSnapshots(t *testing.T, pool *pgxpool.Pool, wsSlug, ident, issueID, actorID string) []Issue {
+	t.Helper()
+	vs, err := ListVersions(context.Background(), pool, wsSlug, ident, issueID, actorID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	out := make([]Issue, 0, len(vs))
+	for _, v := range vs {
+		var snap Issue
+		if err := json.Unmarshal(v.Snapshot, &snap); err != nil {
+			t.Fatalf("decode version %d snapshot: %v", v.VersionNo, err)
+		}
+		out = append(out, snap)
+	}
+	return out
+}
+
+func moveProjectID(t *testing.T, pool *pgxpool.Pool, ident string) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT id::text FROM projects WHERE identifier = $1`, ident).Scan(&id); err != nil {
+		t.Fatalf("project id for %q: %v", ident, err)
+	}
+	return id
+}
+
+// TestMoveIssueWritesVersionSnapshots (C49T2): moving a 2-issue subtree
+// appends exactly one version per moved row (root + child), each
+// carrying the post-move project_id / sequence_id / state_id.
+func TestMoveIssueWritesVersionSnapshots(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	wsSlug, srcIdent, dstIdent, owner := moveTestSetup(t, pool, "versions")
+
+	srcInProg := stateIDByName(t, pool, wsSlug, srcIdent, owner, "In Progress")
+	root, err := CreateIssue(ctx, pool, wsSlug, srcIdent, owner, CreateIssueInput{
+		Name: "Move root", StateID: &srcInProg,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue root: %v", err)
+	}
+	child, err := CreateIssue(ctx, pool, wsSlug, srcIdent, owner, CreateIssueInput{
+		Name: "Move child", ParentID: &root.ID, StateID: &srcInProg,
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue child: %v", err)
+	}
+	// Baseline: create wrote v1 for each.
+	if got := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, root.ID, owner)); got != 1 {
+		t.Fatalf("root versions before move = %d, want 1 (create v1)", got)
+	}
+	if got := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, child.ID, owner)); got != 1 {
+		t.Fatalf("child versions before move = %d, want 1 (create v1)", got)
+	}
+
+	mustMove(t, pool, wsSlug, srcIdent, root.ID, owner, dstIdent)
+
+	dstProjectID := moveProjectID(t, pool, dstIdent)
+	dstInProg := stateIDByName(t, pool, wsSlug, dstIdent, owner, "In Progress")
+	for _, tc := range []struct {
+		name     string
+		id       string
+		wantSeq  int
+		wantDisp string
+	}{
+		{"root", root.ID, 1, dstIdent + "-1"},
+		{"child", child.ID, 2, dstIdent + "-2"},
+	} {
+		snaps := moveVersionSnapshots(t, pool, wsSlug, dstIdent, tc.id, owner)
+		if len(snaps) != 2 {
+			t.Fatalf("%s versions after move = %d, want 2 (create v1 + move)", tc.name, len(snaps))
+		}
+		latest := snaps[len(snaps)-1]
+		if latest.ProjectID != dstProjectID {
+			t.Fatalf("%s snapshot project_id = %q, want %q", tc.name, latest.ProjectID, dstProjectID)
+		}
+		if latest.SequenceID != tc.wantSeq {
+			t.Fatalf("%s snapshot sequence_id = %d, want %d", tc.name, latest.SequenceID, tc.wantSeq)
+		}
+		if latest.StateID != dstInProg {
+			t.Fatalf("%s snapshot state_id = %q, want target In Progress %q", tc.name, latest.StateID, dstInProg)
+		}
+		if latest.DisplayID != tc.wantDisp {
+			t.Fatalf("%s snapshot display_id = %q, want %q", tc.name, latest.DisplayID, tc.wantDisp)
+		}
+	}
+}
+
+// TestMoveIssueNoOpWritesNoVersion (C49T2): a no-op move — already in
+// the target project — writes no new version, matching the SetParent
+// no-op rule. (Same-project is rejected before any mutation, so the
+// version count is unchanged.)
+func TestMoveIssueNoOpWritesNoVersion(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	wsSlug, srcIdent, _, owner := moveTestSetup(t, pool, "versionsnoop")
+
+	iss := createTestIssue(t, pool, wsSlug, srcIdent, owner, "No-op move")
+	before := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, iss.ID, owner))
+	_, err := MoveIssue(ctx, pool, wsSlug, srcIdent, iss.ID, owner,
+		MoveIssueInput{TargetProjectIdentifier: srcIdent})
+	if !errors.Is(err, ErrMoveSameProject) {
+		t.Fatalf("same-project move: err = %v, want ErrMoveSameProject", err)
+	}
+	if got := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, iss.ID, owner)); got != before {
+		t.Fatalf("versions after no-op move = %d, want %d (unchanged)", got, before)
+	}
+}
+
+// TestMoveIssueFailedMoveWritesNoVersion (C49T2): a failed move
+// (invalid target → tx rollback) writes no new version.
+func TestMoveIssueFailedMoveWritesNoVersion(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	wsSlug, srcIdent, _, owner := moveTestSetup(t, pool, "versionsfail")
+
+	iss := createTestIssue(t, pool, wsSlug, srcIdent, owner, "Doomed move")
+	before := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, iss.ID, owner))
+	_, err := MoveIssue(ctx, pool, wsSlug, srcIdent, iss.ID, owner,
+		MoveIssueInput{TargetProjectIdentifier: "NOPE404"})
+	if !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("unknown target: err = %v, want ErrProjectNotFound", err)
+	}
+	if got := len(moveVersionSnapshots(t, pool, wsSlug, srcIdent, iss.ID, owner)); got != before {
+		t.Fatalf("versions after failed move = %d, want %d (unchanged)", got, before)
+	}
+}
