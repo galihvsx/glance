@@ -5,6 +5,45 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Issue-history trails for the remaining direct-row mutations (cycle 51)**
+- Audit: every `UPDATE issues` / `INSERT INTO issues` site in
+  `internal/service/` was checked against the triple trail (version
+  snapshot + activity rows + `issue.updated` WS + webhook). The three
+  remaining gaps are closed below. Deliberately untouched (documented
+  no-trail decisions): project archive/unarchive, RebalanceSortOrder,
+  imports (versions = post-import edit history). No migration, no
+  frontend changes.
+- DeleteState reassign versions (C51T0): deleting a state with
+  reassignTo now appends one version snapshot per moved LIVE issue
+  (new StateID, authored by the deleter, same tx). Activity rows
+  (C47T0) and announce (C45T2) already existed; soft-deleted issues
+  get no version, matching their no-activity/no-announce rule.
+- DeleteIssue child detach trail (C51T1): deleting a parent now
+  leaves a trace on each detached live child — a `parent_id`
+  activity row (old = deleted parent, new = NULL, same shape as
+  Convert's row) + a version snapshot of the post-detach row +
+  webhook `issue.updated` (changed_fields `["parent_id"]`,
+  SetParent/Convert parity) + WS `issue.updated` after commit —
+  across all four `deleteIssueTx` call sites (DeleteIssue,
+  BulkDeleteIssues, RejectIntakeIssue, DuplicateIntakeIssue). No
+  objective fan-out (parent_id does not affect KR progress).
+- Release bulk ops trail (C51T2): Assign/UnassignReleaseIssues and
+  the DeleteRelease reassign / force branches now write one
+  `release_id` activity row (old → new, PATCH-path shape) + enqueue
+  one webhook `issue.updated` (changed_fields `["release_id"]`) +
+  announce WS `issue.updated` per actually-changed issue — the WS
+  announce invalidates open issue detail, which `release.updated`
+  does not. All writes run in one tx; the change-check SELECTs are
+  `FOR UPDATE` so concurrent release/PATCH/move ops serialize.
+  Idempotent no-ops and 409 deletes write/announce nothing. No
+  version snapshot: `release_id` is not a field of the `Issue`
+  struct. `announceReleaseUpdated` unchanged.
+- Stale carried candidates from the cycle-50 close note re-checked
+  against code and rejected: BulkSet cascade version (fixed C50T0),
+  RestoreVersion `issue.updated` (fixed C45T0), state-deletion
+  `issue.updated` (fixed C45T2), automation-triggered `issue.updated`
+  (covered C44–C46).
+
 **Version coverage for the remaining automation-cascade paths (cycle 50)**
 - Shared rule: after an operation fires automations, the final in-tx
   row is snapshotted as a version iff it differs from the last
