@@ -749,10 +749,10 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Bulk-delete many issues",
-        "description": "Member (15)+. Honors Idempotency-Key.",
+        "description": "Soft-deletes many issues with per-item savepoint semantics: each item reports {id, ok, error?}; an unknown or malformed id fails per-item (error \"issue not found\"), not the whole batch. Empty ids → 400; more than 100 ids → 400. Member (15)+. Honors Idempotency-Key.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
-        "responses": { "200": { "description": "Bulk delete result", "content": { "application/json": { "schema": { "type": "object", "properties": { "deleted": { "type": "integer" } } } } } } } 
+        "responses": { "200": { "description": "Per-item results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "ok": { "type": "boolean" }, "error": { "type": "string" } } } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/bulk-restore": {
@@ -1062,26 +1062,28 @@
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "List issue description versions",
+        "summary": "List issue versions",
+        "description": "Oldest first. Each version carries the full issue row at that version as `snapshot`. Any workspace member may read (guests included).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
-        "responses": { "200": { "description": "Versions", "content": { "application/json": { "schema": { "type": "object", "properties": { "versions": { "type": "array", "items": { "$ref": "#/components/schemas/IssueVersion" } } } } } } } }
+        "responses": { "200": { "description": "Versions", "content": { "application/json": { "schema": { "type": "object", "properties": { "versions": { "type": "array", "items": { "$ref": "#/components/schemas/IssueVersion" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions/{n}": {
       "get": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "Get one description version",
+        "summary": "Get one issue version",
+        "description": "n < 1 → 400; unknown n → 404. Any workspace member may read (guests included).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "n", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } } ],
-        "responses": { "200": { "description": "Version", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueVersion" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Version", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueVersion" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions/{n}/restore": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "Restore a description version",
-        "description": "The pre-restore state is snapshotted first, so a restore is itself undoable.",
+        "summary": "Restore an issue version",
+        "description": "Applies version n's snapshot as a NEW version — history is never rewritten. The pre-restore state is already the latest version, so a restore is itself undoable by restoring that version. Returns the post-restore live issue. Member (15)+; guests get 403. n < 1 → 400; unknown n → 404.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "n", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } } ],
-        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/links": {
@@ -2902,10 +2904,11 @@
       },
       "IssueVersion": {
         "type": "object",
+        "description": "One immutable snapshot of the full issue row. Mirrors service.IssueVersion field-for-field.",
         "properties": {
-          "n": { "type": "integer", "description": "Version number" },
-          "description": { "description": "Rich-text JSON document at this version" },
-          "created_by": { "type": "string", "format": "uuid" },
+          "version_no": { "type": "integer", "description": "Version number, 1-based, oldest first" },
+          "snapshot": { "$ref": "#/components/schemas/Issue", "description": "Full issue row at this version" },
+          "created_by": { "type": "object", "description": "Who wrote this version (service.ActorRef)", "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string", "nullable": true }, "email": { "type": "string" } } },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
