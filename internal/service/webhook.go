@@ -467,6 +467,14 @@ const (
 	webhookEventPrefix = "webhook."
 	// webhookBatchSize caps how many rows one Run claims.
 	webhookBatchSize = 25
+	// webhookPerWebhookCap caps how many rows the GLOBAL (unscoped)
+	// claim takes per webhook per pass. Without it, one webhook's due
+	// backlog fills the whole batch and every other webhook's rows
+	// starve behind it (head-of-line blocking). The scoped claim stays
+	// uncapped. Fairness wins over single-webhook throughput: the
+	// flooded webhook still drains every pass, just at most cap rows
+	// per tick.
+	webhookPerWebhookCap = 5
 	// webhookMaxAttempts: after this many failed attempts the row is
 	// marked failed instead of retried forever.
 	webhookMaxAttempts = 8
@@ -599,7 +607,9 @@ func (d *WebhookDispatcher) run(ctx context.Context, webhookID string) error {
 // here; deliveries stay at-least-once. A non-empty webhookID scopes the
 // claim to rows whose payload names that webhook (payload->>'webhook_id'
 // = $3); an empty webhookID claims globally, which is the production
-// behavior. Ordering is unchanged either way.
+// behavior, capped at webhookPerWebhookCap rows per webhook per pass
+// (fairness: one webhook's backlog cannot starve the others). Ordering
+// is unchanged either way.
 func (d *WebhookDispatcher) claimDue(ctx context.Context, webhookID string) ([]webhookOutboxRow, error) {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
@@ -618,6 +628,30 @@ func (d *WebhookDispatcher) claimDue(ctx context.Context, webhookID string) ([]w
 		query += `
 		  AND payload->>'webhook_id' = $3`
 		args = append(args, webhookID)
+	} else {
+		// Global claim: at most webhookPerWebhookCap rows per webhook
+		// per pass (ROW_NUMBER over the same due filter, oldest first
+		// within each webhook). The due filter is duplicated inside
+		// the subquery on purpose: Postgres rejects FOR UPDATE on a
+		// query whose FROM contains a window function ("FOR UPDATE is
+		// not allowed with window functions"), so the ranking lives in
+		// an IN-subquery and the outer query keeps its original shape
+		// — same due filter, same ORDER BY id, same LIMIT, same
+		// FOR UPDATE SKIP LOCKED on outbox rows. The two copies of the
+		// filter must stay in sync. The scoped path above is untouched.
+		query += `
+		  AND id IN (
+			SELECT id FROM (
+				SELECT id,
+					ROW_NUMBER() OVER (PARTITION BY payload->>'webhook_id' ORDER BY id) AS rn
+				FROM outbox
+				WHERE event LIKE $2
+				  AND next_retry_at <= now()
+				  AND (status = 'pending' OR status = 'delivering')
+			) ranked
+			WHERE rn <= $3
+		  )`
+		args = append(args, webhookPerWebhookCap)
 	}
 	query += `
 		ORDER BY id
