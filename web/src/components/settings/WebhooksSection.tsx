@@ -26,10 +26,12 @@ import {
   buildCreateBody,
   createWebhook,
   deleteWebhook,
+  deliveryPayloadJson,
   deliveryRowLabel,
   deliveryRowTone,
   deliveryStatusLabel,
   eventLabel,
+  fetchWebhookDelivery,
   generateWebhookSecret,
   listWebhookDeliveries,
   listWebhooks,
@@ -43,11 +45,13 @@ import {
   type Webhook,
   type WebhookCreateBody,
   type WebhookDelivery,
+  type WebhookDeliveryDetail,
   type WebhookDeliveryTone,
   type WebhookUpdateBody,
 } from "../../lib/webhooks";
 import { relativeTime } from "../../lib/relativeTime";
 import { formatDateTime } from "../../lib/format";
+import { copyText } from "../../lib/clipboard";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -136,6 +140,8 @@ function WebhookDeliveryHistory({
   const [error, setError] = useState<string | null>(null);
   const [redelivering, setRedelivering] = useState<number | null>(null);
   const [redelivered, setRedelivered] = useState(false);
+  // The row whose payload dialog is open (C60T1).
+  const [viewing, setViewing] = useState<WebhookDelivery | null>(null);
 
   // Transient confirmation: clears itself after a few seconds.
   useEffect(() => {
@@ -280,6 +286,17 @@ function WebhookDeliveryHistory({
                           : "Redeliver"}
                       </Button>
                     )}
+                    {/* C60T1: payload viewer on EVERY row — the payload is
+                        equally useful for verifying what a delivered
+                        webhook sent. */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setViewing(d)}
+                      aria-label={`View payload for ${d.event} delivery ${d.id}`}
+                    >
+                      View payload
+                    </Button>
                   </li>
                 );
               })}
@@ -303,7 +320,108 @@ function WebhookDeliveryHistory({
           )}
         </div>
       )}
+      {viewing && (
+        <WebhookPayloadDialog
+          slug={slug}
+          webhookId={webhookId}
+          delivery={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// Delivery payload viewer (C60T1): a dialog over the history panel
+// showing one attempt's domain-event payload as pretty-printed JSON,
+// plus a copy button (lib/clipboard helper, transient "Copied"
+// confirmation — same pattern as the secret-reveal flow). The header
+// carries the attempt's status / event / attempted-at; the body shows
+// ONLY event + data (delivery bookkeeping already lives in the history
+// row and the dialog description). The detail is fetched lazily on open.
+function WebhookPayloadDialog({
+  slug,
+  webhookId,
+  delivery,
+  onClose,
+}: {
+  slug: string;
+  webhookId: string;
+  delivery: WebhookDelivery;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<WebhookDeliveryDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await fetchWebhookDelivery(slug, webhookId, delivery.id);
+        if (cancelled) return;
+        if (d === null) {
+          setError("Delivery not found.");
+        } else {
+          setDetail(d);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(mutationError(e, "Failed to load delivery payload"));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, webhookId, delivery.id]);
+
+  async function copy() {
+    if (!detail) return;
+    if (!(await copyText(deliveryPayloadJson(detail)))) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Delivery payload</DialogTitle>
+          <DialogDescription>
+            {deliveryRowLabel(delivery.status)} ·{" "}
+            <span className="font-mono">{delivery.event}</span> ·{" "}
+            {formatDateTime(delivery.attempted_at)}
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : detail ? (
+          <>
+            <pre className="max-h-[50vh] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+              {deliveryPayloadJson(detail)}
+            </pre>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={copy}>
+                {copied ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                {copied ? "Copied" : "Copy"}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 

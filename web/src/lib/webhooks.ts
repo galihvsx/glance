@@ -19,6 +19,11 @@
 //     → {deliveries: WebhookDelivery[], next_before: number | null} —
 //     per-attempt history, newest first (C59T1). before is a delivery-id
 //     cursor. No data / outbox_row_id in the rows.
+//   GET  /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId
+//     → {delivery: WebhookDeliveryDetail} — the list fields PLUS the
+//     stored domain-event payload (C60T0). The ONLY shape that carries
+//     data; the list deliberately omits it (payloads can be large).
+//     data is the domain event only — never the webhook URL or secret.
 //   POST /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId/redeliver
 //     → 202 {ok: true} — failed rows only (409 otherwise); the fresh
 //     outbox row is built from the webhook's CURRENT url + secret.
@@ -257,6 +262,24 @@ export interface WebhookDeliveriesPage {
   next_before: number | null;
 }
 
+// --- Delivery payload viewer (C60T1) ----------------------------------------
+// The detail endpoint returns the list shape PLUS `data` — the full
+// domain-event payload the dispatcher signed and POSTed. data is the
+// domain event only, never the webhook URL or secret (those live on
+// the webhook row and are never exposed by this endpoint).
+
+export interface WebhookDeliveryDetail extends WebhookDelivery {
+  data: unknown;
+}
+
+// Pretty-prints one delivery's payload for the viewer dialog: the
+// domain event name + the payload, indented JSON. Delivery bookkeeping
+// (id, http_status, error, duration) is deliberately excluded — it is
+// already visible in the history row and the dialog header.
+export function deliveryPayloadJson(detail: WebhookDeliveryDetail): string {
+  return JSON.stringify({ event: detail.event, data: detail.data }, null, 2);
+}
+
 // Tone for a delivery-history row's status badge — same mapping as the
 // C57T2 summary indicator (delivered green, retrying amber, failed red).
 export function deliveryRowTone(status: WebhookDeliveryStatus): WebhookDeliveryTone {
@@ -327,6 +350,22 @@ export function redeliverWebhookDelivery(
     `${webhooksPath(slug, webhookId)}/deliveries/${deliveryId}/redeliver`,
     {},
   );
+}
+
+// Fetches one delivery's detail — the list fields PLUS the stored
+// payload (the ONLY shape that carries data). Missing delivery in a
+// 200 body cannot happen against the real backend; normalize it to
+// null like the list client normalizes missing pages.
+export function fetchWebhookDelivery(
+  slug: string,
+  webhookId: string,
+  deliveryId: number,
+): Promise<WebhookDeliveryDetail | null> {
+  return api
+    .get<{ delivery: WebhookDeliveryDetail }>(
+      `${webhooksPath(slug, webhookId)}/deliveries/${deliveryId}`,
+    )
+    .then((r) => r.delivery ?? null);
 }
 
 export function createWebhook(
