@@ -164,6 +164,23 @@ func normalizeExternalRefInput(in CreateExternalRefInput) (CreateExternalRefInpu
 	return out, nil
 }
 
+// announceExternalRefChange fans out issue.updated after a ref
+// mutation so open issue-detail pages refetch their embedded refs
+// (C62T1). Best-effort: the row fetch is skipped entirely when no
+// broadcaster is wired, and a lookup failure skips the broadcast
+// rather than failing the already-committed mutation (same
+// best-effort posture as announceCycleUpdated).
+func announceExternalRefChange(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident, projectID, issueID string) {
+	if Realtime == nil {
+		return
+	}
+	iss, err := getIssueRow(ctx, pool, ident, projectID, issueID)
+	if err != nil {
+		return
+	}
+	announceIssueUpdated(wsSlug, ident, issueID, &iss.Issue)
+}
+
 // CreateExternalRef manually links a PR or commit to an issue. Member
 // (15)+; guests get ErrForbidden, non-members ErrNotFound (tenancy
 // hygiene via resolveSatelliteIssue). A duplicate (issue, provider,
@@ -175,7 +192,7 @@ func CreateExternalRef(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		return nil, err
 	}
 	issueID = normalizeIssueID(issueID)
-	_, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	ident, projectID, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +210,9 @@ func CreateExternalRef(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		}
 		return nil, err
 	}
+	// C62T1: ref changes move the issue's displayed state — announce so
+	// collaborators and other tabs refresh.
+	announceExternalRefChange(ctx, pool, wsSlug, ident, projectID, issueID)
 	return ref, nil
 }
 
@@ -201,7 +221,7 @@ func CreateExternalRef(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 // (15)+.
 func DeleteExternalRef(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, refID string) error {
 	issueID = normalizeIssueID(issueID)
-	_, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	ident, projectID, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return err
 	}
@@ -220,6 +240,8 @@ func DeleteExternalRef(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 	if ct.RowsAffected() == 0 {
 		return ErrExternalRefNotFound
 	}
+	// C62T1: announce so open detail pages drop the unlinked row.
+	announceExternalRefChange(ctx, pool, wsSlug, ident, projectID, issueID)
 	return nil
 }
 
