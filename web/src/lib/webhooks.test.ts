@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCreateBody,
+  deliveryStatusLabel,
   eventLabel,
   generateWebhookSecret,
   revealReducer,
   toggleEvent,
+  truncateDeliveryError,
   validateWebhookUrl,
   WEBHOOK_EVENTS,
 } from "./webhooks";
@@ -169,5 +171,103 @@ describe("revealReducer (show-once secret flow)", () => {
       { type: "dismissed" },
     );
     expect(state).toBeNull();
+  });
+});
+
+describe("deliveryStatusLabel (C57T2)", () => {
+  const base = {
+    id: "wh-1",
+    workspace_id: "ws-1",
+    url: "https://example.com/hook",
+    events: ["issue.created"],
+    active: true,
+    created_at: "2026-10-18T00:00:00Z",
+    updated_at: "2026-10-18T00:00:00Z",
+  };
+  const now = new Date("2026-10-18T00:05:00Z");
+
+  it("delivered: green tone with a relative time", () => {
+    const label = deliveryStatusLabel(
+      {
+        ...base,
+        last_delivery_at: "2026-10-18T00:04:00Z",
+        last_delivery_status: "delivered",
+        last_error: null,
+      },
+      now,
+    );
+    expect(label.tone).toBe("success");
+    expect(label.text).toBe("Delivered 1m ago");
+  });
+
+  it("retrying: amber tone with the truncated error", () => {
+    const label = deliveryStatusLabel({
+      ...base,
+      last_delivery_at: "2026-10-18T00:04:00Z",
+      last_delivery_status: "retrying",
+      last_error: "webhook: https://example.com/hook returned status 500",
+    });
+    expect(label.tone).toBe("warning");
+    expect(label.text).toBe(
+      "Retrying — webhook: https://example.com/hook returned status 500",
+    );
+  });
+
+  it("failed: red tone with the truncated error", () => {
+    const label = deliveryStatusLabel({
+      ...base,
+      last_delivery_at: "2026-10-18T00:04:00Z",
+      last_delivery_status: "failed",
+      last_error: "webhook: target resolves to a non-public IP (SSRF guard)",
+    });
+    expect(label.tone).toBe("danger");
+    expect(label.text).toBe(
+      "Failed — webhook: target resolves to a non-public IP (SSRF guard)",
+    );
+  });
+
+  it("never attempted: muted tone", () => {
+    const label = deliveryStatusLabel({
+      ...base,
+      last_delivery_at: null,
+      last_delivery_status: null,
+      last_error: null,
+    });
+    expect(label.tone).toBe("muted");
+    expect(label.text).toBe("No deliveries yet");
+  });
+
+  it("truncates long errors so the row stays compact", () => {
+    const label = deliveryStatusLabel({
+      ...base,
+      last_delivery_at: "2026-10-18T00:04:00Z",
+      last_delivery_status: "failed",
+      last_error: "x".repeat(200),
+    });
+    expect(label.text.startsWith("Failed — ")).toBe(true);
+    expect(label.text.length).toBeLessThan(200);
+    expect(label.text.endsWith("…")).toBe(true);
+  });
+
+  it("a missing error never renders a dangling dash", () => {
+    const label = deliveryStatusLabel({
+      ...base,
+      last_delivery_at: "2026-10-18T00:04:00Z",
+      last_delivery_status: "retrying",
+      last_error: null,
+    });
+    expect(label.text).toBe("Retrying — unknown error");
+  });
+});
+
+describe("truncateDeliveryError", () => {
+  it("passes short errors through untouched", () => {
+    expect(truncateDeliveryError("boom")).toBe("boom");
+  });
+
+  it("truncates to 80 chars with an ellipsis", () => {
+    const out = truncateDeliveryError("x".repeat(200));
+    expect(out).toBe("x".repeat(79) + "…");
+    expect(out.length).toBe(80);
   });
 });

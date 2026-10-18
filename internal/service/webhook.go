@@ -79,6 +79,17 @@ type Webhook struct {
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// LastDeliveryAt / LastDeliveryStatus / LastError record the most
+	// recent delivery attempt (C57T2). All three are NULL until the
+	// first attempt. Pointer fields WITHOUT omitempty, so the keys are
+	// present-but-null in list/get/create responses — the same null
+	// convention as AdminUser.Name. The dispatcher writes them
+	// alongside each outbox outcome write; the status update never
+	// touches updated_at (delivery outcomes are operational metadata,
+	// not a user edit of the webhook).
+	LastDeliveryAt     *time.Time `json:"last_delivery_at"`
+	LastDeliveryStatus *string    `json:"last_delivery_status"`
+	LastError          *string    `json:"last_error"`
 }
 
 // WebhookCreateResponse is the POST 201 response shape: the single
@@ -93,19 +104,27 @@ type WebhookCreateResponse struct {
 	Active      bool      `json:"active"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// Delivery outcome fields (C57T2): all NULL on a new webhook — it
+	// has never delivered.
+	LastDeliveryAt     *time.Time `json:"last_delivery_at"`
+	LastDeliveryStatus *string    `json:"last_delivery_status"`
+	LastError          *string    `json:"last_error"`
 }
 
 // CreateResponse renders the show-on-create shape for a new webhook.
 func (w *Webhook) CreateResponse() *WebhookCreateResponse {
 	return &WebhookCreateResponse{
-		ID:          w.ID,
-		WorkspaceID: w.WorkspaceID,
-		URL:         w.URL,
-		Secret:      w.Secret,
-		Events:      w.Events,
-		Active:      w.Active,
-		CreatedAt:   w.CreatedAt,
-		UpdatedAt:   w.UpdatedAt,
+		ID:                 w.ID,
+		WorkspaceID:        w.WorkspaceID,
+		URL:                w.URL,
+		Secret:             w.Secret,
+		Events:             w.Events,
+		Active:             w.Active,
+		CreatedAt:          w.CreatedAt,
+		UpdatedAt:          w.UpdatedAt,
+		LastDeliveryAt:     w.LastDeliveryAt,
+		LastDeliveryStatus: w.LastDeliveryStatus,
+		LastError:          w.LastError,
 	}
 }
 
@@ -130,14 +149,15 @@ func scanWebhook(row pgx.Row) (*Webhook, error) {
 	var w Webhook
 	var events []string
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &w.URL, &w.Secret, &events,
-		&w.Active, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		&w.Active, &w.CreatedAt, &w.UpdatedAt,
+		&w.LastDeliveryAt, &w.LastDeliveryStatus, &w.LastError); err != nil {
 		return nil, err
 	}
 	w.Events = events
 	return &w, nil
 }
 
-const webhookColumns = `id::text, workspace_id::text, url, secret, events, active, created_at, updated_at`
+const webhookColumns = `id::text, workspace_id::text, url, secret, events, active, created_at, updated_at, last_delivery_at, last_delivery_status, last_error`
 
 func validateWebhookURL(raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -645,24 +665,26 @@ func (d *WebhookDispatcher) claimDue(ctx context.Context, webhookID string) ([]w
 func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) error {
 	var wd webhookDelivery
 	if err := json.Unmarshal(r.payload, &wd); err != nil {
-		// Poison row: never decodes, fail permanently.
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: bad payload: %w", err))
+		// Poison row: never decodes, fail permanently. No webhook id
+		// is recoverable from the payload — no status update.
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: bad payload: %w", err), "")
 	}
 	if wd.URL == "" || wd.Event == "" {
-		return d.markFailed(ctx, r.id, r.attempts, errors.New("webhook: missing url or event"))
+		return d.markFailed(ctx, r.id, r.attempts, errors.New("webhook: missing url or event"), wd.WebhookID)
 	}
 	// A webhook deleted or deactivated after enqueue must not fire:
-	// mark the row done (skip), not failed.
+	// mark the row done (skip), not failed. No delivery was attempted,
+	// so no delivery status is written either (empty webhook id).
 	var active bool
 	if err := d.pool.QueryRow(ctx,
 		`SELECT active FROM webhooks WHERE id = $1::uuid`, wd.WebhookID).Scan(&active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return d.markDone(ctx, r.id)
+			return d.markDone(ctx, r.id, "")
 		}
 		return fmt.Errorf("webhook: lookup webhook: %w", err)
 	}
 	if !active {
-		return d.markDone(ctx, r.id)
+		return d.markDone(ctx, r.id, "")
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -671,11 +693,11 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 		"delivered_at": time.Now().UTC(),
 	})
 	if err != nil {
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: marshal body: %w", err))
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: marshal body: %w", err), wd.WebhookID)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wd.URL, bytes.NewReader(body))
 	if err != nil {
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: build request: %w", err))
+		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: build request: %w", err), wd.WebhookID)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Glance-Event", wd.Event)
@@ -698,23 +720,23 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 				// Permanently unsafe: a target resolving to private
 				// space will never become safe — fail the row instead
 				// of retrying it forever.
-				return d.markFailed(ctx, r.id, r.attempts, err)
+				return d.markFailed(ctx, r.id, r.attempts, err, wd.WebhookID)
 			}
 			// DNS failure: transient — backoff and retry.
-			return d.recordFailure(ctx, r.id, r.attempts, err)
+			return d.recordFailure(ctx, r.id, r.attempts, err, wd.WebhookID)
 		}
 		resp, err = d.doPinned(ctx, req, ips)
 	}
 	if err != nil {
-		return d.recordFailure(ctx, r.id, r.attempts, err)
+		return d.recordFailure(ctx, r.id, r.attempts, err, wd.WebhookID)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return d.recordFailure(ctx, r.id, r.attempts,
-			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode))
+			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode), wd.WebhookID)
 	}
-	return d.markDone(ctx, r.id)
+	return d.markDone(ctx, r.id, wd.WebhookID)
 }
 
 // errWebhookTargetBlocked marks a delivery refused by the SSRF guard. It
@@ -820,20 +842,29 @@ func webhookSignature(secret string, body []byte) string {
 // spans the HTTP call). A failed outcome write leaves the row
 // 'delivering' with its lease — a later pass reclaims and redelivers
 // (at-least-once is preserved).
-func (d *WebhookDispatcher) markDone(ctx context.Context, id int64) error {
+//
+// Each outcome write also records the last-delivery outcome on the
+// webhook row (C57T2) via updateWebhookDeliveryStatus, in the same step
+// as the outbox outcome write. webhookID is the payload's webhook id;
+// "" means "no webhook to attribute" (skip paths, poison rows) and
+// writes no status. The outbox write runs FIRST: the outbox row is the
+// source of truth for delivery, and a webhook-status failure surfaces
+// as a Run error without un-delivering an already-recorded outcome —
+// the next delivery for that webhook corrects the display field.
+func (d *WebhookDispatcher) markDone(ctx context.Context, id int64, webhookID string) error {
 	if _, err := d.pool.Exec(ctx,
 		`UPDATE outbox SET status = 'done', processed_at = now() WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("webhook: mark row %d done: %w", id, err)
 	}
-	return nil
+	return d.updateWebhookDeliveryStatus(ctx, webhookID, "delivered", nil)
 }
 
 // recordFailure bumps attempts; the row goes back to pending with
 // backoff, or is marked failed once it exhausts webhookMaxAttempts.
-func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempts int, sendErr error) error {
+func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempts int, sendErr error, webhookID string) error {
 	attempts++
 	if attempts >= webhookMaxAttempts {
-		return d.markFailed(ctx, id, attempts, sendErr)
+		return d.markFailed(ctx, id, attempts, sendErr, webhookID)
 	}
 	retryAt := time.Now().Add(webhookRetryBackoff(attempts))
 	if _, err := d.pool.Exec(ctx, `
@@ -842,16 +873,46 @@ func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempt
 		WHERE id = $1`, id, attempts, sendErr.Error(), retryAt); err != nil {
 		return fmt.Errorf("webhook: record failure for row %d: %w", id, err)
 	}
-	return nil
+	errStr := sendErr.Error()
+	return d.updateWebhookDeliveryStatus(ctx, webhookID, "retrying", &errStr)
 }
 
-func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts int, sendErr error) error {
+func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts int, sendErr error, webhookID string) error {
 	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
 		SET status = 'failed', attempts = $2, last_error = $3,
 		    processed_at = now()
 		WHERE id = $1`, id, attempts, sendErr.Error()); err != nil {
 		return fmt.Errorf("webhook: mark row %d failed: %w", id, err)
+	}
+	errStr := sendErr.Error()
+	return d.updateWebhookDeliveryStatus(ctx, webhookID, "failed", &errStr)
+}
+
+// updateWebhookDeliveryStatus records the last-delivery outcome on the
+// webhook row: last_delivery_at = now(), last_delivery_status =
+// status, last_error = lastErr (nil → NULL, the delivered case).
+// updated_at is NOT touched — delivery outcomes are operational
+// metadata, not a user edit of the webhook.
+//
+// A missing row (the webhook was deleted between the deliverRow lookup
+// and this write) updates zero rows and is a silent no-op, NOT an
+// error — the UPDATE's WHERE only matches by id, so zero rows affected
+// can only mean the row is gone. A genuine failure on an EXISTING row
+// surfaces like other outcome-write failures.
+func (d *WebhookDispatcher) updateWebhookDeliveryStatus(ctx context.Context, webhookID, status string, lastErr *string) error {
+	if webhookID == "" {
+		return nil
+	}
+	var errArg any
+	if lastErr != nil {
+		errArg = *lastErr
+	}
+	if _, err := d.pool.Exec(ctx,
+		`UPDATE webhooks
+		    SET last_delivery_at = now(), last_delivery_status = $2, last_error = $3
+		  WHERE id = $1::uuid`, webhookID, status, errArg); err != nil {
+		return fmt.Errorf("webhook: update delivery status for webhook %s: %w", webhookID, err)
 	}
 	return nil
 }

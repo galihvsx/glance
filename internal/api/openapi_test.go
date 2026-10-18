@@ -2769,3 +2769,137 @@ func docKeysOf[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+// Doc-side pinning test (C57T2): the Webhook schema in docs/openapi.yaml
+// carries the three last-delivery fields with the right types, the
+// status enum, and nullable presence (present-but-null when never
+// attempted — the Go fields are pointers WITHOUT omitempty, so the
+// keys are never omitted). WebhookCreateResponse inherits them via
+// allOf → Webhook. This is the doc-side complement to the live pins
+// (TestWebhookDeliveryStatusHTTP asserts the keys in real responses).
+func TestOpenAPIDocShapesWebhookDeliveryStatus(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	raw, ok := spec.Components.Schemas["Webhook"]
+	if !ok {
+		t.Fatal("spec has no Webhook schema")
+	}
+	var docSchema struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &docSchema); err != nil {
+		t.Fatalf("decode Webhook schema: %v", err)
+	}
+	if docSchema.Type != "object" {
+		t.Fatalf("Webhook schema type = %q, want object", docSchema.Type)
+	}
+	var prop struct {
+		Type     string   `json:"type"`
+		Format   string   `json:"format"`
+		Enum     []string `json:"enum"`
+		Nullable bool     `json:"nullable"`
+	}
+	decodeProp := func(name string) {
+		t.Helper()
+		prop = struct {
+			Type     string   `json:"type"`
+			Format   string   `json:"format"`
+			Enum     []string `json:"enum"`
+			Nullable bool     `json:"nullable"`
+		}{}
+		rawProp, ok := docSchema.Props[name]
+		if !ok {
+			t.Fatalf("Webhook doc missing property %q", name)
+		}
+		if err := json.Unmarshal(rawProp, &prop); err != nil {
+			t.Fatalf("decode Webhook.%s: %v", name, err)
+		}
+	}
+	decodeProp("last_delivery_at")
+	if prop.Type != "string" || prop.Format != "date-time" || !prop.Nullable {
+		t.Fatalf("Webhook.last_delivery_at = {%s, %s, nullable=%v}, want {string, date-time, true}",
+			prop.Type, prop.Format, prop.Nullable)
+	}
+	decodeProp("last_delivery_status")
+	if prop.Type != "string" || !prop.Nullable {
+		t.Fatalf("Webhook.last_delivery_status = {%s, nullable=%v}, want {string, true}",
+			prop.Type, prop.Nullable)
+	}
+	wantEnum := map[string]bool{"delivered": true, "retrying": true, "failed": true}
+	if len(prop.Enum) != len(wantEnum) {
+		t.Fatalf("Webhook.last_delivery_status enum = %v, want exactly %v", prop.Enum, wantEnum)
+	}
+	for _, e := range prop.Enum {
+		if !wantEnum[e] {
+			t.Fatalf("Webhook.last_delivery_status enum = %v, want exactly %v", prop.Enum, wantEnum)
+		}
+	}
+	decodeProp("last_error")
+	if prop.Type != "string" || !prop.Nullable {
+		t.Fatalf("Webhook.last_error = {%s, nullable=%v}, want {string, true}",
+			prop.Type, prop.Nullable)
+	}
+
+	// WebhookCreateResponse is allOf → Webhook: the create-201 shape
+	// inherits the delivery fields (null on a fresh webhook) without
+	// re-declaring them.
+	rawCreate, ok := spec.Components.Schemas["WebhookCreateResponse"]
+	if !ok {
+		t.Fatal("spec has no WebhookCreateResponse schema")
+	}
+	var createSchema struct {
+		AllOf []struct {
+			Ref string `json:"$ref"`
+		} `json:"allOf"`
+	}
+	if err := json.Unmarshal(rawCreate, &createSchema); err != nil {
+		t.Fatalf("decode WebhookCreateResponse schema: %v", err)
+	}
+	inherits := false
+	for _, ref := range createSchema.AllOf {
+		if ref.Ref == "#/components/schemas/Webhook" {
+			inherits = true
+		}
+	}
+	if !inherits {
+		t.Fatalf("WebhookCreateResponse allOf = %v, want a $ref to Webhook (delivery fields inherited)",
+			createSchema.AllOf)
+	}
+
+	// Reflection pin: every json tag on service.Webhook (except the
+	// json:"-" secret) must be a doc property and vice versa, so a
+	// struct change without a doc update fails.
+	structType := reflect.TypeOf(service.Webhook{})
+	if structType.Kind() != reflect.Struct {
+		t.Fatalf("service.Webhook kind = %v, want struct", structType.Kind())
+	}
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		tag := f.Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "-" {
+			continue // secret: never serialized in list/get
+		}
+		if name == "" {
+			t.Fatalf("service.Webhook field %s has no json name", f.Name)
+		}
+		wantProps[name] = true
+	}
+	if len(docSchema.Props) != len(wantProps) {
+		t.Fatalf("Webhook doc properties = %v, want exactly %v (service.Webhook minus secret)",
+			docKeysOf(docSchema.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := docSchema.Props[name]; !ok {
+			t.Fatalf("Webhook doc missing property %q (struct field)", name)
+		}
+	}
+}

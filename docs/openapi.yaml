@@ -3225,10 +3225,15 @@
         "description": "Signing secret is never returned by list/get/update — only by create (once).",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
           "url": { "type": "string", "format": "uri" },
           "events": { "type": "array", "items": { "type": "string" } },
           "active": { "type": "boolean" },
-          "created_at": { "type": "string", "format": "date-time" }
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "last_delivery_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Time of the most recent delivery attempt, or null if no delivery has been attempted yet." },
+          "last_delivery_status": { "type": "string", "enum": ["delivered", "retrying", "failed"], "nullable": true, "description": "Outcome of the most recent delivery attempt: delivered (2xx), retrying (failed, backoff scheduled), failed (permanently failed after retries or blocked). Null if no delivery has been attempted yet." },
+          "last_error": { "type": "string", "nullable": true, "description": "Error from the most recent failed delivery attempt, or null after a successful delivery / when no delivery has been attempted yet." }
         }
       },
       "WebhookCreateResponse": {

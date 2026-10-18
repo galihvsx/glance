@@ -396,3 +396,71 @@ func TestDigestScheduleTZHTTPEndpoints(t *testing.T) {
 		t.Fatalf("tz after reset = %q, want server-local default", sched.TZ)
 	}
 }
+
+// TestWebhookDeliveryStatusHTTP (C57T2): list/get/create webhook
+// responses include the three delivery fields as present-but-null keys
+// for a never-attempted webhook (same null convention as
+// AdminUser.name: pointer fields, no omitempty).
+func TestWebhookDeliveryStatusHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testNotifyServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("wh-status"), "ua", "10.9.2.1")
+	slug := uniqueSlug("wh-status")
+	createWorkspaceHTTP(t, e, cookie, "Webhook Status Co", slug)
+	base := "/api/v1/workspaces/" + slug + "/webhooks"
+
+	assertNullDeliveryKeys := func(name string, body []byte) {
+		t.Helper()
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		for _, key := range []string{"last_delivery_at", "last_delivery_status", "last_error"} {
+			val, ok := m[key]
+			if !ok {
+				t.Fatalf("%s response lacks key %q: %s", name, key, body)
+			}
+			if val != nil {
+				t.Fatalf("%s response %q = %v, want null (never attempted)", name, key, val)
+			}
+		}
+	}
+
+	// Create → 201 carries the secret AND the null delivery keys.
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"url":"https://example.com/hook","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertNullDeliveryKeys("create", rec.Body.Bytes())
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	// List → the webhook entry carries the null delivery keys.
+	rec = getAuthed(t, e, http.MethodGet, base, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list webhooks: status = %d", rec.Code)
+	}
+	var list struct {
+		Webhooks []json.RawMessage `json:"webhooks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Webhooks) != 1 {
+		t.Fatalf("webhooks = %d, want 1", len(list.Webhooks))
+	}
+	assertNullDeliveryKeys("list", list.Webhooks[0])
+
+	// Get → same three null keys.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+created.ID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get webhook: status = %d", rec.Code)
+	}
+	assertNullDeliveryKeys("get", rec.Body.Bytes())
+}

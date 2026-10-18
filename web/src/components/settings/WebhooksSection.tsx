@@ -26,6 +26,7 @@ import {
   buildCreateBody,
   createWebhook,
   deleteWebhook,
+  deliveryStatusLabel,
   eventLabel,
   generateWebhookSecret,
   listWebhooks,
@@ -36,6 +37,7 @@ import {
   WEBHOOK_EVENTS,
   type Webhook,
   type WebhookCreateBody,
+  type WebhookDeliveryTone,
   type WebhookUpdateBody,
 } from "../../lib/webhooks";
 import { relativeTime } from "../../lib/relativeTime";
@@ -66,6 +68,42 @@ import {
 import { toast } from "../ui/toast";
 
 const WEBHOOKS_KEY = (slug: string) => ["webhooks", slug];
+
+// Delivery status indicator (C57T2): a colored dot + one-line label
+// under each webhook's event chips — delivered (green), retrying
+// (amber), failed (red), never attempted (muted). Tone → color mapping
+// follows the ProjectUpdates STATUS_META convention. For retrying /
+// failed the full error stays on the title tooltip; the label shows
+// the truncated form (lib/webhooks.ts truncateDeliveryError).
+const DELIVERY_DOT: Record<WebhookDeliveryTone, string> = {
+  success: "bg-emerald-500",
+  warning: "bg-amber-500",
+  danger: "bg-destructive",
+  muted: "bg-muted-foreground/40",
+};
+
+const DELIVERY_TEXT: Record<WebhookDeliveryTone, string> = {
+  success: "text-emerald-700 dark:text-emerald-400",
+  warning: "text-amber-700 dark:text-amber-400",
+  danger: "text-destructive",
+  muted: "text-muted-foreground",
+};
+
+function DeliveryStatusIndicator({ webhook }: { webhook: Webhook }) {
+  const label = deliveryStatusLabel(webhook);
+  return (
+    <span
+      className={`flex items-center gap-1.5 text-xs ${DELIVERY_TEXT[label.tone]}`}
+      title={webhook.last_error ?? undefined}
+    >
+      <span
+        aria-hidden
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${DELIVERY_DOT[label.tone]}`}
+      />
+      {label.text}
+    </span>
+  );
+}
 
 function mutationError(e: unknown, fallback: string): string {
   return e instanceof ApiError ? e.message : fallback;
@@ -407,6 +445,9 @@ export default function WebhooksSection({ slug }: { slug: string }) {
                     >
                       · created {relativeTime(w.created_at)}
                     </span>
+                  </div>
+                  <div className="mt-1">
+                    <DeliveryStatusIndicator webhook={w} />
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">

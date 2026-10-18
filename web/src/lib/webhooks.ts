@@ -9,6 +9,9 @@
 //       random 32-byte hex one.
 //   GET  /api/v1/workspaces/:slug/webhooks
 //     → {webhooks: Webhook[]} — secret omitted (json:"-" on the Go struct).
+//     Each entry carries the last-delivery outcome (C57T2):
+//     last_delivery_at / last_delivery_status / last_error, all null
+//     until the first delivery attempt.
 //   GET  /api/v1/workspaces/:slug/webhooks/:id → Webhook — secret omitted.
 //   PATCH .../webhooks/:id {url?, secret?, events?, active?} → Webhook —
 //     secret omitted. Only non-empty url is applied; nil fields untouched.
@@ -26,6 +29,7 @@
 // UI lives in components/settings/WebhooksSection.tsx.
 
 import { api } from "./api";
+import { relativeTime } from "./relativeTime";
 
 export interface Webhook {
   id: string;
@@ -36,6 +40,17 @@ export interface Webhook {
   active: boolean;
   created_at: string;
   updated_at: string;
+  // Last-delivery outcome (C57T2): written by the dispatcher alongside
+  // each outbox outcome write. All three are null until the first
+  // delivery attempt (never attempted). Present-but-null in the wire
+  // shape — the backend sends pointer fields without omitempty.
+  // last_delivery_status: "delivered" (2xx) | "retrying" (failed,
+  // backoff scheduled) | "failed" (permanently failed).
+  last_delivery_at: string | null;
+  last_delivery_status: "delivered" | "retrying" | "failed" | null;
+  // Error from the most recent failed attempt; null after a success
+  // or when never attempted.
+  last_error: string | null;
 }
 
 // POST 201 response shape — the only response that reveals the signing
@@ -153,6 +168,58 @@ export function revealReducer(
       return { kind: action.kind, secret: action.secret };
     case "dismissed":
       return null;
+  }
+}
+
+// --- Delivery status -------------------------------------------------------
+// Compact per-webhook delivery indicator (C57T2), rendered by
+// WebhooksSection under each webhook's event chips. The label text is a
+// pure function of the webhook row so it is unit-testable here; the
+// component only maps tone → colors.
+
+export type WebhookDeliveryTone = "success" | "warning" | "danger" | "muted";
+
+export interface WebhookDeliveryLabel {
+  tone: WebhookDeliveryTone;
+  text: string;
+}
+
+// Max rendered length for a delivery error — last_error is unbounded
+// server-side (it carries the raw send error), so the list truncates it
+// to keep rows compact; the full error stays on the title tooltip.
+export const DELIVERY_ERROR_MAX = 80;
+
+export function truncateDeliveryError(err: string): string {
+  if (err.length <= DELIVERY_ERROR_MAX) return err;
+  return err.slice(0, DELIVERY_ERROR_MAX - 1) + "…";
+}
+
+export function deliveryStatusLabel(
+  w: Webhook,
+  now: Date = new Date(),
+): WebhookDeliveryLabel {
+  switch (w.last_delivery_status) {
+    case "delivered": {
+      const when = w.last_delivery_at
+        ? relativeTime(w.last_delivery_at, now)
+        : "";
+      return {
+        tone: "success",
+        text: when ? `Delivered ${when}` : "Delivered",
+      };
+    }
+    case "retrying":
+    case "failed": {
+      const err = w.last_error?.trim()
+        ? truncateDeliveryError(w.last_error)
+        : "unknown error";
+      return {
+        tone: w.last_delivery_status === "retrying" ? "warning" : "danger",
+        text: `${w.last_delivery_status === "retrying" ? "Retrying" : "Failed"} — ${err}`,
+      };
+    }
+    default:
+      return { tone: "muted", text: "No deliveries yet" };
   }
 }
 
