@@ -5,6 +5,48 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook delivery reliability + operability (cycle 57)**
+- Dispatcher test-isolation (C57T0): scoped claim path — `run(ctx,
+  webhookID)` adds `AND payload->>'webhook_id' = $3` to the claim
+  query only when non-empty; production `Run` keeps the exact
+  current behavior (unscoped, global claim) and the production
+  dispatcher still calls plain `Run`. The regression test pins
+  isolation: a scoped run delivers only its own rows while 30
+  older due decoy rows for other webhook ids stay pending.
+  SSRF + notify dispatcher tests converted to the scoped run.
+- Outbox retention (C57T1): `service.PruneOutbox` + daily
+  `ticker.OutboxRetentionTicker` prune `done`/`failed` outbox rows
+  older than 30 days, batched so one pass never holds a long lock.
+  The WHERE clause structurally excludes `pending`/`delivering`
+  rows and `processed_at IS NULL` rows. Migration 000063 adds
+  the partial index `ON outbox (processed_at) WHERE status IN
+  ('done','failed')` (EXPLAIN-verified); down migration drops it;
+  up-twice idempotency tested.
+- Webhook delivery status (C57T2): migration 000064 adds nullable
+  `last_delivery_at`, `last_delivery_status` (CHECK in
+  `delivered` / `retrying` / `failed`), and `last_error` to
+  `webhooks` (NULL = never attempted). Each dispatcher outcome
+  write updates the webhook row in the same step as the outbox
+  write: `markDone` → `delivered` + `last_error` NULL,
+  `recordFailure` → `retrying` + send error, `markFailed` →
+  `failed` + send error. A missing webhook row (deleted between
+  lookup and write) or a malformed webhook id is a silent no-op;
+  poison / deleted / deactivated / skip paths write no status.
+  The status update never touches `updated_at`. API list/get/
+  create responses include the three fields present-but-null
+  (same null convention as `AdminUser.name`); the settings
+  `WebhooksSection` shows a compact indicator per webhook —
+  delivered (green, "Delivered <relative time>"), retrying
+  (amber), failed (red), never attempted (muted) — with the
+  error truncated to 80 chars in the label and the full error on
+  the tooltip. OpenAPI `Webhook` schema gains the three fields
+  (plus the previously undocumented `workspace_id` /
+  `updated_at`), pinned by doc-shape + live-response tests.
+  Pinned by 8 service tests (success, retrying, SSRF-failed,
+  exhausted retries, invalid-UUID id, deleted webhook,
+  deactivated skip, never-attempted), a migration test, an HTTP
+  test, and frontend tests.
+
 **Webhook fan-out completeness: every issue mutation enqueues issue.updated (cycle 56)**
 - Invariant: exactly one `issue.updated` webhook per user-visible
   mutation per issue, with `changed_fields` = the union of the
