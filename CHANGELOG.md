@@ -5,6 +5,18 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Inbound GitHub webhook broadcast parity (cycle 63)**
+- The inbound PR webhook now fans out realtime `issue.updated` per affected
+  issue — the same event the manual link/unlink paths already send (C62T1).
+  Opening a PR that mentions an issue, or closing/merging a PR, updates open
+  issue-detail pages live instead of sitting stale until refresh.
+- Contract match, not a new contract: best-effort announce (post-mutation;
+  a nil broadcaster or lookup failure never fails the delivery), no webhook
+  enqueue, no state transitions — a PR close/merge still never moves issues
+  between states (by design), and `changed_fields` vocabulary is unchanged.
+  One event per issue per delivery even when the close path's state flip and
+  mention rescan touch the same issue.
+
 **GitHub integration UI (cycle 62)**
 - Settings → GitHub (admin-only): webhook-secret set/clear (the secret is
   never echoed back — responses carry only `github_webhook_configured`),
