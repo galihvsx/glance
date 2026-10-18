@@ -73,6 +73,8 @@ func notifyError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "webhook url must be http(s)", nil)
 	case errors.Is(err, service.ErrUnknownWebhookEvent):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "unknown webhook event", nil)
+	case errors.Is(err, service.ErrInvalidWebhookFilter):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid webhook filter", nil)
 	case errors.Is(err, service.ErrNothingToUpdate):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "nothing to update", nil)
 	case errors.Is(err, service.ErrForbidden):
@@ -220,6 +222,22 @@ type webhookBody struct {
 	Secret *string  `json:"secret"`
 	Events []string `json:"events"`
 	Active *bool    `json:"active"`
+	// Filter is tri-state (C69T0): absent = untouched on update / no
+	// filter on create; explicit null = clear the filter; an array
+	// replaces it. service.PatchField records presence — a plain
+	// *WebhookFilter could not tell absent from explicit null.
+	Filter service.PatchField[service.WebhookFilter] `json:"filter"`
+}
+
+// webhookFilterInput maps the create body filter onto the service's
+// nil-absent discipline: absent key and explicit null both mean "no
+// filter" on create (nil); a present array is passed through for
+// service-side validation.
+func webhookFilterInput(f service.PatchField[service.WebhookFilter]) *service.WebhookFilter {
+	if !f.Set || f.Value == nil {
+		return nil
+	}
+	return f.Value
 }
 
 func (h *NotifyHandler) createWebhook(c *echo.Context) error {
@@ -239,6 +257,7 @@ func (h *NotifyHandler) createWebhook(c *echo.Context) error {
 		Secret: b.Secret,
 		Events: b.Events,
 		Active: b.Active,
+		Filter: webhookFilterInput(b.Filter),
 	})
 	if err != nil {
 		return notifyError(c, err)
@@ -288,6 +307,16 @@ func (h *NotifyHandler) updateWebhook(c *echo.Context) error {
 	patch := service.WebhookPatch{Secret: b.Secret, Events: b.Events, Active: b.Active}
 	if b.URL != "" {
 		patch.URL = &b.URL
+	}
+	// Filter tri-state → service nil-vs-empty discipline: absent = nil
+	// (untouched); explicit null = non-nil empty (clear); array = replace.
+	// Validation of the conditions themselves lives in the service.
+	if b.Filter.Set {
+		f := service.WebhookFilter{}
+		if b.Filter.Value != nil {
+			f = *b.Filter.Value
+		}
+		patch.Filter = &f
 	}
 	id, ok := requireUUIDParam(c, "id", "webhook id")
 	if !ok {

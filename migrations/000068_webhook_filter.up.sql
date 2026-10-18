@@ -1,0 +1,16 @@
+-- 000068_webhook_filter: per-webhook event filter (C69T0).
+--
+-- Plane's webhooks support event filters (Basic builder / PQL) over
+-- type_id, state_group, assignee_id, label_id, project_id, priority,
+-- start_date, target_date; glance's webhook track had zero filtering.
+-- This column stores one webhook's filter as a JSON array of
+-- {field, op, value} conditions (all AND-ed), validated by
+-- ValidateWebhookFilter in internal/service/webhook_filter.go.
+--
+-- NULL / empty = no filter → the webhook receives every subscribed
+-- event (fully backwards compatible). The evaluator runs at ENQUEUE
+-- time (enqueueWebhookDeliveryTx): a non-matching event never creates
+-- an outbox row, so it never pollutes the delivery history.
+--
+-- Idempotent: safe to re-run (ADD COLUMN IF NOT EXISTS).
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS filter JSONB;

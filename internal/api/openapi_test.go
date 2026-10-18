@@ -2992,6 +2992,141 @@ func TestOpenAPIDocShapesWebhookDeliveryStatus(t *testing.T) {
 	}
 }
 
+// Doc-side pinning test (C69T0): the Webhook.filter property and the
+// WebhookCondition schema in docs/openapi.yaml carry the filter
+// contract — the closed field/op vocabularies, nullable presence
+// (present-but-null when unset — the Go field is a pointer WITHOUT
+// omitempty), and the create/update request bodies accept filter.
+// This is the doc-side complement to the live pins
+// (TestWebhookFilterHTTP asserts the key in real responses).
+func TestOpenAPIDocShapesWebhookFilter(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+		Paths map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	var docSchema struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decodeSchema := func(name string) {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		docSchema = struct {
+			Type  string                     `json:"type"`
+			Props map[string]json.RawMessage `json:"properties"`
+		}{}
+		if err := json.Unmarshal(raw, &docSchema); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+	}
+
+	// Webhook.filter: nullable array of WebhookCondition.
+	decodeSchema("Webhook")
+	rawFilter, ok := docSchema.Props["filter"]
+	if !ok {
+		t.Fatal("Webhook doc missing property \"filter\"")
+	}
+	var filterProp struct {
+		Type     string `json:"type"`
+		Nullable bool   `json:"nullable"`
+		Items    struct {
+			Ref string `json:"$ref"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rawFilter, &filterProp); err != nil {
+		t.Fatalf("decode Webhook.filter: %v", err)
+	}
+	if filterProp.Type != "array" || !filterProp.Nullable ||
+		filterProp.Items.Ref != "#/components/schemas/WebhookCondition" {
+		t.Fatalf("Webhook.filter = {%s, nullable=%v, items=%s}, want {array, true, WebhookCondition}",
+			filterProp.Type, filterProp.Nullable, filterProp.Items.Ref)
+	}
+
+	// WebhookCondition: field/op enums pin the closed vocabularies.
+	decodeSchema("WebhookCondition")
+	var fieldProp, opProp struct {
+		Type string   `json:"type"`
+		Enum []string `json:"enum"`
+	}
+	if raw, ok := docSchema.Props["field"]; !ok {
+		t.Fatal("WebhookCondition doc missing property \"field\"")
+	} else if err := json.Unmarshal(raw, &fieldProp); err != nil {
+		t.Fatalf("decode WebhookCondition.field: %v", err)
+	}
+	wantFields := map[string]bool{
+		"priority": true, "state_group": true, "state_id": true,
+		"assignee_id": true, "label_id": true, "project_id": true,
+		"target_date": true,
+	}
+	if len(fieldProp.Enum) != len(wantFields) {
+		t.Fatalf("WebhookCondition.field enum = %v, want exactly %v", fieldProp.Enum, wantFields)
+	}
+	for _, f := range fieldProp.Enum {
+		if !wantFields[f] {
+			t.Fatalf("WebhookCondition.field enum = %v, want exactly %v", fieldProp.Enum, wantFields)
+		}
+	}
+	if raw, ok := docSchema.Props["op"]; !ok {
+		t.Fatal("WebhookCondition doc missing property \"op\"")
+	} else if err := json.Unmarshal(raw, &opProp); err != nil {
+		t.Fatalf("decode WebhookCondition.op: %v", err)
+	}
+	if len(opProp.Enum) != 2 || opProp.Enum[0] != "eq" || opProp.Enum[1] != "in" {
+		t.Fatalf("WebhookCondition.op enum = %v, want [eq in]", opProp.Enum)
+	}
+	if _, ok := docSchema.Props["value"]; !ok {
+		t.Fatal("WebhookCondition doc missing property \"value\"")
+	}
+
+	// The create (POST) and update (PATCH) request bodies accept filter.
+	checkRequestBody := func(path, method string, wantNullable bool) {
+		t.Helper()
+		rawPath, ok := spec.Paths[path]
+		if !ok {
+			t.Fatalf("spec has no path %s", path)
+		}
+		var pathItem map[string]json.RawMessage
+		if err := json.Unmarshal(rawPath, &pathItem); err != nil {
+			t.Fatalf("decode path %s: %v", path, err)
+		}
+		var op struct {
+			RequestBody struct {
+				Content map[string]struct {
+					Schema struct {
+						Props map[string]json.RawMessage `json:"properties"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"requestBody"`
+		}
+		if err := json.Unmarshal(pathItem[method], &op); err != nil {
+			t.Fatalf("decode %s %s: %v", method, path, err)
+		}
+		rawProp, ok := op.RequestBody.Content["application/json"].Schema.Props["filter"]
+		if !ok {
+			t.Fatalf("%s %s request body lacks filter property", method, path)
+		}
+		var prop struct {
+			Nullable bool `json:"nullable"`
+		}
+		if err := json.Unmarshal(rawProp, &prop); err != nil {
+			t.Fatalf("decode %s %s filter: %v", method, path, err)
+		}
+		if prop.Nullable != wantNullable {
+			t.Fatalf("%s %s filter nullable = %v, want %v", method, path, prop.Nullable, wantNullable)
+		}
+	}
+	checkRequestBody("/api/v1/workspaces/{slug}/webhooks", "post", true)
+	checkRequestBody("/api/v1/workspaces/{slug}/webhooks/{id}", "patch", true)
+}
+
 // Doc-side pinning test (C59T1): the WebhookDelivery schema in
 // docs/openapi.yaml matches service.WebhookDelivery field-for-field
 // (reflection pin — a struct change without a doc update fails),
