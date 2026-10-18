@@ -32,6 +32,12 @@ import { Skeleton } from "../ui/skeleton";
 import { cn } from "cn";
 import TimeTracker from "./TimeTracker";
 import VersionHistory from "./VersionHistory";
+import CommentReactions from "./CommentReactions";
+
+// Member (15)+ may toggle reactions — mirrors the PageReactions
+// ROLE_MEMBER gate; the server enforces it, the UI only hides what
+// would 403.
+const ROLE_MEMBER = 15;
 
 export type ActivityTab =
   | "all"
@@ -249,6 +255,9 @@ function CommentBody({
 }
 
 function CommentItem({
+  slug,
+  identifier,
+  uuid,
   comment,
   onReply,
   onToggleResolve,
@@ -257,7 +266,11 @@ function CommentItem({
   onToggleExpand,
   members,
   depth = 0,
+  canReact,
 }: {
+  slug: string;
+  identifier: string;
+  uuid: string;
   comment: CommentNode;
   onReply: (parentId: string) => void;
   /** Root-only resolve/reopen (C32). Undefined for reply subtrees. */
@@ -268,6 +281,8 @@ function CommentItem({
   onToggleExpand?: (id: string) => void;
   members: MentionableMember[];
   depth?: number;
+  /** Member 15+ — computed once in ActivitySection, threaded down. */
+  canReact: boolean;
 }) {
   const initial = (actorName(comment.actor)[0] ?? "?").toUpperCase();
   const resolved = comment.resolved_at != null;
@@ -337,11 +352,21 @@ function CommentItem({
             <p className="mt-1 text-[10px] leading-[17px] whitespace-pre-wrap text-ink-secondary">
               <CommentBody text={tiptapText(comment.content)} members={members} />
             </p>
+            <CommentReactions
+              slug={slug}
+              identifier={identifier}
+              uuid={uuid}
+              comment={comment}
+              canWrite={canReact}
+            />
             {comment.replies.length > 0 && (
               <div className="mt-1 border-l border-border-hairline pl-4">
                 {comment.replies.map((r) => (
                   <CommentItem
                     key={r.id}
+                    slug={slug}
+                    identifier={identifier}
+                    uuid={uuid}
                     comment={r}
                     onReply={onReply}
                     onToggleResolve={onToggleResolve}
@@ -350,6 +375,7 @@ function CommentItem({
                     onToggleExpand={onToggleExpand}
                     members={members}
                     depth={depth + 1}
+                    canReact={canReact}
                   />
                 ))}
               </div>
@@ -473,6 +499,10 @@ export default function ActivitySection({
   const comments = commentsQuery.data ?? [];
   const history = historyQuery.data ?? [];
   const mentionMembers = (membersQuery.data ?? []).filter((m) => m.id !== userId);
+  // C67T1: member 15+ may toggle comment reactions (server-enforced).
+  const canReact =
+    (membersQuery.data?.find((m) => m.id === userId)?.role ?? 0) >=
+    ROLE_MEMBER;
 
   const commentMutation = useMutation({
     mutationFn: (body: { content: unknown; parent_id?: string | null }) =>
@@ -777,6 +807,9 @@ export default function ActivitySection({
                 item.kind === "comment" ? (
                   <CommentItem
                     key={item.comment.id}
+                    slug={slug}
+                    identifier={identifier}
+                    uuid={uuid}
                     comment={item.comment}
                     onReply={(id) => {
                       setReplyTo(id);
@@ -794,6 +827,7 @@ export default function ActivitySection({
                     }
                     onToggleExpand={toggleExpand}
                     members={mentionMembers}
+                    canReact={canReact}
                   />
                 ) : (
                   <EventItem key={item.entry.id} entry={item.entry} states={states} />
