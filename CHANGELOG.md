@@ -5,6 +5,24 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook dispatch fairness: per-webhook claim cap (cycle 58)**
+- The global dispatcher claim (`claimDue`, unscoped production path)
+  now takes at most `webhookPerWebhookCap = 5` rows per webhook per
+  pass (`ROW_NUMBER() OVER (PARTITION BY payload->>'webhook_id'
+  ORDER BY id)`), filling the 25-row batch across webhooks. Before,
+  one webhook's due backlog filled the whole batch and every other
+  webhook's rows starved silently behind it (head-of-line blocking).
+  Under normal load (≤5 due rows per webhook) the claimed rows and
+  order are identical to before; a flooding webhook still drains
+  every pass, just at most 5 rows per tick. The scoped (test-only)
+  claim stays uncapped. The ranking lives in an `IN`-subquery
+  because Postgres rejects `FOR UPDATE` on a query whose `FROM`
+  contains a window function; the outer query keeps its exact
+  original shape (`ORDER BY id`, `LIMIT`, `FOR UPDATE SKIP LOCKED`
+  on outbox rows). No migration, no API/frontend/docs changes.
+  Pinned by 6 DB-backed tests (flood starvation, normal load, cap
+  boundary, scoped uncapped, oldest-first ordering, full drain).
+
 **Webhook delivery reliability + operability (cycle 57)**
 - Dispatcher test-isolation (C57T0): scoped claim path — `run(ctx,
   webhookID)` adds `AND payload->>'webhook_id' = $3` to the claim
