@@ -116,6 +116,7 @@ export default function PropertyStrip({
   onPatch,
   onToggleAssignee,
   disabled,
+  allowedStateIds,
 }: {
   issue: Issue;
   states: IssueState[];
@@ -123,6 +124,10 @@ export default function PropertyStrip({
   onPatch: (body: Record<string, unknown>) => void;
   onToggleAssignee: (id: string, currently: boolean) => void;
   disabled?: boolean;
+  /** C68T1: workflow transition controls — the permitted next states from
+   *  the issue's current state, or null when the project is unrestricted
+   *  (client hint only; the server enforces). */
+  allowedStateIds?: string[] | null;
 }) {
   const state = states.find((s) => s.id === issue.state_id);
   const [stateOpen, setStateOpen] = useState(false);
@@ -143,21 +148,35 @@ export default function PropertyStrip({
             )}
           </PopoverTrigger>
           <PopoverContent className="w-52 p-1" align="start">
-            {states.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => {
-                  onPatch({ state_id: s.id });
-                  setStateOpen(false);
-                }}
-                className="flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-left text-xs text-ink-secondary hover:bg-wash-hover hover:text-ink"
-              >
-                <StateDot state={s} />
-                <span className="flex-1">{s.name}</span>
-                {s.id === issue.state_id && <Check className="h-3.5 w-3.5 text-ink-muted" />}
-              </button>
-            ))}
+            {states.map((s) => {
+              // C68T1: the issue's current state and any permitted next
+              // state stay selectable; the rest are disabled (hint only).
+              const blocked =
+                allowedStateIds != null &&
+                s.id !== issue.state_id &&
+                !allowedStateIds.includes(s.id);
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => {
+                    onPatch({ state_id: s.id });
+                    setStateOpen(false);
+                  }}
+                  title={blocked ? "Blocked by the project workflow" : undefined}
+                  className={`flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-left text-xs text-ink-secondary hover:bg-wash-hover hover:text-ink ${
+                    blocked ? "cursor-not-allowed opacity-40" : ""
+                  }`}
+                >
+                  <StateDot state={s} />
+                  <span className="flex-1">{s.name}</span>
+                  {s.id === issue.state_id && (
+                    <Check className="h-3.5 w-3.5 text-ink-muted" />
+                  )}
+                </button>
+              );
+            })}
           </PopoverContent>
         </Popover>
       </span>

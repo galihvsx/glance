@@ -28,6 +28,12 @@ import { api, ApiError } from "../lib/api";
 import { dropSortOrder } from "../lib/sortOrder";
 import { stateDotClass } from "../lib/stateDot";
 import {
+  isTransitionAllowed,
+  stateTransitionConflictMessage,
+  useWorkflow,
+} from "../lib/workflow";
+import { toast } from "../components/ui/toast";
+import {
   Calendar,
   Copy,
   GitBranch,
@@ -307,6 +313,7 @@ function BoardColumn({
   priority,
   issues,
   disabled,
+  dropDisabled = false,
   onQuickCreate,
   onQuickExpand,
   fields,
@@ -320,12 +327,20 @@ function BoardColumn({
   priority?: number;
   issues: Issue[];
   disabled: boolean;
+  /** C68T1: true when a drag is active and the project's workflow rules
+   *  forbid dropping the dragged issue into this state column. The
+   *  droppable is unregistered (client hint only — the server enforces)
+   *  and the column dims while dragging. */
+  dropDisabled?: boolean;
   onQuickCreate: (name: string) => Promise<void>;
   onQuickExpand: (name: string) => void;
   fields: DisplayFields;
   onOpen: (id: string) => void;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
+  const { setNodeRef, isOver } = useDroppable({
+    id: droppableId,
+    disabled: dropDisabled,
+  });
   // Header expand tool: widen this column for a closer look.
   const [expanded, setExpanded] = useState(false);
   // Header "+" tool: opens this column's inline quick-add.
@@ -337,7 +352,10 @@ function BoardColumn({
       ref={setNodeRef}
       className={`flex min-h-[420px] shrink-0 flex-col rounded-[7px] border bg-[#0f0f11] px-[8px] pb-[8px] transition-[width,border-color,background-color] duration-150 ${
         expanded ? "w-[520px]" : "w-[325px]"
-      } ${isOver ? "border-accent-blue/70" : "border-border-hairline"}`}
+      } ${isOver ? "border-accent-blue/70" : "border-border-hairline"} ${
+        dropDisabled ? "opacity-40" : ""
+      }`}
+      aria-disabled={dropDisabled || undefined}
     >
       <div className="flex h-[42px] flex-none items-center gap-[7px] px-[4px]">
         {state ? (
@@ -484,6 +502,15 @@ export default function Board() {
     () => new Map(states.map((s) => [s.id, s] as const)),
     [states],
   );
+  const stateNames = useMemo(
+    () => new Map(states.map((s) => [s.id, s.name] as const)),
+    [states],
+  );
+  // C68T1: workflow transition controls — client-side move hints. The
+  // server enforces; this only disables disallowed drop targets and
+  // names the permitted next states on a 409.
+  const workflowQuery = useWorkflow(slug, identifier);
+  const workflow = workflowQuery.data ?? null;
   // Stabilized so downstream memos (column grouping) don't re-evaluate
   // every render on a fresh [] identity while the query is pending.
   const issues = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
@@ -518,9 +545,16 @@ export default function Board() {
           blockers,
         });
       } else {
-        setBoardError(
-          e instanceof ApiError ? e.message : "Failed to move issue",
-        );
+        // C68T1: workflow transition controls — the move was denied by the
+        // project's workflow rules; name the permitted next states.
+        const conflict = stateTransitionConflictMessage(e, stateNames);
+        if (conflict) {
+          toast.add({ title: "Move blocked", description: conflict, type: "error" });
+        } else {
+          setBoardError(
+            e instanceof ApiError ? e.message : "Failed to move issue",
+          );
+        }
       }
       void queryClient.invalidateQueries({ queryKey: issuesKey });
     },
@@ -593,6 +627,26 @@ export default function Board() {
       ? gs
       : gs.filter((g) => g.issues.length > 0);
   }, [settings.groupBy, settings.showEmptyGroups, states, issues]);
+
+  // C68T1: per-column drop hint while a drag is active — the set of
+  // droppable IDs the project's workflow rules forbid the dragged issue
+  // from landing in (state columns only; priority columns unaffected).
+  // Client hint only; the server enforces on PATCH.
+  const dropBlocked = useMemo(() => {
+    const blocked = new Set<string>();
+    if (!workflow || !activeIssue || settings.groupBy === "priority") {
+      return blocked;
+    }
+    for (const g of groups) {
+      if (
+        g.state &&
+        !isTransitionAllowed(workflow, activeIssue.state_id, g.state.id)
+      ) {
+        blocked.add(g.droppableId);
+      }
+    }
+    return blocked;
+  }, [workflow, activeIssue, settings.groupBy, groups]);
 
   /** Inline quick-add: title only; the column stamps state (and priority
    *  in priority-grouped mode). The new card appears via query
@@ -850,6 +904,7 @@ export default function Board() {
                   priority={g.priority}
                   issues={g.issues}
                   disabled={!canEdit}
+                  dropDisabled={dropBlocked.has(g.droppableId)}
                   onQuickCreate={(name) => quickCreate(g, name)}
                   onQuickExpand={(name) => quickExpand(g, name)}
                   fields={settings.fields}

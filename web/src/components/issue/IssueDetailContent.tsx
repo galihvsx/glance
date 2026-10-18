@@ -12,6 +12,11 @@ import {
   Plus,
 } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
+import {
+  allowedNextStateIds,
+  stateTransitionConflictMessage,
+  useWorkflow,
+} from "../../lib/workflow";
 import { useAuth } from "../../lib/auth";
 import type {
   Issue,
@@ -379,6 +384,18 @@ export default function IssueDetailContent({
 
   const issue = issueQuery.data;
   const states = statesQuery.data ?? [];
+  // C68T1: workflow transition controls — client hint only. The permitted
+  // next states from the issue's current state, or null when the project
+  // is unrestricted.
+  const workflow = useWorkflow(slug, identifier).data ?? null;
+  const allowedStateIds = useMemo(() => {
+    if (!issue || !workflow) return null;
+    return allowedNextStateIds(workflow, issue.state_id);
+  }, [workflow, issue]);
+  const stateNames = useMemo(
+    () => new Map(states.map((s) => [s.id, s.name] as const)),
+    [states],
+  );
   // C53T1: display ids for parents the detail page already loaded
   // (the live parent, via parentQuery) — VersionHistory renders a
   // snapshot parent_id as its display id when known, else a truncated
@@ -461,6 +478,13 @@ export default function IssueDetailContent({
           setBlockerConfirm({ stateId, blockers });
           return;
         }
+      }
+      // C68T1: workflow transition controls — the move was denied by the
+      // project's workflow rules; name the permitted next states.
+      const conflict = stateTransitionConflictMessage(e, stateNames);
+      if (conflict) {
+        toast.add({ title: "Move blocked", description: conflict, type: "error" });
+        return;
       }
       setError(e instanceof ApiError ? e.message : "Failed to update issue");
     },
@@ -831,6 +855,7 @@ export default function IssueDetailContent({
                 onPatch={(b) => patchMutation.mutate(b)}
                 onToggleAssignee={(id, cur) => toggleRelation("assignees", id, cur)}
                 disabled={patchMutation.isPending}
+                allowedStateIds={allowedStateIds}
               />
 
               {/* Description */}

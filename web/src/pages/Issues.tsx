@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { stateTransitionConflictMessage } from "../lib/workflow";
 import type {
   Cycle,
   Issue,
@@ -421,6 +422,16 @@ export default function Issues() {
       });
     },
     onError: (e) => {
+      // C68T1: workflow transition controls — a bulk set was denied by the
+      // project's workflow rules; name the permitted next states.
+      const conflict = stateTransitionConflictMessage(
+        e,
+        new Map((statesQuery.data ?? []).map((s) => [s.id, s.name] as const)),
+      );
+      if (conflict) {
+        toast.add({ title: "Move blocked", description: conflict, type: "error" });
+        return;
+      }
       setBulkError(e instanceof ApiError ? e.message : "Bulk update failed");
     },
   });

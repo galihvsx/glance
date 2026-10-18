@@ -12,6 +12,7 @@ import EstimatesSection from "../components/settings/EstimatesSection";
 import GeneralSection from "../components/settings/GeneralSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import StatesSection from "../components/settings/StatesSection";
+import WorkflowSection from "../components/settings/WorkflowSection";
 import TemplatesSection from "../components/settings/TemplatesSection";
 import CustomFieldsSection from "../components/settings/CustomFieldsSection";
 import ImportSection from "../components/settings/ImportSection";
@@ -64,6 +65,7 @@ export default function ProjectSettings() {
               <TabsTrigger value="general">General</TabsTrigger>
               <TabsTrigger value="labels">Labels</TabsTrigger>
               <TabsTrigger value="states">States</TabsTrigger>
+              <TabsTrigger value="workflow">Workflow</TabsTrigger>
               <TabsTrigger value="estimates">Estimates</TabsTrigger>
               <TabsTrigger value="templates">Templates</TabsTrigger>
               <TabsTrigger value="custom-fields">Custom fields</TabsTrigger>
@@ -81,6 +83,9 @@ export default function ProjectSettings() {
             </TabsContent>
             <TabsContent value="states" className="mt-4">
               <StatesSection slug={slug} identifier={identifier} canEdit={canEdit} />
+            </TabsContent>
+            <TabsContent value="workflow" className="mt-4">
+              <WorkflowSection slug={slug} identifier={identifier} canEdit={canEdit} />
             </TabsContent>
             <TabsContent value="estimates" className="mt-4">
               <EstimatesSection

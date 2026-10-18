@@ -10,6 +10,8 @@ import {
 } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { stateTransitionConflictMessage, useWorkflow } from "../lib/workflow";
+import { toast } from "../components/ui/toast";
 import type {
   Issue,
   IssueAssignee,
@@ -240,6 +242,20 @@ export default function Spreadsheet() {
     () => new Map((statesQuery.data ?? []).map((s) => [s.id, s] as const)),
     [statesQuery.data],
   );
+  // C68T1: workflow transition controls — client hint only. When the
+  // project restricts moves, the state cell editor only offers the
+  // row's current state plus its permitted next states.
+  const workflow = useWorkflow(slug, identifier).data ?? null;
+  const cellStatesFor = (stateId: string) => {
+    const all = statesQuery.data ?? [];
+    if (!workflow || !workflow.transitions.length) return all;
+    const allowed = new Set(
+      workflow.transitions
+        .filter((t) => t.from_state_id === stateId)
+        .map((t) => t.to_state_id),
+    );
+    return all.filter((s) => s.id === stateId || allowed.has(s.id));
+  };
 
   const createMutation = useMutation({
     mutationFn: (body: {
@@ -342,7 +358,17 @@ export default function Spreadsheet() {
     },
     onError: (e, _vars, ctx) => {
       if (ctx?.prev) queryClient.setQueryData(issuesKey, ctx.prev);
-      setEditError(e instanceof ApiError ? e.message : "Failed to update issue");
+      // C68T1: workflow transition controls — the cell edit was denied by
+      // the project's workflow rules; name the permitted next states.
+      const conflict = stateTransitionConflictMessage(
+        e,
+        new Map((statesQuery.data ?? []).map((s) => [s.id, s.name] as const)),
+      );
+      if (conflict) {
+        toast.add({ title: "Move blocked", description: conflict, type: "error" });
+      } else {
+        setEditError(e instanceof ApiError ? e.message : "Failed to update issue");
+      }
     },
     onSettled: () => {
       void queryClient.invalidateQueries({
@@ -819,7 +845,7 @@ export default function Spreadsheet() {
                         >
                           {isEditing(issue.id, "state") ? (
                             <CellStateEditor
-                              states={statesQuery.data ?? []}
+                              states={cellStatesFor(issue.state_id)}
                               value={issue.state_id}
                               ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
                               onCommit={(stateId) =>
