@@ -253,6 +253,9 @@ export interface CommentNode {
   resolved_at?: string | null;
   /** Who resolved the thread; null while open (roots only). */
   resolved_by?: ActorRef | null;
+  /** Reaction groups (C67T0); the backend always embeds `[]` — never
+   *  null or omitted — on ListComments. */
+  reactions: ReactionGroup[];
   replies: CommentNode[];
 }
 

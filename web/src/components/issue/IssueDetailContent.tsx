@@ -34,6 +34,7 @@ import DraftWithAI from "./DraftWithAI";
 import TriageSuggestions from "./TriageSuggestions";
 import IssueSummary from "./IssueSummary";
 import IssueBreakdown from "./IssueBreakdown";
+import IssueReactions from "./IssueReactions";
 import SubIssues from "./SubIssues";
 import IssueLinks from "./IssueLinks";
 import IssueExternalRefs from "./IssueExternalRefs";
@@ -818,6 +819,9 @@ export default function IssueDetailContent({
                   {issue.name.length}/255
                 </span>
               </div>
+
+              {/* Issue reactions (C67T1) — row below the title meta */}
+              <IssueReactions slug={slug} identifier={identifier} uuid={uuid} />
 
               {/* Inline property strip */}
               <PropertyStrip
