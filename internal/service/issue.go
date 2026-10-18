@@ -2081,7 +2081,25 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// C64T1 audit: the issueRowContentEqual guard above covers this
 		// call site — a no-change final row (no-op patch, no cascade)
 		// snapshots nothing.
+		c50SnapshotFired := false
 		if !issueRowContentEqual(final, updatedRow) {
+			if err := snapshotVersionTx(ctx, tx, id, actorID, final); err != nil {
+				return 0, nil, err
+			}
+			c50SnapshotFired = true
+		}
+		// C65T1: a real label/assignee membership change (REUSED
+		// setFields — never re-derived) that moved no row anywhere owes
+		// exactly one version carrying the post-mutation row: membership
+		// is not a row column, so neither updateIssueTx's snapshot nor
+		// the C50T0 guard above could ever see it. Skipped when the item
+		// already got a version this pass — updateIssueTx snapshotted
+		// (len(patchFields) > 0 mirrors its sets exactly) or the C50T0
+		// guard just fired (a cascade moved the row) — the exactly-one
+		// invariant. Skipped on no-op sets: setFields carries neither
+		// "labels" nor "assignees". final already has its derived
+		// DisplayID set above.
+		if !c50SnapshotFired && len(patchFields) == 0 && bulkSetMembershipChanged(setFields) {
 			if err := snapshotVersionTx(ctx, tx, id, actorID, final); err != nil {
 				return 0, nil, err
 			}
@@ -2209,6 +2227,20 @@ func bulkSetChangedSetFieldsTx(ctx context.Context, tx pgx.Tx, issueID string, l
 		}
 	}
 	return fields, nil
+}
+
+// bulkSetMembershipChanged reports whether the direct set-change
+// fields computed by bulkSetChangedSetFieldsTx record a real
+// label/assignee membership change for this item (C65T1). The
+// snapshot schema stays the post-mutation Issue row; the
+// issue_activities 'labels'/'assignees' rows record the old/new sets.
+func bulkSetMembershipChanged(setFields []string) bool {
+	for _, f := range setFields {
+		if f == "labels" || f == "assignees" {
+			return true
+		}
+	}
+	return false
 }
 
 // bulkSetWebhookTx enqueues exactly ONE issue.updated webhook in-tx

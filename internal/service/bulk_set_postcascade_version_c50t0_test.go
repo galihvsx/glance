@@ -1,13 +1,14 @@
 package service
 
-// BulkSet post-cascade version snapshot (C50T0): the label/assignee
-// replace fns evaluate automations AFTER updateIssueTx ran, so a
-// cascade rule (e.g. labels_changed → set_state / set_priority) moves
-// the row after updateIssueTx snapshotted it. BulkSetIssues must write
-// one extra version carrying the post-cascade final row when — and
-// only when — the final row's content differs from the row
-// updateIssueTx returned. No duplicate-content version on the
-// no-cascade path.
+// version snapshot (C50T0): the label/assignee replace fns evaluate
+// automations AFTER updateIssueTx ran, so a cascade rule (e.g.
+// labels_changed → set_state / set_priority) moves the row after
+// updateIssueTx snapshotted it. BulkSetIssues must write one extra
+// version carrying the post-cascade final row when — and only when —
+// the final row's content differs from the row updateIssueTx returned.
+// C65T1: a real membership change that moved no row owes its own
+// version — labels-only / assignees-only no-cascade sets snapshot
+// once; no-op sets and already-snapshotted items snapshot nothing.
 
 import (
 	"context"
@@ -73,7 +74,7 @@ func TestBulkSetLabelsCascadeVersionCarriesNewPriority(t *testing.T) {
 	}
 }
 
-func TestBulkSetLabelsOnlyNoCascadeWritesNoVersion(t *testing.T) {
+func TestBulkSetLabelsOnlyNoCascadeWritesOneVersion(t *testing.T) {
 	fx := setupLinkedIssue(t)
 	ctx := context.Background()
 	labelID := createBulkSetLabel(t, fx, "plain-label")
@@ -89,10 +90,16 @@ func TestBulkSetLabelsOnlyNoCascadeWritesNoVersion(t *testing.T) {
 		t.Fatalf("BulkSetIssues labels: %v", err)
 	}
 
-	// (c) Labels-only, no rule / no row change → version count UNCHANGED:
-	// no duplicate-content version.
-	if got := versionCount(t, fx, fx.iss.ID); got != 1 {
-		t.Fatalf("versions after BulkSet = %d, want 1 (unchanged)", got)
+	// (c) C65T1: labels-only, no rule / no row change → exactly one
+	// version for the real membership change — the C50T0 guard could
+	// never see it (membership is not a row column). Never a second.
+	if got := versionCount(t, fx, fx.iss.ID); got != 2 {
+		t.Fatalf("versions after BulkSet = %d, want 2 (create + membership)", got)
+	}
+	snap := latestVersionSnapshot(t, fx, fx.iss.ID)
+	live := c65LiveRow(t, fx.pool, fx.iss.ID)
+	if !issueRowContentEqual(&snap, live) {
+		t.Fatalf("latest snapshot row content differs from the live row")
 	}
 }
 
