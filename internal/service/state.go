@@ -195,6 +195,12 @@ func UpdateState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 // C51T0: the reassign also appends one version snapshot per moved LIVE
 // issue (new StateID, authored by the deleter) in the same tx;
 // soft-deleted issues get no version.
+//
+// C61T0: the reassign also enqueues one in-tx issue.updated webhook
+// per moved LIVE issue (changed_fields = ["state_id"], same payload
+// shape as restoreIssueTx) in the same tx; soft-deleted issues get no
+// row. Any enqueue error rolls back the whole delete, like every other
+// mutation.
 func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, stateID, actorID string, reassignTo *string) error {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -318,6 +324,20 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 		// as the activity rows above). Every moved live issue changed
 		// state_id by construction (reassignTo != deleted state), so
 		// the snapshot is unconditional — no content-equality guard.
+		//
+		// C61T0: the same loop enqueues the issue.updated webhook
+		// (outbox row, in this tx) per moved live issue, reusing the
+		// scanned row's DisplayID. changed_fields is exactly
+		// ["state_id"] — the reassign UPDATE touches no other field
+		// (row-field-only vocabulary). An enqueue error rolls back
+		// the delete.
+		var wsID string
+		if len(movedLiveIDs) > 0 {
+			wsID, err = workspaceIDForProjectTx(ctx, tx, projectID)
+			if err != nil {
+				return err
+			}
+		}
 		for _, movedID := range movedLiveIDs {
 			iss, err := scanIssue(tx.QueryRow(ctx,
 				`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid FOR UPDATE`, movedID))
@@ -326,6 +346,14 @@ func DeleteState(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, st
 			}
 			iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
 			if err := snapshotVersionTx(ctx, tx, movedID, actorID, iss); err != nil {
+				return err
+			}
+			if err := enqueueWebhookDeliveryTx(ctx, tx, wsID, EventIssueUpdated, map[string]any{
+				"id":             movedID,
+				"display_id":     iss.DisplayID,
+				"changed_fields": []string{"state_id"},
+				"actor_id":       actorID,
+			}); err != nil {
 				return err
 			}
 		}
