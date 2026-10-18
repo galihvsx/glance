@@ -450,8 +450,10 @@ func upsertPRRef(ctx context.Context, q queryRower, issueID, repo, number, url, 
 // linkMentionedIssues resolves every mentioned display ID against the
 // workspace's projects and upserts the PR ref with the given state.
 // Unknown identifiers and deleted issues are skipped silently — a PR body
-// mentioning GLC-999 or "UTF-8" is not an error.
-func linkMentionedIssues(ctx context.Context, pool *pgxpool.Pool, wsID, repo, number, url, state, text string) error {
+// mentioning GLC-999 or "UTF-8" is not an error. It returns the ids of the
+// issues that gained a ref row (used by the C63T0 inbound broadcast).
+func linkMentionedIssues(ctx context.Context, pool *pgxpool.Pool, wsID, repo, number, url, state, text string) ([]string, error) {
+	var linked []string
 	for _, mention := range extractIssueMentions(text) {
 		var issueID string
 		err := pool.QueryRow(ctx,
@@ -464,27 +466,79 @@ func linkMentionedIssues(ctx context.Context, pool *pgxpool.Pool, wsID, repo, nu
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
-			return err
+			return nil, err
 		}
 		if err := upsertPRRef(ctx, pool, issueID, repo, number, url, state); err != nil {
-			return err
+			return nil, err
 		}
+		linked = append(linked, issueID)
 	}
-	return nil
+	return linked, nil
 }
 
 // closePRRefs flips every ref for (workspace, repo, PR number) to the
 // closed state — this catches refs linked manually via POST /refs, which
-// the mention scan below would otherwise miss.
-func closePRRefs(ctx context.Context, pool *pgxpool.Pool, wsID, repo, number, state string) error {
-	_, err := pool.Exec(ctx,
+// the mention scan below would otherwise miss. It returns the ids of the
+// affected issues (used by the C63T0 inbound broadcast).
+func closePRRefs(ctx context.Context, pool *pgxpool.Pool, wsID, repo, number, state string) ([]string, error) {
+	rows, err := pool.Query(ctx,
 		`UPDATE issue_external_refs r SET state = $4
 		   FROM issues i JOIN projects p ON p.id = i.project_id
 		  WHERE r.issue_id = i.id AND p.workspace_id = $1::uuid
 		    AND r.provider = 'github' AND r.repo = $2
-		    AND r.ref_type = 'pr' AND r.ref_id = $3`,
+		    AND r.ref_type = 'pr' AND r.ref_id = $3
+		  RETURNING r.issue_id::text`,
 		wsID, repo, number, state)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var affected []string
+	for rows.Next() {
+		var issueID string
+		if err := rows.Scan(&issueID); err != nil {
+			return nil, err
+		}
+		if !seen[issueID] {
+			seen[issueID] = true
+			affected = append(affected, issueID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return affected, nil
+}
+
+// announceInboundRefChanges fans out issue.updated per issue whose refs
+// changed on an inbound webhook delivery (C63T0) — the same event the
+// manual ref paths send via announceExternalRefChange. Best-effort: a
+// routing-lookup failure skips that issue rather than failing the
+// delivery, and duplicates collapse into one event per issue (the closed
+// path's state flip and mention rescan can touch the same issue).
+func announceInboundRefChanges(ctx context.Context, pool *pgxpool.Pool, issueIDs []string) {
+	if Realtime == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, issueID := range issueIDs {
+		if seen[issueID] {
+			continue
+		}
+		seen[issueID] = true
+		var wsSlug, ident, projectID string
+		if err := pool.QueryRow(ctx,
+			`SELECT w.slug, p.identifier, p.id::text
+			   FROM issues i
+			   JOIN projects p ON p.id = i.project_id
+			   JOIN workspaces w ON w.id = p.workspace_id
+			  WHERE i.id = $1::uuid AND i.deleted_at IS NULL`,
+			issueID).Scan(&wsSlug, &ident, &projectID); err != nil {
+			continue
+		}
+		announceExternalRefChange(ctx, pool, wsSlug, ident, projectID, issueID)
+	}
 }
 
 // HandleGitHubWebhook processes one verified delivery. event is the
@@ -521,19 +575,34 @@ func HandleGitHubWebhook(ctx context.Context, pool *pgxpool.Pool, event, signatu
 	switch p.Action {
 	case "opened":
 		// Auto-link mentioned issues, state open. Idempotent: a
-		// redelivered opened collapses into the same rows.
-		return linkMentionedIssues(ctx, pool, wsID, repo, number, url, "open", text)
+		// redelivered opened collapses into the same rows. C63T0:
+		// announce per affected issue, same event the manual path
+		// sends — best-effort, delivery success is unaffected.
+		linked, err := linkMentionedIssues(ctx, pool, wsID, repo, number, url, "open", text)
+		if err != nil {
+			return err
+		}
+		announceInboundRefChanges(ctx, pool, linked)
+		return nil
 	case "closed":
 		state := "closed"
 		if p.PullRequest.Merged {
 			state = "merged"
 		}
-		if err := closePRRefs(ctx, pool, wsID, repo, number, state); err != nil {
+		affected, err := closePRRefs(ctx, pool, wsID, repo, number, state)
+		if err != nil {
 			return err
 		}
 		// Also run the mention scan with the closed state, so a missed
 		// opened delivery still links the PR (with the right state).
-		return linkMentionedIssues(ctx, pool, wsID, repo, number, url, state, text)
+		linked, err := linkMentionedIssues(ctx, pool, wsID, repo, number, url, state, text)
+		if err != nil {
+			return err
+		}
+		// C63T0: broadcast for every issue the delivery touched —
+		// announceInboundRefChanges dedupes the flip+rescan overlap.
+		announceInboundRefChanges(ctx, pool, append(affected, linked...))
+		return nil
 	default:
 		return nil
 	}
