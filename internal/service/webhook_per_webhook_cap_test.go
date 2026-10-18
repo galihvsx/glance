@@ -20,16 +20,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// clearDueWebhookOutboxRows deletes leftover due webhook outbox rows from
-// other tests. The test DB is shared, and an unscoped Run claims the
+// clearDueWebhookOutboxRows deletes leftover due webhook.deliver rows
+// from other tests. The test DB is shared, and an unscoped Run claims the
 // oldest rows globally, so another test's pending rows (e.g. the scoped
 // test's 30 untouched decoy rows) would fill the claim batch and starve
-// this test's own rows. Other tests assert on their rows within their
-// own test body, so deleting their leftovers here is safe.
+// this test's own rows. Narrowed on purpose: event = 'webhook.deliver'
+// AND a webhook_id in the payload — other packages' marker rows must
+// survive. In particular, the mail package's
+// TestDispatcherIgnoresOtherNamespaces seeds a 'webhook.delivery' row
+// (no webhook_id) and asserts it stays pending, and packages run in
+// parallel under `go test ./...`; a bare `event LIKE 'webhook.%'`
+// delete here would remove that row mid-test and fail it.
 func clearDueWebhookOutboxRows(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
 	t.Helper()
 	if _, err := pool.Exec(ctx,
-		`DELETE FROM outbox WHERE event LIKE 'webhook.%'
+		`DELETE FROM outbox WHERE event = 'webhook.deliver'
+		   AND payload->>'webhook_id' IS NOT NULL
 		   AND next_retry_at <= now()
 		   AND (status = 'pending' OR status = 'delivering')`); err != nil {
 		t.Fatalf("clear due webhook outbox rows: %v", err)
