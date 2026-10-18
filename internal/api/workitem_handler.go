@@ -50,9 +50,20 @@ func (h *IssueHandler) getWorkItemByDisplayID(c *echo.Context) error {
 	return c.JSON(http.StatusOK, iss)
 }
 
+// searchResponse is the GET /api/v1/search envelope. The issue contract
+// is kept byte-for-byte (results/next_cursor). C66T0 adds page hits with
+// their own cursor; per_page applies to each list independently.
+type searchResponse struct {
+	Results        []service.SearchIssueItem `json:"results"`
+	NextCursor     string                    `json:"next_cursor,omitempty"`
+	PageResults    []service.SearchPageItem  `json:"page_results"`
+	PageNextCursor string                    `json:"page_next_cursor,omitempty"`
+}
+
 // searchIssues implements GET /api/v1/search?q=: global full-text search
-// over issue titles and descriptions, scoped to the caller's workspaces.
-// 200 with the {results, next_cursor} envelope (spec §5).
+// over issue titles + descriptions and page titles + content, scoped to
+// the caller's workspaces. 200 with the {results, next_cursor,
+// page_results, page_next_cursor} envelope (spec §5, extended C66T0).
 func (h *IssueHandler) searchIssues(c *echo.Context) error {
 	qp := c.QueryParams()
 
@@ -68,10 +79,23 @@ func (h *IssueHandler) searchIssues(c *echo.Context) error {
 		perPage = p
 	}
 
-	res, err := service.SearchIssues(c.Request().Context(), h.Pool,
-		CurrentUser(c).ID, qp.Get("q"), qp.Get("cursor"), perPage)
+	ctx := c.Request().Context()
+	actorID := CurrentUser(c).ID
+	q := qp.Get("q")
+	res, err := service.SearchIssues(ctx, h.Pool, actorID, q, qp.Get("cursor"), perPage)
 	if err != nil {
 		return workItemError(c, err)
 	}
-	return c.JSON(http.StatusOK, res)
+	// Issues are searched first: an empty q returns ErrQueryRequired here
+	// with the same 400 as before; pages never run on an invalid query.
+	pageRes, err := service.SearchPages(ctx, h.Pool, actorID, q, qp.Get("page_cursor"), perPage)
+	if err != nil {
+		return workItemError(c, err)
+	}
+	return c.JSON(http.StatusOK, searchResponse{
+		Results:        res.Results,
+		NextCursor:     res.NextCursor,
+		PageResults:    pageRes.Results,
+		PageNextCursor: pageRes.NextCursor,
+	})
 }

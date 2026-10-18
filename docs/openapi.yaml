@@ -2321,9 +2321,10 @@
     "/api/v1/search": {
       "get": {
         "tags": ["search"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
-        "summary": "Cross-project issue search",
-        "parameters": [ { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } } ],
-        "responses": { "200": { "description": "Search results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } } }
+        "summary": "Cross-project issue and page search",
+        "description": "Global full-text search over issue titles + descriptions and page titles + content (English stemming), scoped to workspaces the caller is a member of. per_page applies to each list independently; issue hits and page hits are returned as two separately-ranked lists with their own cursors (cursor / page_cursor).",
+        "parameters": [ { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }, { "name": "per_page", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25, "description": "Page size for EACH list (issues and pages); 1-100." } }, { "name": "cursor", "in": "query", "schema": { "type": "string", "description": "Opaque cursor from a previous page's next_cursor (issue hits)." } }, { "name": "page_cursor", "in": "query", "schema": { "type": "string", "description": "Opaque cursor from a previous page's page_next_cursor (page hits)." } } ],
+        "responses": { "200": { "description": "Search results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } }, "next_cursor": { "type": "string", "description": "Opaque cursor for the next page of issue hits; omitted on the last page." }, "page_results": { "type": "array", "items": { "$ref": "#/components/schemas/PageSearchResult" } }, "page_next_cursor": { "type": "string", "description": "Opaque cursor for the next page of page hits; omitted on the last page." } } } } } } }
       }
     },
     "/api/v1/work-items/{displayID}": {
@@ -3148,6 +3149,16 @@
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" },
           "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" }, "description": "Embedded on GET page detail only; reaction groups with counts and the caller's reacted state" }
+        }
+      },
+      "PageSearchResult": {
+        "type": "object",
+        "description": "One page hit in global search (service.SearchPageItem): page id + title plus the workspace and project context needed to link to it. Rank is computed server-side for ordering and never serialized.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "project_identifier": { "type": "string", "example": "ENG" },
+          "workspace_slug": { "type": "string", "example": "acme" }
         }
       },
       "PageRevision": {

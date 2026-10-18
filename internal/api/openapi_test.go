@@ -3313,3 +3313,130 @@ func TestOpenAPIDocShapesWebhookDeliveryDetail(t *testing.T) {
 		t.Fatalf("detail-delivery 200 delivery $ref = %q, want WebhookDeliveryDetail", gotRef)
 	}
 }
+
+// TestOpenAPIDocShapesSearchPages (C66T0): pins the GET /api/v1/search
+// doc against the Go envelope. The issue contract (results/next_cursor)
+// is unchanged; page_results/page_next_cursor are added with their own
+// cursor. Every doc property name must match the Go JSON tags exactly.
+func TestOpenAPIDocShapesSearchPages(t *testing.T) {
+	var spec struct {
+		Paths map[string]struct {
+			Get struct {
+				Responses map[string]struct {
+					Content map[string]struct {
+						Schema struct {
+							Properties map[string]struct {
+								Type   string `json:"type"`
+								Format string `json:"format"`
+								Items  struct {
+									Ref string `json:"$ref"`
+								} `json:"items"`
+							} `json:"properties"`
+						} `json:"schema"`
+					} `json:"content"`
+				} `json:"responses"`
+			} `json:"get"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	path, ok := spec.Paths["/api/v1/search"]
+	if !ok {
+		t.Fatal("spec has no /api/v1/search path")
+	}
+	props := path.Get.Responses["200"].Content["application/json"].Schema.Properties
+
+	// Doc properties must match the Go envelope's JSON tags exactly —
+	// results/next_cursor byte-for-byte, plus the page fields.
+	want := map[string]bool{}
+	for i := 0; i < reflect.TypeOf(searchResponse{}).NumField(); i++ {
+		tag := reflect.TypeOf(searchResponse{}).Field(i).Tag.Get("json")
+		want[strings.Split(tag, ",")[0]] = true
+	}
+	if len(props) != len(want) {
+		t.Fatalf("search 200 properties = %v, Go envelope has %v", propNames(props), want)
+	}
+	for name := range want {
+		if _, ok := props[name]; !ok {
+			t.Fatalf("search 200 missing property %q (doc: %v, Go: %v)", name, propNames(props), want)
+		}
+	}
+	if props["page_results"].Type != "array" {
+		t.Fatalf("page_results type = %q, want array", props["page_results"].Type)
+	}
+	if got := props["page_results"].Items.Ref; got != "#/components/schemas/PageSearchResult" {
+		t.Fatalf("page_results items $ref = %q, want PageSearchResult", got)
+	}
+	if props["page_next_cursor"].Type != "string" {
+		t.Fatalf("page_next_cursor type = %q, want string", props["page_next_cursor"].Type)
+	}
+
+	// The PageSearchResult schema matches service.SearchPageItem's
+	// exported JSON tags (rank is unexported and must stay undocumented).
+	raw, ok := spec.Components.Schemas["PageSearchResult"]
+	if !ok {
+		t.Fatal("spec has no PageSearchResult schema")
+	}
+	var itemDoc struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &itemDoc); err != nil {
+		t.Fatalf("decode PageSearchResult schema: %v", err)
+	}
+	wantItem := map[string]bool{}
+	for i := 0; i < reflect.TypeOf(service.SearchPageItem{}).NumField(); i++ {
+		f := reflect.TypeOf(service.SearchPageItem{}).Field(i)
+		if f.PkgPath != "" { // unexported (rank) — must not appear
+			continue
+		}
+		wantItem[strings.Split(f.Tag.Get("json"), ",")[0]] = true
+	}
+	if len(itemDoc.Props) != len(wantItem) {
+		t.Fatalf("PageSearchResult properties = %v, Go item has %v", propNamesRaw(itemDoc.Props), wantItem)
+	}
+	for name := range wantItem {
+		if _, ok := itemDoc.Props[name]; !ok {
+			t.Fatalf("PageSearchResult missing property %q", name)
+		}
+	}
+	if _, ok := itemDoc.Props["rank"]; ok {
+		t.Fatal("PageSearchResult documents rank, which the Go struct keeps unexported")
+	}
+	var idProp struct {
+		Type   string `json:"type"`
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal(itemDoc.Props["id"], &idProp); err != nil {
+		t.Fatalf("decode PageSearchResult.id: %v", err)
+	}
+	if idProp.Type != "string" || idProp.Format != "uuid" {
+		t.Fatalf("PageSearchResult.id = {%s, %s}, want {string, uuid}", idProp.Type, idProp.Format)
+	}
+}
+
+func propNames(props map[string]struct {
+	Type   string `json:"type"`
+	Format string `json:"format"`
+	Items  struct {
+		Ref string `json:"$ref"`
+	} `json:"items"`
+}) []string {
+	names := make([]string, 0, len(props))
+	for n := range props {
+		names = append(names, n)
+	}
+	return names
+}
+
+func propNamesRaw(props map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(props))
+	for n := range props {
+		names = append(names, n)
+	}
+	return names
+}
