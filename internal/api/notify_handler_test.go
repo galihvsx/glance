@@ -753,3 +753,159 @@ func TestWebhookDeliveriesHTTP(t *testing.T) {
 		t.Fatalf("redeliver inactive webhook: status = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// TestWebhookDeliveryDetailHTTP (C60T0): GET
+// .../webhooks/:id/deliveries/:deliveryId — 200 {delivery: {...}}
+// with the full payload (data), NO outbox_row_id; 400 for a
+// non-numeric id; 403 for a member; 404 for missing / cross-webhook
+// / cross-workspace / missing-webhook. Real test database, no skips.
+func TestWebhookDeliveryDetailHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testNotifyServer(t, pool)
+	ctx := context.Background()
+
+	cookieA := loginTestUser(t, e, pool, uniqueEmail("wh-dd"), "ua", "10.9.7.1")
+	cookieB := loginTestUser(t, e, pool, uniqueEmail("wh-dd-b"), "ua", "10.9.7.2")
+	userBID := authedUserID(t, e, cookieB)
+
+	slug := uniqueSlug("wh-dd")
+	createWorkspaceHTTP(t, e, cookieA, "Webhook Detail Co", slug)
+	base := "/api/v1/workspaces/" + slug + "/webhooks"
+
+	// B joins as member: the detail endpoint is admin-only → 403.
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", cookieA,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, userBID))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("add member: status = %d", rec.Code)
+	}
+
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookieA,
+		`{"url":"https://example.com/hook","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var wh struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wh); err != nil {
+		t.Fatalf("decode webhook: %v", err)
+	}
+
+	// A second webhook in the same workspace for the cross-webhook
+	// 404: the delivery exists but is not under :id.
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookieA,
+		`{"url":"https://example.com/other","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create second webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var wh2 struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wh2); err != nil {
+		t.Fatalf("decode second webhook: %v", err)
+	}
+
+	// A webhook in a different workspace for the cross-workspace 404.
+	slug2 := uniqueSlug("wh-dd-2")
+	createWorkspaceHTTP(t, e, cookieA, "Webhook Detail Co 2", slug2)
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug2+"/webhooks", cookieA,
+		`{"url":"https://example.com/xws","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create xws webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var whX struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &whX); err != nil {
+		t.Fatalf("decode xws webhook: %v", err)
+	}
+
+	seed := func(webhookID, event, status string, httpStatus *int, errStr *string, attemptedAt time.Time, data string) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO webhook_deliveries
+			   (webhook_id, event, data, status, http_status, error, duration_ms, attempted_at)
+			 VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6, 12, $7) RETURNING id`,
+			webhookID, event, data, status, httpStatus, errStr, attemptedAt).Scan(&id); err != nil {
+			t.Fatalf("seed delivery: %v", err)
+		}
+		return id
+	}
+	now := time.Now().UTC()
+	http500 := 500
+	errBoom := "boom"
+	failedID := seed(wh.ID, "issue.created", "failed", &http500, &errBoom, now, `{"id":"issue-1","title":"Bug"}`)
+	otherFailedID := seed(wh2.ID, "issue.created", "failed", nil, &errBoom, now, `{"id":"issue-9"}`)
+
+	detailURL := base + "/" + wh.ID + "/deliveries/" + fmt.Sprint(failedID)
+
+	// 200: the response carries the full payload, and never
+	// outbox_row_id.
+	rec = getAuthed(t, e, http.MethodGet, detailURL, cookieA)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode detail body: %v (body: %s)", err, rec.Body.String())
+	}
+	delivery, ok := body["delivery"].(map[string]any)
+	if !ok {
+		t.Fatalf("detail body has no delivery object: %v", body)
+	}
+	wantKeys := []string{"id", "webhook_id", "event", "status", "http_status", "error", "duration_ms", "attempted_at", "data"}
+	for _, k := range wantKeys {
+		if _, ok := delivery[k]; !ok {
+			t.Fatalf("detail.delivery missing key %q: %v", k, delivery)
+		}
+	}
+	if _, ok := delivery["outbox_row_id"]; ok {
+		t.Fatalf("detail.delivery carries outbox_row_id, must not: %v", delivery)
+	}
+	if delivery["event"] != "issue.created" || delivery["status"] != "failed" {
+		t.Fatalf("detail = %v, want failed issue.created", delivery)
+	}
+	data, ok := delivery["data"].(map[string]any)
+	if !ok || data["id"] != "issue-1" || data["title"] != "Bug" {
+		t.Fatalf("detail.data = %v, want the stored payload", delivery["data"])
+	}
+
+	// Non-numeric delivery id → 400.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+wh.ID+"/deliveries/abc", cookieA)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("detail bad id: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Non-admin (member) → 403.
+	rec = getAuthed(t, e, http.MethodGet, detailURL, cookieB)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member detail: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Missing delivery → 404.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+wh.ID+"/deliveries/999999999", cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing detail: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Delivery under another webhook → 404 (never leak
+	// cross-webhook existence).
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+wh.ID+"/deliveries/"+fmt.Sprint(otherFailedID), cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-webhook detail: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Webhook from another workspace → 404 (never leak
+	// cross-workspace existence).
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+whX.ID+"/deliveries/"+fmt.Sprint(failedID), cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-workspace detail: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Unknown webhook → 404.
+	rec = getAuthed(t, e, http.MethodGet, base+"/00000000-0000-0000-0000-000000000000/deliveries/"+fmt.Sprint(failedID), cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown webhook detail: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

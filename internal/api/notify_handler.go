@@ -45,6 +45,8 @@ func RegisterNotifyRoutes(e *echo.Echo, h *NotifyHandler) {
 	// C59T1: per-webhook delivery history + manual redelivery.
 	w.GET("/:id/deliveries", h.listWebhookDeliveries)
 	w.POST("/:id/deliveries/:deliveryId/redeliver", h.redeliverWebhookDelivery)
+	// C60T0: single delivery detail (payload view).
+	w.GET("/:id/deliveries/:deliveryId", h.getWebhookDelivery)
 }
 
 // notifyError maps service sentinel errors to HTTP statuses. Unknown
@@ -386,4 +388,33 @@ func (h *NotifyHandler) redeliverWebhookDelivery(c *echo.Context) error {
 		return notifyError(c, err)
 	}
 	return c.JSON(http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+// getWebhookDelivery implements GET
+// /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId — the
+// payload view for one delivery attempt. 200 {delivery: {...}} where
+// delivery carries the list fields PLUS data (the domain-event
+// payload); outbox_row_id is never exposed. Non-numeric delivery id
+// is 400 (same convention as redeliver); the ErrWebhookDeliveryNotFound
+// → 404 mapping is reused from notifyError (cycle 59).
+func (h *NotifyHandler) getWebhookDelivery(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	deliveryID, err := strconv.ParseInt(c.Param("deliveryId"), 10, 64)
+	if err != nil || deliveryID < 1 {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid delivery id", nil)
+	}
+	delivery, err := service.GetWebhookDelivery(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id, deliveryID)
+	if err != nil {
+		return notifyError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"delivery": delivery,
+	})
 }
