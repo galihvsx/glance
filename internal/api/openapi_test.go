@@ -3117,3 +3117,145 @@ func TestOpenAPIDocShapesWebhookDelivery(t *testing.T) {
 		}
 	}
 }
+
+// Doc-side pinning test (C60T1): the WebhookDeliveryDetail schema in
+// docs/openapi.yaml matches service.WebhookDeliveryDetail field-for-field
+// (reflection pin — the struct embeds service.WebhookDelivery plus the
+// `data` payload; a struct change without a doc update fails), carries NO
+// outbox_row_id (internal correlation, never exposed), and the delivery-
+// detail GET endpoint is documented with its params and response shapes.
+// This is the doc-side complement to the live pins
+// (TestGetWebhookDeliveryHTTP asserts the shapes in real responses).
+func TestOpenAPIDocShapesWebhookDeliveryDetail(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	raw, ok := spec.Components.Schemas["WebhookDeliveryDetail"]
+	if !ok {
+		t.Fatal("spec has no WebhookDeliveryDetail schema")
+	}
+	var docSchema struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &docSchema); err != nil {
+		t.Fatalf("decode WebhookDeliveryDetail schema: %v", err)
+	}
+	if docSchema.Type != "object" {
+		t.Fatalf("WebhookDeliveryDetail schema type = %q, want object", docSchema.Type)
+	}
+
+	// The detail shape is the list shape PLUS data.
+	var dataProp struct {
+		Type string `json:"type"`
+	}
+	rawData, ok := docSchema.Props["data"]
+	if !ok {
+		t.Fatal("WebhookDeliveryDetail doc missing property \"data\"")
+	}
+	if err := json.Unmarshal(rawData, &dataProp); err != nil {
+		t.Fatalf("decode WebhookDeliveryDetail.data: %v", err)
+	}
+	if dataProp.Type != "object" {
+		t.Fatalf("WebhookDeliveryDetail.data type = %q, want object", dataProp.Type)
+	}
+	// Internal correlation id is never part of the exposed shape.
+	if _, ok := docSchema.Props["outbox_row_id"]; ok {
+		t.Fatal("WebhookDeliveryDetail doc must not carry \"outbox_row_id\"")
+	}
+
+	// Reflection pin: every json tag on service.WebhookDeliveryDetail
+	// (flattening the embedded service.WebhookDelivery) must be a doc
+	// property and vice versa.
+	structType := reflect.TypeOf(service.WebhookDeliveryDetail{})
+	if structType.Kind() != reflect.Struct {
+		t.Fatalf("service.WebhookDeliveryDetail kind = %v, want struct", structType.Kind())
+	}
+	jsonName := func(f reflect.StructField) string {
+		return strings.SplitN(f.Tag.Get("json"), ",", 2)[0]
+	}
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		fields := []reflect.StructField{f}
+		if f.Anonymous {
+			fields = fields[:0]
+			for j := 0; j < f.Type.NumField(); j++ {
+				fields = append(fields, f.Type.Field(j))
+			}
+		}
+		for _, ef := range fields {
+			name := jsonName(ef)
+			if name == "-" || name == "" {
+				t.Fatalf("service.WebhookDeliveryDetail field %s has no json name", ef.Name)
+			}
+			wantProps[name] = true
+		}
+	}
+	if len(docSchema.Props) != len(wantProps) {
+		t.Fatalf("WebhookDeliveryDetail doc properties = %v, want exactly %v (service.WebhookDeliveryDetail)",
+			docKeysOf(docSchema.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := docSchema.Props[name]; !ok {
+			t.Fatalf("WebhookDeliveryDetail doc missing property %q (struct field)", name)
+		}
+	}
+
+	// Endpoint: the detail GET documented with params + responses.
+	paths := loadOpenAPISpec(t)
+	detailPath := "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries/{deliveryId}"
+	ops, ok := paths[detailPath]
+	if !ok {
+		t.Fatalf("spec has no path %q", detailPath)
+	}
+	var detailOp struct {
+		Parameters []struct {
+			Name string `json:"name"`
+			Ref  string `json:"$ref"`
+		} `json:"parameters"`
+		Responses map[string]json.RawMessage `json:"responses"`
+	}
+	if err := json.Unmarshal(ops["get"], &detailOp); err != nil {
+		t.Fatalf("decode detail-delivery operation: %v", err)
+	}
+	wantParams := map[string]bool{"slug": true, "id": true, "deliveryId": true}
+	for _, p := range detailOp.Parameters {
+		if p.Ref == "#/components/parameters/Slug" {
+			delete(wantParams, "slug")
+			continue
+		}
+		delete(wantParams, p.Name)
+	}
+	if len(wantParams) != 0 {
+		t.Fatalf("detail-delivery params missing %v", docKeysOf(wantParams))
+	}
+	for _, want := range []string{"200", "400", "403", "404"} {
+		if _, ok := detailOp.Responses[want]; !ok {
+			t.Fatalf("detail-delivery responses lack %q", want)
+		}
+	}
+	// 200 wraps the detail under a `delivery` property pointing at
+	// the WebhookDeliveryDetail schema.
+	var detailOK struct {
+		Content map[string]struct {
+			Schema struct {
+				Properties map[string]struct {
+					Ref string `json:"$ref"`
+				} `json:"properties"`
+			} `json:"schema"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(detailOp.Responses["200"], &detailOK); err != nil {
+		t.Fatalf("decode detail-delivery 200: %v", err)
+	}
+	gotRef := detailOK.Content["application/json"].Schema.Properties["delivery"].Ref
+	if gotRef != "#/components/schemas/WebhookDeliveryDetail" {
+		t.Fatalf("detail-delivery 200 delivery $ref = %q, want WebhookDeliveryDetail", gotRef)
+	}
+}

@@ -10,11 +10,17 @@ import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import WebhooksSection from "./WebhooksSection";
 import { ApiError } from "../../lib/api";
 import {
+  fetchWebhookDelivery,
   listWebhookDeliveries,
   listWebhooks,
   redeliverWebhookDelivery,
 } from "../../lib/webhooks";
-import type { Webhook, WebhookDelivery } from "../../lib/webhooks";
+import { copyText } from "../../lib/clipboard";
+import type {
+  Webhook,
+  WebhookDelivery,
+  WebhookDeliveryDetail,
+} from "../../lib/webhooks";
 
 vi.mock("../../lib/webhooks", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../../lib/webhooks")>();
@@ -23,13 +29,17 @@ vi.mock("../../lib/webhooks", async (importOriginal) => {
     listWebhooks: vi.fn(),
     listWebhookDeliveries: vi.fn(),
     redeliverWebhookDelivery: vi.fn(),
+    fetchWebhookDelivery: vi.fn(),
   };
 });
+vi.mock("../../lib/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../ui/toast", () => ({ toast: { add: vi.fn() } }));
 
 const listMock = listWebhooks as unknown as Mock;
 const deliveriesMock = listWebhookDeliveries as unknown as Mock;
 const redeliverMock = redeliverWebhookDelivery as unknown as Mock;
+const detailMock = fetchWebhookDelivery as unknown as Mock;
+const copyMock = copyText as unknown as Mock;
 
 const HOOK: Webhook = {
   id: "wh-1",
@@ -184,5 +194,96 @@ describe("WebhookDeliveryHistory panel", () => {
     deliveriesMock.mockRejectedValue(new ApiError(500, "backend is down"));
     await expandHistory();
     expect(await screen.findByText("backend is down")).toBeTruthy();
+  });
+});
+
+// View-payload dialog (C60T1): a per-row "View payload" button on EVERY
+// row (all statuses, not just failed) opens a dialog with the delivery's
+// status/event/attempted-at in the header, the event + payload as
+// pretty-printed JSON, and a copy button with a transient "Copied"
+// confirmation.
+
+const DETAIL: WebhookDeliveryDetail = {
+  ...FAILED,
+  data: {
+    issue: { id: "iss-1", title: "Fix it" },
+    workspace: { id: "ws-1" },
+  },
+};
+
+const PAGE3 = { deliveries: [FAILED, DELIVERED, RETRYING], next_before: null };
+
+async function openPayloadDialog() {
+  deliveriesMock.mockResolvedValue(PAGE1);
+  detailMock.mockResolvedValue(DETAIL);
+  await expandHistory();
+  await screen.findByText("boom: connection refused");
+  fireEvent.click(
+    screen.getByRole("button", { name: /View payload.*delivery 30/ }),
+  );
+}
+
+describe("View payload dialog (C60T1)", () => {
+  it("renders a View payload button on every row, whatever the status", async () => {
+    deliveriesMock.mockResolvedValue(PAGE3);
+    await expandHistory();
+    await screen.findByText("boom: connection refused");
+    expect(
+      screen.getAllByRole("button", { name: /View payload/ }),
+    ).toHaveLength(3);
+  });
+
+  it("opens a dialog with status/event/attempted-at in the header and the payload as pretty JSON", async () => {
+    await openPayloadDialog();
+    await waitFor(() =>
+      expect(detailMock).toHaveBeenCalledWith("acme", "wh-1", 30),
+    );
+    const dialog = await screen.findByRole("dialog");
+    // Header: the delivery's status label, event, and attempted-at.
+    expect(dialog.textContent).toContain("Failed");
+    expect(dialog.textContent).toContain("issue.created");
+    // Body: pretty-printed event + payload, not the bookkeeping fields.
+    expect(dialog.textContent).toContain('"event": "issue.created"');
+    expect(dialog.textContent).toContain('"title": "Fix it"');
+    expect(dialog.textContent).not.toContain("http_status");
+  });
+
+  it("copies the payload JSON and confirms transiently", async () => {
+    copyMock.mockResolvedValue(true);
+    await openPayloadDialog();
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await waitFor(() =>
+      expect(copyMock).toHaveBeenCalledWith(
+        expect.stringContaining('"event": "issue.created"'),
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Copied" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the detail load failure in the dialog without crashing", async () => {
+    deliveriesMock.mockResolvedValue(PAGE1);
+    detailMock.mockRejectedValue(new ApiError(500, "backend is down"));
+    await expandHistory();
+    await screen.findByText("boom: connection refused");
+    fireEvent.click(
+      screen.getByRole("button", { name: /View payload.*delivery 30/ }),
+    );
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(await screen.findByText("backend is down")).toBeTruthy();
+  });
+
+  it("closes the dialog without refetching the detail", async () => {
+    await openPayloadDialog();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeTruthy();
+    // Radix Dialog closes on Escape by default.
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).toBeNull(),
+    );
+    expect(detailMock).toHaveBeenCalledTimes(1);
   });
 });

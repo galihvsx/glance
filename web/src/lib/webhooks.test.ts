@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCreateBody,
+  deliveryPayloadJson,
   deliveryRowLabel,
   deliveryRowTone,
   deliveryStatusLabel,
   eventLabel,
+  fetchWebhookDelivery,
   generateWebhookSecret,
   listWebhookDeliveries,
   redeliverWebhookDelivery,
@@ -13,6 +15,7 @@ import {
   truncateDeliveryError,
   validateWebhookUrl,
   WEBHOOK_EVENTS,
+  type WebhookDeliveryDetail,
 } from "./webhooks";
 import { api } from "./api";
 
@@ -342,5 +345,54 @@ describe("redeliverWebhookDelivery (C59T1)", () => {
       {},
     );
     expect(res).toEqual({ ok: true });
+  });
+});
+
+const DETAIL: WebhookDeliveryDetail = {
+  id: 30,
+  webhook_id: "wh-1",
+  event: "issue.created",
+  status: "failed",
+  http_status: 500,
+  error: "boom: connection refused",
+  duration_ms: 12,
+  attempted_at: "2026-10-18T00:04:00Z",
+  data: {
+    issue: { id: "iss-1", title: "Fix it" },
+    workspace: { id: "ws-1" },
+  },
+};
+
+describe("fetchWebhookDelivery (C60T1)", () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it("fetches the delivery-detail path and returns r.delivery", async () => {
+    vi.mocked(api.get).mockResolvedValue({ delivery: DETAIL });
+    const res = await fetchWebhookDelivery("acme", "wh-1", 30);
+    expect(api.get).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/webhooks/wh-1/deliveries/30",
+    );
+    expect(res).toEqual(DETAIL);
+  });
+
+  it("normalizes a missing delivery to null", async () => {
+    vi.mocked(api.get).mockResolvedValue({});
+    expect(await fetchWebhookDelivery("acme", "wh-1", 30)).toBeNull();
+  });
+});
+
+describe("deliveryPayloadJson (C60T1)", () => {
+  it("pretty-prints the event + data as indented JSON", () => {
+    expect(deliveryPayloadJson(DETAIL)).toBe(
+      '{\n  "event": "issue.created",\n  "data": {\n    "issue": {\n      "id": "iss-1",\n      "title": "Fix it"\n    },\n    "workspace": {\n      "id": "ws-1"\n    }\n  }\n}',
+    );
+  });
+
+  it("omits delivery bookkeeping fields (id, http_status, error)", () => {
+    const json = deliveryPayloadJson(DETAIL);
+    expect(json).not.toContain("http_status");
+    expect(json).not.toContain("boom: connection refused");
   });
 });
