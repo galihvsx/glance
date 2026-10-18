@@ -16,11 +16,13 @@ All notable changes to glance are documented here. The format follows
   belong to the project, rejects self-loops, replace semantics);
   `checkTransitionTx` enforcement on user-initiated paths — single PATCH,
   bulk update (per-item), bulk set (applies to the FINAL state value
-  after automation cascades, C46 discipline), and cross-project move
-  (entry modeled as target-backlog → landing state against the TARGET
-  project's rules). System paths keep their guarantees and bypass rules:
-  DeleteState reassign, RestoreIssueVersion, intake accept, ConvertIssue,
-  recurring creation, automation set_state firings.
+  after automation cascades, C46 discipline). System paths keep their
+  guarantees and bypass rules: DeleteState reassign, RestoreIssueVersion,
+  intake accept, ConvertIssue, recurring creation, automation set_state
+  firings, and cross-project moves (state remap by name preserves the
+  semantic workflow position — no user-chosen transition to govern;
+  governing entry as backlog → landing would falsely deny routine
+  name-preserving moves).
 - API: `GET`/`PUT /api/v1/workspaces/{slug}/projects/{identifier}/workflow`;
   violation → 409 `state_transition_not_allowed` with `details.allowed`
   naming the permitted next-state IDs. Documented in the OpenAPI spec

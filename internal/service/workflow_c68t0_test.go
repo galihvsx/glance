@@ -446,20 +446,31 @@ func sameWorkspaceMoveFixtures(t *testing.T) (pool *pgxpool.Pool, slug, srcIdent
 	return pool, slug, srcIdent, dstIdent, admin, byGroup(srcIdent), byGroup(dstIdent)
 }
 
-func TestMoveIssueWorkflowEnforcement(t *testing.T) {
+// TestMoveIssueBypassesWorkflow (review amendment 2026-10-19):
+// cross-project moves are NOT governed by transition rules. A move
+// remaps state by name and preserves the issue's semantic workflow
+// position — there is no user-chosen transition to govern. Governing
+// entry as (target backlog → landing) would falsely deny routine
+// name-preserving moves with no escape hatch, so moves are an
+// administrative placement like DeleteState reassign and version
+// restore.
+func TestMoveIssueBypassesWorkflow(t *testing.T) {
 	pool, slug, srcIdent, dstIdent, admin, srcStates, dstStates := sameWorkspaceMoveFixtures(t)
 	ctx := context.Background()
 
-	// Target rules: backlog→todo only.
+	// Target rules: backlog→todo only — strict enough to deny any
+	// non-trivial entry under the old (backlog → landing) model.
 	if _, err := SetWorkflow(ctx, pool, slug, dstIdent, admin,
 		[]WorkflowTransition{{FromStateID: dstStates["backlog"], ToStateID: dstStates["unstarted"]}}); err != nil {
 		t.Fatalf("SetWorkflow dst: %v", err)
 	}
 
-	move := func(issueID string) error {
-		_, err := MoveIssue(ctx, pool, slug, srcIdent, issueID, admin,
-			MoveIssueInput{TargetProjectIdentifier: dstIdent})
-		return err
+	move := func(issueID string) {
+		t.Helper()
+		if _, err := MoveIssue(ctx, pool, slug, srcIdent, issueID, admin,
+			MoveIssueInput{TargetProjectIdentifier: dstIdent}); err != nil {
+			t.Fatalf("MoveIssue with strict dst rules: %v (moves bypass workflow rules)", err)
+		}
 	}
 	position := func(issueID, stateID string) {
 		t.Helper()
@@ -468,35 +479,24 @@ func TestMoveIssueWorkflowEnforcement(t *testing.T) {
 			t.Fatalf("position: %v", err)
 		}
 	}
+	landedState := func(issueID string) string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(ctx,
+			`SELECT state_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&s); err != nil {
+			t.Fatalf("re-read state: %v", err)
+		}
+		return s
+	}
 
-	// Issue in Done → lands in target "Done" (name-matched):
-	// (dstBacklog → dstDone) not allowed → 409, nothing moved.
+	// Issue in Done → lands in target "Done" (name-matched): the move
+	// succeeds and the semantic workflow position is preserved, even
+	// though (backlog → done) is not a listed target transition.
 	issDone := createTestIssue(t, pool, slug, srcIdent, admin, "mv-done")
 	position(issDone.ID, srcStates["completed"])
-	if err := move(issDone.ID); !errors.Is(err, ErrStateTransitionNotAllowed) {
-		t.Fatalf("move landing in done: err = %v, want ErrStateTransitionNotAllowed", err)
-	}
-	var proj string
-	if err := pool.QueryRow(ctx,
-		`SELECT project_id::text FROM issues WHERE id = $1::uuid`, issDone.ID).Scan(&proj); err != nil {
-		t.Fatalf("re-read project: %v", err)
-	}
-	var srcProj string
-	if err := pool.QueryRow(ctx,
-		`SELECT id::text FROM projects WHERE workspace_id = (SELECT id FROM workspaces WHERE slug = $1)
-		  AND identifier = $2`, slug, strings.ToUpper(srcIdent)).Scan(&srcProj); err != nil {
-		t.Fatalf("src project id: %v", err)
-	}
-	if proj != srcProj {
-		t.Fatalf("issue moved despite denial")
-	}
-
-	// Issue in Todo → lands in target "Todo" (name-matched):
-	// (dstBacklog → dstTodo) IS allowed → move succeeds.
-	issTodo := createTestIssue(t, pool, slug, srcIdent, admin, "mv-todo")
-	position(issTodo.ID, srcStates["unstarted"])
-	if err := move(issTodo.ID); err != nil {
-		t.Fatalf("move landing in todo: %v", err)
+	move(issDone.ID)
+	if got := landedState(issDone.ID); got != dstStates["completed"] {
+		t.Fatalf("moved issue state = %s, want target completed %s", got, dstStates["completed"])
 	}
 
 	// No rules on target → unrestricted (backwards compatible).
@@ -505,8 +505,9 @@ func TestMoveIssueWorkflowEnforcement(t *testing.T) {
 	}
 	issDone2 := createTestIssue(t, pool, slug, srcIdent, admin, "mv-done2")
 	position(issDone2.ID, srcStates["completed"])
-	if err := move(issDone2.ID); err != nil {
-		t.Fatalf("move with no rules: %v", err)
+	move(issDone2.ID)
+	if got := landedState(issDone2.ID); got != dstStates["completed"] {
+		t.Fatalf("moved issue state = %s, want target completed %s", got, dstStates["completed"])
 	}
 }
 

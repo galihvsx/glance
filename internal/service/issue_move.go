@@ -245,28 +245,15 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 		}
 	}
 
-	// C68T0: workflow transition governance on cross-project moves. A
-	// move introduces the issue into the TARGET project's workflow, so
-	// entry is modeled as a transition from the target's default
-	// backlog state (the project's inbox — the same fallback unmatched
-	// states land in) to the remapped landing state, enforced against
-	// the TARGET project's rules. Landing in the backlog itself is
-	// trivially allowed. The first violation aborts the whole move
-	// (single transaction): 409, nothing moved, nothing announced.
-	{
-		landings := map[string]bool{}
-		for _, id := range newStateIDs {
-			landings[id] = true
-		}
-		for landing := range landings {
-			if landing == dstBacklog {
-				continue
-			}
-			if err := checkTransitionTx(ctx, tx, dstProjectID, dstBacklog, landing); err != nil {
-				return nil, err
-			}
-		}
-	}
+	// C68T0 (review amendment): cross-project moves are NOT governed by
+	// workflow transition rules. A move remaps state by name and preserves
+	// the issue's semantic workflow position — there is no user-chosen
+	// transition, so there is nothing for the allowlist to govern.
+	// Modeling entry as (target backlog → landing state) would falsely
+	// deny routine name-preserving moves (e.g. moving an In-Progress
+	// issue into a project whose rules only list backlog→todo), with no
+	// escape hatch for the mover. Moves are an administrative placement,
+	// like DeleteState reassign and version restore — documented bypass.
 
 	// Estimate remap: source point value → target point id by value.
 	srcPointRows, err := queryKV(

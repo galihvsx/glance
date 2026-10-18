@@ -10,12 +10,14 @@ package service
 // behave exactly as today until an admin configures rules).
 //
 // Enforcement is user-initiated paths only (UpdateIssue,
-// BulkUpdateIssues, BulkSetIssues, MoveIssue); system/integrity paths
-// keep their existing guarantees and bypass rules — documented at each
-// call site: DeleteState reassign (name-remap else backlog fallback),
+// BulkUpdateIssues, BulkSetIssues); system/integrity paths keep their
+// existing guarantees and bypass rules — documented at each call site:
+// DeleteState reassign (name-remap else backlog fallback),
 // RestoreIssueVersion, intake accept, ConvertIssue, recurring issue
-// creation, automation set_state firings. Rules govern human workflow
-// movement, never system integrity.
+// creation, automation set_state firings, and cross-project moves (state
+// remap by name preserves the semantic workflow position — no
+// user-chosen transition to govern; review amendment 2026-10-19). Rules
+// govern human workflow movement, never system integrity.
 
 import (
 	"context"

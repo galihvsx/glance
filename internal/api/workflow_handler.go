@@ -10,7 +10,7 @@ package api
 //      (15)+, mirroring the states API auth convention; the service is
 //      the gate, the handler maps sentinels to the spec §5 error envelope.
 //
-// A denied state move anywhere (PATCH /issues/{id}, bulk paths, move)
+// A denied state move anywhere (PATCH /issues/{id}, bulk paths)
 // answers 409 with code "state_transition_not_allowed" and details
 // {"allowed": [...]} naming the permitted next-state IDs.
 
