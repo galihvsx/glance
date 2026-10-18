@@ -5,6 +5,26 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Reactions surface: issue + comment reactions (cycle 67)**
+- Reactions were half-wired: the backend had the full reaction contract and
+  pages had the UI, but the issue surface showed zero reactions and comment
+  reactions had add/remove with no way to list them. Plane shows emoji
+  reactions on issues and comments — that gap is now closed.
+- Backend: new `GET
+  .../issues/{uuid}/comments/{commentID}/reactions` (`ListCommentReactions`,
+  same member-read authz as issue reactions) and `reactions:
+  []ReactionGroup` on every `Comment` JSON — one batched query inside
+  `ListComments` (no N+1), always present as `[]`, never null or omitted.
+  Documented in the OpenAPI spec with test pins.
+- Frontend: a reaction row on the issue detail (below the title meta) and a
+  picker + group chips on every comment node in the activity feed
+  (top-level and replies), with optimistic toggles, error alerts, and a
+  member-15+ gate mirroring the page reactions UI. The picker's anatomy
+  (grid, sort/toggle helpers, error surface) was extracted into a shared
+  `ReactionRow`/`EmojiGrid`/`lib/reactions` — page reactions now render
+  through the same row (contract and queries untouched; chip screen-reader
+  labels improved as a side effect).
+
 **Global search covers Pages (cycle 66)**
 - `GET /api/v1/search` was issues-only; page titles and content were
   invisible to global search. Pages now get a `search` tsvector (migration
