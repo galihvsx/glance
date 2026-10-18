@@ -27,6 +27,17 @@ All notable changes to glance are documented here. The format follows
   violation → 409 `state_transition_not_allowed` with `details.allowed`
   naming the permitted next-state IDs. Documented in the OpenAPI spec
   with test pins.
+- Frontend: new Project Settings → Workflow tab — per-state allowed-next
+  checkbox editor, unrestricted-vs-restricted display (states with no rule
+  row = unrestricted), dirty-tracked Save → PUT with 400/403 inline
+  alerts. Client-side move hints (the server enforces): board columns whose
+  state is not an allowed target get disabled drop while dragging + dimmed
+  style; spreadsheet state cell offers only current + permitted next
+  states; issue-detail state popover disables disallowed targets
+  ("Blocked by the project workflow"); every surface shows a 409 toast
+  naming the permitted next states. Shared `lib/workflow.ts` client
+  (`allowedNextStateIds`, `isTransitionAllowed`,
+  `stateTransitionConflictMessage`) + 14 new vitest tests.
 
 **Reactions surface: issue + comment reactions (cycle 67)**
 - Reactions were half-wired: the backend had the full reaction contract and
