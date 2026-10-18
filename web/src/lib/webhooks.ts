@@ -15,7 +15,13 @@
 //   GET  /api/v1/workspaces/:slug/webhooks/:id → Webhook — secret omitted.
 //   PATCH .../webhooks/:id {url?, secret?, events?, active?} → Webhook —
 //     secret omitted. Only non-empty url is applied; nil fields untouched.
-//   DELETE .../webhooks/:id → 204.
+//   GET  /api/v1/workspaces/:slug/webhooks/:id/deliveries?limit=&before=
+//     → {deliveries: WebhookDelivery[], next_before: number | null} —
+//     per-attempt history, newest first (C59T1). before is a delivery-id
+//     cursor. No data / outbox_row_id in the rows.
+//   POST /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId/redeliver
+//     → 202 {ok: true} — failed rows only (409 otherwise); the fresh
+//     outbox row is built from the webhook's CURRENT url + secret.
 //   Admin-only (role 20): non-members → 404, members/guests → 403
 //     (service.ErrForbidden → "forbidden").
 //   URL must be http(s) → 400 otherwise (ErrBadWebhookURL).
@@ -223,6 +229,58 @@ export function deliveryStatusLabel(
   }
 }
 
+// --- Delivery history (C59T1) ------------------------------------------------
+// Per-webhook delivery log: one row per attempt, newest first. The list
+// shape deliberately carries NO data (payloads can be large; the list is
+// the log view) and NO outbox_row_id (internal correlation).
+
+export type WebhookDeliveryStatus = "delivered" | "retrying" | "failed";
+
+export interface WebhookDelivery {
+  id: number;
+  webhook_id: string;
+  event: string;
+  status: WebhookDeliveryStatus;
+  // NULL when no HTTP response was received (DNS failure, dial error,
+  // timeout, SSRF refusal, poison row).
+  http_status: number | null;
+  // NULL on delivered.
+  error: string | null;
+  duration_ms: number;
+  attempted_at: string;
+}
+
+export interface WebhookDeliveriesPage {
+  deliveries: WebhookDelivery[];
+  // Cursor for the next page (the last row's id), or null when the page
+  // came back short (exhausted).
+  next_before: number | null;
+}
+
+// Tone for a delivery-history row's status badge — same mapping as the
+// C57T2 summary indicator (delivered green, retrying amber, failed red).
+export function deliveryRowTone(status: WebhookDeliveryStatus): WebhookDeliveryTone {
+  switch (status) {
+    case "delivered":
+      return "success";
+    case "retrying":
+      return "warning";
+    case "failed":
+      return "danger";
+  }
+}
+
+export function deliveryRowLabel(status: WebhookDeliveryStatus): string {
+  switch (status) {
+    case "delivered":
+      return "Delivered";
+    case "retrying":
+      return "Retrying";
+    case "failed":
+      return "Failed";
+  }
+}
+
 // --- API -------------------------------------------------------------------
 
 const webhooksPath = (slug: string, id?: string) =>
@@ -234,6 +292,41 @@ export function listWebhooks(slug: string): Promise<Webhook[]> {
   return api
     .get<{ webhooks: Webhook[] }>(webhooksPath(slug))
     .then((r) => r.webhooks ?? []);
+}
+
+export function listWebhookDeliveries(
+  slug: string,
+  webhookId: string,
+  opts?: { limit?: number; before?: number },
+): Promise<WebhookDeliveriesPage> {
+  const q = new URLSearchParams();
+  if (opts?.limit !== undefined) q.set("limit", String(opts.limit));
+  if (opts?.before !== undefined) q.set("before", String(opts.before));
+  const qs = q.toString();
+  return api
+    .get<WebhookDeliveriesPage>(
+      `${webhooksPath(slug, webhookId)}/deliveries${qs ? `?${qs}` : ""}`,
+    )
+    .then((r) => ({
+      deliveries: r.deliveries ?? [],
+      next_before: r.next_before ?? null,
+    }));
+}
+
+// Redelivers a failed delivery: the server enqueues a FRESH outbox row
+// built from the webhook's CURRENT row (current URL + secret — if the
+// admin changed the URL since the failure, the redelivery goes to the
+// current URL). Only failed rows are redeliverable (server enforces
+// with 409); the original history row is untouched.
+export function redeliverWebhookDelivery(
+  slug: string,
+  webhookId: string,
+  deliveryId: number,
+): Promise<{ ok: boolean }> {
+  return api.post<{ ok: boolean }>(
+    `${webhooksPath(slug, webhookId)}/deliveries/${deliveryId}/redeliver`,
+    {},
+  );
 }
 
 export function createWebhook(

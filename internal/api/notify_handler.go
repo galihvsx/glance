@@ -42,6 +42,9 @@ func RegisterNotifyRoutes(e *echo.Echo, h *NotifyHandler) {
 	w.GET("/:id", h.getWebhook)
 	w.PATCH("/:id", h.updateWebhook)
 	w.DELETE("/:id", h.deleteWebhook)
+	// C59T1: per-webhook delivery history + manual redelivery.
+	w.GET("/:id/deliveries", h.listWebhookDeliveries)
+	w.POST("/:id/deliveries/:deliveryId/redeliver", h.redeliverWebhookDelivery)
 }
 
 // notifyError maps service sentinel errors to HTTP statuses. Unknown
@@ -60,6 +63,10 @@ func notifyError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "digest timezone must be a valid IANA timezone name", nil)
 	case errors.Is(err, service.ErrWebhookNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "webhook not found", nil)
+	case errors.Is(err, service.ErrWebhookDeliveryNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "webhook delivery not found", nil)
+	case errors.Is(err, service.ErrDeliveryNotRedeliverable):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "webhook delivery is not redeliverable", nil)
 	case errors.Is(err, service.ErrBadWebhookURL):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "webhook url must be http(s)", nil)
 	case errors.Is(err, service.ErrUnknownWebhookEvent):
@@ -304,4 +311,79 @@ func (h *NotifyHandler) deleteWebhook(c *echo.Context) error {
 		return notifyError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// listWebhookDeliveries implements GET
+// /api/v1/workspaces/:slug/webhooks/:id/deliveries?limit=&before=
+// (C59T1): one webhook's delivery history, newest first. limit
+// defaults to 25 and must be 1-100 (invalid → 400); before is a
+// delivery-id cursor — only rows strictly older than it are
+// returned. next_before is the cursor for the next page (the last
+// row's id) or null when the page came back short (exhausted).
+func (h *NotifyHandler) listWebhookDeliveries(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	limit := 25
+	if raw := c.QueryParam("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid limit: want 1-100", nil)
+		}
+		limit = n
+	}
+	var before int64
+	if raw := c.QueryParam("before"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid before: want a delivery id", nil)
+		}
+		before = n
+	}
+	deliveries, err := service.ListWebhookDeliveries(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id, limit, before)
+	if err != nil {
+		return notifyError(c, err)
+	}
+	var nextBefore *int64
+	if len(deliveries) == limit {
+		last := deliveries[len(deliveries)-1].ID
+		nextBefore = &last
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"deliveries":  deliveries,
+		"next_before": nextBefore,
+	})
+}
+
+// redeliverWebhookDelivery implements POST
+// /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId/redeliver
+// (C59T1): enqueues a fresh outbox row for a failed delivery, built
+// from the webhook's CURRENT row (current URL + secret — if the
+// admin changed the URL since the failure, the redelivery goes to
+// the current URL). 202 {ok: true}. 404 when the webhook or the
+// delivery is unknown (or the delivery belongs to another webhook —
+// never leak cross-webhook existence); 409 when the delivery is not
+// failed or the webhook is inactive.
+func (h *NotifyHandler) redeliverWebhookDelivery(c *echo.Context) error {
+	u := CurrentUser(c)
+	if u == nil {
+		return WriteError(c, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized", nil)
+	}
+	id, ok := requireUUIDParam(c, "id", "webhook id")
+	if !ok {
+		return nil
+	}
+	deliveryID, err := strconv.ParseInt(c.Param("deliveryId"), 10, 64)
+	if err != nil || deliveryID < 1 {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid delivery id", nil)
+	}
+	if err := service.RedeliverWebhookDelivery(c.Request().Context(), h.Pool, c.Param("slug"), u.ID, id, deliveryID); err != nil {
+		return notifyError(c, err)
+	}
+	return c.JSON(http.StatusAccepted, map[string]bool{"ok": true})
 }

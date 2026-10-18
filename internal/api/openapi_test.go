@@ -2903,3 +2903,217 @@ func TestOpenAPIDocShapesWebhookDeliveryStatus(t *testing.T) {
 		}
 	}
 }
+
+// Doc-side pinning test (C59T1): the WebhookDelivery schema in
+// docs/openapi.yaml matches service.WebhookDelivery field-for-field
+// (reflection pin — a struct change without a doc update fails),
+// carries NO data / outbox_row_id (never part of the log view), and
+// the list + redeliver endpoints are documented with their params
+// and response shapes. This is the doc-side complement to the live
+// pins (TestWebhookDeliveriesHTTP asserts the shapes in real
+// responses).
+func TestOpenAPIDocShapesWebhookDelivery(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	raw, ok := spec.Components.Schemas["WebhookDelivery"]
+	if !ok {
+		t.Fatal("spec has no WebhookDelivery schema")
+	}
+	var docSchema struct {
+		Type  string                     `json:"type"`
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &docSchema); err != nil {
+		t.Fatalf("decode WebhookDelivery schema: %v", err)
+	}
+	if docSchema.Type != "object" {
+		t.Fatalf("WebhookDelivery schema type = %q, want object", docSchema.Type)
+	}
+	var prop struct {
+		Type     string   `json:"type"`
+		Format   string   `json:"format"`
+		Enum     []string `json:"enum"`
+		Nullable bool     `json:"nullable"`
+	}
+	decodeProp := func(name string) {
+		t.Helper()
+		prop = struct {
+			Type     string   `json:"type"`
+			Format   string   `json:"format"`
+			Enum     []string `json:"enum"`
+			Nullable bool     `json:"nullable"`
+		}{}
+		rawProp, ok := docSchema.Props[name]
+		if !ok {
+			t.Fatalf("WebhookDelivery doc missing property %q", name)
+		}
+		if err := json.Unmarshal(rawProp, &prop); err != nil {
+			t.Fatalf("decode WebhookDelivery.%s: %v", name, err)
+		}
+	}
+	decodeProp("id")
+	if prop.Type != "integer" || prop.Format != "int64" {
+		t.Fatalf("WebhookDelivery.id = {%s, %s}, want {integer, int64}", prop.Type, prop.Format)
+	}
+	decodeProp("webhook_id")
+	if prop.Type != "string" || prop.Format != "uuid" {
+		t.Fatalf("WebhookDelivery.webhook_id = {%s, %s}, want {string, uuid}", prop.Type, prop.Format)
+	}
+	decodeProp("event")
+	if prop.Type != "string" {
+		t.Fatalf("WebhookDelivery.event type = %q, want string", prop.Type)
+	}
+	decodeProp("status")
+	if prop.Type != "string" {
+		t.Fatalf("WebhookDelivery.status type = %q, want string", prop.Type)
+	}
+	wantEnum := map[string]bool{"delivered": true, "retrying": true, "failed": true}
+	if len(prop.Enum) != len(wantEnum) {
+		t.Fatalf("WebhookDelivery.status enum = %v, want exactly %v", prop.Enum, wantEnum)
+	}
+	for _, e := range prop.Enum {
+		if !wantEnum[e] {
+			t.Fatalf("WebhookDelivery.status enum = %v, want exactly %v", prop.Enum, wantEnum)
+		}
+	}
+	decodeProp("http_status")
+	if prop.Type != "integer" || !prop.Nullable {
+		t.Fatalf("WebhookDelivery.http_status = {%s, nullable=%v}, want {integer, true}", prop.Type, prop.Nullable)
+	}
+	decodeProp("error")
+	if prop.Type != "string" || !prop.Nullable {
+		t.Fatalf("WebhookDelivery.error = {%s, nullable=%v}, want {string, true}", prop.Type, prop.Nullable)
+	}
+	decodeProp("duration_ms")
+	if prop.Type != "integer" {
+		t.Fatalf("WebhookDelivery.duration_ms type = %q, want integer", prop.Type)
+	}
+	decodeProp("attempted_at")
+	if prop.Type != "string" || prop.Format != "date-time" {
+		t.Fatalf("WebhookDelivery.attempted_at = {%s, %s}, want {string, date-time}", prop.Type, prop.Format)
+	}
+	// The log view never carries the payload or the internal
+	// correlation id.
+	for _, forbidden := range []string{"data", "outbox_row_id"} {
+		if _, ok := docSchema.Props[forbidden]; ok {
+			t.Fatalf("WebhookDelivery doc must not carry %q", forbidden)
+		}
+	}
+
+	// Reflection pin: every json tag on service.WebhookDelivery must
+	// be a doc property and vice versa.
+	structType := reflect.TypeOf(service.WebhookDelivery{})
+	if structType.Kind() != reflect.Struct {
+		t.Fatalf("service.WebhookDelivery kind = %v, want struct", structType.Kind())
+	}
+	wantProps := map[string]bool{}
+	for i := 0; i < structType.NumField(); i++ {
+		f := structType.Field(i)
+		tag := f.Tag.Get("json")
+		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "-" || name == "" {
+			t.Fatalf("service.WebhookDelivery field %s has no json name", f.Name)
+		}
+		wantProps[name] = true
+	}
+	if len(docSchema.Props) != len(wantProps) {
+		t.Fatalf("WebhookDelivery doc properties = %v, want exactly %v (service.WebhookDelivery)",
+			docKeysOf(docSchema.Props), docKeysOf(wantProps))
+	}
+	for name := range wantProps {
+		if _, ok := docSchema.Props[name]; !ok {
+			t.Fatalf("WebhookDelivery doc missing property %q (struct field)", name)
+		}
+	}
+
+	// Endpoints: list + redeliver documented with params + responses.
+	paths := loadOpenAPISpec(t)
+	listPath := "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries"
+	ops, ok := paths[listPath]
+	if !ok {
+		t.Fatalf("spec has no path %q", listPath)
+	}
+	var listOp struct {
+		Parameters []struct {
+			Name     string `json:"name"`
+			In       string `json:"in"`
+			Required bool   `json:"required"`
+			Ref      string `json:"$ref"`
+		} `json:"parameters"`
+		Responses map[string]json.RawMessage `json:"responses"`
+	}
+	if err := json.Unmarshal(ops["get"], &listOp); err != nil {
+		t.Fatalf("decode list-deliveries operation: %v", err)
+	}
+	wantParams := map[string]bool{"slug": true, "id": true, "limit": true, "before": true}
+	for _, p := range listOp.Parameters {
+		if p.Ref == "#/components/parameters/Slug" {
+			delete(wantParams, "slug")
+			continue
+		}
+		delete(wantParams, p.Name)
+	}
+	if len(wantParams) != 0 {
+		t.Fatalf("list-deliveries params missing %v", docKeysOf(wantParams))
+	}
+	for _, want := range []string{"200", "400", "403", "404"} {
+		if _, ok := listOp.Responses[want]; !ok {
+			t.Fatalf("list-deliveries responses lack %q", want)
+		}
+	}
+	var listOK struct {
+		Content map[string]struct {
+			Schema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"schema"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(listOp.Responses["200"], &listOK); err != nil {
+		t.Fatalf("decode list-deliveries 200: %v", err)
+	}
+	listSchema := listOK.Content["application/json"].Schema
+	if _, ok := listSchema.Properties["deliveries"]; !ok {
+		t.Fatal("list-deliveries 200 schema lacks deliveries")
+	}
+	if _, ok := listSchema.Properties["next_before"]; !ok {
+		t.Fatal("list-deliveries 200 schema lacks next_before")
+	}
+
+	redeliverPath := "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries/{deliveryId}/redeliver"
+	ops, ok = paths[redeliverPath]
+	if !ok {
+		t.Fatalf("spec has no path %q", redeliverPath)
+	}
+	var redeliverOp struct {
+		Parameters []struct {
+			Name string `json:"name"`
+			Ref  string `json:"$ref"`
+		} `json:"parameters"`
+		Responses map[string]json.RawMessage `json:"responses"`
+	}
+	if err := json.Unmarshal(ops["post"], &redeliverOp); err != nil {
+		t.Fatalf("decode redeliver operation: %v", err)
+	}
+	wantParams = map[string]bool{"slug": true, "id": true, "deliveryId": true}
+	for _, p := range redeliverOp.Parameters {
+		if p.Ref == "#/components/parameters/Slug" {
+			delete(wantParams, "slug")
+			continue
+		}
+		delete(wantParams, p.Name)
+	}
+	if len(wantParams) != 0 {
+		t.Fatalf("redeliver params missing %v", docKeysOf(wantParams))
+	}
+	for _, want := range []string{"202", "400", "403", "404", "409"} {
+		if _, ok := redeliverOp.Responses[want]; !ok {
+			t.Fatalf("redeliver responses lack %q", want)
+		}
+	}
+}

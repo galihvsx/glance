@@ -6,11 +6,13 @@ package api
 // Real test database, no skips.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
@@ -463,4 +465,291 @@ func TestWebhookDeliveryStatusHTTP(t *testing.T) {
 		t.Fatalf("get webhook: status = %d", rec.Code)
 	}
 	assertNullDeliveryKeys("get", rec.Body.Bytes())
+}
+
+// TestWebhookDeliveriesHTTP (C59T1): GET .../webhooks/:id/deliveries
+// (paging, response shape, authz, validation) + POST
+// .../deliveries/:deliveryId/redeliver (202 + fresh outbox row,
+// 409/404 rules). Real test database, no skips.
+func TestWebhookDeliveriesHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testNotifyServer(t, pool)
+	ctx := context.Background()
+
+	cookieA := loginTestUser(t, e, pool, uniqueEmail("wh-del"), "ua", "10.9.3.1")
+	cookieB := loginTestUser(t, e, pool, uniqueEmail("wh-del-b"), "ua", "10.9.3.2")
+	userBID := authedUserID(t, e, cookieB)
+
+	slug := uniqueSlug("wh-del")
+	createWorkspaceHTTP(t, e, cookieA, "Webhook Deliveries Co", slug)
+	base := "/api/v1/workspaces/" + slug + "/webhooks"
+
+	// B joins as member: the deliveries endpoints are admin-only → 403.
+	rec := postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug+"/members", cookieA,
+		fmt.Sprintf(`{"user_id":%q,"role":15}`, userBID))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("add member: status = %d", rec.Code)
+	}
+
+	// Admin creates the webhook under test.
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookieA,
+		`{"url":"https://example.com/hook","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var wh struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wh); err != nil {
+		t.Fatalf("decode webhook: %v", err)
+	}
+
+	// A second workspace + webhook for the cross-workspace 404 checks:
+	// its deliveries must never be visible through the first workspace.
+	slug2 := uniqueSlug("wh-del-2")
+	createWorkspaceHTTP(t, e, cookieA, "Webhook Deliveries Co 2", slug2)
+	rec = postAuthedJSON(t, e, http.MethodPost, "/api/v1/workspaces/"+slug2+"/webhooks", cookieA,
+		`{"url":"https://example.com/other","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create second webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var wh2 struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &wh2); err != nil {
+		t.Fatalf("decode second webhook: %v", err)
+	}
+
+	seedDelivery := func(webhookID, event, status string, httpStatus *int, errStr *string, attemptedAt time.Time, data string) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO webhook_deliveries
+			   (webhook_id, event, data, status, http_status, error, duration_ms, attempted_at)
+			 VALUES ($1::uuid, $2, $3::jsonb, $4, $5, $6, 12, $7) RETURNING id`,
+			webhookID, event, data, status, httpStatus, errStr, attemptedAt).Scan(&id); err != nil {
+			t.Fatalf("seed delivery: %v", err)
+		}
+		return id
+	}
+	now := time.Now().UTC()
+	http500, http200 := 500, 200
+	errBoom := "boom"
+	// Seeded oldest-first so ids increase with attempted_at (as the
+	// dispatcher produces them: attempted_at ~ now() at insert). The
+	// newest-first list is then: failed, delivered, retrying.
+	retryingID := seedDelivery(wh.ID, "issue.created", "retrying", nil, &errBoom, now.Add(-2*time.Minute), `{"id":"issue-3"}`)
+	deliveredID := seedDelivery(wh.ID, "issue.updated", "delivered", &http200, nil, now.Add(-time.Minute), `{"id":"issue-2"}`)
+	failedID := seedDelivery(wh.ID, "issue.created", "failed", &http500, &errBoom, now, `{"id":"issue-1"}`)
+	otherFailedID := seedDelivery(wh2.ID, "issue.created", "failed", nil, &errBoom, now, `{"id":"issue-9"}`)
+
+	type deliveryResp struct {
+		ID         int64   `json:"id"`
+		WebhookID  string  `json:"webhook_id"`
+		Event      string  `json:"event"`
+		Status     string  `json:"status"`
+		HTTPStatus *int    `json:"http_status"`
+		Error      *string `json:"error"`
+		DurationMs int     `json:"duration_ms"`
+		Attempted  string  `json:"attempted_at"`
+	}
+	type listResp struct {
+		Deliveries []deliveryResp `json:"deliveries"`
+		NextBefore *int64         `json:"next_before"`
+	}
+	decodeList := func(rec *httptest.ResponseRecorder) listResp {
+		t.Helper()
+		var out listResp
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode deliveries list: %v (body: %s)", err, rec.Body.String())
+		}
+		return out
+	}
+
+	deliveriesURL := base + "/" + wh.ID + "/deliveries"
+
+	// Full list: newest first, next_before null on a short page.
+	rec = getAuthed(t, e, http.MethodGet, deliveriesURL, cookieA)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list deliveries: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	list := decodeList(rec)
+	if len(list.Deliveries) != 3 {
+		t.Fatalf("deliveries = %d, want 3", len(list.Deliveries))
+	}
+	if list.NextBefore != nil {
+		t.Fatalf("next_before = %d, want null on a short page", *list.NextBefore)
+	}
+	wantOrder := []int64{failedID, deliveredID, retryingID}
+	for i, want := range wantOrder {
+		if list.Deliveries[i].ID != want {
+			t.Fatalf("deliveries[%d].id = %d, want %d (newest first)", i, list.Deliveries[i].ID, want)
+		}
+	}
+	if list.Deliveries[0].Status != "failed" || list.Deliveries[0].Event != "issue.created" {
+		t.Fatalf("first delivery = %+v, want failed issue.created", list.Deliveries[0])
+	}
+	if list.Deliveries[0].HTTPStatus == nil || *list.Deliveries[0].HTTPStatus != 500 {
+		t.Fatalf("first delivery http_status = %v, want 500", list.Deliveries[0].HTTPStatus)
+	}
+	if list.Deliveries[0].Error == nil || *list.Deliveries[0].Error != "boom" {
+		t.Fatalf("first delivery error = %v, want boom", list.Deliveries[0].Error)
+	}
+	if list.Deliveries[2].HTTPStatus != nil {
+		t.Fatalf("retrying delivery http_status = %v, want null (no response received)", list.Deliveries[2].HTTPStatus)
+	}
+
+	// The list shape carries NO data and NO outbox_row_id (both are
+	// internal / payload-sized, never part of the log view).
+	var raw struct {
+		Deliveries []map[string]any `json:"deliveries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw list: %v", err)
+	}
+	for _, d := range raw.Deliveries {
+		if _, ok := d["data"]; ok {
+			t.Fatalf("delivery list leaks data: %s", rec.Body.String())
+		}
+		if _, ok := d["outbox_row_id"]; ok {
+			t.Fatalf("delivery list leaks outbox_row_id: %s", rec.Body.String())
+		}
+	}
+
+	// Paging: limit=2 → first two + next_before; before=cursor → rest.
+	rec = getAuthed(t, e, http.MethodGet, deliveriesURL+"?limit=2", cookieA)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list limit=2: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	page1 := decodeList(rec)
+	if len(page1.Deliveries) != 2 || page1.NextBefore == nil || *page1.NextBefore != deliveredID {
+		t.Fatalf("page1 = %+v, want 2 rows + next_before %d", page1, deliveredID)
+	}
+	rec = getAuthed(t, e, http.MethodGet,
+		fmt.Sprintf("%s?limit=2&before=%d", deliveriesURL, *page1.NextBefore), cookieA)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list page 2: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	page2 := decodeList(rec)
+	if len(page2.Deliveries) != 1 || page2.Deliveries[0].ID != retryingID {
+		t.Fatalf("page2 = %+v, want the single retrying row", page2)
+	}
+	if page2.NextBefore != nil {
+		t.Fatalf("page2 next_before = %d, want null (exhausted)", *page2.NextBefore)
+	}
+
+	// Invalid limit / before → 400.
+	for _, q := range []string{"?limit=0", "?limit=101", "?limit=abc", "?limit=-1", "?before=abc", "?before=0", "?before=-5"} {
+		rec = getAuthed(t, e, http.MethodGet, deliveriesURL+q, cookieA)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("list %s: status = %d, want 400 (body: %s)", q, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Non-admin (member) → 403 on both endpoints.
+	rec = getAuthed(t, e, http.MethodGet, deliveriesURL, cookieB)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member list deliveries: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(failedID)+"/redeliver", cookieB, `{}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member redeliver: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Unknown webhook → 404; a webhook from another workspace → 404
+	// (never leak cross-workspace existence).
+	rec = getAuthed(t, e, http.MethodGet, base+"/00000000-0000-0000-0000-000000000000/deliveries", cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown webhook list: status = %d, want 404", rec.Code)
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+wh2.ID+"/deliveries", cookieA)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-workspace list: status = %d, want 404", rec.Code)
+	}
+
+	// Redeliver of a delivered row → 409 (only failed is redeliverable).
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(deliveredID)+"/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("redeliver delivered: status = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Redeliver of a retrying row → 409 (it retries automatically).
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(retryingID)+"/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("redeliver retrying: status = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Redeliver of a missing delivery → 404; of a delivery under
+	// another webhook → 404 (never leak cross-webhook existence).
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/999999999/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("redeliver missing: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(otherFailedID)+"/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("redeliver cross-webhook: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Redeliver with a non-numeric delivery id → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/abc/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("redeliver bad id: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Redeliver the failed row → 202 {ok: true} + a fresh outbox row
+	// (pending, attempts 0, same event + data); the original history
+	// row is untouched (still failed).
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(failedID)+"/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("redeliver failed: status = %d, want 202 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var okResp struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &okResp); err != nil || !okResp.OK {
+		t.Fatalf("redeliver response = %s, want {ok: true}", rec.Body.String())
+	}
+	var outbox struct {
+		Status   string
+		Attempts int
+		Payload  []byte
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT status, attempts, payload FROM outbox
+		  WHERE event = 'webhook.deliver' ORDER BY id DESC LIMIT 1`,
+	).Scan(&outbox.Status, &outbox.Attempts, &outbox.Payload); err != nil {
+		t.Fatalf("read fresh outbox row: %v", err)
+	}
+	if outbox.Status != "pending" || outbox.Attempts != 0 {
+		t.Fatalf("fresh outbox = {%q, attempts %d}, want {pending, 0}", outbox.Status, outbox.Attempts)
+	}
+	var payload struct {
+		WebhookID string         `json:"webhook_id"`
+		Event     string         `json:"event"`
+		Data      map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(outbox.Payload, &payload); err != nil {
+		t.Fatalf("decode fresh payload: %v", err)
+	}
+	if payload.WebhookID != wh.ID || payload.Event != "issue.created" || payload.Data["id"] != "issue-1" {
+		t.Fatalf("fresh payload = %+v, want webhook %s / issue.created / {id: issue-1}", payload, wh.ID)
+	}
+	rec = getAuthed(t, e, http.MethodGet, deliveriesURL, cookieA)
+	list = decodeList(rec)
+	if len(list.Deliveries) != 3 {
+		t.Fatalf("deliveries after redeliver = %d, want 3 (original row untouched, no new history yet)", len(list.Deliveries))
+	}
+	if list.Deliveries[0].ID != failedID || list.Deliveries[0].Status != "failed" {
+		t.Fatalf("first delivery after redeliver = %+v, want the untouched failed row", list.Deliveries[0])
+	}
+
+	// Inactive webhook → redelivery is 409 (the dispatcher would skip it).
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+wh.ID, cookieA, `{"active":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deactivate webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = postAuthedJSON(t, e, http.MethodPost, deliveriesURL+"/"+fmt.Sprint(failedID)+"/redeliver", cookieA, `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("redeliver inactive webhook: status = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
+	}
 }
