@@ -76,6 +76,7 @@ func TestMalformedUUIDPathParams400(t *testing.T) {
 		{"updateComment", http.MethodPatch, projBase + "/issues/not-a-uuid/comments/not-a-uuid", `{"content":{"type":"doc","content":[]}}`},
 		{"deleteComment", http.MethodDelete, projBase + "/issues/not-a-uuid/comments/not-a-uuid", ""},
 		{"addCommentReaction", http.MethodPost, projBase + "/issues/not-a-uuid/comments/not-a-uuid/reactions", `{"emoji":"👍"}`},
+		{"listCommentReactions", http.MethodGet, projBase + "/issues/not-a-uuid/comments/not-a-uuid/reactions", ""},
 		{"assignLabel", http.MethodPost, projBase + "/issues/not-a-uuid/labels/not-a-uuid", ""},
 		{"unassignLabel", http.MethodDelete, projBase + "/issues/not-a-uuid/labels/not-a-uuid", ""},
 		{"assignAssignee", http.MethodPost, projBase + "/issues/not-a-uuid/assignees/not-a-uuid", ""},

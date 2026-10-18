@@ -440,6 +440,13 @@ type Comment struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 	ResolvedAt *time.Time      `json:"resolved_at"`
 	ResolvedBy *ActorRef       `json:"resolved_by"`
+	// Reactions carries the comment's reaction groups (emoji + count +
+	// caller's reacted state). Populated only by
+	// ListComments/ListCommentsFiltered (one batched query, no N+1);
+	// every other constructor leaves the initialized empty slice, so
+	// the field always serializes as [] when empty — never null,
+	// never absent.
+	Reactions []ReactionGroup `json:"reactions"`
 }
 
 // CommentNode is a comment with its nested replies.
@@ -472,6 +479,10 @@ func scanComment(row pgx.Row) (*Comment, error) {
 		}
 		c.ResolvedBy = &ActorRef{ID: *resolvedByID, Name: resolvedByName, Email: email}
 	}
+	// C67T0: the reactions field always serializes as [] when empty —
+	// never null. Only the list path populates it (batched); every
+	// other read keeps the initialized empty slice.
+	c.Reactions = []ReactionGroup{}
 	return &c, nil
 }
 
@@ -838,7 +849,57 @@ func ListCommentsFiltered(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 		}
 		roots = kept
 	}
+	// C67T0: attach reaction groups to every returned comment (roots +
+	// replies) in ONE batched query — no N+1 per comment.
+	if err := attachCommentReactions(ctx, pool, roots, actorID); err != nil {
+		return nil, err
+	}
 	return roots, nil
+}
+
+// attachCommentReactions fills Reactions on every node of the tree
+// (all depths) with a single grouped query over comment_reactions.
+// Nodes without reactions keep a non-nil empty slice, so the JSON
+// field serializes as [] — never null, never absent on list reads.
+func attachCommentReactions(ctx context.Context, pool *pgxpool.Pool, roots []*CommentNode, actorID string) error {
+	ids := []string{}
+	byID := map[string]*CommentNode{}
+	var walk func(n *CommentNode)
+	walk = func(n *CommentNode) {
+		ids = append(ids, n.ID)
+		byID[n.ID] = n
+		for _, r := range n.Replies {
+			walk(r)
+		}
+	}
+	for _, n := range roots {
+		walk(n)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT comment_id::text, emoji, count(*)::int, bool_or(user_id = $2::uuid)
+		 FROM comment_reactions
+		 WHERE comment_id = ANY($1::uuid[])
+		 GROUP BY comment_id, emoji
+		 ORDER BY comment_id, count(*) DESC, emoji ASC`,
+		ids, actorID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var commentID string
+		var g ReactionGroup
+		if err := rows.Scan(&commentID, &g.Emoji, &g.Count, &g.Reacted); err != nil {
+			return err
+		}
+		if n, ok := byID[commentID]; ok {
+			n.Reactions = append(n.Reactions, g)
+		}
+	}
+	return rows.Err()
 }
 
 // subtractStrings returns a minus b, order-preserving, in a fresh slice.
@@ -1143,6 +1204,39 @@ func RemoveCommentReaction(ctx context.Context, pool *pgxpool.Pool, wsSlug, iden
 		 WHERE comment_id = $1::uuid AND user_id = $2::uuid AND emoji = $3`,
 		commentID, actorID, emoji)
 	return err
+}
+
+// ListCommentReactions groups a comment's reactions by emoji: total
+// count plus whether the calling user reacted, most-reacted first. Any
+// member may read. Returns an empty (non-nil) slice when there are no
+// reactions; an unknown comment is ErrCommentNotFound.
+func ListCommentReactions(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string) ([]ReactionGroup, error) {
+	if _, _, _, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID); err != nil {
+		return nil, err
+	}
+	if _, err := getComment(ctx, pool, issueID, commentID); err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT emoji, count(*)::int, bool_or(user_id = $2::uuid)
+		 FROM comment_reactions
+		 WHERE comment_id = $1::uuid
+		 GROUP BY emoji
+		 ORDER BY count(*) DESC, emoji ASC`,
+		commentID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ReactionGroup{}
+	for rows.Next() {
+		var g ReactionGroup
+		if err := rows.Scan(&g.Emoji, &g.Count, &g.Reacted); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // ---------- votes ----------

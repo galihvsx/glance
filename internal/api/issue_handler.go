@@ -1150,6 +1150,7 @@ func RegisterSatelliteRoutes(e *echo.Echo, h *IssueHandler) {
 	g.DELETE("/comments/:commentID", h.deleteComment)
 	g.POST("/comments/:commentID/resolve", h.resolveComment)
 	g.POST("/comments/:commentID/reopen", h.reopenComment)
+	g.GET("/comments/:commentID/reactions", h.listCommentReactions)
 	g.POST("/comments/:commentID/reactions", h.addCommentReaction)
 	g.DELETE("/comments/:commentID/reactions", h.removeCommentReaction)
 	g.GET("/reactions", h.listIssueReactions)
@@ -1404,6 +1405,25 @@ func (h *IssueHandler) removeCommentReaction(c *echo.Context) error {
 		return issueError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// listCommentReactions implements GET
+// .../issues/{uuid}/comments/{commentID}/reactions: emoji groups with
+// counts and the caller's reacted state. Mirrors listIssueReactions.
+func (h *IssueHandler) listCommentReactions(c *echo.Context) error {
+	slug, ident, uuid, actor, ok := h.issueParams(c)
+	if !ok {
+		return nil
+	}
+	commentID, ok := requireUUIDParam(c, "commentID", "comment id")
+	if !ok {
+		return nil
+	}
+	groups, err := service.ListCommentReactions(c.Request().Context(), h.Pool, slug, ident, uuid, commentID, actor)
+	if err != nil {
+		return issueError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"reactions": groups})
 }
 
 // getIssueVotes implements GET .../issues/{uuid}/votes: {count, voted}.
