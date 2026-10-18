@@ -196,10 +196,23 @@ export interface SearchIssueItem extends Issue {
   project_identifier: string;
 }
 
-/** Search envelope: {"results": [...], "next_cursor"?: "..."}. */
+/** One page hit from GET /api/v1/search?q= (C66T0): the page plus the
+ *  workspace and project context needed to link to it from anywhere. */
+export interface PageSearchResult {
+  id: string;
+  title: string;
+  project_identifier: string;
+  workspace_slug: string;
+}
+
+/** Search envelope: {"results": [...], "next_cursor"?: "...",
+ *  "page_results": [...], "page_next_cursor"?: "..."} (extended C66T0).
+ *  page_results is [] when there are no page hits. */
 export interface SearchIssuesResult {
   results: SearchIssueItem[];
   next_cursor?: string;
+  page_results: PageSearchResult[];
+  page_next_cursor?: string;
 }
 
 /** A workspace member (for the assignee picker). */

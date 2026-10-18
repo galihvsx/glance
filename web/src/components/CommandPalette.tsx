@@ -16,6 +16,7 @@ import {
   ArrowRight,
   BarChart3,
   Briefcase,
+  FileText,
   FolderKanban,
   Home,
   Inbox,
@@ -39,6 +40,7 @@ import { useDebouncedValue } from "../lib/useDebouncedValue";
 import { useShell } from "./shell/shell-context";
 import type {
   IssueListResult,
+  PageSearchResult,
   Project,
   SearchIssueItem,
   SearchIssuesResult,
@@ -67,6 +69,10 @@ function wsProjectPath(slug: string, identifier: string): string {
 
 function issuePath(slug: string, identifier: string, id: string): string {
   return `${wsProjectPath(slug, identifier)}/i/${encodeURIComponent(id)}`;
+}
+
+function pagesPath(slug: string, identifier: string): string {
+  return `${wsProjectPath(slug, identifier)}/pages`;
 }
 
 /** Project icon when served (C18T4), initials fallback. Defensive: the
@@ -241,6 +247,25 @@ export default function CommandPalette() {
     currentIdentifier,
   ]);
 
+  // C66T1: page hits ride the same /api/v1/search response — no extra
+  // fetch. Defensive like the issue groups: skip archived projects and
+  // malformed hits, and treat a missing/null page_results as empty.
+  const pageHits: PageSearchResult[] = useMemo(() => {
+    const raw = searchQuery.data?.page_results;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (hit) =>
+        hit &&
+        typeof hit.id === "string" &&
+        hit.id.length > 0 &&
+        typeof hit.project_identifier === "string" &&
+        typeof hit.workspace_slug === "string" &&
+        !archivedKeys.has(
+          `${hit.workspace_slug}/${hit.project_identifier.toUpperCase()}`,
+        ),
+    );
+  }, [searchQuery.data, archivedKeys]);
+
   const matchingProjects = useMemo(() => {
     if (!searching) return [];
     const q = trimmed.toLowerCase();
@@ -312,6 +337,16 @@ export default function CommandPalette() {
     }
   }
 
+  function openPage(
+    wsSlug: string,
+    identifier: string,
+    pageId: string,
+  ): void {
+    // Pages.tsx honors location state { pageId } (C36T1): the page opens
+    // selected in the pages tree, and the state survives a fresh mount.
+    go(pagesPath(wsSlug, identifier), { pageId });
+  }
+
   function createIssueInProject(p: Project): void {
     if (!slug) return;
     go(wsProjectPath(slug, p.identifier), { newIssue: true });
@@ -327,7 +362,10 @@ export default function CommandPalette() {
   const showLoading =
     searching && debounced.length > 0 && searchQuery.isFetching;
   const hasResults =
-    groups.length > 0 || matchingProjects.length > 0 || parsed !== null;
+    groups.length > 0 ||
+    pageHits.length > 0 ||
+    matchingProjects.length > 0 ||
+    parsed !== null;
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
@@ -450,6 +488,30 @@ export default function CommandPalette() {
                   ))}
                 </CommandGroup>
               ))}
+
+            {searching && pageHits.length > 0 && (
+              <CommandGroup heading="Pages">
+                {pageHits.slice(0, GROUP_ISSUE_CAP).map((pageHit) => (
+                  <CommandItem
+                    key={pageHit.id}
+                    value={`${pageHit.title ?? ""} ${pageHit.project_identifier ?? ""} ${pageHit.id}`}
+                    onSelect={() =>
+                      openPage(
+                        pageHit.workspace_slug,
+                        pageHit.project_identifier,
+                        pageHit.id,
+                      )
+                    }
+                  >
+                    <FileText className="text-muted-foreground" />
+                    <span className="truncate">{pageHit.title ?? ""}</span>
+                    <span className="ml-auto shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                      {(pageHit.project_identifier ?? "").toUpperCase()}
+                    </span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
 
             {searching && matchingProjects.length > 0 && (
               <CommandGroup heading="Projects">
