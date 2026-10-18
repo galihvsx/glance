@@ -449,15 +449,51 @@ func issueBeforeImageInTx(ctx context.Context, tx pgx.Tx, issueID string) (*Issu
 // nesting (no firing runs) all leave the row unchanged, so none of
 // them snapshots. A snapshot lands in the same tx and rolls back with
 // it — never post-commit. The snapshot carries the derived DisplayID,
-// like every other snapshot call site.
-func snapshotCascadeVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, ident string, before *Issue) error {
+// like every other snapshot call site. The bool return reports whether
+// the snapshot fired (C65T0): callers that owe a membership version on
+// a real set change but no cascade movement use it to avoid
+// double-snapshotting.
+func snapshotCascadeVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, ident string, before *Issue) (bool, error) {
+	after, err := scanIssue(tx.QueryRow(ctx,
+		`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid FOR UPDATE`, issueID))
+	if err != nil {
+		return false, err
+	}
+	if issueRowContentEqual(before, after) {
+		return false, nil
+	}
+	after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
+	if err := snapshotVersionTx(ctx, tx, issueID, actorID, after); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// snapshotMembershipVersionTx writes exactly one version after a
+// label/assignee membership mutation (C65T0). If the automation
+// cascade moved the issue row, that snapshot already landed (via
+// snapshotCascadeVersionTx, fired=true) and nothing more is written —
+// never a double-snapshot. Otherwise, on a REAL set change (changed),
+// the post-mutation row is snapshotted once with the derived
+// DisplayID, like every other snapshot call site. Idempotent no-ops
+// (changed=false) and a missing before-image (haveBefore=false,
+// nothing to compare against) write nothing. The snapshot lands in
+// the same tx and rolls back with it — never post-commit.
+func snapshotMembershipVersionTx(ctx context.Context, tx pgx.Tx, issueID, actorID, ident string, before *Issue, haveBefore, changed bool) error {
+	if !haveBefore || !changed {
+		return nil
+	}
+	fired, err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before)
+	if err != nil {
+		return err
+	}
+	if fired {
+		return nil
+	}
 	after, err := scanIssue(tx.QueryRow(ctx,
 		`SELECT `+issueColumns+` FROM issues WHERE id = $1::uuid FOR UPDATE`, issueID))
 	if err != nil {
 		return err
-	}
-	if issueRowContentEqual(before, after) {
-		return nil
 	}
 	after.DisplayID = ident + "-" + strconv.Itoa(after.SequenceID)
 	return snapshotVersionTx(ctx, tx, issueID, actorID, after)
@@ -654,13 +690,13 @@ func AssignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			[]string{lid}, nil)
 	}
-	// C50T1: snapshot the cascade row iff the firing moved it.
-	if haveBefore {
-		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
-			return err
-		}
-	}
 	changed := tag.RowsAffected() > 0
+	// C50T1 + C65T0: exactly one version per real membership change --
+	// the cascade snapshot iff the firing moved the row, else one
+	// snapshot of the post-mutation row. No-ops snapshot nothing.
+	if err := snapshotMembershipVersionTx(ctx, tx, issueID, actorID, ident, before, haveBefore, changed); err != nil {
+		return err
+	}
 	// C56T1: exactly one issue.updated webhook in-tx for a real attach
 	// (direct "labels" + any cascade row diff).
 	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "labels", before, haveBefore, changed); err != nil {
@@ -724,13 +760,13 @@ func UnassignLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		notified = runAutomationLabelsChangedTx(ctx, tx, wsID, projectID, ident, issueID, actorID,
 			nil, []string{lid})
 	}
-	// C50T1: snapshot the cascade row iff the firing moved it.
-	if haveBefore {
-		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
-			return err
-		}
-	}
 	changed := tag.RowsAffected() > 0
+	// C50T1 + C65T0: exactly one version per real membership change --
+	// the cascade snapshot iff the firing moved the row, else one
+	// snapshot of the post-mutation row. No-ops snapshot nothing.
+	if err := snapshotMembershipVersionTx(ctx, tx, issueID, actorID, ident, before, haveBefore, changed); err != nil {
+		return err
+	}
 	// C56T1: exactly one issue.updated webhook in-tx for a real detach
 	// (direct "labels" + any cascade row diff).
 	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "labels", before, haveBefore, changed); err != nil {
@@ -825,13 +861,13 @@ func AssignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 				runAutomationAssignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
-	// C50T1: snapshot the cascade row iff the firing moved it.
-	if haveBefore {
-		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
-			return err
-		}
-	}
 	changed := tag.RowsAffected() > 0
+	// C50T1 + C65T0: exactly one version per real membership change --
+	// the cascade snapshot iff the firing moved the row, else one
+	// snapshot of the post-mutation row. No-ops snapshot nothing.
+	if err := snapshotMembershipVersionTx(ctx, tx, issueID, actorID, ident, before, haveBefore, changed); err != nil {
+		return err
+	}
 	// C56T1: exactly one issue.updated webhook in-tx for a real
 	// assignment (direct "assignees" + any cascade row diff).
 	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "assignees", before, haveBefore, changed); err != nil {
@@ -918,13 +954,13 @@ func UnassignAssignee(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 				runAutomationUnassignedTx(ctx, tx, wsID, projectID, ident, issueID, actorID)...)
 		}
 	}
-	// C50T1: snapshot the cascade row iff the firing moved it.
-	if haveBefore {
-		if err := snapshotCascadeVersionTx(ctx, tx, issueID, actorID, ident, before); err != nil {
-			return err
-		}
-	}
 	changed := tag.RowsAffected() > 0
+	// C50T1 + C65T0: exactly one version per real membership change --
+	// the cascade snapshot iff the firing moved the row, else one
+	// snapshot of the post-mutation row. No-ops snapshot nothing.
+	if err := snapshotMembershipVersionTx(ctx, tx, issueID, actorID, ident, before, haveBefore, changed); err != nil {
+		return err
+	}
 	// C56T1: exactly one issue.updated webhook in-tx for a real
 	// unassignment (direct "assignees" + any cascade row diff).
 	if err := enqueueLabelWebhookTx(ctx, tx, wsID, ident, issueID, actorID, "assignees", before, haveBefore, changed); err != nil {
