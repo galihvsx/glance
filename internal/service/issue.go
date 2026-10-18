@@ -1043,6 +1043,11 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	// Append-only version snapshot of the post-automation row. Rides
 	// along inside the caller's tx/savepoint, so BulkUpdateIssues gets
 	// per-item versions for free.
+	// C64T1 audit: this site cannot emit a duplicate-content snapshot —
+	// the len(sets)==0 early return above exits before any write when
+	// the patch changed nothing, so every snapshot here follows a real
+	// UPDATE (a net-zero automation cascade still went through real
+	// writes with activity rows; it is not a phantom).
 	if err := snapshotVersionTx(ctx, tx, fresh.ID, actorID, fresh); err != nil {
 		return nil, nil, false, err
 	}
@@ -1228,8 +1233,25 @@ func restoreIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, a
 	}
 
 	restored.DisplayID = ident + "-" + strconv.Itoa(restored.SequenceID)
-	if err := snapshotVersionTx(ctx, tx, restored.ID, actorID, restored); err != nil {
+	// C64T1: no-op snapshot guard (same duplicate class as the C64T0
+	// no-op version restore). deleteIssueTx snapshots the row at delete
+	// time, and deleted_at is NOT in the Issue struct, so a restore
+	// that clears no parent and changed nothing else would snapshot
+	// content identical to the issue's latest version — a phantom
+	// version for an event whose trail is already recorded by the
+	// _restored activity row and the issue.updated webhook below. Skip
+	// the snapshot when the restored row's content equals the latest
+	// version. The parent-clear path above changed parent_id (and a
+	// DeleteState reassign while deleted changes state_id), so those
+	// restores still snapshot.
+	dup, err := latestVersionContentEqualTx(ctx, tx, restored.ID, restored)
+	if err != nil {
 		return nil, err
+	}
+	if !dup {
+		if err := snapshotVersionTx(ctx, tx, restored.ID, actorID, restored); err != nil {
+			return nil, err
+		}
 	}
 
 	// Webhook fan-out as issue.updated: the restored issue re-enters
@@ -1429,6 +1451,13 @@ func deleteIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	}
 
 	del.DisplayID = ident + "-" + strconv.Itoa(del.SequenceID)
+	// C64T1 audit: this delete-time snapshot is the deliberate content
+	// anchor for the trash-restore guard in restoreIssueTx — deleted_at
+	// is not in the Issue struct, so the snapshot content equals the
+	// pre-delete version's by construction, and it is the row state a
+	// later restore compares against. The delete is a real event
+	// (accompanied by the _deleted activity row and the issue.deleted
+	// webhook below), not a phantom.
 	if err := snapshotVersionTx(ctx, tx, del.ID, actorID, del); err != nil {
 		return nil, err
 	}
@@ -2049,6 +2078,9 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// and snapshotVersionTx's sequencing cannot interleave.
 		// In-tx like every other write here, so any error rolls the
 		// snapshot back with the batch.
+		// C64T1 audit: the issueRowContentEqual guard above covers this
+		// call site — a no-change final row (no-op patch, no cascade)
+		// snapshots nothing.
 		if !issueRowContentEqual(final, updatedRow) {
 			if err := snapshotVersionTx(ctx, tx, id, actorID, final); err != nil {
 				return 0, nil, err

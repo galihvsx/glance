@@ -383,6 +383,11 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 		// state, estimate) — record a post-move version snapshot.
 		// iss is the RETURNING row, so no extra read is needed; the
 		// snapshot lands in the same tx and rolls back with it.
+		// C64T1 audit: honest by construction — same-project moves are
+		// rejected above (ErrMoveSameProject), so project_id always
+		// changes, and the sequence is always re-allocated from the
+		// target project's counter; the snapshot can never duplicate
+		// the issue's latest version.
 		if err := snapshotVersionTx(ctx, tx, n.id, actorID, iss); err != nil {
 			return nil, err
 		}
