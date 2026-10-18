@@ -514,8 +514,10 @@ func AcceptIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		// objectives — intake issues are pre-triage inbox items with
 		// no KR links yet (plan expectation); the stateChanged flag
 		// is discarded.
+		// C68T0: system path — workflow transition rules are bypassed
+		// (rules govern human movement, never triage integrity).
 		_, notified, _, err := updateIssueTx(ctx, tx, projectID, ident, r.issueID, actorID,
-			IssuePatch{StateID: &backlog})
+			IssuePatch{StateID: &backlog}, false)
 		if err != nil {
 			return nil, nil, err
 		}

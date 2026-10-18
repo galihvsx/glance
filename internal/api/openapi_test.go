@@ -60,6 +60,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterAdminRoutes(e, &AdminHandler{})
 	RegisterTaxonomyRoutes(e, issueHandler)
 	RegisterStateRoutes(e, &StateHandler{})
+	// C68T0: keep in lockstep with cmd/glance/main.go.
+	RegisterWorkflowRoutes(e, &WorkflowHandler{})
 	RegisterSatelliteRoutes(e, issueHandler)
 	RegisterIntakeRoutes(e, issueHandler)
 	RegisterIssueLinkRoutes(e, issueHandler)

@@ -245,6 +245,16 @@ func MoveIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, sourceIdentifier
 		}
 	}
 
+	// C68T0 (review amendment): cross-project moves are NOT governed by
+	// workflow transition rules. A move remaps state by name and preserves
+	// the issue's semantic workflow position — there is no user-chosen
+	// transition, so there is nothing for the allowlist to govern.
+	// Modeling entry as (target backlog → landing state) would falsely
+	// deny routine name-preserving moves (e.g. moving an In-Progress
+	// issue into a project whose rules only list backlog→todo), with no
+	// escape hatch for the mover. Moves are an administrative placement,
+	// like DeleteState reassign and version restore — documented bypass.
+
 	// Estimate remap: source point value → target point id by value.
 	srcPointRows, err := queryKV(
 		`SELECT ep.id::text, ep.value::text FROM estimate_points ep

@@ -299,6 +299,9 @@ func main() {
 	api.RegisterAdminRoutes(e, &api.AdminHandler{Pool: pool, BackupCfg: cfg.Backup})
 	api.RegisterTaxonomyRoutes(e, issueHandler)
 	api.RegisterStateRoutes(e, &api.StateHandler{Pool: pool})
+	// C68T0: keep in lockstep with registerAllAPIRoutes in
+	// internal/api/openapi_test.go.
+	api.RegisterWorkflowRoutes(e, &api.WorkflowHandler{Pool: pool})
 	api.RegisterSatelliteRoutes(e, issueHandler)
 	api.RegisterIntakeRoutes(e, issueHandler)
 	api.RegisterIssueLinkRoutes(e, issueHandler)

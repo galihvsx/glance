@@ -659,7 +659,7 @@ func UpdateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, is
 		return nil, ErrForbidden
 	}
 
-	iss, notified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+	iss, notified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch, true)
 	if err != nil {
 		return nil, err
 	}
@@ -700,7 +700,12 @@ func validateIssuePatch(patch IssuePatch) error {
 // commit via announceNotifications. The third return reports whether
 // state_id actually changed in the final in-tx row — callers gate
 // their objective.updated fan-out on it (C44T1).
-func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string, patch IssuePatch) (*Issue, []*Notification, bool, error) {
+//
+// enforceWorkflow gates the C68T0 transition-rules check: user-initiated
+// callers (UpdateIssue, BulkUpdateIssues, BulkSetIssues) pass true;
+// system callers (intake accept, version restore) pass false — rules
+// govern human workflow movement, never system integrity.
+func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, actorID string, patch IssuePatch, enforceWorkflow bool) (*Issue, []*Notification, bool, error) {
 	// Lock the row and read the before-image for per-field comparison.
 	old, err := scanIssue(tx.QueryRow(ctx,
 		`SELECT `+issueColumns+` FROM issues
@@ -729,6 +734,17 @@ func updateIssueTx(ctx context.Context, tx pgx.Tx, projectID, ident, issueID, ac
 	// covers single PATCH, bulk-update, and bulk-set alike.
 	if stateID != nil && *stateID != old.StateID && !patch.IgnoreBlockers {
 		if err := assertNoOpenBlockersTx(ctx, tx, projectID, ident, issueID, *stateID); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	// C68T0: workflow transition governance — when the project defines
+	// any transition rules, a user-initiated state move must be a listed
+	// (old → new) pair. Checked before any mutation: a denial returns
+	// ErrStateTransitionNotAllowed with no writes, so the caller commits
+	// nothing (no activity row, no announce, no webhook). System callers
+	// pass enforceWorkflow=false (see the doc comment above).
+	if enforceWorkflow && stateID != nil && *stateID != old.StateID {
+		if err := checkTransitionTx(ctx, tx, projectID, old.StateID, *stateID); err != nil {
 			return nil, nil, false, err
 		}
 	}
@@ -1549,6 +1565,16 @@ func bulkItemErrMessage(err error) string {
 			return "open blockers: " + strings.Join(obe.Blockers, ", ")
 		}
 		return "open blockers"
+	// C68T0: per-item message for a denied workflow transition. The
+	// allowed next-state IDs ride along when present so the client can
+	// name them without a second call.
+	case errors.Is(err, ErrStateTransitionNotAllowed):
+		var ste *StateTransitionError
+		if errors.As(err, &ste) && len(ste.Allowed) > 0 {
+			return "state transition not allowed by the project's workflow (allowed: " +
+				strings.Join(ste.Allowed, ", ") + ")"
+		}
+		return "state transition not allowed by the project's workflow"
 	default:
 		return "internal error"
 	}
@@ -1598,7 +1624,7 @@ func BulkUpdateIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		if _, err := tx.Exec(ctx, "SAVEPOINT "+sp); err != nil {
 			return nil, err
 		}
-		updated, itemNotified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		updated, itemNotified, stateChanged, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch, true)
 		if err != nil {
 			// Per-item failure: roll back this item only, record the
 			// reason, keep going.
@@ -2012,7 +2038,7 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		// returns the current row without writing (labels/assignees-only
 		// sets are fine). The returned row is the comparison baseline
 		// for the C50T0 post-cascade snapshot below.
-		updatedRow, itemNotified, _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch)
+		updatedRow, itemNotified, _, err := updateIssueTx(ctx, tx, projectID, ident, id, actorID, patch, true)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -2065,6 +2091,20 @@ func BulkSetIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return 0, nil, err
 		}
 		final.DisplayID = ident + "-" + strconv.Itoa(final.SequenceID)
+		// C68T0: workflow transition governance applies to the FINAL
+		// state value (C46 discipline). The replace fns above may have
+		// fired a membership automation that cascade-moved the row AFTER
+		// updateIssueTx checked the requested move — the net movement
+		// the user initiated is (preStateID → final.StateID). When rules
+		// exist and that pair is not allowed, the whole batch fails 409
+		// here and the tx rolls back: no mutation, no announce, no
+		// activity row. (Standalone automation firings outside a user
+		// request keep their existing bypass guarantee.)
+		if final.StateID != preStateID {
+			if err := checkTransitionTx(ctx, tx, projectID, preStateID, final.StateID); err != nil {
+				return 0, nil, err
+			}
+		}
 		// C50T0: the replace fns above may have fired a cascade rule
 		// that moved the row AFTER updateIssueTx snapshotted it. If
 		// the final row's content differs from the row updateIssueTx

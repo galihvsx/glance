@@ -134,6 +134,18 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeOpenBlockers,
 			"issue has open blockers: "+strings.Join(blockers, ", "),
 			map[string]any{"blockers": blockers})
+	// C68T0: workflow transition governance. 409 with code
+	// state_transition_not_allowed; details names the allowed next-state
+	// IDs so the client can render them.
+	case errors.Is(err, service.ErrStateTransitionNotAllowed):
+		var ste *service.StateTransitionError
+		allowed := []string{}
+		if errors.As(err, &ste) && ste.Allowed != nil {
+			allowed = ste.Allowed
+		}
+		return WriteError(c, http.StatusConflict, ErrCodeStateTransitionNotAllowed,
+			"state transition not allowed by the project's workflow",
+			map[string]any{"allowed": allowed})
 	case errors.Is(err, service.ErrInvalidDateRange):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "start_date must not be after target_date", nil)
 	case errors.Is(err, service.ErrInvalidIdentifier):

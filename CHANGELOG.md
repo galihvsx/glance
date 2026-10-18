@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Workflow transition controls (cycle 68, backend)**
+- Plane paywalls state-transition governance (Business/Enterprise Grid);
+  glance ships it free. New per-project transition allowlist: each row
+  permits one directed state move (from → to); a project with zero rule
+  rows stays fully unrestricted (backwards compatible).
+- Backend: migration `000067` (`project_state_transitions`, FKs to
+  states ON DELETE CASCADE so state deletes drop dangling rule rows);
+  `GetWorkflow`/`SetWorkflow` (member-15+ for PUT, validates endpoints
+  belong to the project, rejects self-loops, replace semantics);
+  `checkTransitionTx` enforcement on user-initiated paths — single PATCH,
+  bulk update (per-item), bulk set (applies to the FINAL state value
+  after automation cascades, C46 discipline). System paths keep their
+  guarantees and bypass rules: DeleteState reassign, RestoreIssueVersion,
+  intake accept, ConvertIssue, recurring creation, automation set_state
+  firings, and cross-project moves (state remap by name preserves the
+  semantic workflow position — no user-chosen transition to govern;
+  governing entry as backlog → landing would falsely deny routine
+  name-preserving moves).
+- API: `GET`/`PUT /api/v1/workspaces/{slug}/projects/{identifier}/workflow`;
+  violation → 409 `state_transition_not_allowed` with `details.allowed`
+  naming the permitted next-state IDs. Documented in the OpenAPI spec
+  with test pins.
+
 **Reactions surface: issue + comment reactions (cycle 67)**
 - Reactions were half-wired: the backend had the full reaction contract and
   pages had the UI, but the issue surface showed zero reactions and comment
