@@ -126,6 +126,24 @@ export interface Issue {
   labels: IssueLabel[];
   /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
   subtask_progress?: SubtaskProgress | null;
+  /** Linked PRs/commits (C17T0). Always present as an array on the detail
+   *  endpoint (empty when nothing is linked); omitted on list rows. */
+  external_refs?: ExternalRef[];
+}
+
+/** One linked PR or commit on an issue (C17T0), as returned by
+ *  GET .../issues/{uuid}/refs and embedded on the issue detail
+ *  response. state is one of "open" | "merged" | "closed". */
+export interface ExternalRef {
+  id: string;
+  issue_id: string;
+  provider: string;
+  repo: string;
+  ref_type: "pr" | "commit";
+  ref_id: string;
+  url: string;
+  state: string;
+  created_at: string;
 }
 
 /** A minimal id+name reference (C19T3): one row of the

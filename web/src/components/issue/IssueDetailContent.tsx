@@ -36,6 +36,7 @@ import IssueSummary from "./IssueSummary";
 import IssueBreakdown from "./IssueBreakdown";
 import SubIssues from "./SubIssues";
 import IssueLinks from "./IssueLinks";
+import IssueExternalRefs from "./IssueExternalRefs";
 import IssueCustomFields from "./IssueCustomFields";
 import Attachments from "./Attachments";
 import BlockerConfirmDialog from "./BlockerConfirmDialog";
@@ -927,6 +928,18 @@ export default function IssueDetailContent({
                 identifier={identifier}
                 uuid={uuid}
                 pickSignal={pickSignal}
+              />
+
+              {/* C62T1: linked GitHub PRs / commits (refs ride on the
+                  detail response; mutations invalidate the detail query
+                  and the service announces issue.updated). */}
+              <IssueExternalRefs
+                slug={slug}
+                identifier={identifier}
+                uuid={uuid}
+                refs={issue.external_refs ?? []}
+                issueKey={issueKey}
+                onError={setError}
               />
 
               {/* AI triage suggestions */}
