@@ -103,6 +103,7 @@ vi.mock("../lib/api", () => ({
           name: "Acme",
           role: mockState.role,
           slack_configured: false,
+    github_webhook_configured: false,
           created_at: "2026-01-01T00:00:00Z",
           updated_at: "2026-01-01T00:00:00Z",
         });

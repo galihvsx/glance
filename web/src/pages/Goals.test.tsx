@@ -26,6 +26,7 @@ const workspace: Workspace = {
   name: "Acme",
   role: 15,
   slack_configured: false,
+    github_webhook_configured: false,
   created_at: "",
   updated_at: "",
 };

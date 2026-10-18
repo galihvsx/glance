@@ -70,6 +70,7 @@ describe("WorkspaceSettings audit log visibility", () => {
         name: "Acme",
         role: currentRole,
         slack_configured: false,
+    github_webhook_configured: false,
       });
     });
     mockFetchAudit.mockResolvedValue({
@@ -93,6 +94,7 @@ describe("WorkspaceSettings audit log visibility", () => {
         name: "Acme",
         role: currentRole,
         slack_configured: false,
+    github_webhook_configured: false,
       });
     });
     renderSettings();
