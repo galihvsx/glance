@@ -2223,6 +2223,15 @@
         "responses": { "200": { "description": "Delivery history page", "content": { "application/json": { "schema": { "type": "object", "properties": { "deliveries": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookDelivery" } }, "next_before": { "type": "integer", "format": "int64", "nullable": true } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries/{deliveryId}": {
+      "get": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get one webhook delivery with its payload",
+        "description": "Admin only. The payload view for one delivery attempt: the list-view fields PLUS `data` — the full domain-event payload the dispatcher signed and POSTed. This is the ONLY shape that carries `data`; the list deliberately omits it. No `outbox_row_id` (internal correlation). 404 when the webhook or the delivery is unknown, or the delivery belongs to another webhook (never leak cross-webhook existence).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "deliveryId", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } } ],
+        "responses": { "200": { "description": "Delivery detail with payload", "content": { "application/json": { "schema": { "type": "object", "properties": { "delivery": { "$ref": "#/components/schemas/WebhookDeliveryDetail" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries/{deliveryId}/redeliver": {
       "post": {
         "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3271,6 +3280,21 @@
           "error": { "type": "string", "nullable": true, "description": "Failure message; null on delivered." },
           "duration_ms": { "type": "integer", "description": "Attempt wall time in milliseconds." },
           "attempted_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WebhookDeliveryDetail": {
+        "type": "object",
+        "description": "One delivery attempt for a webhook WITH its payload (C60): the WebhookDelivery list fields PLUS `data` — the full domain-event payload the dispatcher signed and POSTed. No outbox_row_id (internal correlation).",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "description": "Delivery id." },
+          "webhook_id": { "type": "string", "format": "uuid" },
+          "event": { "type": "string", "description": "Domain event, e.g. issue.updated." },
+          "status": { "type": "string", "enum": ["delivered", "retrying", "failed"], "description": "Attempt outcome: delivered (2xx), retrying (failed, backoff scheduled), failed (permanently failed)." },
+          "http_status": { "type": "integer", "nullable": true, "description": "Receiver's HTTP status for this attempt; null when no HTTP response was received (DNS failure, dial error, timeout, SSRF refusal)." },
+          "error": { "type": "string", "nullable": true, "description": "Failure message; null on delivered." },
+          "duration_ms": { "type": "integer", "description": "Attempt wall time in milliseconds." },
+          "attempted_at": { "type": "string", "format": "date-time" },
+          "data": { "type": "object", "description": "The domain-event payload the dispatcher sent — the same JSON the receiver got. Never the webhook URL or secret." }
         }
       },
       "Notification": {

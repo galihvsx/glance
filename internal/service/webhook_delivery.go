@@ -131,6 +131,62 @@ func ListWebhookDeliveries(ctx context.Context, pool *pgxpool.Pool, wsSlug, acto
 	return out, rows.Err()
 }
 
+// WebhookDeliveryDetail is one webhook_deliveries row as exposed to
+// the detail endpoint: the payload view. It is the list shape PLUS
+// the stored domain-event `data` — the ONLY shape that carries it.
+// No outbox_row_id: internal correlation only. Data is the domain
+// event payload the dispatcher signed and POSTed — never the
+// webhook URL or secret, which live only on the webhook row (the
+// dispatcher writes data from the outbox payload's Data field alone;
+// see recordDeliveryOutcome in webhook.go).
+type WebhookDeliveryDetail struct {
+	WebhookDelivery
+	Data map[string]any `json:"data"`
+}
+
+// GetWebhookDelivery returns one webhook's delivery detail — the
+// full history row including the stored payload. Admin-only,
+// workspace-scoped: the webhook must belong to :slug, and the
+// delivery must belong to the webhook — a cross-webhook delivery id
+// reads as ErrWebhookDeliveryNotFound (never leaking cross-webhook
+// existence), exactly like the redeliver path.
+func GetWebhookDelivery(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, webhookID string, deliveryID int64) (*WebhookDeliveryDetail, error) {
+	wsID, err := resolveWebhookAdmin(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	// Webhook must exist in this workspace — otherwise 404, and the
+	// delivery query below can never leak another workspace's history.
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM webhooks WHERE id = $1::uuid AND workspace_id = $2::uuid)`,
+		webhookID, wsID).Scan(&exists); err != nil {
+		if isInvalidUUID(err) {
+			return nil, ErrWebhookNotFound
+		}
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrWebhookNotFound
+	}
+	var d WebhookDeliveryDetail
+	var dataBytes []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT `+webhookDeliveryColumns+`, data FROM webhook_deliveries
+		  WHERE id = $1 AND webhook_id = $2::uuid`,
+		deliveryID, webhookID).Scan(&d.ID, &d.WebhookID, &d.Event, &d.Status,
+		&d.HTTPStatus, &d.Error, &d.DurationMs, &d.AttemptedAt, &dataBytes); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrWebhookDeliveryNotFound
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(dataBytes, &d.Data); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 // RedeliverWebhookDelivery enqueues a fresh outbox row for a failed
 // delivery. 404 when the webhook or the delivery is not found (or
 // the delivery belongs to another webhook); 409 when the delivery
