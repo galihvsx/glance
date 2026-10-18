@@ -20,11 +20,15 @@ const (
 	// ErrCodeOpenBlockers is the 409 code (C16T3) when an issue is moved
 	// to a completed state while it has open blockers. details carries
 	// {"blockers":[...]} — the blocker display IDs.
-	ErrCodeOpenBlockers    = "open_blockers"
-	ErrCodeRateLimited     = "rate_limited"
-	ErrCodeGone            = "gone"
-	ErrCodePayloadTooLarge = "payload_too_large"
-	ErrCodeInternal        = "internal"
+	ErrCodeOpenBlockers = "open_blockers"
+	// ErrCodeStateTransitionNotAllowed is the 409 code (C68T0) when a
+	// state move is not an allowed transition of the project's workflow.
+	// details carries {"allowed":[...]} — the permitted next-state IDs.
+	ErrCodeStateTransitionNotAllowed = "state_transition_not_allowed"
+	ErrCodeRateLimited               = "rate_limited"
+	ErrCodeGone                      = "gone"
+	ErrCodePayloadTooLarge           = "payload_too_large"
+	ErrCodeInternal                  = "internal"
 	// ErrCodeScheduleNotFound is the 404 code (C28T2) for an unknown
 	// recurring schedule id within a confirmed project.
 	ErrCodeScheduleNotFound = "schedule_not_found"

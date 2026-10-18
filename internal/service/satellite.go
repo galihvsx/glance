@@ -398,7 +398,9 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	// webhook fan-out ride along; broadcast after commit.
 	// C45T0: mirror UpdateIssue — capture stateChanged and fan
 	// out issue.updated + objective.updated after commit.
-	updated, notified, stateChanged, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+	// C68T0: system path — restoring a historical version bypasses
+	// workflow transition rules (history integrity over governance).
+	updated, notified, stateChanged, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch, false)
 	if err != nil {
 		return nil, err
 	}

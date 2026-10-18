@@ -483,7 +483,7 @@ func TestAutomationEventsRollbackFiresNothing(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	if _, _, _, err := updateIssueTx(ctx, tx, projectID, fx.ident, iss.ID, fx.admin,
-		IssuePatch{Priority: autoIntPtr(3)}); err != nil {
+		IssuePatch{Priority: autoIntPtr(3)}, true); err != nil {
 		tx.Rollback(ctx)
 		t.Fatalf("updateIssueTx: %v", err)
 	}

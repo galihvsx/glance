@@ -750,7 +750,7 @@
       "patch": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Atomically set fields on many issues",
-        "description": "Applies ONE set to many issues in a single fully-atomic transaction — any unknown, deleted, cross-project, or malformed id, or any invalid set field, aborts the whole batch (no partial application). 200 with {updated, issue_ids}. Member (15)+. The blocker guard applies per issue: a move into a completed state with open blockers aborts the batch with 409 code open_blockers unless set.ignore_blockers=true.",
+        "description": "Applies ONE set to many issues in a single fully-atomic transaction — any unknown, deleted, cross-project, or malformed id, or any invalid set field, aborts the whole batch (no partial application). 200 with {updated, issue_ids}. Member (15)+. The blocker guard applies per issue: a move into a completed state with open blockers aborts the batch with 409 code open_blockers unless set.ignore_blockers=true. Workflow transition rules apply to the FINAL state value (after automation cascades): a net (before → final) move that is not a listed pair aborts the batch with 409 code state_transition_not_allowed.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids", "set"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "set": { "type": "object", "properties": { "state_id": { "type": "string", "format": "uuid" }, "priority": { "type": "integer" }, "label_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "null = untouched; non-null replaces the label set (empty clears)" }, "assignee_id": { "type": "object", "description": "Tri-state: omitted = untouched, null value = clear all, value = replace with that user", "properties": { "set": { "type": "boolean" }, "value": { "type": "string", "format": "uuid", "nullable": true } } }, "ignore_blockers": { "type": "boolean", "description": "Bypass the open-blocker guard for the whole batch" } } } } } } } },
         "responses": { "200": { "description": "Bulk set result", "content": { "application/json": { "schema": { "type": "object", "properties": { "updated": { "type": "integer" }, "issue_ids": { "type": "array", "items": { "type": "string" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "$ref": "#/components/responses/Conflict" } }
@@ -760,7 +760,7 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Bulk-update many issues (partial success)",
-        "description": "Applies one tri-state patch to many issues inside a single transaction (per-item savepoints → partial success). 200 with {results:[{id, ok, error?}]}. The blocker guard applies per item: a blocked move reports ok:false with an \"open blockers\" error (pass patch.ignore_blockers=true to force the batch). Member (15)+. Honors Idempotency-Key.",
+        "description": "Applies one tri-state patch to many issues inside a single transaction (per-item savepoints → partial success). 200 with {results:[{id, ok, error?}]}. The blocker guard applies per item: a blocked move reports ok:false with an \"open blockers\" error (pass patch.ignore_blockers=true to force the batch). Workflow transition rules apply per item the same way: a disallowed move reports ok:false with a \"state transition not allowed\" error. Member (15)+. Honors Idempotency-Key.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/IdempotencyKey" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["ids", "patch"], "properties": { "ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "patch": { "$ref": "#/components/schemas/IssuePatch" } } } } } },
         "responses": { "200": { "description": "Per-item results", "content": { "application/json": { "schema": { "type": "object", "properties": { "results": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "ok": { "type": "boolean" }, "error": { "type": "string" } } } } } } } } } } 
@@ -809,7 +809,7 @@
       "patch": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update an issue",
-        "description": "Partial update. Plain pointers: nil = omitted, leave untouched. Tri-state fields (description, parent_id, dates, estimate_point_id): omitted = untouched, explicit null = clear, value = assign. archived=true archives, false unarchives. Moving to a completed-group state while the issue has open 'blocks' blockers (blocking issues that are neither completed nor archived) is rejected with 409 code open_blockers — details.blockers lists the blocker display IDs; pass ignore_blockers=true to complete anyway.",
+        "description": "Partial update. Plain pointers: nil = omitted, leave untouched. Tri-state fields (description, parent_id, dates, estimate_point_id): omitted = untouched, explicit null = clear, value = assign. archived=true archives, false unarchives. Moving to a completed-group state while the issue has open 'blocks' blockers (blocking issues that are neither completed nor archived) is rejected with 409 code open_blockers — details.blockers lists the blocker display IDs; pass ignore_blockers=true to complete anyway. When the project defines workflow transition rules, a move that is not a listed (from → to) pair is rejected with 409 code state_transition_not_allowed — details.allowed lists the permitted next-state IDs.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuePatch" } } } },
         "responses": { "200": { "description": "Updated issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
@@ -843,7 +843,7 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Move an issue to another project",
-        "description": "Moves the issue (plus its whole sub-issue subtree) into another project of the same workspace in one transaction, and returns the move report. The issue keeps its UUID; each moved issue gets a fresh display ID from the target project's issue_sequences and a `_moved` activity entry. State is matched by name (case-insensitive) in the target project, else the target's default backlog state (state_remapped). Labels match by name; unmatched are dropped (labels_dropped). Estimate matches by value in the target scale, else nulled (estimate_dropped). Assignees, watchers, comments, attachments, links, relations, reactions, votes and time entries move with the issue. Cycle/module/release memberships and custom field values are project-scoped and dropped (reported). 400 when the target is the same project, the issue is still in the intake inbox, or the target identifier is missing/malformed; 404 when the issue or target project is missing. Member (15)+ on both projects; Idempotency-Key honored.",
+        "description": "Moves the issue (plus its whole sub-issue subtree) into another project of the same workspace in one transaction, and returns the move report. The issue keeps its UUID; each moved issue gets a fresh display ID from the target project's issue_sequences and a `_moved` activity entry. State is matched by name (case-insensitive) in the target project, else the target's default backlog state (state_remapped). Labels match by name; unmatched are dropped (labels_dropped). Estimate matches by value in the target scale, else nulled (estimate_dropped). Assignees, watchers, comments, attachments, links, relations, reactions, votes and time entries move with the issue. Cycle/module/release memberships and custom field values are project-scoped and dropped (reported). 400 when the target is the same project, the issue is still in the intake inbox, or the target identifier is missing/malformed; 404 when the issue or target project is missing. When the TARGET project defines workflow transition rules, entry is governed as (target default backlog → remapped landing state): a landing state that is not an allowed transition from the target backlog aborts the move with 409 code state_transition_not_allowed. Member (15)+ on both projects; Idempotency-Key honored.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["target_project_identifier"], "properties": { "target_project_identifier": { "type": "string", "description": "Identifier of the destination project (case-insensitive)" } } } } } },
         "responses": { "200": { "description": "Move report", "content": { "application/json": { "schema": { "type": "object", "properties": { "issue": { "$ref": "#/components/schemas/Issue" }, "new_display_id": { "type": "string" }, "state_remapped": { "type": "boolean" }, "labels_dropped": { "type": "array", "items": { "type": "string" } }, "estimate_dropped": { "type": "boolean" }, "memberships_dropped": { "type": "object", "properties": { "cycles": { "type": "integer" }, "modules": { "type": "integer" }, "releases": { "type": "integer" } } }, "custom_values_dropped": { "type": "integer" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
@@ -1323,6 +1323,23 @@
         "summary": "Delete a workflow state",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "stateID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/workflow": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get the project's workflow transition rules",
+        "description": "Member (15)+ configures via PUT; any workspace member (guests included) may read. Returns the project's states plus its state-transition allowlist. A project with zero transitions is unrestricted: any state may move to any other.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Workflow", "content": { "application/json": { "schema": { "type": "object", "properties": { "states": { "type": "array", "items": { "$ref": "#/components/schemas/State" } }, "transitions": { "type": "array", "items": { "$ref": "#/components/schemas/WorkflowTransition" } } } } } } } }
+      },
+      "put": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Replace the project's workflow transition rules",
+        "description": "Member (15)+. Replaces the whole transition allowlist (empty array clears all rules, restoring unrestricted moves). Every transition endpoint must be a state of this project; from_state_id must differ from to_state_id; duplicate pairs are deduped. Rules are enforced on user-initiated state moves (single PATCH, bulk update, bulk set, cross-project move) with 409 state_transition_not_allowed; system paths (intake accept, version restore, state-delete reassign, automations) bypass them.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["transitions"], "properties": { "transitions": { "type": "array", "items": { "$ref": "#/components/schemas/WorkflowTransition" } } } } } } },
+        "responses": { "200": { "description": "Updated workflow", "content": { "application/json": { "schema": { "type": "object", "properties": { "states": { "type": "array", "items": { "$ref": "#/components/schemas/State" } }, "transitions": { "type": "array", "items": { "$ref": "#/components/schemas/WorkflowTransition" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/estimates": {
@@ -3107,6 +3124,14 @@
           "sequence": { "type": "integer" },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WorkflowTransition": {
+        "type": "object",
+        "description": "One allowed directed state move of a project's workflow (service.WorkflowTransition). A project with zero transitions is unrestricted.",
+        "properties": {
+          "from_state_id": { "type": "string", "format": "uuid" },
+          "to_state_id": { "type": "string", "format": "uuid" }
         }
       },
       "EstimateScale": {
