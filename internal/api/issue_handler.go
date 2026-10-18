@@ -194,6 +194,11 @@ func issueError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "relation not found", nil)
 	case errors.Is(err, service.ErrVersionNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "version not found", nil)
+	// C64T0: a restore whose snapshot is identical to the live row is
+	// meaningless against current state — 409, matching the state-
+	// conflict convention (cycle / dup-name / open-blocker cases).
+	case errors.Is(err, service.ErrVersionRestoreNoOp):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "issue already matches that version", nil)
 	default:
 		return WriteInternalError(c)
 	}

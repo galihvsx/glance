@@ -373,6 +373,22 @@ func TestOpenAPIResponseShapesFourEndpoints(t *testing.T) {
 		t.Fatalf("versions after restore = %+v, want [v1, v2, v3]", list.Versions)
 	}
 
+	// 4b. No-op restore: the live row now equals v3's snapshot, so
+	// restoring v3 is meaningless → 409 conflict, no version written.
+	rec = postAuthedJSON(t, e, http.MethodPost, base+"/"+alpha+"/versions/3/restore", cookie, `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("no-op restore v3: status = %d, want 409 (body: %s)", rec.Code, rec.Body.String())
+	}
+	decode(rec, &errEnv)
+	if errEnv.Error.Code != "conflict" {
+		t.Fatalf("no-op restore v3 error code = %q, want conflict", errEnv.Error.Code)
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+alpha+"/versions", cookie)
+	decode(rec, &list)
+	if len(list.Versions) != 3 {
+		t.Fatalf("versions after no-op restore = %+v, want still [v1, v2, v3]", list.Versions)
+	}
+
 	// 5. POST bulk-delete → 200 {results: [{id, ok, error?}]}, NOT
 	//    {deleted: integer}. Per-item: live id ok, unknown id fails.
 	rec = postAuthedJSON(t, e, http.MethodPost, base+"/bulk-delete", cookie,
@@ -415,6 +431,44 @@ func TestOpenAPIResponseShapesFourEndpoints(t *testing.T) {
 		fmt.Sprintf(`{"ids":[%q]}`, alpha))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("guest bulk-delete: status = %d, want 403 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Doc-side pinning test (C64T0): POST .../issues/{uuid}/versions/{n}/restore
+// documents the 409 no-op rejection (service.ErrVersionRestoreNoOp): a
+// restore whose snapshot is identical to the live row writes no version
+// and no _restored marker. This is the doc-side complement to the live
+// 409 pin in TestOpenAPIResponseShapesFourEndpoints §4b. No DB: parses
+// the embedded spec.
+func TestOpenAPIDocShapesVersionRestoreNoOp(t *testing.T) {
+	var spec struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	const path = "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/versions/{n}/restore"
+	ops, ok := spec.Paths[path]
+	if !ok {
+		t.Fatalf("spec has no path %s", path)
+	}
+	var op struct {
+		Responses map[string]json.RawMessage `json:"responses"`
+	}
+	if err := json.Unmarshal(ops["post"], &op); err != nil {
+		t.Fatalf("decode restore operation: %v", err)
+	}
+	if _, ok := op.Responses["409"]; !ok {
+		t.Fatalf("restore operation responses lack 409 (no-op restore rejection): %v", op.Responses)
+	}
+	var conflict struct {
+		Ref string `json:"$ref"`
+	}
+	if err := json.Unmarshal(op.Responses["409"], &conflict); err != nil {
+		t.Fatalf("decode restore 409 response: %v", err)
+	}
+	if conflict.Ref != "#/components/responses/Conflict" {
+		t.Fatalf("restore 409 $ref = %q, want #/components/responses/Conflict", conflict.Ref)
 	}
 }
 

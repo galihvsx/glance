@@ -1102,9 +1102,9 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Restore an issue version",
-        "description": "Applies version n's snapshot as a NEW version — history is never rewritten. The pre-restore state is already the latest version, so a restore is itself undoable by restoring that version. Exception: a sort-order rebalance writes no version, so after one the latest version's sort_order predates the live row and restoring it reverts sort_order too. Returns the post-restore live issue. Member (15)+; guests get 403. n < 1 → 400; unknown n → 404.",
+        "description": "Applies version n's snapshot as a NEW version — history is never rewritten. The pre-restore state is already the latest version, so a restore is itself undoable by restoring that version. Exception: a sort-order rebalance writes no version, so after one the latest version's sort_order predates the live row and restoring it reverts sort_order too. Returns the post-restore live issue. Member (15)+; guests get 403. n < 1 → 400; unknown n → 404; snapshot identical to the live row → 409 (no version written, no _restored marker).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "n", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } } ],
-        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Restored issue", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Issue" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/links": {

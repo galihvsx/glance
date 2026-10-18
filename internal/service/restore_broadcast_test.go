@@ -2,9 +2,10 @@ package service
 
 // RestoreIssueVersion broadcast (C45T0): a restore with a real diff
 // mirrors UpdateIssue exactly — issue.updated unconditionally,
-// objective.updated iff state_id actually changed. A no-diff restore
-// and a failed restore announce nothing. Only issue.updated /
-// objective.updated events are asserted here.
+// objective.updated iff state_id actually changed. A failed restore
+// (a no-diff restore has been one since C64T0: it is rejected with
+// ErrVersionRestoreNoOp before writing anything) announces nothing.
+// Only issue.updated / objective.updated events are asserted here.
 
 import (
 	"errors"
@@ -93,13 +94,11 @@ func TestRestoreBroadcastNoDiff(t *testing.T) {
 	fx := setupLinkedIssue(t)
 	fake := installCapturingBroadcaster(t)
 
-	// v1 is the current state: restoring it diffs nothing.
-	restored, err := RestoreIssueVersion(fx.ctx, fx.pool, fx.slug, fx.ident, fx.iss.ID, fx.actor, 1)
-	if err != nil {
-		t.Fatalf("RestoreIssueVersion v1: %v", err)
-	}
-	if restored.Name != "linked" || restored.StateID != fx.backlogID {
-		t.Fatalf("restored = %+v, want unchanged v1", restored)
+	// v1 is the current state: restoring it diffs nothing. C64T0: the
+	// no-diff restore is rejected before writing anything, so nothing
+	// is announced.
+	if _, err := RestoreIssueVersion(fx.ctx, fx.pool, fx.slug, fx.ident, fx.iss.ID, fx.actor, 1); !errors.Is(err, ErrVersionRestoreNoOp) {
+		t.Fatalf("no-diff restore: err = %v, want ErrVersionRestoreNoOp", err)
 	}
 	assertIssueUpdatedEvents(t, fake)
 	assertLinkedObjectiveEvents(t, fake)

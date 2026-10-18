@@ -9,6 +9,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -129,25 +130,25 @@ func TestRestoreV1AfterCreatedRuleMoveIsNoOp(t *testing.T) {
 	}
 
 	// v1 already holds the post-rules row, so restoring it diffs to
-	// nothing: the live row must stay in the post-rules state, and
-	// the restore still records the marker + a new version per the
-	// existing no-diff branch.
-	restored, err := RestoreIssueVersion(ctx, fx.pool, fx.slug, fx.ident, iss.ID, fx.admin, 1)
-	if err != nil {
-		t.Fatalf("RestoreIssueVersion v1: %v", err)
+	// nothing. C64T0: a no-diff restore is rejected with
+	// ErrVersionRestoreNoOp before writing anything — the live row
+	// stays in the post-rules state and no marker version is recorded.
+	if _, err := RestoreIssueVersion(ctx, fx.pool, fx.slug, fx.ident, iss.ID, fx.admin, 1); !errors.Is(err, ErrVersionRestoreNoOp) {
+		t.Fatalf("RestoreIssueVersion v1: err = %v, want ErrVersionRestoreNoOp", err)
 	}
-	if restored.StateID != fx.started {
-		t.Fatalf("restored StateID = %s, want post-rules %s (restore must not revert the automation move)", restored.StateID, fx.started)
+	live, err := GetIssue(ctx, fx.pool, fx.slug, fx.ident, iss.ID, fx.admin)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if live.StateID != fx.started {
+		t.Fatalf("live StateID = %s, want post-rules %s (rejected restore must not revert the automation move)", live.StateID, fx.started)
 	}
 
 	vs, err := ListVersions(ctx, fx.pool, fx.slug, fx.ident, iss.ID, fx.admin)
 	if err != nil {
 		t.Fatalf("ListVersions: %v", err)
 	}
-	if len(vs) != 2 || vs[1].VersionNo != 2 {
-		t.Fatalf("versions after restore = %d, want [v1 v2] (restore marker version)", len(vs))
-	}
-	if got := decodeVersionSnapshot(t, vs[1]); got.StateID != fx.started {
-		t.Fatalf("v2 snapshot StateID = %s, want post-rules %s", got.StateID, fx.started)
+	if len(vs) != 1 || vs[0].VersionNo != 1 {
+		t.Fatalf("versions after rejected restore = %d, want [v1] (no version spam)", len(vs))
 	}
 }
