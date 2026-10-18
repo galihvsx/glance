@@ -10,6 +10,8 @@ export interface Workspace {
   role: number;
   /** Whether a Slack incoming-webhook URL is configured (C9T3). The URL itself is never returned. */
   slack_configured: boolean;
+  /** Whether a GitHub repo-webhook secret is configured (C17T0, C62T0 UI). The secret itself is never returned. */
+  github_webhook_configured: boolean;
   created_at: string;
   updated_at: string;
 }

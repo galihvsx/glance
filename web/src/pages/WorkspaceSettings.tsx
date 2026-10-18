@@ -28,6 +28,7 @@ import {
 import AuditLogSection from "../components/settings/AuditLogSection";
 import WebhooksSection from "../components/settings/WebhooksSection";
 import SlackSection from "../components/settings/SlackSection";
+import GitHubSection from "../components/settings/GitHubSection";
 import DataSection from "../components/settings/DataSection";
 import ProjectTemplatesSection from "../components/settings/ProjectTemplatesSection";
 
@@ -392,6 +393,14 @@ export default function WorkspaceSettings() {
       {/* ---------- Slack (admin only, matches danger-zone gating) ---------- */}
       {isAdmin && (
         <SlackSection slug={ws.slug} initialConfigured={ws.slack_configured} />
+      )}
+
+      {/* ---------- GitHub (admin only, matches danger-zone gating) ---------- */}
+      {isAdmin && (
+        <GitHubSection
+          slug={ws.slug}
+          initialConfigured={ws.github_webhook_configured}
+        />
       )}
 
       {/* ---------- Data export (admin only, matches danger-zone gating) ---------- */}

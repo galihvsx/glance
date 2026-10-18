@@ -40,6 +40,7 @@ const seeds: [readonly unknown[], unknown][] = [
         name: "Acme Corp",
         role: 20,
         slack_configured: false,
+    github_webhook_configured: false,
         created_at: "",
         updated_at: "",
       } satisfies Workspace,

@@ -226,6 +226,7 @@ function defaultGet(path: string): Promise<unknown> {
       name: "Acme",
       role: testRole.value,
       slack_configured: false,
+    github_webhook_configured: false,
       created_at: "",
       updated_at: "",
     });
