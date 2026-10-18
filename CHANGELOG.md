@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook delivery payload viewer (cycle 60)**
+- Delivery-detail endpoint: `GET
+  /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId` →
+  200 `{delivery: {...}}`. The detail shape is the list shape PLUS
+  `data` — the stored domain-event payload the dispatcher signed and
+  POSTed (domain event only — never the webhook URL or secret, which
+  live on the webhook row). It is the ONLY response shape that
+  carries `data` and it never carries `outbox_row_id`; the list
+  response is unchanged. Admin-only, workspace-scoped; cross-webhook
+  delivery ids read as 404 (never leaks cross-webhook existence);
+  non-numeric id → 400.
+- Settings → webhooks → delivery history: per-row "View payload"
+  button on every delivery (all statuses) opening a dialog with the
+  payload as pretty-printed `{event, data}` JSON, a copy button
+  (same pattern as the secret-reveal flow), and a status/event/
+  attempted-at header. Payload fetched lazily on open with
+  Skeleton/error states. Additive only — no redesign of the
+  webhooks section.
+- OpenAPI: `WebhookDeliveryDetail` schema + the detail endpoint,
+  pinned in `openapi_test.go` (reflection pin over the embedded
+  struct, `outbox_row_id` forbidden).
+
 **Webhook delivery history + manual redelivery (cycle 59)**
 - New `webhook_deliveries` table (migration 000065): one row per
   delivery attempt — `webhook_id`, `outbox_row_id` (correlation,
