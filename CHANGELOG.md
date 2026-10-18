@@ -5,6 +5,20 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Version-history membership completeness (cycle 65)**
+- Label and assignee changes now leave a trace in the issue's version
+  history. Previously, attaching/detaching a label or assigning/unassigning
+  a member wrote activity rows, fired automations, and enqueued webhooks —
+  but wrote **zero version rows** unless an automation cascade happened to
+  move the issue. Each real membership change (single attach/detach/assign/
+  unassign, and bulk label/assignee sets) now records exactly one version
+  carrying the post-mutation row; the old/new sets live in the existing
+  `issue_activities` rows, and restore semantics stay row-fields-only.
+- The cycle-64 no-op discipline is preserved: idempotent no-ops
+  (re-attaching an attached label, detaching an absent one, bulk sets with
+  identical membership) snapshot nothing, and a membership change whose
+  automation cascade moved the row is never snapshotted twice.
+
 **Version-restore integrity (cycle 64)**
 - Restoring a version whose snapshot is identical to the live row is now
   rejected with **409** (`issue already matches that version`) instead of
