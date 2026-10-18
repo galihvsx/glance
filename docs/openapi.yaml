@@ -938,6 +938,12 @@
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/comments/{commentID}/reactions": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List comment reactions",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" }, { "name": "commentID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Reactions", "content": { "application/json": { "schema": { "type": "object", "properties": { "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Add a reaction to a comment",
@@ -3031,7 +3037,7 @@
       },
       "Comment": {
         "type": "object",
-        "description": "One issue comment (service.Comment). The list endpoint returns the threaded tree: each root carries its nested replies; single-comment responses (create / edit / resolve / reopen) return the bare comment with no replies key.",
+        "description": "One issue comment (service.Comment). The list endpoint returns the threaded tree: each root carries its nested replies; single-comment responses (create / edit / resolve / reopen) return the bare comment with no replies key. The reactions array is always present ([] when none, never null); the list endpoint populates it for every returned comment (roots and replies), single-comment responses carry it empty.",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "issue_id": { "type": "string", "format": "uuid" },
@@ -3042,6 +3048,7 @@
           "updated_at": { "type": "string", "format": "date-time" },
           "resolved_at": { "type": "string", "format": "date-time", "nullable": true, "description": "When the thread was resolved; always present, null while open. Only thread roots (parent_id null) ever carry a value." },
           "resolved_by": { "$ref": "#/components/schemas/ActorRef", "nullable": true, "description": "Who resolved the thread; always present, null while open." },
+          "reactions": { "type": "array", "items": { "$ref": "#/components/schemas/ReactionGroup" }, "description": "Reaction groups with counts and the caller's reacted state. Always present ([] when none), never null. Populated on GET list for every comment (roots and replies); empty on single-comment responses (create / edit / resolve / reopen)." },
           "replies": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" }, "description": "Nested replies (each a Comment, itself with replies). Present only on GET list; absent on single-comment responses." }
         }
       },

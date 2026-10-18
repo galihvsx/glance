@@ -929,8 +929,9 @@ func rawKeysOf(m map[string]json.RawMessage) []string {
 // last_login_at/updated_at instead, name nullable); Label/State carry
 // their scope + timestamp fields (Label color never null, State group
 // admits triage); Comment carries actor (ActorRef, not author/User),
-// issue_id and list-only replies; Attachment carries issue_id +
-// uploaded_by; GET reactions returns ReactionGroup[] (the old Reaction
+// issue_id, list-only replies, and reactions (C67T0: always an array,
+// [] when empty, never null — populated on list, empty on single
+// responses); Attachment carries issue_id + uploaded_by; GET reactions returns ReactionGroup[] (the old Reaction
 // {emoji,user_id,created_at} shape never existed); GET votes returns
 // {count, voted} (the old Vote[] shape never existed); SubtaskProgress
 // is present with real values on detail; Page/PageRevision content is
@@ -1148,9 +1149,10 @@ func TestOpenAPIResponseShapesSweep(t *testing.T) {
 	}
 
 	// 4. Comment: create → bare Comment with actor (ActorRef), no
-	// author / replies keys; resolved_at + resolved_by present-but-
-	// null while open. List nests the reply under replies[]. Resolve
-	// fills resolved_at + resolved_by (ActorRef, not User).
+	// author / replies keys, reactions present-but-empty; resolved_at
+	// + resolved_by present-but-null while open. List nests the reply
+	// under replies[] and attaches reactions[] to roots and replies.
+	// Resolve fills resolved_at + resolved_by (ActorRef, not User).
 	alpha := createIssue(`{"name":"Alpha"}`)
 	commentBase := base + "/" + alpha + "/comments"
 	rec = postAuthedJSON(t, e, http.MethodPost, commentBase, cookie,
@@ -1160,8 +1162,15 @@ func TestOpenAPIResponseShapesSweep(t *testing.T) {
 	}
 	comment := topKeys(rec)
 	exactKeys(t, comment, "id", "issue_id", "content", "actor",
-		"created_at", "updated_at", "resolved_at", "resolved_by")
+		"created_at", "updated_at", "resolved_at", "resolved_by", "reactions")
 	mustNotHave(t, comment, "author", "replies")
+	isEmptyArray := func(t *testing.T, m map[string]json.RawMessage, key string) {
+		t.Helper()
+		if string(m[key]) != "[]" {
+			t.Fatalf("%s = %s, want []", key, string(m[key]))
+		}
+	}
+	isEmptyArray(t, comment, "reactions")
 	if nonEmptyString(t, comment, "issue_id") != alpha {
 		t.Fatalf("comment issue_id = %s, want %s", string(comment["issue_id"]), alpha)
 	}
@@ -1209,6 +1218,29 @@ func TestOpenAPIResponseShapesSweep(t *testing.T) {
 	var replyActor map[string]json.RawMessage
 	decodeDetail(replies[0]["actor"], &replyActor)
 	actorKeys(t, replyActor)
+	// C67T0: the list path attaches reactions to roots and replies —
+	// always an array, [] when empty, never null / never absent.
+	mustHave(t, root, "reactions")
+	mustHave(t, replies[0], "reactions")
+	isEmptyArray(t, root, "reactions")
+	isEmptyArray(t, replies[0], "reactions")
+	rec = postAuthedJSON(t, e, http.MethodPost, commentBase+"/"+commentID+"/reactions", cookie,
+		`{"emoji":"👍"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("add comment reaction: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, commentBase, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("relist comments: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var relist struct {
+		Comments []map[string]json.RawMessage `json:"comments"`
+	}
+	decode(rec, &relist)
+	relisted := decodeCommentReactionList(t, append([]byte(`{"reactions":`), append(relist.Comments[0]["reactions"], '}')...))
+	if len(relisted) != 1 || relisted[0].Emoji != "👍" || relisted[0].Count != 1 || !relisted[0].Reacted {
+		t.Fatalf("root reactions after add = %+v, want one 👍 count 1 reacted true", relisted)
+	}
 	rec = postAuthedJSON(t, e, http.MethodPost, commentBase+"/"+commentID+"/resolve", cookie, `{}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("resolve comment: status = %d (body: %s)", rec.Code, rec.Body.String())
