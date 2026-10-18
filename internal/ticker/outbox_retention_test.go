@@ -9,6 +9,7 @@ package ticker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -63,5 +64,61 @@ func TestOutboxRetentionTickerRunOnce(t *testing.T) {
 	// Second pass over an empty backlog: no error.
 	if err := ot.RunOnce(ctx); err != nil {
 		t.Fatalf("second RunOnce: %v", err)
+	}
+}
+
+// TestOutboxRetentionTickerRunOncePrunesWebhookDeliveries (C59T0):
+// the same retention pass also prunes webhook_deliveries rows older
+// than 90 days, and keeps recent ones.
+func TestOutboxRetentionTickerRunOncePrunesWebhookDeliveries(t *testing.T) {
+	pool := tickerTestPool(t)
+	ctx := context.Background()
+
+	var wsID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO workspaces (slug, name) VALUES ($1, 'Ticker') RETURNING id`,
+		fmt.Sprintf("ticker-deliveries-%d", time.Now().UnixNano()),
+	).Scan(&wsID); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	var whID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO webhooks (workspace_id, url, secret) VALUES ($1, 'https://example.com/hook', 's') RETURNING id`,
+		wsID).Scan(&whID); err != nil {
+		t.Fatalf("seed webhook: %v", err)
+	}
+
+	old := time.Now().UTC().AddDate(0, 0, -91)
+	var oldID, freshID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO webhook_deliveries (webhook_id, event, data, status, attempted_at)
+		 VALUES ($1, 'issue.created', '{}'::jsonb, 'failed', $2) RETURNING id`,
+		whID, old).Scan(&oldID); err != nil {
+		t.Fatalf("seed old delivery: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO webhook_deliveries (webhook_id, event, data, status, attempted_at)
+		 VALUES ($1, 'issue.created', '{}'::jsonb, 'failed', now()) RETURNING id`,
+		whID).Scan(&freshID); err != nil {
+		t.Fatalf("seed fresh delivery: %v", err)
+	}
+
+	ot := &OutboxRetentionTicker{Pool: pool}
+	if err := ot.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	exists := func(id int64) bool {
+		var ok bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id).Scan(&ok); err != nil {
+			t.Fatalf("row exists: %v", err)
+		}
+		return ok
+	}
+	if exists(oldID) {
+		t.Fatal("old delivery row still present after RunOnce, want pruned")
+	}
+	if !exists(freshID) {
+		t.Fatal("fresh delivery row pruned by RunOnce, want kept")
 	}
 }

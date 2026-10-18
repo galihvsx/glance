@@ -697,29 +697,49 @@ func (d *WebhookDispatcher) claimDue(ctx context.Context, webhookID string) ([]w
 
 // deliverRow POSTs one claimed row and records the outcome with short
 // single-statement writes — no transaction spans the HTTP call.
+//
+// Every outcome also records one webhook_deliveries history row
+// (C59T0) via the outcome writes, threaded through webhookOutcome:
+// the receiver's HTTP status (nil when no response was received)
+// and the attempt wall time. Pre-lookup failures (poison rows,
+// missing url/event) still go through markFailed, but with no
+// HTTP attempt behind them (nil status, zero duration); the
+// history insert's malformed-id guard makes those a silent no-op
+// when the payload's webhook id is unparseable.
 func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) error {
 	var wd webhookDelivery
 	if err := json.Unmarshal(r.payload, &wd); err != nil {
 		// Poison row: never decodes, fail permanently. No webhook id
-		// is recoverable from the payload — no status update.
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: bad payload: %w", err), "")
+		// is recoverable from the payload — no status update, no
+		// history (empty webhook id).
+		return d.markFailed(ctx, webhookOutcome{outboxID: r.id, attempts: r.attempts},
+			fmt.Errorf("webhook: bad payload: %w", err))
+	}
+	// outcome carries the attempt context for the history row.
+	oc := webhookOutcome{
+		outboxID:  r.id,
+		attempts:  r.attempts,
+		webhookID: wd.WebhookID,
+		event:     wd.Event,
+		data:      wd.Data,
 	}
 	if wd.URL == "" || wd.Event == "" {
-		return d.markFailed(ctx, r.id, r.attempts, errors.New("webhook: missing url or event"), wd.WebhookID)
+		return d.markFailed(ctx, oc, errors.New("webhook: missing url or event"))
 	}
 	// A webhook deleted or deactivated after enqueue must not fire:
 	// mark the row done (skip), not failed. No delivery was attempted,
-	// so no delivery status is written either (empty webhook id).
+	// so no delivery status is written either (empty webhook id —
+	// the outcome writes treat it as "no webhook to attribute").
 	var active bool
 	if err := d.pool.QueryRow(ctx,
 		`SELECT active FROM webhooks WHERE id = $1::uuid`, wd.WebhookID).Scan(&active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return d.markDone(ctx, r.id, "")
+			return d.markDone(ctx, webhookOutcome{outboxID: r.id})
 		}
 		return fmt.Errorf("webhook: lookup webhook: %w", err)
 	}
 	if !active {
-		return d.markDone(ctx, r.id, "")
+		return d.markDone(ctx, webhookOutcome{outboxID: r.id})
 	}
 
 	body, err := json.Marshal(map[string]any{
@@ -728,11 +748,11 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 		"delivered_at": time.Now().UTC(),
 	})
 	if err != nil {
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: marshal body: %w", err), wd.WebhookID)
+		return d.markFailed(ctx, oc, fmt.Errorf("webhook: marshal body: %w", err))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wd.URL, bytes.NewReader(body))
 	if err != nil {
-		return d.markFailed(ctx, r.id, r.attempts, fmt.Errorf("webhook: build request: %w", err), wd.WebhookID)
+		return d.markFailed(ctx, oc, fmt.Errorf("webhook: build request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Glance-Event", wd.Event)
@@ -744,6 +764,12 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 	// v1 must not ship dialable-metadata-endpoint webhooks (169.254.169.254
 	// is the classic target; a string check on the URL would miss DNS
 	// indirection entirely).
+	//
+	// The clock starts here: duration covers the guard + dial + body
+	// drain, i.e. the whole HTTP attempt. Pre-lookup failures above
+	// never reach this point, so they record zero duration.
+	attemptStart := time.Now()
+	elapsedMs := func() int { return int(time.Since(attemptStart).Milliseconds()) }
 	var resp *http.Response
 	if d.allowPrivateTargets {
 		resp, err = d.client.Do(req) // tests only: httptest targets are loopback
@@ -751,27 +777,34 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 		var ips []net.IP
 		ips, err = d.guardTarget(ctx, wd.URL)
 		if err != nil {
+			oc.durationMs = elapsedMs()
 			if errors.Is(err, errWebhookTargetBlocked) {
 				// Permanently unsafe: a target resolving to private
 				// space will never become safe — fail the row instead
-				// of retrying it forever.
-				return d.markFailed(ctx, r.id, r.attempts, err, wd.WebhookID)
+				// of retrying it forever. No HTTP response was
+				// received, so httpStatus stays nil — but the
+				// refusal IS a delivery attempt worth logging.
+				return d.markFailed(ctx, oc, err)
 			}
 			// DNS failure: transient — backoff and retry.
-			return d.recordFailure(ctx, r.id, r.attempts, err, wd.WebhookID)
+			return d.recordFailure(ctx, oc, err)
 		}
 		resp, err = d.doPinned(ctx, req, ips)
 	}
 	if err != nil {
-		return d.recordFailure(ctx, r.id, r.attempts, err, wd.WebhookID)
+		// Dial error / timeout: no HTTP response, transient.
+		oc.durationMs = elapsedMs()
+		return d.recordFailure(ctx, oc, err)
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
+	oc.durationMs = elapsedMs()
+	oc.httpStatus = &resp.StatusCode
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return d.recordFailure(ctx, r.id, r.attempts,
-			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode), wd.WebhookID)
+		return d.recordFailure(ctx, oc,
+			fmt.Errorf("webhook: %s returned status %d", wd.URL, resp.StatusCode))
 	}
-	return d.markDone(ctx, r.id, wd.WebhookID)
+	return d.markDone(ctx, oc)
 }
 
 // errWebhookTargetBlocked marks a delivery refused by the SSRF guard. It
@@ -873,6 +906,22 @@ func webhookSignature(secret string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// webhookOutcome carries one delivery attempt's context from
+// deliverRow to the outcome writes: the outbox row, the attempt
+// count, the webhook to attribute the outcome to, the domain
+// event + data (copied into the history row so redelivery works
+// independently of outbox retention), and the attempt's HTTP
+// status (nil when no HTTP response was received) and wall time.
+type webhookOutcome struct {
+	outboxID   int64
+	attempts   int
+	webhookID  string
+	event      string
+	data       map[string]any
+	httpStatus *int
+	durationMs int
+}
+
 // Outcome writes are single statements on the pool (short-lived, no tx
 // spans the HTTP call). A failed outcome write leaves the row
 // 'delivering' with its lease — a later pass reclaims and redelivers
@@ -880,48 +929,101 @@ func webhookSignature(secret string, body []byte) string {
 //
 // Each outcome write also records the last-delivery outcome on the
 // webhook row (C57T2) via updateWebhookDeliveryStatus, in the same step
-// as the outbox outcome write. webhookID is the payload's webhook id;
-// "" means "no webhook to attribute" (skip paths, poison rows) and
-// writes no status. The outbox write runs FIRST: the outbox row is the
-// source of truth for delivery, and a webhook-status failure surfaces
-// as a Run error without un-delivering an already-recorded outcome —
-// the next delivery for that webhook corrects the display field.
-func (d *WebhookDispatcher) markDone(ctx context.Context, id int64, webhookID string) error {
+// as the outbox outcome write, AND one webhook_deliveries history row
+// (C59T0) via insertWebhookDeliveryHistory. webhookID is the payload's
+// webhook id; "" means "no webhook to attribute" (skip paths, poison
+// rows) and writes neither status nor history. The outbox write runs
+// FIRST: the outbox row is the source of truth for delivery, and a
+// webhook-status or history failure surfaces as a Run error without
+// un-delivering an already-recorded outcome — the next delivery for
+// that webhook corrects the display field, and the next attempt
+// writes the next history row.
+func (d *WebhookDispatcher) markDone(ctx context.Context, oc webhookOutcome) error {
 	if _, err := d.pool.Exec(ctx,
-		`UPDATE outbox SET status = 'done', processed_at = now() WHERE id = $1`, id); err != nil {
-		return fmt.Errorf("webhook: mark row %d done: %w", id, err)
+		`UPDATE outbox SET status = 'done', processed_at = now() WHERE id = $1`, oc.outboxID); err != nil {
+		return fmt.Errorf("webhook: mark row %d done: %w", oc.outboxID, err)
 	}
-	return d.updateWebhookDeliveryStatus(ctx, webhookID, "delivered", nil)
+	if err := d.updateWebhookDeliveryStatus(ctx, oc.webhookID, "delivered", nil); err != nil {
+		return err
+	}
+	return d.insertWebhookDeliveryHistory(ctx, oc, "delivered", nil)
 }
 
 // recordFailure bumps attempts; the row goes back to pending with
 // backoff, or is marked failed once it exhausts webhookMaxAttempts.
-func (d *WebhookDispatcher) recordFailure(ctx context.Context, id int64, attempts int, sendErr error, webhookID string) error {
-	attempts++
-	if attempts >= webhookMaxAttempts {
-		return d.markFailed(ctx, id, attempts, sendErr, webhookID)
+func (d *WebhookDispatcher) recordFailure(ctx context.Context, oc webhookOutcome, sendErr error) error {
+	oc.attempts++
+	if oc.attempts >= webhookMaxAttempts {
+		return d.markFailed(ctx, oc, sendErr)
 	}
-	retryAt := time.Now().Add(webhookRetryBackoff(attempts))
+	retryAt := time.Now().Add(webhookRetryBackoff(oc.attempts))
 	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
 		SET status = 'pending', attempts = $2, last_error = $3, next_retry_at = $4
-		WHERE id = $1`, id, attempts, sendErr.Error(), retryAt); err != nil {
-		return fmt.Errorf("webhook: record failure for row %d: %w", id, err)
+		WHERE id = $1`, oc.outboxID, oc.attempts, sendErr.Error(), retryAt); err != nil {
+		return fmt.Errorf("webhook: record failure for row %d: %w", oc.outboxID, err)
 	}
 	errStr := sendErr.Error()
-	return d.updateWebhookDeliveryStatus(ctx, webhookID, "retrying", &errStr)
+	if err := d.updateWebhookDeliveryStatus(ctx, oc.webhookID, "retrying", &errStr); err != nil {
+		return err
+	}
+	return d.insertWebhookDeliveryHistory(ctx, oc, "retrying", sendErr)
 }
 
-func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts int, sendErr error, webhookID string) error {
+func (d *WebhookDispatcher) markFailed(ctx context.Context, oc webhookOutcome, sendErr error) error {
 	if _, err := d.pool.Exec(ctx, `
 		UPDATE outbox
 		SET status = 'failed', attempts = $2, last_error = $3,
 		    processed_at = now()
-		WHERE id = $1`, id, attempts, sendErr.Error()); err != nil {
-		return fmt.Errorf("webhook: mark row %d failed: %w", id, err)
+		WHERE id = $1`, oc.outboxID, oc.attempts, sendErr.Error()); err != nil {
+		return fmt.Errorf("webhook: mark row %d failed: %w", oc.outboxID, err)
 	}
 	errStr := sendErr.Error()
-	return d.updateWebhookDeliveryStatus(ctx, webhookID, "failed", &errStr)
+	if err := d.updateWebhookDeliveryStatus(ctx, oc.webhookID, "failed", &errStr); err != nil {
+		return err
+	}
+	return d.insertWebhookDeliveryHistory(ctx, oc, "failed", sendErr)
+}
+
+// insertWebhookDeliveryHistory writes one webhook_deliveries row for
+// this attempt (C59T0): the domain event + data (so redelivery works
+// independently of outbox retention), the outcome status, the
+// receiver's HTTP status (nil → NULL, no response received), the
+// failure message (nil → NULL, the delivered case), and the attempt
+// wall time.
+//
+// Attribution rule (same as C57T2's status update): "" webhook id
+// writes nothing. A malformed id can never match a webhook row —
+// silent no-op, same guard as updateWebhookDeliveryStatus — so a
+// pre-lookup markFailed with the payload's raw webhook id never
+// fails the pass on a $1::uuid cast.
+func (d *WebhookDispatcher) insertWebhookDeliveryHistory(ctx context.Context, oc webhookOutcome, status string, sendErr error) error {
+	if oc.webhookID == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(oc.webhookID); err != nil {
+		return nil
+	}
+	dataJSON := []byte("{}")
+	if oc.data != nil {
+		var err error
+		dataJSON, err = json.Marshal(oc.data)
+		if err != nil {
+			return fmt.Errorf("webhook: marshal delivery data for webhook %s: %w", oc.webhookID, err)
+		}
+	}
+	var errArg any
+	if sendErr != nil {
+		errArg = sendErr.Error()
+	}
+	if _, err := d.pool.Exec(ctx,
+		`INSERT INTO webhook_deliveries
+		   (webhook_id, outbox_row_id, event, data, status, http_status, error, duration_ms)
+		 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)`,
+		oc.webhookID, oc.outboxID, oc.event, dataJSON, status, oc.httpStatus, errArg, oc.durationMs); err != nil {
+		return fmt.Errorf("webhook: insert delivery history for webhook %s: %w", oc.webhookID, err)
+	}
+	return nil
 }
 
 // updateWebhookDeliveryStatus records the last-delivery outcome on the
