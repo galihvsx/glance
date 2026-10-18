@@ -5,6 +5,16 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Global search covers Pages (cycle 66)**
+- `GET /api/v1/search` was issues-only; page titles and content were
+  invisible to global search. Pages now get a `search` tsvector (migration
+  000066, title weighted above content) and the search envelope carries
+  `page_results` + `page_next_cursor` alongside the unchanged issue
+  `results`/`next_cursor` — same member-only authz, archived-project skip,
+  and keyset pagination discipline as issues. The Cmd+K palette renders a
+  Pages section (title + project badge) that deep-links into the pages
+  tree with the page selected.
+
 **Version-history membership completeness (cycle 65)**
 - Label and assignee changes now leave a trace in the issue's version
   history. Previously, attaching/detaching a label or assigning/unassigning
