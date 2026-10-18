@@ -5,6 +5,15 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**DeleteState webhook fan-out (cycle 61)**
+- Deleting a state with reassign now enqueues one in-tx `issue.updated`
+  webhook per moved LIVE issue (`changed_fields: ["state_id"]`, same
+  payload shape as restoreIssueVersion) — webhook consumers no longer
+  silently miss the mass `state_id` change. Soft-deleted issues moved by
+  the same delete enqueue nothing (same invariant as the per-issue
+  activity rows and version snapshots); an enqueue error rolls back the
+  whole delete like every other mutation.
+
 **Webhook delivery payload viewer (cycle 60)**
 - Delivery-detail endpoint: `GET
   /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId` →
