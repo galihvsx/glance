@@ -46,6 +46,11 @@ var (
 	ErrRelationNotFound = errors.New("service: relation not found")
 	// ErrVersionNotFound is returned for a missing version number.
 	ErrVersionNotFound = errors.New("service: version not found")
+	// ErrVersionRestoreNoOp is returned when the requested version's
+	// snapshot content is identical to the live row: the restore would
+	// record a version for an event that never happened, so it is
+	// rejected instead of minting duplicate history.
+	ErrVersionRestoreNoOp = errors.New("service: version restore is a no-op")
 )
 
 // ActorRef is the denormalized actor embedded in satellite responses.
@@ -289,7 +294,9 @@ func isIssueDescendant(ctx context.Context, q queryRower, projectID, ancestorID,
 // _restored marker records which version was restored. References in the
 // snapshot are re-validated against the live project (a state deleted
 // since the snapshot was taken rejects the restore); a parent that would
-// now close a cycle is rejected too. Member (15)+.
+// now close a cycle is rejected too. A restore whose snapshot content is
+// identical to the live row is a no-op and is rejected with
+// ErrVersionRestoreNoOp — no version row, no _restored marker. Member (15)+.
 func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string, n int) (*Issue, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -372,27 +379,24 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 	}
 
 	patch := diffIssuePatch(cur, &snap)
+	if !patch.hasFields() {
+		// No-op restore: the snapshot is identical to the live row.
+		// Recording a version here would mint phantom history (a new
+		// version row plus a _restored marker) for an event that never
+		// happened — reject BEFORE writing anything instead.
+		return nil, fmt.Errorf("%w: issue already matches version %d", ErrVersionRestoreNoOp, n)
+	}
 	var updated *Issue
 	var notified []*Notification
 	var stateChanged bool
-	if patch.hasFields() {
-		// Reuses the PATCH machinery: per-field activity rows plus the
-		// new version snapshot, all inside this tx. State changes and
-		// webhook fan-out ride along; broadcast after commit.
-		// C45T0: mirror UpdateIssue — capture stateChanged and fan
-		// out issue.updated + objective.updated after commit.
-		updated, notified, stateChanged, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// Nothing differs, but the restore was an explicit user action:
-		// record it as a new version anyway.
-		updated = cur
-		updated.DisplayID = ident + "-" + strconv.Itoa(updated.SequenceID)
-		if err := snapshotVersionTx(ctx, tx, issueID, actorID, updated); err != nil {
-			return nil, err
-		}
+	// Reuses the PATCH machinery: per-field activity rows plus the
+	// new version snapshot, all inside this tx. State changes and
+	// webhook fan-out ride along; broadcast after commit.
+	// C45T0: mirror UpdateIssue — capture stateChanged and fan
+	// out issue.updated + objective.updated after commit.
+	updated, notified, stateChanged, err = updateIssueTx(ctx, tx, projectID, ident, issueID, actorID, patch)
+	if err != nil {
+		return nil, err
 	}
 
 	marker, _ := json.Marshal(map[string]any{"version_no": n})
@@ -407,15 +411,11 @@ func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 		return nil, err
 	}
 	announceNotifications(notified)
-	// C45T0: mirror UpdateIssue exactly, after commit only. The
-	// no-diff branch (patch empty) announces nothing — nothing
-	// changed. A failed restore returns before commit, so it
-	// announces nothing either.
-	if patch.hasFields() {
-		announceIssueUpdated(wsSlug, ident, issueID, updated)
-		if stateChanged {
-			announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
-		}
+	// C45T0: mirror UpdateIssue exactly, after commit only. A failed
+	// restore returns before commit, so it announces nothing either.
+	announceIssueUpdated(wsSlug, ident, issueID, updated)
+	if stateChanged {
+		announceObjectivesForIssue(ctx, pool, wsSlug, issueID)
 	}
 	return updated, nil
 }
