@@ -5,6 +5,26 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**GitHub integration UI (cycle 62)**
+- Settings → GitHub (admin-only): webhook-secret set/clear (the secret is
+  never echoed back — responses carry only `github_webhook_configured`),
+  the inbound webhook URL
+  `POST /api/v1/integrations/github/webhook` with copy button, and
+  repo-webhook setup instructions. Mirrors the Slack section's
+  write-only-secret contract.
+- Issue detail: linked pull requests / commits section — repo,
+  `#number` / short-SHA, state badge (Open/Merged/Closed), link in new
+  tab; link dialog (repo, type, PR number / commit SHA, URL) honoring
+  the backend's 409 (already linked) and 400 envelopes; remove with
+  confirm. Member (15)+ only (guests read-only); the server enforces
+  all of it.
+- Realtime: ref create/delete now fan out `issue.updated` (best-effort,
+  same posture as other mutations) so collaborators and other tabs
+  refetch refs live.
+- Known gap (future cycle, product decision): the inbound webhook's
+  auto-link path still announces nothing — and a PR close/merge never
+  moves issues between states (by design).
+
 **DeleteState webhook fan-out (cycle 61)**
 - Deleting a state with reassign now enqueues one in-tx `issue.updated`
   webhook per moved LIVE issue (`changed_fields: ["state_id"]`, same
