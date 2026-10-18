@@ -251,8 +251,22 @@ func MergeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, iss
 		return nil, err
 	}
 
-	if err := snapshotVersionTx(ctx, tx, issueID, actorID, src); err != nil {
+	// C64T1: no-op snapshot guard — a source already in the cancelled
+	// state changes no row content here (the UPDATE above only
+	// re-stamps updated_at), so snapshotting would mint a duplicate of
+	// the issue's latest version, the same duplicate class as the C64T0
+	// no-op restore. The merge itself is still recorded: the duplicate
+	// relation, both _merged activity rows, and the issue.updated
+	// webhook above. Skip the snapshot when the row content equals the
+	// latest version.
+	dup, err := latestVersionContentEqualTx(ctx, tx, issueID, src)
+	if err != nil {
 		return nil, err
+	}
+	if !dup {
+		if err := snapshotVersionTx(ctx, tx, issueID, actorID, src); err != nil {
+			return nil, err
+		}
 	}
 
 	wsID, err := workspaceIDForProjectTx(ctx, tx, projectID)

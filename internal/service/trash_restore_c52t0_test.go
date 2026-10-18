@@ -239,9 +239,10 @@ func TestListDeletedIssuesRoles(t *testing.T) {
 
 // TestRestoreIssueClearsDeletedAtAndWritesTrail: restore clears
 // deleted_at, writes one _restored row ({"restored_at": ...}), one
-// version, one issue.updated webhook row (changed_fields
-// ["deleted_at"]), announces issue.updated, and the issue reappears
-// in the normal list.
+// issue.updated webhook row (changed_fields ["deleted_at"]), announces
+// issue.updated, and the issue reappears in the normal list. No version
+// snapshot is written: the restored row's content is identical to the
+// delete-time version (C64T1 no-op snapshot guard).
 func TestRestoreIssueClearsDeletedAtAndWritesTrail(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -303,8 +304,8 @@ func TestRestoreIssueClearsDeletedAtAndWritesTrail(t *testing.T) {
 	if _, ok := payloads[0]["restored_at"]; !ok {
 		t.Fatalf("_restored payload = %v, want a restored_at key", payloads[0])
 	}
-	if n := countVersions(t, pool, iss.ID); n != versionsBefore+1 {
-		t.Fatalf("version rows = %d, want %d (one restore snapshot)", n, versionsBefore+1)
+	if n := countVersions(t, pool, iss.ID); n != versionsBefore {
+		t.Fatalf("version rows = %d, want %d (restore with identical content snapshots nothing — C64T1)", n, versionsBefore)
 	}
 	assertIssueUpdatedIDs(t, fake, iss.ID)
 

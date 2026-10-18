@@ -296,7 +296,11 @@ func isIssueDescendant(ctx context.Context, q queryRower, projectID, ancestorID,
 // since the snapshot was taken rejects the restore); a parent that would
 // now close a cycle is rejected too. A restore whose snapshot content is
 // identical to the live row is a no-op and is rejected with
-// ErrVersionRestoreNoOp — no version row, no _restored marker. Member (15)+.
+// ErrVersionRestoreNoOp — no version row, no _restored marker.
+// C64T1 audit: the no-op branch returns before any write, and the
+// real-change branch goes through updateIssueTx (whose own len(sets)==0
+// early return blocks empty writes), so this path cannot emit a
+// duplicate-content snapshot. Member (15)+.
 func RestoreIssueVersion(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID string, n int) (*Issue, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -521,6 +525,37 @@ func issueRowContentEqual(a, b *Issue) bool {
 		return false
 	}
 	return bytes.Equal(aj, bj)
+}
+
+// latestVersionContentEqualTx reports whether iss's row content matches
+// the issue's latest version snapshot (C64T1). It is the shared guard
+// for call sites whose mutation can leave the row content identical to
+// the last snapshot — trash restore (deleted_at is not in the Issue
+// struct, so delete→restore snapshots identical content) and merging a
+// source that is already in the cancelled state (the UPDATE only
+// re-stamps updated_at). The comparison uses the same
+// issueRowContentEqual semantics as the C50 cascade guards.
+// No version row yet (unreachable in practice — every create writes
+// v1) fails OPEN (false): the caller snapshots rather than skipping on
+// missing data. A corrupt snapshot fails LOUD (error): silently
+// skipping could drop a real record.
+func latestVersionContentEqualTx(ctx context.Context, tx pgx.Tx, issueID string, iss *Issue) (bool, error) {
+	var snapJSON []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT snapshot FROM issue_versions
+		  WHERE issue_id = $1::uuid
+		  ORDER BY version_no DESC LIMIT 1`,
+		issueID).Scan(&snapJSON); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var latest Issue
+	if err := json.Unmarshal(snapJSON, &latest); err != nil {
+		return false, fmt.Errorf("service: decode latest version snapshot: %w", err)
+	}
+	return issueRowContentEqual(iss, &latest), nil
 }
 
 // CreateComment posts a comment; parentID nests it as a reply. The parent

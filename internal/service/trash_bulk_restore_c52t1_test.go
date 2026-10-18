@@ -104,9 +104,11 @@ func TestBulkRestoreValidation(t *testing.T) {
 	}
 }
 
-// TestBulkRestoreTrail: each restored item gets one _restored row, one
-// version snapshot, one issue.updated webhook row (changed_fields
-// [deleted_at]), and one WS issue.updated announce.
+// TestBulkRestoreTrail: each restored item gets one _restored row,
+// one issue.updated webhook row (changed_fields [deleted_at]), and
+// one WS issue.updated announce. No version snapshot is written: the
+// restored rows' content is identical to their delete-time versions
+// (C64T1 no-op snapshot guard).
 func TestBulkRestoreTrail(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()
@@ -159,8 +161,8 @@ func TestBulkRestoreTrail(t *testing.T) {
 		if n := countActivities(t, pool, iss.ID, "_restored"); n != 1 {
 			t.Fatalf("issue %s _restored rows = %d, want 1", iss.ID, n)
 		}
-		if n := countVersions(t, pool, iss.ID); n != versionsBefore[iss.ID]+1 {
-			t.Fatalf("issue %s versions = %d, want %d", iss.ID, n, versionsBefore[iss.ID]+1)
+		if n := countVersions(t, pool, iss.ID); n != versionsBefore[iss.ID] {
+			t.Fatalf("issue %s versions = %d, want %d (restore with identical content snapshots nothing — C64T1)", iss.ID, n, versionsBefore[iss.ID])
 		}
 	}
 	assertIssueUpdatedIDs(t, fake, ids...)
