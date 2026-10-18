@@ -5,6 +5,54 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook delivery history + manual redelivery (cycle 59)**
+- New `webhook_deliveries` table (migration 000065): one row per
+  delivery attempt — `webhook_id`, `outbox_row_id` (correlation,
+  deliberately NOT a foreign key: outbox rows are pruned after 30d),
+  `event`, `data` (domain event data only — never the URL or the
+  signing secret, which are re-read from the webhook row at redelivery
+  time), `status` (`delivered` | `retrying` | `failed`, the C57T2
+  vocabulary), `http_status` (NULL when no HTTP response was
+  received), `error`, `duration_ms`, `attempted_at`. Index on
+  `(webhook_id, attempted_at DESC, id DESC)`. The dispatcher writes
+  the history row alongside each outbox outcome (outbox write first,
+  then status, then history); skip paths (deleted/inactive webhook)
+  and unattributable rows (poison payload, malformed webhook id)
+  write no history. The C57T2 `last_delivery_*` summary on the
+  webhook row is unchanged — history is the detail behind it.
+- Manual redelivery: `POST
+  /api/v1/workspaces/:slug/webhooks/:id/deliveries/:deliveryId/redeliver`
+  → 202 `{ok: true}`. Only `failed` entries are redeliverable
+  (retrying retries automatically; delivered needs no redelivery —
+  enforced in the service with 409, not just in the UI). Redelivery
+  enqueues a FRESH outbox row (attempts 0, pending, due now) built
+  from the webhook's CURRENT row (current URL + secret — if the
+  admin changed the URL since the failure, the redelivery goes to
+  the current URL); the original history row stays untouched and
+  the redelivery's own attempts create new history rows. 404 when
+  the webhook/delivery is unknown or the delivery belongs to
+  another webhook (never leaks cross-webhook existence); 409 when
+  the webhook is inactive.
+- Delivery history API: `GET
+  /api/v1/workspaces/:slug/webhooks/:id/deliveries?limit=&before=`
+  → `{deliveries, next_before}` — newest first, `limit` default 25
+  / max 100 (invalid → 400), `before` is a delivery-id cursor.
+  Rows carry no `data` and no `outbox_row_id`. Admin-only,
+  workspace-scoped, like all webhook endpoints.
+- Settings UI: per-webhook expandable Delivery history panel
+  (status badge, event, attempted time, HTTP status / "No
+  response", truncated error with full-error tooltip, Load more via
+  the `before` cursor, Redeliver button only on failed rows with
+  in-flight disable + transient confirmation + list refresh, and a
+  "redelivery re-sends to this webhook's current URL" note).
+- Retention: `PruneWebhookDeliveries` deletes history rows older
+  than 90 days (longer than the outbox's 30, so redelivery outlives
+  the queue), batched, in the same daily ticker pass as
+  `PruneOutbox`; the prune deletes by `attempted_at` cutoff only,
+  never by status. OpenAPI `WebhookDelivery` schema + both
+  endpoints, with test pins. Pinned by 17 service tests, handler +
+  OpenAPI-pin tests, and 12 new frontend tests.
+
 **Webhook dispatch fairness: per-webhook claim cap (cycle 58)**
 - The global dispatcher claim (`claimDue`, unscoped production path)
   now takes at most `webhookPerWebhookCap = 5` rows per webhook per
