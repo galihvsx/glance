@@ -5,6 +5,20 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Version-restore integrity (cycle 64)**
+- Restoring a version whose snapshot is identical to the live row is now
+  rejected with **409** (`issue already matches that version`) instead of
+  minting a duplicate-content version row plus a fake `_restored` marker —
+  reachable before via the API (restore of the latest version, or an
+  A→B→A stale-but-identical restore). Version history no longer records
+  events that never happened.
+- Same-class audit of every version-snapshot writer: trash restore and
+  merging an already-cancelled source no longer snapshot identical content
+  (the delete-time snapshot is the content anchor; the `_restored` activity
+  row, merge relation/activities, and webhooks are untouched). MoveIssue,
+  BulkSet, `updateIssueTx`, and the version-restore path were verified
+  honest and documented in code.
+
 **Inbound GitHub webhook broadcast parity (cycle 63)**
 - The inbound PR webhook now fans out realtime `issue.updated` per affected
   issue — the same event the manual link/unlink paths already send (C62T1).
