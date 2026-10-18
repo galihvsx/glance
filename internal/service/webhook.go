@@ -91,6 +91,13 @@ type Webhook struct {
 	LastDeliveryAt     *time.Time `json:"last_delivery_at"`
 	LastDeliveryStatus *string    `json:"last_delivery_status"`
 	LastError          *string    `json:"last_error"`
+	// Filter is the event filter (C69T0): a list of {field, op, value}
+	// conditions AND-ed together, evaluated at enqueue time against
+	// work-item events only. NULL / empty = no filter → the webhook
+	// receives every subscribed event. Pointer WITHOUT omitempty, so
+	// the key is present-but-null in list/get/create responses — the
+	// same null convention as the last-delivery fields above.
+	Filter *WebhookFilter `json:"filter"`
 }
 
 // WebhookCreateResponse is the POST 201 response shape: the single
@@ -110,6 +117,9 @@ type WebhookCreateResponse struct {
 	LastDeliveryAt     *time.Time `json:"last_delivery_at"`
 	LastDeliveryStatus *string    `json:"last_delivery_status"`
 	LastError          *string    `json:"last_error"`
+	// Filter (C69T0): the webhook's event filter, null when unset —
+	// same present-but-null convention as Webhook.Filter.
+	Filter *WebhookFilter `json:"filter"`
 }
 
 // CreateResponse renders the show-on-create shape for a new webhook.
@@ -126,39 +136,69 @@ func (w *Webhook) CreateResponse() *WebhookCreateResponse {
 		LastDeliveryAt:     w.LastDeliveryAt,
 		LastDeliveryStatus: w.LastDeliveryStatus,
 		LastError:          w.LastError,
+		Filter:             w.Filter,
 	}
 }
 
 // WebhookInput carries webhook creation fields. Secret nil/empty → a random
 // 32-byte hex secret is generated. Events empty → all domain events.
+// Filter nil → no event filter.
 type WebhookInput struct {
 	URL    string
 	Secret *string
 	Events []string
 	Active *bool
+	Filter *WebhookFilter
 }
 
 // WebhookPatch carries partial webhook updates (nil = untouched).
+// Filter follows the nil-vs-empty discipline of Events: nil = untouched,
+// non-nil replaces — a non-nil but EMPTY filter clears the column
+// (the HTTP layer maps an explicit `filter: null` to that).
 type WebhookPatch struct {
 	URL    *string
 	Secret *string
 	Events []string // nil = untouched; non-nil (even empty) replaces
 	Active *bool
+	Filter *WebhookFilter // nil = untouched; non-nil replaces (empty clears)
 }
 
 func scanWebhook(row pgx.Row) (*Webhook, error) {
 	var w Webhook
 	var events []string
+	var filterRaw []byte
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &w.URL, &w.Secret, &events,
 		&w.Active, &w.CreatedAt, &w.UpdatedAt,
-		&w.LastDeliveryAt, &w.LastDeliveryStatus, &w.LastError); err != nil {
+		&w.LastDeliveryAt, &w.LastDeliveryStatus, &w.LastError,
+		&filterRaw); err != nil {
 		return nil, err
 	}
 	w.Events = events
+	if len(filterRaw) > 0 {
+		var f WebhookFilter
+		if err := json.Unmarshal(filterRaw, &f); err == nil {
+			w.Filter = &f
+		}
+		// A corrupt stored filter on a READ path surfaces as unset
+		// (nil); the enqueue path re-validates and fail-closes there.
+	}
 	return &w, nil
 }
 
-const webhookColumns = `id::text, workspace_id::text, url, secret, events, active, created_at, updated_at, last_delivery_at, last_delivery_status, last_error`
+// webhookFilterParam renders the filter for the filter JSONB column:
+// nil/empty → SQL NULL (no filter), otherwise the JSON text.
+func webhookFilterParam(f *WebhookFilter) any {
+	if f == nil || len(*f) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(f)
+	if err != nil {
+		return nil
+	}
+	return string(raw)
+}
+
+const webhookColumns = `id::text, workspace_id::text, url, secret, events, active, created_at, updated_at, last_delivery_at, last_delivery_status, last_error, filter`
 
 func validateWebhookURL(raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -225,6 +265,11 @@ func CreateWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID stri
 	if err := validateWebhookEvents(in.Events); err != nil {
 		return nil, err
 	}
+	if in.Filter != nil {
+		if err := ValidateWebhookFilter(*in.Filter); err != nil {
+			return nil, err
+		}
+	}
 	wsID, err := resolveWebhookAdmin(ctx, pool, wsSlug, actorID)
 	if err != nil {
 		return nil, err
@@ -254,10 +299,10 @@ func CreateWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID stri
 	}
 	defer tx.Rollback(ctx)
 	w, err := scanWebhook(tx.QueryRow(ctx,
-		`INSERT INTO webhooks (workspace_id, url, secret, events, active)
-		 VALUES ($1::uuid, $2, $3, $4, $5)
+		`INSERT INTO webhooks (workspace_id, url, secret, events, active, filter)
+		 VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)
 		 RETURNING `+webhookColumns,
-		wsID, strings.TrimSpace(in.URL), secret, events, active))
+		wsID, strings.TrimSpace(in.URL), secret, events, active, webhookFilterParam(in.Filter)))
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +401,12 @@ func UpdateWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, id 
 	if patch.Active != nil {
 		add("active", "", *patch.Active)
 	}
+	if patch.Filter != nil {
+		if err := ValidateWebhookFilter(*patch.Filter); err != nil {
+			return nil, err
+		}
+		add("filter", "::jsonb", webhookFilterParam(patch.Filter))
+	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
 	}
@@ -420,9 +471,15 @@ func DeleteWebhook(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, id 
 // active webhook subscribed to domainEvent, inside the caller's tx — the
 // transactional outbox guarantee: no delivery without a committed mutation.
 // A webhook with an empty events list receives every domain event.
+//
+// C69T0: each webhook's filter (webhooks.filter) is evaluated at enqueue
+// time against the event's issue snapshot. A non-matching filter — or any
+// filter evaluation failure (fail-closed) — skips the mail.Enqueue for
+// that webhook: the event never creates an outbox row and never pollutes
+// the delivery history. Non-work-item events bypass filters entirely.
 func enqueueWebhookDeliveryTx(ctx context.Context, tx pgx.Tx, wsID, domainEvent string, data map[string]any) error {
 	rows, err := tx.Query(ctx,
-		`SELECT id::text, url, secret FROM webhooks
+		`SELECT id::text, url, secret, filter FROM webhooks
 		  WHERE workspace_id = $1::uuid AND active
 		    AND (events = '{}' OR $2 = ANY(events))`,
 		wsID, domainEvent)
@@ -432,11 +489,14 @@ func enqueueWebhookDeliveryTx(ctx context.Context, tx pgx.Tx, wsID, domainEvent 
 	defer rows.Close()
 	// Drain before enqueueing: pgx forbids a new query on the tx while
 	// rows are still open ("conn busy").
-	type hook struct{ id, target, secret string }
+	type hook struct {
+		id, target, secret string
+		filter             []byte // raw webhooks.filter JSONB; nil when unset
+	}
 	var hooks []hook
 	for rows.Next() {
 		var h hook
-		if err := rows.Scan(&h.id, &h.target, &h.secret); err != nil {
+		if err := rows.Scan(&h.id, &h.target, &h.secret, &h.filter); err != nil {
 			return err
 		}
 		hooks = append(hooks, h)
@@ -446,6 +506,21 @@ func enqueueWebhookDeliveryTx(ctx context.Context, tx pgx.Tx, wsID, domainEvent 
 		return err
 	}
 	for _, h := range hooks {
+		if len(h.filter) > 0 {
+			f, err := parseStoredWebhookFilter(h.filter, h.id)
+			if err != nil {
+				logWebhookFilterSkip(h.id, domainEvent, "corrupt stored filter", err)
+				continue
+			}
+			match, err := MatchWebhookFilter(ctx, tx, f, domainEvent, data)
+			if err != nil {
+				logWebhookFilterSkip(h.id, domainEvent, "evaluation failed", err)
+				continue
+			}
+			if !match {
+				continue
+			}
+		}
 		if err := mail.Enqueue(ctx, tx, WebhookDeliverEvent, webhookDelivery{
 			WebhookID: h.id,
 			URL:       h.target,

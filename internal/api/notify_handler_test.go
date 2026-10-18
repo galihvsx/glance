@@ -909,3 +909,162 @@ func TestWebhookDeliveryDetailHTTP(t *testing.T) {
 		t.Fatalf("unknown webhook detail: status = %d, want 404 (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+// TestWebhookFilterHTTP (C69T0): the filter key is present-but-null in
+// create/list/get responses when unset (same null convention as the
+// last-delivery fields); create/update accept a filter array; PATCH with
+// an explicit null clears it; PATCH without the key leaves it untouched;
+// an invalid filter is a 400.
+func TestWebhookFilterHTTP(t *testing.T) {
+	pool := newTestPool(t)
+	e := testNotifyServer(t, pool)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("wh-filter"), "ua", "10.9.3.1")
+	slug := uniqueSlug("wh-filter")
+	createWorkspaceHTTP(t, e, cookie, "Webhook Filter Co", slug)
+	base := "/api/v1/workspaces/" + slug + "/webhooks"
+
+	filterOf := func(name string, body []byte) (present bool, raw json.RawMessage) {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		raw, present = m["filter"]
+		return present, raw
+	}
+	assertFilterNull := func(name string, body []byte) {
+		t.Helper()
+		present, raw := filterOf(name, body)
+		if !present {
+			t.Fatalf("%s response lacks key %q: %s", name, "filter", body)
+		}
+		if string(raw) != "null" {
+			t.Fatalf("%s response filter = %s, want null", name, raw)
+		}
+	}
+
+	// Create without a filter → present-but-null.
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"url":"https://example.com/hook","events":["issue.created"]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertFilterNull("create", rec.Body.Bytes())
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	// Create WITH a filter → the array round-trips.
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"url":"https://example.com/hook2","events":["issue.created"],`+
+			`"filter":[{"field":"priority","op":"in","value":["high","urgent"]}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create webhook with filter: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	present, raw := filterOf("create-with-filter", rec.Body.Bytes())
+	if !present {
+		t.Fatalf("create-with-filter response lacks filter key: %s", rec.Body.String())
+	}
+	var conds []map[string]any
+	if err := json.Unmarshal(raw, &conds); err != nil {
+		t.Fatalf("decode filter: %v", err)
+	}
+	if len(conds) != 1 || conds[0]["field"] != "priority" || conds[0]["op"] != "in" {
+		t.Fatalf("create-with-filter filter = %s, want the priority condition", raw)
+	}
+	var created2 struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created2); err != nil {
+		t.Fatalf("decode created2: %v", err)
+	}
+
+	// Invalid filter → 400.
+	rec = postAuthedJSON(t, e, http.MethodPost, base, cookie,
+		`{"url":"https://example.com/hook3","events":["issue.created"],`+
+			`"filter":[{"field":"priority","op":"eq","value":"critical"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create with invalid filter: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// PATCH without the filter key leaves the filter untouched.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created2.ID, cookie,
+		`{"active":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch without filter: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if present, raw := filterOf("patch-untouched", rec.Body.Bytes()); !present || string(raw) == "null" {
+		t.Fatalf("patch-untouched filter = %s, want the priority condition preserved", raw)
+	}
+
+	// PATCH with explicit null clears the filter.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created2.ID, cookie,
+		`{"filter":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch clear filter: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	assertFilterNull("patch-clear", rec.Body.Bytes())
+
+	// PATCH with a new array replaces the filter.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created2.ID, cookie,
+		`{"filter":[{"field":"state_group","op":"eq","value":"started"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch replace filter: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	present, raw = filterOf("patch-replace", rec.Body.Bytes())
+	if !present {
+		t.Fatalf("patch-replace response lacks filter key: %s", rec.Body.String())
+	}
+	if err := json.Unmarshal(raw, &conds); err != nil {
+		t.Fatalf("decode filter: %v", err)
+	}
+	if len(conds) != 1 || conds[0]["field"] != "state_group" {
+		t.Fatalf("patch-replace filter = %s, want the state_group condition", raw)
+	}
+
+	// PATCH with an invalid filter → 400 and the stored filter survives.
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created2.ID, cookie,
+		`{"filter":[{"field":"nope","op":"eq","value":"x"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch invalid filter: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+created2.ID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get webhook: status = %d", rec.Code)
+	}
+	present, raw = filterOf("get", rec.Body.Bytes())
+	if !present {
+		t.Fatalf("get response lacks filter key: %s", rec.Body.String())
+	}
+	if err := json.Unmarshal(raw, &conds); err != nil {
+		t.Fatalf("decode filter: %v", err)
+	}
+	if len(conds) != 1 || conds[0]["field"] != "state_group" {
+		t.Fatalf("get filter = %s, want the state_group condition (failed patch must not clobber)", raw)
+	}
+
+	// List carries the filter on each entry; the unfiltered webhook
+	// from the first create reads null.
+	rec = getAuthed(t, e, http.MethodGet, base, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list webhooks: status = %d", rec.Code)
+	}
+	var list struct {
+		Webhooks []json.RawMessage `json:"webhooks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Webhooks) != 2 {
+		t.Fatalf("webhooks = %d, want 2", len(list.Webhooks))
+	}
+	for _, entry := range list.Webhooks {
+		if present, _ := filterOf("list", entry); !present {
+			t.Fatalf("list entry lacks filter key: %s", entry)
+		}
+	}
+}

@@ -2211,7 +2211,7 @@
         "summary": "Create a webhook",
         "description": "The 201 is the only response that reveals the signing secret (show-on-create); list/get/update omit it.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["url", "events"], "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["url", "events"], "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" }, "filter": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookCondition" }, "nullable": true, "description": "Event filter conditions (C69), AND-ed. Null/omitted = no filter." } } } } } },
         "responses": { "201": { "description": "Created webhook (secret shown once)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookCreateResponse" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       }
     },
@@ -2227,7 +2227,7 @@
         "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a webhook",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "url": { "type": "string", "format": "uri" }, "secret": { "type": "string" }, "events": { "type": "array", "items": { "type": "string" } }, "active": { "type": "boolean" }, "filter": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookCondition" }, "nullable": true, "description": "Event filter conditions (C69), AND-ed. Omitted = untouched; explicit null clears; an array replaces." } } } } } },
         "responses": { "200": { "description": "Updated webhook", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Webhook" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -3303,7 +3303,17 @@
           "updated_at": { "type": "string", "format": "date-time" },
           "last_delivery_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Time of the most recent delivery attempt, or null if no delivery has been attempted yet." },
           "last_delivery_status": { "type": "string", "enum": ["delivered", "retrying", "failed"], "nullable": true, "description": "Outcome of the most recent delivery attempt: delivered (2xx), retrying (failed, backoff scheduled), failed (permanently failed after retries or blocked). Null if no delivery has been attempted yet." },
-          "last_error": { "type": "string", "nullable": true, "description": "Error from the most recent failed delivery attempt, or null after a successful delivery / when no delivery has been attempted yet." }
+          "last_error": { "type": "string", "nullable": true, "description": "Error from the most recent failed delivery attempt, or null after a successful delivery / when no delivery has been attempted yet." },
+          "filter": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookCondition" }, "nullable": true, "description": "Event filter conditions (C69), AND-ed together and evaluated at enqueue time against work-item events (issue.*, comment.*) only. Null = no filter: the webhook receives every subscribed event." }
+        }
+      },
+      "WebhookCondition": {
+        "type": "object",
+        "description": "One webhook event-filter condition (C69). All conditions on a webhook are AND-ed. Filters apply to work-item events only; non-work-item events ignore them.",
+        "properties": {
+          "field": { "type": "string", "enum": ["priority", "state_group", "state_id", "assignee_id", "label_id", "project_id", "target_date"] },
+          "op": { "type": "string", "enum": ["eq", "in"], "description": "eq: scalar value; in: non-empty array value" },
+          "value": { "description": "Scalar for eq, non-empty array for in. priority: none|low|medium|high|urgent; state_group: backlog|unstarted|started|completed|cancelled; *_id: uuid string; target_date: ISO-8601 date (YYYY-MM-DD)." }
         }
       },
       "WebhookCreateResponse": {
