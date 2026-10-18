@@ -570,7 +570,8 @@ func TestWebhookMarkFailedSetsProcessedAt(t *testing.T) {
 	outboxID := enqueueWebhookRow(t, pool, ctx, wsSlug)
 
 	d := NewWebhookDispatcher(pool)
-	if err := d.markFailed(ctx, outboxID, 99, errors.New("boom")); err != nil {
+	// "" = no webhook to attribute: this test pins processed_at only.
+	if err := d.markFailed(ctx, outboxID, 99, errors.New("boom"), ""); err != nil {
 		t.Fatalf("markFailed: %v", err)
 	}
 	var status string
