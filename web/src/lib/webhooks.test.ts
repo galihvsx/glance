@@ -1,15 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCreateBody,
+  deliveryRowLabel,
+  deliveryRowTone,
   deliveryStatusLabel,
   eventLabel,
   generateWebhookSecret,
+  listWebhookDeliveries,
+  redeliverWebhookDelivery,
   revealReducer,
   toggleEvent,
   truncateDeliveryError,
   validateWebhookUrl,
   WEBHOOK_EVENTS,
 } from "./webhooks";
+import { api } from "./api";
+
+vi.mock("./api", () => ({
+  api: {
+    get: vi.fn(),
+    post: vi.fn(),
+    patch: vi.fn(),
+    del: vi.fn(),
+  },
+}));
 
 describe("WEBHOOK_EVENTS vocabulary", () => {
   it("pins the exact backend event vocabulary (service.WebhookDomainEvents)", () => {
@@ -269,5 +283,64 @@ describe("truncateDeliveryError", () => {
     const out = truncateDeliveryError("x".repeat(200));
     expect(out).toBe("x".repeat(79) + "…");
     expect(out.length).toBe(80);
+  });
+});
+
+describe("deliveryRowTone / deliveryRowLabel (C59T1)", () => {
+  it("maps each delivery status to the summary-indicator tone", () => {
+    expect(deliveryRowTone("delivered")).toBe("success");
+    expect(deliveryRowTone("retrying")).toBe("warning");
+    expect(deliveryRowTone("failed")).toBe("danger");
+  });
+
+  it("labels each delivery status", () => {
+    expect(deliveryRowLabel("delivered")).toBe("Delivered");
+    expect(deliveryRowLabel("retrying")).toBe("Retrying");
+    expect(deliveryRowLabel("failed")).toBe("Failed");
+  });
+});
+
+describe("listWebhookDeliveries (C59T1)", () => {
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset();
+  });
+
+  it("fetches the deliveries path with no query string by default", async () => {
+    vi.mocked(api.get).mockResolvedValue({ deliveries: [], next_before: null });
+    const page = await listWebhookDeliveries("acme", "wh-1");
+    expect(api.get).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/webhooks/wh-1/deliveries",
+    );
+    expect(page).toEqual({ deliveries: [], next_before: null });
+  });
+
+  it("passes limit + before as query params for paging", async () => {
+    vi.mocked(api.get).mockResolvedValue({ deliveries: [], next_before: 7 });
+    await listWebhookDeliveries("acme", "wh-1", { limit: 25, before: 42 });
+    expect(api.get).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/webhooks/wh-1/deliveries?limit=25&before=42",
+    );
+  });
+
+  it("normalizes a missing deliveries/next_before to [] / null", async () => {
+    vi.mocked(api.get).mockResolvedValue({});
+    const page = await listWebhookDeliveries("acme", "wh-1");
+    expect(page).toEqual({ deliveries: [], next_before: null });
+  });
+});
+
+describe("redeliverWebhookDelivery (C59T1)", () => {
+  beforeEach(() => {
+    vi.mocked(api.post).mockReset();
+  });
+
+  it("POSTs to the redeliver path and returns {ok: true}", async () => {
+    vi.mocked(api.post).mockResolvedValue({ ok: true });
+    const res = await redeliverWebhookDelivery("acme", "wh-1", 123);
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/webhooks/wh-1/deliveries/123/redeliver",
+      {},
+    );
+    expect(res).toEqual({ ok: true });
   });
 });

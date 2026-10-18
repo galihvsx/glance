@@ -2214,6 +2214,24 @@
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List webhook deliveries",
+        "description": "Admin only. One webhook's delivery history — one row per delivery attempt, newest first. `before` is a delivery-id cursor: only rows strictly older than it are returned. `next_before` is the cursor for the next page (the last row's id) or null when the page came back short (exhausted). Rows carry no `data` (payloads can be large; the list is the log view) and no `outbox_row_id` (internal correlation).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 25 } }, { "name": "before", "in": "query", "description": "Delivery-id cursor from a previous page's next_before.", "schema": { "type": "integer", "format": "int64" } } ],
+        "responses": { "200": { "description": "Delivery history page", "content": { "application/json": { "schema": { "type": "object", "properties": { "deliveries": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookDelivery" } }, "next_before": { "type": "integer", "format": "int64", "nullable": true } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/webhooks/{id}/deliveries/{deliveryId}/redeliver": {
+      "post": {
+        "tags": ["webhooks"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Redeliver a failed webhook delivery",
+        "description": "Admin only. Enqueues a FRESH outbox row (attempts 0, pending, due now) for a failed delivery, built from the webhook's CURRENT row (current URL + current secret — if the admin changed the URL since the failure, the redelivery goes to the current URL). The original history row is untouched; the redelivery's own attempts create NEW history rows. 202 means the redelivery was enqueued — delivery itself is async. 409 when the delivery is not failed (retrying retries automatically; delivered needs no redelivery) or the webhook is inactive. 404 when the webhook or the delivery is unknown, or the delivery belongs to another webhook (never leak cross-webhook existence).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "deliveryId", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } } ],
+        "responses": { "202": { "description": "Redelivery enqueued", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": ["notifications"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3240,6 +3258,20 @@
         "allOf": [ { "$ref": "#/components/schemas/Webhook" } ],
         "description": "Webhook plus its signing secret, shown exactly once.",
         "properties": { "secret": { "type": "string", "description": "Signing secret — shown once at creation" } }
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "description": "One delivery attempt for a webhook (C59). The list view carries no data payload (payloads can be large; the list is the log view) and no outbox_row_id (internal correlation).",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "description": "Delivery id — also the `before` cursor for paging." },
+          "webhook_id": { "type": "string", "format": "uuid" },
+          "event": { "type": "string", "description": "Domain event, e.g. issue.updated." },
+          "status": { "type": "string", "enum": ["delivered", "retrying", "failed"], "description": "Attempt outcome: delivered (2xx), retrying (failed, backoff scheduled), failed (permanently failed). Only failed rows are redeliverable." },
+          "http_status": { "type": "integer", "nullable": true, "description": "Receiver's HTTP status for this attempt; null when no HTTP response was received (DNS failure, dial error, timeout, SSRF refusal)." },
+          "error": { "type": "string", "nullable": true, "description": "Failure message; null on delivered." },
+          "duration_ms": { "type": "integer", "description": "Attempt wall time in milliseconds." },
+          "attempted_at": { "type": "string", "format": "date-time" }
+        }
       },
       "Notification": {
         "type": "object",

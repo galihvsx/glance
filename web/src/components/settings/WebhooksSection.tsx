@@ -10,7 +10,7 @@
 // client-side: a fresh 32-byte hex secret is generated and PATCHed, then
 // shown once like a create.
 
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
@@ -26,17 +26,23 @@ import {
   buildCreateBody,
   createWebhook,
   deleteWebhook,
+  deliveryRowLabel,
+  deliveryRowTone,
   deliveryStatusLabel,
   eventLabel,
   generateWebhookSecret,
+  listWebhookDeliveries,
   listWebhooks,
+  redeliverWebhookDelivery,
   revealReducer,
   toggleEvent,
+  truncateDeliveryError,
   updateWebhook,
   validateWebhookUrl,
   WEBHOOK_EVENTS,
   type Webhook,
   type WebhookCreateBody,
+  type WebhookDelivery,
   type WebhookDeliveryTone,
   type WebhookUpdateBody,
 } from "../../lib/webhooks";
@@ -107,6 +113,198 @@ function DeliveryStatusIndicator({ webhook }: { webhook: Webhook }) {
 
 function mutationError(e: unknown, fallback: string): string {
   return e instanceof ApiError ? e.message : fallback;
+}
+
+// Delivery history panel (C59T1): expandable per-webhook log of
+// delivery attempts, newest first. "Load more" pages via the `before`
+// cursor; Redeliver appears ONLY on failed rows (the server enforces
+// the same rule with 409). A redelivery re-sends to the webhook's
+// CURRENT URL + secret, so the panel says so next to the list.
+function WebhookDeliveryHistory({
+  slug,
+  webhookId,
+}: {
+  slug: string;
+  webhookId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
+  const [nextBefore, setNextBefore] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [redelivering, setRedelivering] = useState<number | null>(null);
+  const [redelivered, setRedelivered] = useState(false);
+
+  // Transient confirmation: clears itself after a few seconds.
+  useEffect(() => {
+    if (!redelivered) return;
+    const t = setTimeout(() => setRedelivered(false), 4000);
+    return () => clearTimeout(t);
+  }, [redelivered]);
+
+  async function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (loaded || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await listWebhookDeliveries(slug, webhookId);
+      setDeliveries(page.deliveries);
+      setNextBefore(page.next_before);
+      setLoaded(true);
+    } catch (e) {
+      setError(mutationError(e, "Failed to load delivery history"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadMore() {
+    if (nextBefore === null || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await listWebhookDeliveries(slug, webhookId, {
+        before: nextBefore,
+      });
+      setDeliveries((prev) => [...prev, ...page.deliveries]);
+      setNextBefore(page.next_before);
+    } catch (e) {
+      setError(mutationError(e, "Failed to load more deliveries"));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function onRedeliver(d: WebhookDelivery) {
+    if (redelivering !== null) return;
+    setRedelivering(d.id);
+    setError(null);
+    try {
+      await redeliverWebhookDelivery(slug, webhookId, d.id);
+      setRedelivered(true);
+      // Refresh from the start: the new attempt appears once the
+      // dispatcher runs it; until then the list is unchanged.
+      const page = await listWebhookDeliveries(slug, webhookId);
+      setDeliveries(page.deliveries);
+      setNextBefore(page.next_before);
+      setLoaded(true);
+    } catch (e) {
+      setError(mutationError(e, "Failed to redeliver"));
+    } finally {
+      setRedelivering(null);
+    }
+  }
+
+  return (
+    <div className="mt-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={toggle}
+        aria-expanded={open}
+        className="h-6 px-1 text-xs text-muted-foreground"
+      >
+        {open ? "Hide delivery history" : "Delivery history"}
+      </Button>
+      {open && (
+        <div className="mt-1 space-y-2 rounded-md border border-border p-2">
+          <p className="text-xs text-muted-foreground">
+            One row per delivery attempt, newest first. Redelivery re-sends
+            to this webhook&apos;s current URL.
+          </p>
+          {loading ? (
+            <Skeleton className="h-8 w-full" />
+          ) : error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : deliveries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No deliveries yet.
+            </p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {deliveries.map((d) => {
+                const tone = deliveryRowTone(d.status);
+                return (
+                  <li
+                    key={d.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-xs"
+                  >
+                    <span
+                      className={`flex items-center gap-1.5 ${DELIVERY_TEXT[tone]}`}
+                    >
+                      <span
+                        aria-hidden
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${DELIVERY_DOT[tone]}`}
+                      />
+                      {deliveryRowLabel(d.status)}
+                    </span>
+                    <span className="font-mono">{d.event}</span>
+                    <span
+                      className="text-muted-foreground"
+                      title={formatDateTime(d.attempted_at)}
+                    >
+                      {relativeTime(d.attempted_at)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {d.http_status !== null
+                        ? `HTTP ${d.http_status}`
+                        : "No response"}
+                    </span>
+                    {d.error ? (
+                      <span
+                        className="min-w-0 flex-1 truncate text-muted-foreground"
+                        title={d.error}
+                      >
+                        {truncateDeliveryError(d.error)}
+                      </span>
+                    ) : null}
+                    {d.status === "failed" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={redelivering !== null}
+                        onClick={() => onRedeliver(d)}
+                        aria-label={`Redeliver ${d.event} delivery ${d.id}`}
+                      >
+                        {redelivering === d.id
+                          ? "Redelivering…"
+                          : "Redeliver"}
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {nextBefore !== null && !loading && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loadingMore}
+              onClick={loadMore}
+            >
+              {loadingMore ? "Loading…" : "Load more"}
+            </Button>
+          )}
+          {redelivered && (
+            <p className="text-xs text-emerald-700 dark:text-emerald-400">
+              Redelivery queued — the new attempt will appear once the
+              dispatcher runs it.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function EventsCheckboxes({
@@ -418,10 +616,8 @@ export default function WebhooksSection({ slug }: { slug: string }) {
         ) : (
           <ul className="divide-y divide-border">
             {webhooks.map((w) => (
-              <li
-                key={w.id}
-                className="flex items-center justify-between gap-3 py-3"
-              >
+              <li key={w.id} className="py-3">
+                <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p
                     className="truncate font-mono text-xs font-medium"
@@ -481,6 +677,8 @@ export default function WebhooksSection({ slug }: { slug: string }) {
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
+                </div>
+                <WebhookDeliveryHistory slug={slug} webhookId={w.id} />
               </li>
             ))}
           </ul>
