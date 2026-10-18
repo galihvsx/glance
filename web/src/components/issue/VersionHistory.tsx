@@ -11,13 +11,10 @@
 // Restore: per-row button, hidden on the latest version and visible
 // only to writers (role >= 15, same precedent as
 // IssueCustomFields.tsx:344 — default 0 = hidden until the role
-// resolves). The button is hidden on the latest version because the
-// backend does NOT reject restore-of-latest: RestoreIssueVersion
-// (internal/service/satellite.go) diffs the snapshot against the live
-// row, finds no differing fields, and STILL writes a new
-// duplicate-content version row (snapshotVersionTx) plus a _restored
-// marker — restoring the current snapshot is a no-op at best and
-// version spam at worst, so the UI does not offer it. Click → confirm
+// resolves). The button is hidden on the latest version because a
+// restore of the current snapshot is a no-op: the backend rejects it
+// with 409 (ErrVersionRestoreNoOp — no version row, no _restored
+// marker since C64T0). Click → confirm dialog → restoreVersion → on
 // dialog → restoreVersion → on success prompt cache invalidation
 // (versions + issue + issues + board-issues + history, following the
 // C52T2 Trash.tsx precedent: no optimistic cache writes) and the new
