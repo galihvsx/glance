@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -902,6 +903,14 @@ func (d *WebhookDispatcher) markFailed(ctx context.Context, id int64, attempts i
 // surfaces like other outcome-write failures.
 func (d *WebhookDispatcher) updateWebhookDeliveryStatus(ctx context.Context, webhookID, status string, lastErr *string) error {
 	if webhookID == "" {
+		return nil
+	}
+	// A malformed id can never match a webhook row: treat it like a
+	// missing row (silent no-op) instead of letting the $1::uuid cast
+	// below fail. This matters on the pre-lookup path, where deliverRow
+	// calls markFailed with the payload's raw webhook_id before any
+	// lookup has validated it.
+	if _, err := uuid.Parse(webhookID); err != nil {
 		return nil
 	}
 	var errArg any

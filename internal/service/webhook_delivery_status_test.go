@@ -205,6 +205,34 @@ func TestWebhookDeliveryStatusExhaustedRetries(t *testing.T) {
 	assertDeliveryAtRecent(t, at)
 }
 
+// TestWebhookDeliveryStatusInvalidUUIDWebhookID: a hand-crafted outbox row
+// with a garbage (non-UUID) webhook_id and an empty URL hits deliverRow's
+// pre-lookup missing-url/event path, which calls markFailed with the raw
+// payload id. The delivery-status update must treat the malformed id as
+// a missing row (silent no-op), NOT surface a $1::uuid cast error — so
+// the scoped run returns no error and the outbox row still lands failed.
+func TestWebhookDeliveryStatusInvalidUUIDWebhookID(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	createNotifyFixture(t, pool)
+
+	outboxID := insertWebhookOutboxRow(t, pool, ctx, "not-a-uuid", "")
+
+	d := NewWebhookDispatcher(pool)
+	if err := d.runScoped(ctx, "not-a-uuid"); err != nil {
+		t.Fatalf("dispatcher run: %v (want no error for a malformed webhook_id)", err)
+	}
+
+	var outboxStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM outbox WHERE id = $1`, outboxID).Scan(&outboxStatus); err != nil {
+		t.Fatalf("read outbox: %v", err)
+	}
+	if outboxStatus != "failed" {
+		t.Fatalf("outbox status = %q, want failed (markFailed outbox write still lands)", outboxStatus)
+	}
+}
+
 // TestWebhookDeliveryStatusDeletedWebhook: a delivery for a webhook
 // deleted after enqueue still marks the outbox row done with no error —
 // the missing webhook row skips the status update silently.
