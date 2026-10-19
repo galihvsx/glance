@@ -26,6 +26,7 @@ const (
 	EventCommentCreated      = "comment.created"
 	EventCycleUpdated        = "cycle.updated"
 	EventModuleUpdated       = "module.updated"
+	EventEpicUpdated         = "epic.updated"
 	EventPageUpdated         = "page.updated"
 	EventReleaseUpdated      = "release.updated"
 	EventTemplateUpdated     = "template.updated"
@@ -138,6 +139,26 @@ func announceModuleUpdated(ctx context.Context, pool *pgxpool.Pool, moduleID, pr
 		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
 		EventModuleUpdated,
 		map[string]string{"id": moduleID},
+	)
+}
+
+// announceEpicUpdated resolves the workspace/project channels for an
+// epic from its project id and broadcasts epic.updated. Best-effort:
+// a lookup failure skips the broadcast rather than failing the mutation.
+// The payload carries only the id — clients refetch via REST.
+func announceEpicUpdated(ctx context.Context, pool *pgxpool.Pool, epicID, projectID string) {
+	var wsSlug, identifier string
+	err := pool.QueryRow(ctx,
+		`SELECT w.slug, p.identifier
+		   FROM projects p JOIN workspaces w ON w.id = p.workspace_id
+		  WHERE p.id = $1::uuid`, projectID).Scan(&wsSlug, &identifier)
+	if err != nil {
+		return
+	}
+	announce(
+		[]string{projectChannel(wsSlug, identifier), workspaceChannel(wsSlug)},
+		EventEpicUpdated,
+		map[string]string{"id": epicID},
 	)
 }
 

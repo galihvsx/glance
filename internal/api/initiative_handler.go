@@ -30,6 +30,10 @@ func RegisterInitiativeRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("/:initiativeID/projects", h.listInitiativeProjects)
 	g.POST("/:initiativeID/projects", h.addInitiativeProject)
 	g.DELETE("/:initiativeID/projects/:projectID", h.removeInitiativeProject)
+	// C71T0: initiative↔epic links, mirroring the project links above.
+	g.GET("/:initiativeID/epics", h.listInitiativeEpics)
+	g.POST("/:initiativeID/epics", h.addInitiativeEpic)
+	g.DELETE("/:initiativeID/epics/:epicID", h.removeInitiativeEpic)
 }
 
 // initiativeError maps initiative sentinel errors to HTTP statuses,
@@ -224,4 +228,75 @@ func (h *IssueHandler) removeInitiativeProject(c *echo.Context) error {
 		return initiativeError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"removed": projectID})
+}
+
+// listInitiativeEpics implements GET .../initiatives/{initiativeID}/epics:
+// the initiative's linked epics (with their projects).
+func (h *IssueHandler) listInitiativeEpics(c *echo.Context) error {
+	initiativeID, ok := requireUUIDParam(c, "initiativeID", "initiative id")
+	if !ok {
+		return nil
+	}
+	epics, err := service.ListInitiativeEpics(c.Request().Context(), h.Pool,
+		c.Param("slug"), CurrentUser(c).ID, initiativeID)
+	if err != nil {
+		return initiativeEpicError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"epics": epics})
+}
+
+type initiativeEpicBody struct {
+	EpicID string `json:"epic_id"`
+}
+
+// addInitiativeEpic implements POST .../initiatives/{initiativeID}/epics
+// {epic_id}. The epic must belong to a project of the workspace.
+// Idempotent: repeats are no-ops. Member (15)+.
+func (h *IssueHandler) addInitiativeEpic(c *echo.Context) error {
+	var body initiativeEpicBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	initiativeID, ok := requireUUIDParam(c, "initiativeID", "initiative id")
+	if !ok {
+		return nil
+	}
+	if err := service.AddInitiativeEpic(c.Request().Context(), h.Pool,
+		c.Param("slug"), CurrentUser(c).ID, initiativeID, body.EpicID); err != nil {
+		return initiativeEpicError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"added": body.EpicID})
+}
+
+// removeInitiativeEpic implements DELETE
+// .../initiatives/{initiativeID}/epics/{epicID}. Idempotent: removing a
+// non-link is a no-op. Member (15)+.
+func (h *IssueHandler) removeInitiativeEpic(c *echo.Context) error {
+	initiativeID, ok := requireUUIDParam(c, "initiativeID", "initiative id")
+	if !ok {
+		return nil
+	}
+	epicID, ok := requireUUIDParam(c, "epicID", "epic id")
+	if !ok {
+		return nil
+	}
+	if err := service.RemoveInitiativeEpic(c.Request().Context(), h.Pool,
+		c.Param("slug"), CurrentUser(c).ID, initiativeID, epicID); err != nil {
+		return initiativeEpicError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"removed": epicID})
+}
+
+// initiativeEpicError maps the epic sentinels onto the initiative
+// envelope: a foreign-workspace epic is 404 (project not found), a
+// malformed or unknown epic id is 400/404 respectively.
+func initiativeEpicError(c *echo.Context, err error) error {
+	switch {
+	case errors.Is(err, service.ErrEpicNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "epic not found", nil)
+	case errors.Is(err, service.ErrInvalidEpicID):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid id", nil)
+	default:
+		return initiativeError(c, err)
+	}
 }
