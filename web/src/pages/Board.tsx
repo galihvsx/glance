@@ -34,9 +34,11 @@ import {
 } from "../lib/workflow";
 import { toast } from "../components/ui/toast";
 import {
+  Ban,
   Calendar,
   Copy,
   GitBranch,
+  Layers,
   Link2,
   Maximize2,
   MoreHorizontal,
@@ -46,6 +48,16 @@ import {
 import DisplayPanel from "../components/issue/DisplayPanel";
 import PriorityBars from "../components/issue/PriorityBars";
 import SubtaskProgressBar from "../components/issue/SubtaskProgressBar";
+import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
+import {
+  buildEpicBoardGroups,
+  epicCardDragId,
+  epicDragIssueId,
+  epicDropColumnKey,
+  planEpicDrop,
+  planEpicQuickAdd,
+  uniqueIssueCount,
+} from "../components/issue/boardEpic";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import { useCloneIssue } from "../components/issue/useCloneIssue";
@@ -252,12 +264,16 @@ function SortableCard({
   disabled,
   fields,
   onOpen,
+  dragId,
 }: {
   issue: Issue;
   state: IssueState | undefined;
   disabled: boolean;
   fields: DisplayFields;
   onOpen: (id: string) => void;
+  /** dnd-kit sortable id override — epic mode uses compound ids
+   *  (epicCardDragId) so multi-appearance drops resolve the right column. */
+  dragId?: string;
 }) {
   const {
     attributes,
@@ -266,7 +282,7 @@ function SortableCard({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: issue.id, disabled });
+  } = useSortable({ id: dragId ?? issue.id, disabled });
 
   // Card click / Enter opens the peek drawer (keeps board context),
   // not the full detail page.
@@ -311,6 +327,10 @@ function BoardColumn({
   title,
   state,
   priority,
+  epicId,
+  byGroup,
+  cardState,
+  getCardDragId,
   issues,
   disabled,
   dropDisabled = false,
@@ -325,6 +345,17 @@ function BoardColumn({
   state?: IssueState;
   /** Priority for priority-grouped columns (header shows amber bars). */
   priority?: number;
+  /** C72T1: epic-mode columns — live epic id (null = Ungrouped). When
+   *  set, the header shows the epic glyph + EpicGroupBreakdown. */
+  epicId?: string | null;
+  /** C72T1: per-state-group member counts for the epic header breakdown. */
+  byGroup?: Record<string, number>;
+  /** C72T1: per-card state badge — epic columns no longer imply state, so
+   *  each card resolves its own. */
+  cardState?: (issue: Issue) => IssueState | undefined;
+  /** C72T1: dnd-kit sortable id per card — epic mode uses compound ids
+   *  (epicCardDragId) so multi-appearance drops resolve the right column. */
+  getCardDragId?: (issue: Issue) => string;
   issues: Issue[];
   disabled: boolean;
   /** C68T1: true when a drag is active and the project's workflow rules
@@ -358,7 +389,16 @@ function BoardColumn({
       aria-disabled={dropDisabled || undefined}
     >
       <div className="flex h-[42px] flex-none items-center gap-[7px] px-[4px]">
-        {state ? (
+        {epicId !== undefined ? (
+          epicId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : (
+            <Layers
+              className="h-[13px] w-[13px] text-accent-purple"
+              aria-hidden
+            />
+          )
+        ) : state ? (
           <span
             className={`state-dot ${stateDotClass(state.group)}`}
             aria-hidden="true"
@@ -393,6 +433,18 @@ function BoardColumn({
           </button>
         </div>
       </div>
+      {/* C72T1: epic column header progress — the shared EpicGroupBreakdown
+          (5 segments, no triage, done = completed + cancelled),
+          byte-identical reuse from the C71 epic surfaces. */}
+      {epicId !== undefined && (
+        <div className="px-[4px] pb-[8px]">
+          <EpicGroupBreakdown
+            byGroup={byGroup ?? {}}
+            total={issues.length}
+            epicName={title}
+          />
+        </div>
+      )}
       {empty ? (
         // Empty column: header + full-width new-item row only. The spacer
         // pins the footer to the column bottom (min-height 420px).
@@ -407,10 +459,11 @@ function BoardColumn({
               <SortableCard
                 key={issue.id}
                 issue={issue}
-                state={state}
+                state={cardState ? cardState(issue) : state}
                 disabled={disabled}
                 fields={fields}
                 onOpen={onOpen}
+                dragId={getCardDragId?.(issue)}
               />
             ))}
           </div>
@@ -514,8 +567,10 @@ export default function Board() {
   // Stabilized so downstream memos (column grouping) don't re-evaluate
   // every render on a fresh [] identity while the query is pending.
   const issues = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
+  // C72T1: in epic mode the active id is a compound epicCardDragId;
+  // epicDragIssueId is identity for plain ids.
   const activeIssue = activeId
-    ? (issues.find((i) => i.id === activeId) ?? null)
+    ? (issues.find((i) => i.id === epicDragIssueId(activeId)) ?? null)
     : null;
 
   const patchMutation = useMutation({
@@ -588,8 +643,52 @@ export default function Board() {
     },
   });
 
-  /** One board column: either a state (default) or a priority bucket,
-   *  depending on the Display panel's Group by setting. */
+  /** C72T1: epic-column drops attach the issue to the target epic
+   *  (the C71 attach endpoint — idempotent, multi-epic aware, never
+   *  detaches other epics). */
+  const epicAttachMutation = useMutation({
+    mutationFn: ({ issueId, epicId }: { issueId: string; epicId: string }) =>
+      api.post(`${base}/epics/${encodeURIComponent(epicId)}/issues`, {
+        issue_ids: [issueId],
+      }),
+    onError: (e) => {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to attach issue to epic",
+      );
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+    },
+  });
+
+  /** Optimistic attach: the card appears in the target epic column
+   *  immediately; the refetch on settle corrects any drift. */
+  function attachToEpic(issueId: string, epicId: string, epicName: string) {
+    setBoardError(null);
+    queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
+      old?.map((i) =>
+        i.id === issueId
+          ? {
+              ...i,
+              epics: [
+                ...(i.epics ?? []),
+                { id: epicId, name: epicName, archived_at: null },
+              ],
+            }
+          : i,
+      ),
+    );
+    epicAttachMutation.mutate({ issueId, epicId });
+  }
+
+  // C72T1: epic columns render one column per live epic (Option A);
+  // cards keep their own state badge because the column no longer
+  // implies state.
+  const groupByEpic = settings.groupBy === "epic";
+
+  /** One board column: a state (default), a priority bucket, or a live
+   *  epic, depending on the Display panel's Group by setting. */
   interface BoardGroup {
     droppableId: string;
     title: string;
@@ -597,6 +696,12 @@ export default function Board() {
     state?: IssueState;
     /** Priority for priority-grouped columns (header amber bars). */
     priority?: number;
+    /** C72T1: epic-mode columns — live epic id (null = Ungrouped). */
+    epicId?: string | null;
+    /** C72T1: column key for epic-mode dnd ids. */
+    columnKey?: string;
+    /** C72T1: per-state-group member counts for the epic header breakdown. */
+    byGroup?: Record<string, number>;
     issues: Issue[];
     /** State/priority stamped onto quick-added issues in this column. */
     newStateId?: string;
@@ -605,7 +710,25 @@ export default function Board() {
 
   const groups = useMemo<BoardGroup[]>(() => {
     let gs: BoardGroup[];
-    if (settings.groupBy === "priority") {
+    if (groupByEpic) {
+      // C72T1: group by LIVE epic membership (see boardEpic.ts for the
+      // multi-appearance + archived-exclusion + Ungrouped-last semantics).
+      // Progress counts come from the loaded states — no extra fetches
+      // (the C70/C71 derived-data discipline).
+      gs = buildEpicBoardGroups(
+        issues,
+        (i) => stateById.get(i.state_id)?.group,
+        states[0]?.id,
+      ).map((g) => ({
+        droppableId: g.droppableId,
+        title: g.title,
+        columnKey: g.columnKey,
+        epicId: g.epicId,
+        byGroup: g.byGroup,
+        issues: g.issues,
+        newStateId: g.newStateId,
+      }));
+    } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
         title: priorityLabel(p),
@@ -626,15 +749,24 @@ export default function Board() {
     return settings.showEmptyGroups
       ? gs
       : gs.filter((g) => g.issues.length > 0);
-  }, [settings.groupBy, settings.showEmptyGroups, states, issues]);
+  }, [
+    groupByEpic,
+    settings.groupBy,
+    settings.showEmptyGroups,
+    states,
+    stateById,
+    issues,
+  ]);
 
   // C68T1: per-column drop hint while a drag is active — the set of
   // droppable IDs the project's workflow rules forbid the dragged issue
-  // from landing in (state columns only; priority columns unaffected).
+  // from landing in (state columns only). C72T1: no transition hints for
+  // epic columns — epic drops attach without changing state (priority
+  // drops re-stamp priority, also exempt).
   // Client hint only; the server enforces on PATCH.
   const dropBlocked = useMemo(() => {
     const blocked = new Set<string>();
-    if (!workflow || !activeIssue || settings.groupBy === "priority") {
+    if (!workflow || !activeIssue || settings.groupBy !== "state") {
       return blocked;
     }
     for (const g of groups) {
@@ -649,16 +781,33 @@ export default function Board() {
   }, [workflow, activeIssue, settings.groupBy, groups]);
 
   /** Inline quick-add: title only; the column stamps state (and priority
-   *  in priority-grouped mode). The new card appears via query
-   *  invalidation — no full reload. */
+   *  in priority-grouped mode). C72T1: an epic column's quick-add also
+   *  attaches the new issue to the column's epic (Ungrouped = plain
+   *  create, no attach). The new card appears via query invalidation —
+   *  no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
-    await api.post<Issue>(`${base}/issues`, {
+    const { stateId, attachEpicId } = planEpicQuickAdd(group);
+    const created = await api.post<Issue>(`${base}/issues`, {
       name,
-      ...(group.newStateId ? { state_id: group.newStateId } : {}),
+      ...(stateId ? { state_id: stateId } : {}),
       ...(group.newPriority !== undefined
         ? { priority: group.newPriority }
         : {}),
     });
+    if (attachEpicId) {
+      try {
+        await api.post(
+          `${base}/epics/${encodeURIComponent(attachEpicId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        // The issue exists; only the attach failed — surface it and let
+        // the invalidation below show the card in Ungrouped.
+        setBoardError(
+          e instanceof ApiError ? e.message : "Failed to attach issue to epic",
+        );
+      }
+    }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
   }
 
@@ -756,8 +905,26 @@ export default function Board() {
     const overId = String(over.id);
 
     const all = queryClient.getQueryData<Issue[]>(issuesKey) ?? [];
-    const dragged = all.find((i) => i.id === activeIssueId);
+    // C72T1: epicDragIssueId is identity for plain (state/priority mode)
+    // ids; in epic mode it unwraps the compound epicCardDragId.
+    const dragged = all.find((i) => i.id === epicDragIssueId(activeIssueId));
     if (!dragged) return;
+
+    if (groupByEpic) {
+      // C72T1: epic columns — dropping attaches the issue to the target
+      // epic (idempotent, multi-epic aware; Ungrouped drops are a
+      // deliberate no-op). Epic drops never change state, so the C68
+      // transition guard does not apply. The over id may be the column
+      // droppable or a card inside it (compound id).
+      const columnKey = epicDropColumnKey(overId);
+      if (columnKey === null) return;
+      const plan = planEpicDrop(columnKey, dragged);
+      if (plan.kind === "noop") return;
+      const targetTitle =
+        groups.find((g) => g.columnKey === columnKey)?.title ?? plan.epicId;
+      attachToEpic(dragged.id, plan.epicId, targetTitle);
+      return;
+    }
 
     if (settings.groupBy === "priority") {
       // Priority columns: dropping changes the issue's priority.
@@ -821,7 +988,13 @@ export default function Board() {
       {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
       <PageHeader
         viewName="Board"
-        count={groups.reduce((n, g) => n + g.issues.length, 0)}
+        // C72T1: under multi-appearance the column memberships exceed the
+        // issue count — the header shows UNIQUE issues, not memberships.
+        count={
+          groupByEpic
+            ? uniqueIssueCount(issues)
+            : groups.reduce((n, g) => n + g.issues.length, 0)
+        }
         showViews
         filterPanel={
           <FilterPanel
@@ -895,22 +1068,37 @@ export default function Board() {
             onDragEnd={onDragEnd}
           >
             <div className="flex min-h-full items-stretch gap-[28px] px-[18px] pb-[18px] pt-[14px]">
-              {groups.map((g) => (
-                <BoardColumn
-                  key={g.droppableId}
-                  droppableId={g.droppableId}
-                  title={g.title}
-                  state={g.state}
-                  priority={g.priority}
-                  issues={g.issues}
-                  disabled={!canEdit}
-                  dropDisabled={dropBlocked.has(g.droppableId)}
-                  onQuickCreate={(name) => quickCreate(g, name)}
-                  onQuickExpand={(name) => quickExpand(g, name)}
-                  fields={settings.fields}
-                  onOpen={openPeek}
-                />
-              ))}
+              {groups.map((g) => {
+                const columnKey = g.columnKey;
+                return (
+                  <BoardColumn
+                    key={g.droppableId}
+                    droppableId={g.droppableId}
+                    title={g.title}
+                    state={g.state}
+                    priority={g.priority}
+                    epicId={g.epicId}
+                    byGroup={g.byGroup}
+                    cardState={
+                      groupByEpic
+                        ? (issue) => stateById.get(issue.state_id)
+                        : undefined
+                    }
+                    getCardDragId={
+                      groupByEpic && columnKey
+                        ? (issue) => epicCardDragId(columnKey, issue.id)
+                        : undefined
+                    }
+                    issues={g.issues}
+                    disabled={!canEdit}
+                    dropDisabled={dropBlocked.has(g.droppableId)}
+                    onQuickCreate={(name) => quickCreate(g, name)}
+                    onQuickExpand={(name) => quickExpand(g, name)}
+                    fields={settings.fields}
+                    onOpen={openPeek}
+                  />
+                );
+              })}
             </div>
             <DragOverlay>
               {activeIssue ? (

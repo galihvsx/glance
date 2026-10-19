@@ -74,9 +74,9 @@ export default function DisplayPanel({
 }) {
   const groupOptions =
     view === "board"
-      ? // C72T0: "epic" grouping is implemented on the list only; the board
-        // variant (with its own prototype-as-spec spec) lands in C72T1.
-        GROUP_OPTIONS.filter((o) => o.value !== "none" && o.value !== "epic")
+      ? // C72T1: "epic" grouping is implemented on the board (epic
+        // columns); only "none" stays list-only.
+        GROUP_OPTIONS.filter((o) => o.value !== "none")
       : GROUP_OPTIONS;
   // The board's State field is meaningless (columns already imply it).
   const fieldRows =
