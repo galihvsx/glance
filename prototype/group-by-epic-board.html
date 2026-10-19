@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Group by Epic — Board · C72T1 prototype-as-spec (static mock)</title>
+<style>
+/* ==========================================================================
+   glance tokens (web/src/index.css, Cycle 19) — duplicated here so the
+   static mock renders pixel-close to the app without the Tailwind build.
+   ========================================================================== */
+:root {
+  --canvas: #09090b;
+  --rail: #0b0b0d;
+  --surface: #141416;
+  --raised: #1a1a1e;
+  --hairline: rgba(255, 255, 255, 0.052);
+  --border: rgba(255, 255, 255, 0.09);
+  --ink: #f4f4f5;
+  --ink-secondary: #b0b0b9;
+  --ink-muted: #777780;
+  --blue: #4f8ef7;
+  --blue-hover: #649cf5;
+  --green: #42c88a;
+  --amber: #e7ad42;
+  --red: #df6b77;
+  --purple: #9c83e6;
+  --wash-hover: rgba(255, 255, 255, 0.05);
+  --wash-active: rgba(255, 255, 255, 0.085);
+  --g-backlog: #9aa0ae;
+  --g-unstarted: #e5a13c;
+  --g-started: #4f8ef7;
+  --g-completed: #42c88a;
+  --g-cancelled: #e5484d;
+  --focus: rgba(79, 142, 247, 0.8);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-muted); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- prototype chrome (NOT part of the app spec) ---------- */
+.proto-bar {
+  position: sticky; top: 0; z-index: 60;
+  background: #131308;
+  border-bottom: 1px solid rgba(231, 173, 66, 0.35);
+  padding: 10px 20px 12px;
+}
+.proto-bar .kicker {
+  font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+  color: var(--amber); text-transform: uppercase;
+}
+.proto-bar h1 { font-size: 14px; margin: 2px 0 0; font-weight: 650; }
+.proto-bar p { font-size: 11px; color: var(--ink-secondary); margin: 5px 0 0; max-width: 980px; line-height: 1.55; }
+.proto-bar p code, .proto-bar li code { color: var(--amber); font-family: ui-monospace, monospace; font-size: 10.5px; }
+.proto-bar ul { margin: 6px 0 0; padding-left: 18px; font-size: 11px; color: var(--ink-secondary); line-height: 1.6; max-width: 980px; }
+.surface-tabs { display: flex; gap: 6px; margin-top: 10px; }
+.surface-tabs button {
+  font: inherit; font-size: 11.5px; font-weight: 600;
+  color: var(--ink-secondary);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer;
+}
+.surface-tabs button:hover { background: var(--wash-hover); color: var(--ink); }
+.surface-tabs button[aria-selected="true"] {
+  background: var(--wash-active); color: var(--ink);
+  border-color: rgba(79, 142, 247, 0.5);
+}
+.surface { display: none; }
+.surface.active { display: block; }
+.open-q {
+  margin-top: 10px; max-width: 980px;
+  border: 1px solid rgba(231, 173, 66, 0.3); border-radius: 6px;
+  background: rgba(231, 173, 66, 0.05); padding: 9px 12px;
+}
+.open-q h3 { margin: 0 0 4px; font-size: 11px; font-weight: 700; color: var(--amber); text-transform: uppercase; letter-spacing: 0.06em; }
+.open-q ol { margin: 0; padding-left: 18px; font-size: 11px; color: var(--ink-secondary); line-height: 1.65; }
+
+/* ---------- app shell ---------- */
+.app { display: flex; min-height: calc(100vh - 170px); }
+.rail {
+  width: 224px; flex-shrink: 0; background: var(--rail);
+  border-right: 1px solid var(--hairline); padding: 14px 10px;
+}
+.rail .ws { font-size: 12px; font-weight: 700; padding: 4px 8px 12px; }
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--ink-secondary);
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+}
+.nav-item:hover { background: var(--wash-hover); color: var(--ink); }
+.nav-item.active { background: var(--wash-active); color: var(--ink); font-weight: 600; }
+.nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex-shrink: 0; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* ---------- PageHeader (Board.tsx, C19T4) ---------- */
+.page-header { display: flex; align-items: center; gap: 12px; padding: 16px 18px 0; }
+.page-header h2 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.page-header .count {
+  font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 2px 8px;
+}
+.page-header .spacer { flex: 1; }
+.ctl {
+  font: inherit; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--ink-secondary);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; cursor: pointer;
+}
+.ctl:hover { background: var(--wash-hover); color: var(--ink); }
+.ctl.hot { border-color: rgba(79, 142, 247, 0.55); color: var(--ink); }
+.ctl svg { width: 13px; height: 13px; }
+
+/* ---------- board columns (Board.tsx BoardColumn) ---------- */
+.board-scroll { overflow-x: auto; flex: 1; }
+.board-row { display: flex; align-items: stretch; gap: 28px; padding: 14px 18px 18px; min-height: 100%; }
+.column {
+  display: flex; flex-direction: column; flex-shrink: 0;
+  width: 325px; min-height: 420px;
+  border-radius: 7px; border: 1px solid var(--hairline);
+  background: #0f0f11; padding: 0 8px 8px;
+}
+.col-head {
+  display: flex; align-items: center; gap: 7px; flex: none;
+  height: 42px; padding: 0 4px;
+}
+.col-head .title { font-size: 11px; font-weight: 600; color: var(--ink); }
+.col-head .count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; color: var(--ink-muted);
+}
+.col-head .tools { margin-left: auto; display: flex; align-items: center; }
+.tool-btn {
+  display: inline-flex; height: 24px; width: 24px; align-items: center; justify-content: center;
+  border-radius: 4px; color: var(--ink-muted); background: transparent; border: none; cursor: pointer;
+}
+.tool-btn:hover { background: var(--wash-hover); color: var(--ink); }
+.tool-btn svg { width: 13px; height: 13px; }
+/* C72T1: epic column header progress — the shared EpicGroupBreakdown,
+   byte-identical rendering (6px stacked bar + 5-group legend). */
+.col-breakdown { padding: 0 4px 8px; }
+.progress-track {
+  display: flex; height: 6px; width: 100%;
+  overflow: hidden; border-radius: 999px; background: var(--raised);
+}
+.progress-track .seg { height: 100%; }
+.progress-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+.legend-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--ink-secondary); font-variant-numeric: tabular-nums;
+}
+.legend-chip .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.legend-chip .n { color: var(--ink-muted); }
+
+/* ---------- board cards (Board.tsx BoardCardBody) ---------- */
+.card {
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface); padding: 10px; cursor: pointer;
+}
+.card:hover { border-color: #3f3f46; background: #17171a; }
+.cards { display: flex; flex-direction: column; gap: 7px; }
+.card .id-row { display: flex; align-items: center; }
+.card .display-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; color: var(--ink-muted);
+}
+.card .more {
+  margin-left: auto; display: inline-flex; height: 20px; width: 22px;
+  align-items: center; justify-content: center; border-radius: 4px;
+  color: var(--ink-muted); background: transparent; border: none; cursor: pointer;
+}
+.card .more:hover { background: var(--wash-hover); color: var(--ink); }
+.card .more svg { width: 13px; height: 13px; }
+.card .title { margin: 5px 0 10px; font-size: 13px; font-weight: 570; line-height: 18px; letter-spacing: -0.008em; color: var(--ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  display: inline-flex; height: 22px; align-items: center; gap: 5px;
+  border-radius: 4px; border: 1px solid var(--border);
+  background: #111113; padding: 0 6px;
+  font-size: 9px; font-weight: 500; color: var(--ink-secondary); white-space: nowrap;
+}
+.mini-btn {
+  display: inline-flex; height: 22px; width: 22px; flex: none; align-items: center; justify-content: center;
+  border-radius: 4px; border: 1px solid var(--border); background: #111113;
+  color: var(--ink-muted); cursor: pointer;
+}
+.mini-btn:hover { background: var(--raised); color: var(--ink); }
+.mini-btn svg { width: 12px; height: 12px; }
+.state-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.state-backlog { border: 1.5px solid var(--g-backlog); background: transparent; }
+.state-unstarted { background: var(--g-unstarted); }
+.state-started { background: var(--g-started); }
+.state-completed { background: var(--g-completed); }
+.state-cancelled { background: var(--g-cancelled); }
+.pbars { display: inline-flex; align-items: flex-end; gap: 1.5px; height: 10px; }
+.pbars i { width: 2.5px; border-radius: 1px; background: rgba(255,255,255,0.14); }
+.pbars i.on { background: var(--amber); }
+.pbars i:nth-child(1) { height: 4px; } .pbars i:nth-child(2) { height: 6px; }
+.pbars i:nth-child(3) { height: 8px; } .pbars i:nth-child(4) { height: 10px; }
+/* duplicate-appearance hint (mock annotation only — the real card is identical) */
+.dup-tag {
+  margin-left: 6px; font-size: 8.5px; font-weight: 700; color: var(--purple);
+  border: 1px solid rgba(156, 131, 230, 0.4); border-radius: 3px; padding: 1px 4px;
+  vertical-align: 1px; cursor: help;
+}
+.quickadd {
+  margin-top: auto; padding-top: 8px;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--ink-muted); cursor: pointer;
+  border: 1px dashed transparent; border-radius: 6px; padding: 7px 8px;
+}
+.quickadd:hover { color: var(--ink-secondary); border-color: var(--border); }
+.quickadd svg { width: 13px; height: 13px; }
+.epic-glyph { color: var(--purple); flex-shrink: 0; display: inline-flex; }
+.epic-glyph svg { width: 13px; height: 13px; }
+.labels-row { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.label {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--ink-secondary);
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 2px 8px;
+}
+.label .swatch { width: 8px; height: 8px; border-radius: 50%; }
+.dates-row { margin-top: 8px; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-muted); }
+.dates-row svg { width: 12px; height: 12px; }
+.subtasks { margin-top: 8px; }
+.subtasks .track { height: 4px; border-radius: 999px; background: var(--raised); overflow: hidden; }
+.subtasks .fill { height: 100%; background: var(--blue); }
+.subtasks .cap { margin-top: 3px; font-size: 10px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- Option B: epic swimlanes inside state columns ---------- */
+.swimlane { border-top: 1px solid var(--hairline); padding: 8px 0 4px; }
+.swimlane:first-child { border-top: none; padding-top: 2px; }
+.swimlane-head { display: flex; align-items: center; gap: 6px; padding: 0 4px 6px; }
+.swimlane-head .title { font-size: 10.5px; font-weight: 600; color: var(--ink-secondary); }
+.swimlane-head .count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px; color: var(--ink-muted);
+}
+.swimlane .progress-track { height: 4px; margin: 0 4px 8px; width: calc(100% - 8px); }
+.ungrouped-head .title { color: var(--ink-muted); font-style: italic; }
+.note-strip {
+  margin: 0 18px 14px; padding: 9px 12px; max-width: 1100px;
+  border: 1px solid var(--hairline); border-radius: 6px; background: var(--surface);
+  font-size: 11px; color: var(--ink-secondary); line-height: 1.6;
+}
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <div class="kicker">C72T1 · prototype-as-spec · static mock — nothing here is wired</div>
+  <h1>Group by Epic — Board</h1>
+  <p>Two candidate surfaces below, same data set. Both reuse <code>EpicGroupBreakdown</code>
+  (5 segments, no triage, GROUP_COLORS, done = completed + cancelled), the C72T0
+  <code>groupByEpic.ts</code> semantics (multi-appearance, archived-exclusion,
+  Ungrouped-last), and the existing board card face (<code>BoardCardBody</code>) untouched.</p>
+  <ul>
+    <li><b>Option A (recommended):</b> columns per live epic — epic name + count + 5-segment
+    progress header, cards keep their state badge; Ungrouped column last; state/priority
+    column paths untouched.</li>
+    <li><b>Option B (alternative):</b> state columns stay, epics become swimlanes inside
+    each column — epic name + count + slim bar per swimlane.</li>
+    <li>Data: 3 live epics (<b>Auth overhaul</b> 3 issues, <b>Privacy compliance</b> 3,
+    <b>Mobile onboarding</b> 2), archived epic <b>Legacy SSO</b> excluded (its issue GLN-8
+    falls to Ungrouped), Ungrouped 2. <b>GLN-58 appears in two columns</b> (multi-appearance,
+    marked with a purple <span class="dup-tag">×2</span> tag that exists in the mock only).</li>
+  </ul>
+  <div class="open-q">
+    <h3>Open questions for the spec ruling</h3>
+    <ol>
+      <li><b>Option A or B?</b> (recommendation: A)</li>
+      <li><b>Drop semantics (A):</b> dropping a card into an epic column = attach the issue to
+      that epic (multi-epic aware, mirrors how priority drops re-stamp priority)? Ungrouped
+      column drop = no-op, or detach-from-all (destructive — likely no-op)?</li>
+      <li><b>Quick-add (A):</b> column quick-add stamps <code>state_id</code> today; epic columns
+      should additionally attach the new issue to that epic (mirrors the C72T0 review ruling
+      on <code>stateId</code> quick-add landing in Ungrouped until attached)?</li>
+      <li><b>Header count inflation:</b> PageHeader total counts memberships (10) not unique
+      issues (9) under multi-appearance — acceptable, or show unique?</li>
+      <li>Workflow drop-blocked hints (C68T1) are state-column concepts; epic columns would
+      need their own guard story (or none). Decide with the ruling.</li>
+    </ol>
+  </div>
+  <div class="surface-tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-surface="opt-a">Option A — Epic columns (recommended)</button>
+    <button role="tab" aria-selected="false" data-surface="opt-b">Option B — Epic swimlanes (alternative)</button>
+  </div>
+</div>
+
+<div class="app">
+  <div class="rail">
+    <div class="ws">Acme Corp</div>
+    <div class="nav-item"><span class="dot"></span>Inbox</div>
+    <div class="nav-item"><span class="dot"></span>My issues</div>
+    <div class="nav-item active"><span class="dot"></span>glance · web</div>
+    <div class="nav-item"><span class="dot"></span>Epics</div>
+    <div class="nav-item"><span class="dot"></span>Initiatives</div>
+  </div>
+  <div class="main">
+
+    <div class="page-header">
+      <h2>Board</h2>
+      <span class="count num">10</span>
+      <span class="spacer"></span>
+      <button class="ctl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>Filters</button>
+      <button class="ctl hot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg>Display · Group by: Epic</button>
+      <button class="ctl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>Views</button>
+    </div>
+
+    <!-- ==================== OPTION A: epic columns ==================== -->
+    <div class="surface active" id="opt-a">
+      <div class="board-scroll">
+        <div class="board-row">
+
+          <!-- Auth overhaul -->
+          <div class="column">
+            <div class="col-head">
+              <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+              <span class="title">Auth overhaul</span>
+              <span class="count num">3</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="col-breakdown">
+              <div class="progress-track" role="img" aria-label="Auth overhaul progress: 1 unstarted, 1 started, 1 completed">
+                <div class="seg" style="width:33.33%;background:#e5a13c" title="Unstarted: 1"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7" title="Started: 1"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a" title="Completed: 1"></div>
+              </div>
+              <div class="progress-legend">
+                <span class="legend-chip"><span class="swatch" style="background:#9aa0ae"></span>Backlog <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5a13c"></span>Unstarted <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#4f8ef7"></span>Started <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#42c88a"></span>Completed <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5484d"></span>Cancelled <span class="n num">0</span></span>
+              </div>
+            </div>
+            <div class="cards">
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-31</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">OAuth refresh token rotation</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>Urgent</span>
+                  <button class="mini-btn" title="Assignees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+                </div>
+                <div class="subtasks"><div class="track"><div class="fill" style="width:50%"></div></div><div class="cap num">2/4 subtasks</div></div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-12</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">MFA enrollment flow</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-unstarted"></span>Unstarted</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                  <button class="mini-btn" title="Assignees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+                  <button class="mini-btn" title="Releases"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-58</span><span class="dup-tag" title="Mock annotation only — appears under every live epic it belongs to">×2</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Export audit log to CSV</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-completed"></span>Completed</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                </div>
+                <div class="labels-row"><span class="label"><span class="swatch" style="background:#4f8ef7"></span>backend</span></div>
+                <div class="dates-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg><span>Oct 13 – Oct 17</span></div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Privacy compliance -->
+          <div class="column">
+            <div class="col-head">
+              <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+              <span class="title">Privacy compliance</span>
+              <span class="count num">3</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="col-breakdown">
+              <div class="progress-track" role="img" aria-label="Privacy compliance progress: 1 backlog, 1 started, 1 completed">
+                <div class="seg" style="width:33.33%;background:#9aa0ae" title="Backlog: 1"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7" title="Started: 1"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a" title="Completed: 1"></div>
+              </div>
+              <div class="progress-legend">
+                <span class="legend-chip"><span class="swatch" style="background:#9aa0ae"></span>Backlog <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5a13c"></span>Unstarted <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#4f8ef7"></span>Started <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#42c88a"></span>Completed <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5484d"></span>Cancelled <span class="n num">0</span></span>
+              </div>
+            </div>
+            <div class="cards">
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-44</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">GDPR consent export</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                </div>
+                <div class="labels-row">
+                  <span class="label"><span class="swatch" style="background:#e5484d"></span>legal</span>
+                  <span class="label"><span class="swatch" style="background:#42c88a"></span>api</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-61</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Data retention policy banner</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i></i><i></i><i></i></span>Low</span>
+                  <button class="mini-btn" title="Assignees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-58</span><span class="dup-tag" title="Mock annotation only — appears under every live epic it belongs to">×2</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Export audit log to CSV</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-completed"></span>Completed</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                </div>
+                <div class="labels-row"><span class="label"><span class="swatch" style="background:#4f8ef7"></span>backend</span></div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Mobile onboarding -->
+          <div class="column">
+            <div class="col-head">
+              <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+              <span class="title">Mobile onboarding</span>
+              <span class="count num">2</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="col-breakdown">
+              <div class="progress-track" role="img" aria-label="Mobile onboarding progress: 1 backlog, 1 unstarted">
+                <div class="seg" style="width:50%;background:#9aa0ae" title="Backlog: 1"></div>
+                <div class="seg" style="width:50%;background:#e5a13c" title="Unstarted: 1"></div>
+              </div>
+              <div class="progress-legend">
+                <span class="legend-chip"><span class="swatch" style="background:#9aa0ae"></span>Backlog <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5a13c"></span>Unstarted <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#4f8ef7"></span>Started <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#42c88a"></span>Completed <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5484d"></span>Cancelled <span class="n num">0</span></span>
+              </div>
+            </div>
+            <div class="cards">
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-77</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Push permission priming screen</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-unstarted"></span>Unstarted</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  <button class="mini-btn" title="Assignees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-79</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Deep-link invite handling</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>Urgent</span>
+                </div>
+                <div class="dates-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg><span>Target Oct 28</span></div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Ungrouped (always last) -->
+          <div class="column">
+            <div class="col-head">
+              <span class="epic-glyph" style="color:var(--ink-muted)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/></svg></span>
+              <span class="title">Ungrouped</span>
+              <span class="count num">2</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="col-breakdown">
+              <div class="progress-track" role="img" aria-label="Ungrouped progress: 1 backlog, 1 started">
+                <div class="seg" style="width:50%;background:#9aa0ae" title="Backlog: 1"></div>
+                <div class="seg" style="width:50%;background:#4f8ef7" title="Started: 1"></div>
+              </div>
+              <div class="progress-legend">
+                <span class="legend-chip"><span class="swatch" style="background:#9aa0ae"></span>Backlog <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5a13c"></span>Unstarted <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#4f8ef7"></span>Started <span class="n num">1</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#42c88a"></span>Completed <span class="n num">0</span></span>
+                <span class="legend-chip"><span class="swatch" style="background:#e5484d"></span>Cancelled <span class="n num">0</span></span>
+              </div>
+            </div>
+            <div class="cards">
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-8</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">SSO login button misaligned on Safari <span class="muted" style="font-weight:400">· only epic “Legacy SSO” is archived, so it lands here</span></p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="id-row"><span class="display-id">GLN-90</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                <p class="title">Changelog page copy</p>
+                <div class="chips">
+                  <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                  <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  <button class="mini-btn" title="Assignees"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
+                </div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+        </div>
+      </div>
+      <div class="note-strip">
+        <b>Option A notes.</b> Columns mirror the existing <code>BoardColumn</code> exactly
+        (325px, 42px header, expand/plus tools, quick-add footer) with one new header variant:
+        epic glyph + name + count + the shared <code>EpicGroupBreakdown</code> (bar + legend).
+        Cards are the unmodified <code>BoardCardBody</code> — state badge stays because the
+        column no longer implies state. Empty epic columns are hidden (existing
+        <code>showEmptyGroups</code> setting); Ungrouped is kept as a drop target even if a
+        coordinator ruling later hides it when empty.
+      </div>
+    </div>
+
+    <!-- ==================== OPTION B: state columns + epic swimlanes ==================== -->
+    <div class="surface" id="opt-b">
+      <div class="board-scroll">
+        <div class="board-row">
+
+          <!-- Backlog -->
+          <div class="column">
+            <div class="col-head">
+              <span class="state-dot state-backlog"></span>
+              <span class="title">Backlog</span>
+              <span class="count num">3</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Privacy compliance</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Privacy compliance overall progress">
+                <div class="seg" style="width:33.33%;background:#9aa0ae"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-44</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">GDPR consent export</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Mobile onboarding</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Mobile onboarding overall progress">
+                <div class="seg" style="width:50%;background:#9aa0ae"></div>
+                <div class="seg" style="width:50%;background:#e5a13c"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-79</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Deep-link invite handling</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>Urgent</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head ungrouped-head">
+                <span class="title">Ungrouped</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-90</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Changelog page copy</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-backlog"></span>Backlog</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Unstarted -->
+          <div class="column">
+            <div class="col-head">
+              <span class="state-dot state-unstarted"></span>
+              <span class="title">Unstarted</span>
+              <span class="count num">2</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Auth overhaul</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Auth overhaul overall progress">
+                <div class="seg" style="width:33.33%;background:#e5a13c"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-12</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">MFA enrollment flow</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-unstarted"></span>Unstarted</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Mobile onboarding</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Mobile onboarding overall progress">
+                <div class="seg" style="width:50%;background:#9aa0ae"></div>
+                <div class="seg" style="width:50%;background:#e5a13c"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-77</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Push permission priming screen</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-unstarted"></span>Unstarted</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Started -->
+          <div class="column">
+            <div class="col-head">
+              <span class="state-dot state-started"></span>
+              <span class="title">Started</span>
+              <span class="count num">3</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Auth overhaul</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Auth overhaul overall progress">
+                <div class="seg" style="width:33.33%;background:#e5a13c"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-31</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">OAuth refresh token rotation</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>Urgent</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Privacy compliance</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Privacy compliance overall progress">
+                <div class="seg" style="width:33.33%;background:#9aa0ae"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-61</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Data retention policy banner</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i></i><i></i><i></i></span>Low</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head ungrouped-head">
+                <span class="title">Ungrouped</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-8</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">SSO login button misaligned on Safari</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-started"></span>Started</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>High</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+          <!-- Completed -->
+          <div class="column">
+            <div class="col-head">
+              <span class="state-dot state-completed"></span>
+              <span class="title">Completed</span>
+              <span class="count num">2</span>
+              <span class="tools">
+                <button class="tool-btn" title="Expand column"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg></button>
+                <button class="tool-btn" title="Add work item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+              </span>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Auth overhaul</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Auth overhaul overall progress">
+                <div class="seg" style="width:33.33%;background:#e5a13c"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-58</span><span class="dup-tag" title="Mock annotation only — appears under every live epic it belongs to">×2</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Export audit log to CSV</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-completed"></span>Completed</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="swimlane">
+              <div class="swimlane-head">
+                <span class="epic-glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg></span>
+                <span class="title">Privacy compliance</span>
+                <span class="count num">1</span>
+              </div>
+              <div class="progress-track" role="img" aria-label="Privacy compliance overall progress">
+                <div class="seg" style="width:33.33%;background:#9aa0ae"></div>
+                <div class="seg" style="width:33.33%;background:#4f8ef7"></div>
+                <div class="seg" style="width:33.33%;background:#42c88a"></div>
+              </div>
+              <div class="cards">
+                <div class="card">
+                  <div class="id-row"><span class="display-id">GLN-58</span><span class="dup-tag" title="Mock annotation only — appears under every live epic it belongs to">×2</span><button class="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button></div>
+                  <p class="title">Export audit log to CSV</p>
+                  <div class="chips">
+                    <span class="chip"><span class="state-dot state-completed"></span>Completed</span>
+                    <span class="chip"><span class="pbars"><i class="on"></i><i class="on"></i><i></i><i></i></span>Medium</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="quickadd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New issue</div>
+          </div>
+
+        </div>
+      </div>
+      <div class="note-strip">
+        <b>Option B notes.</b> State columns are the <b>unmodified</b> current board; each column
+        splits into per-epic swimlanes (epic glyph + name + in-column count + slim 4px bar
+        showing the epic's <b>overall</b> progress). Ungrouped is a swimlane in each state column.
+        Cost: every column repeats every epic header, so headers multiply with column count —
+        dense projects get noisy; vertical scrolling grows inside each column. Drag between
+        columns keeps today's state-change semantics (epic membership untouched). Quick-add
+        stays state-stamped as today.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// Prototype chrome only: switch surfaces. Not part of the app spec.
+document.querySelectorAll('.surface-tabs button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.surface-tabs button').forEach((b) => b.setAttribute('aria-selected', 'false'));
+    document.querySelectorAll('.surface').forEach((s) => s.classList.remove('active'));
+    btn.setAttribute('aria-selected', 'true');
+    document.getElementById(btn.dataset.surface).classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
