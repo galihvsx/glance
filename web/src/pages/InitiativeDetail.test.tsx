@@ -74,9 +74,9 @@ const rollup: InitiativeRollup = {
 };
 
 const workspaceProjects: Project[] = [
-  { id: "p-1", workspace_id: "ws-1", identifier: "WEB", labels: [], name: "Web", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
-  { id: "p-2", workspace_id: "ws-1", identifier: "API", labels: [], name: "API", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
-  { id: "p-4", workspace_id: "ws-1", identifier: "MOB", labels: [], name: "Mobile", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-1", workspace_id: "ws-1", identifier: "WEB", labels: [], name: "Web", description: "", parallel_cycles: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-2", workspace_id: "ws-1", identifier: "API", labels: [], name: "API", description: "", parallel_cycles: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-4", workspace_id: "ws-1", identifier: "MOB", labels: [], name: "Mobile", description: "", parallel_cycles: false, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
 ];
 
 // Workspace role for the current test: 15 = member, 5 = guest.

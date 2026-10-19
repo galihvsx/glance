@@ -52,6 +52,7 @@ const projects: Project[] = [
     description: "",
     created_at: "",
     updated_at: "",
+    parallel_cycles: false,
   },
   {
     id: "p-plt",
@@ -62,6 +63,7 @@ const projects: Project[] = [
     description: "",
     created_at: "",
     updated_at: "",
+    parallel_cycles: false,
   },
 ];
 
