@@ -1491,6 +1491,24 @@
         "responses": { "200": { "description": "Burndown data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Burndown" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/start": {
+      "post": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Manually start a cycle",
+        "description": "Member (15)+. Flips an upcoming cycle to current ahead of its scheduled start_date (\\\"Override scheduled cycles\\\", C79T0). The scheduled end_date is never touched, so the ticker still auto-completes the cycle on schedule, and the manual start is never reverted to upcoming. Announces cycle.updated with status current — the same fan-out as the ticker's scheduled activation. Repeats and starts on completed cycles are 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Started cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "description": "The cycle's date range overlaps another live (upcoming/current) cycle of the project and the project's parallel_cycles toggle is off (C78T0). The error message names the conflicting cycle (e.g. cycle dates overlap with \\\"Sprint 12\\\"). Enable parallel_cycles on the project to allow overlapping ranges.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/end": {
+      "post": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Manually end a cycle",
+        "description": "Member (15)+. Completes a live (upcoming or current) cycle early through the exact ticker path (C79T0): freezes the progress snapshot, rolls incomplete issues over to the next cycle (or detaches them per the project's close_in_days rule), and announces cycle.updated with status completed — automations, webhooks and realtime clients see a manual end identically to a scheduled end. The scheduled end_date is kept for the cycle's report. A repeat end is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Ended cycle (frozen report snapshot)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/calendar.ics": {
       "get": {
         "tags": ["calendar"], "security": [{ "feedToken": [] }],
