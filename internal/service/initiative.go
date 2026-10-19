@@ -53,6 +53,11 @@ var (
 	// project id passed to a membership endpoint — is not a syntactically
 	// valid UUID. The handler maps it to 400 bad_request.
 	ErrInvalidInitiativeID = errors.New("service: invalid initiative id")
+	// ErrInvalidInitiativeFilter is returned when a ListInitiatives
+	// filter param fails validation: unknown status, malformed uuid,
+	// unparseable date, unknown sort/order. The handler maps it to 400
+	// with the wrapped detail as the message.
+	ErrInvalidInitiativeFilter = errors.New("service: invalid initiative list filter")
 )
 
 // initiativeStatuses is the status vocabulary enforced by the 000050
@@ -222,22 +227,146 @@ func CreateInitiative(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID s
 	return &init, nil
 }
 
-// ListInitiatives returns the workspace's initiatives ordered by
-// creation, with live member project counts. Archived are excluded
-// unless includeArchived. Any role may read.
-func ListInitiatives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, includeArchived bool) ([]Initiative, error) {
+// InitiativeListFilter carries the rich filter params for
+// ListInitiatives (C73T0 — Plane "initiatives rich filters" parity).
+// All user input is parameterized in the query; Sort/Order are
+// whitelisted to static SQL fragments, never interpolated.
+//
+// Status semantics: an explicit Statuses list always wins. Otherwise
+// IncludeArchived (the legacy ?include_archived=1|true) means "no
+// status exclusion"; the default excludes archived.
+type InitiativeListFilter struct {
+	IncludeArchived bool
+	Statuses        []string
+	Q               string
+	CreatedBy       string
+	CreatedFrom     string // ISO-8601 (RFC3339 or date-only); "" = unbounded
+	CreatedTo       string
+	ProjectID       string
+	Sort            string // name|created_at|updated_at|project_count; "" = created_at
+	Order           string // asc|desc; "" = asc for name, desc otherwise
+}
+
+// initiativeSortColumns whitelists sort keys to static ORDER BY
+// expressions. project_count is a correlated subquery over the
+// initiative_projects junction — computed, not interpolated.
+var initiativeSortColumns = map[string]string{
+	"name":          `name`,
+	"created_at":    `created_at`,
+	"updated_at":    `updated_at`,
+	"project_count": `(SELECT COUNT(*) FROM initiative_projects ip WHERE ip.initiative_id = initiatives.id)`,
+}
+
+// parseInitiativeDate accepts ISO-8601: full RFC3339 timestamps and
+// bare dates (2006-01-02). "" means unbounded.
+func parseInitiativeDate(v string) (*time.Time, error) {
+	if v == "" {
+		return nil, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return &t, nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		return &t, nil
+	}
+	return nil, fmt.Errorf("%w: unparseable date %q (want ISO-8601)", ErrInvalidInitiativeFilter, v)
+}
+
+// ListInitiatives returns the workspace's initiatives with rich
+// filters (C73T0), live member project counts, and the result never
+// nil — an empty match is []. Any role may read.
+func ListInitiatives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, filter InitiativeListFilter) ([]Initiative, error) {
 	wsID, _, err := resolveInitiativeWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return nil, err
 	}
-	statusFilter := `AND status <> 'archived'`
-	if includeArchived {
-		statusFilter = ``
+
+	var conds []string
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
 	}
+	wsArg := arg(wsID)
+
+	// Status: explicit list wins; otherwise legacy includeArchived maps
+	// to "no status exclusion"; default excludes archived.
+	if len(filter.Statuses) > 0 {
+		for _, s := range filter.Statuses {
+			if !initiativeStatuses[s] {
+				return nil, fmt.Errorf("%w: unknown status %q (want active|completed|archived)", ErrInvalidInitiativeFilter, s)
+			}
+		}
+		conds = append(conds, `status = ANY(`+arg(filter.Statuses)+`)`)
+	} else if !filter.IncludeArchived {
+		conds = append(conds, `status <> 'archived'`)
+	}
+
+	// Text search: ILIKE on name + description, fully parameterized.
+	if q := strings.TrimSpace(filter.Q); q != "" {
+		conds = append(conds, `(name ILIKE `+arg("%"+q+"%")+` OR description ILIKE `+arg("%"+q+"%")+`)`)
+	}
+
+	// Created-by: malformed uuid is a client error, not a ::uuid 500.
+	if filter.CreatedBy != "" {
+		if !isUUIDFormat(filter.CreatedBy) {
+			return nil, fmt.Errorf("%w: malformed created_by %q", ErrInvalidInitiativeFilter, filter.CreatedBy)
+		}
+		conds = append(conds, `created_by = `+arg(filter.CreatedBy)+`::uuid`)
+	}
+
+	// Created-at range: unparseable dates are client errors.
+	if from, err := parseInitiativeDate(filter.CreatedFrom); err != nil {
+		return nil, err
+	} else if from != nil {
+		conds = append(conds, `created_at >= `+arg(*from))
+	}
+	if to, err := parseInitiativeDate(filter.CreatedTo); err != nil {
+		return nil, err
+	} else if to != nil {
+		conds = append(conds, `created_at <= `+arg(*to))
+	}
+
+	// Member-project via the junction; a valid-but-unknown project id
+	// simply matches nothing.
+	if filter.ProjectID != "" {
+		if !isUUIDFormat(filter.ProjectID) {
+			return nil, fmt.Errorf("%w: malformed project_id %q", ErrInvalidInitiativeFilter, filter.ProjectID)
+		}
+		conds = append(conds, `EXISTS (SELECT 1 FROM initiative_projects ip
+			WHERE ip.initiative_id = initiatives.id AND ip.project_id = `+arg(filter.ProjectID)+`::uuid)`)
+	}
+
+	// Sort/order: whitelisted columns only — unknown values are 400.
+	sort := filter.Sort
+	if sort == "" {
+		sort = "created_at"
+	}
+	col, ok := initiativeSortColumns[sort]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown sort %q (want name|created_at|updated_at|project_count)", ErrInvalidInitiativeFilter, filter.Sort)
+	}
+	order := strings.ToLower(filter.Order)
+	if order == "" {
+		order = "desc"
+		if sort == "name" {
+			order = "asc"
+		}
+	}
+	if order != "asc" && order != "desc" {
+		return nil, fmt.Errorf("%w: unknown order %q (want asc|desc)", ErrInvalidInitiativeFilter, filter.Order)
+	}
+
+	where := `workspace_id = ` + wsArg + `::uuid`
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	// Deterministic tiebreak so pagination-free lists are stable.
 	rows, err := pool.Query(ctx,
 		`SELECT `+initiativeColumnsCounted+`
-		 FROM initiatives WHERE workspace_id = $1::uuid `+statusFilter+`
-		 ORDER BY created_at`, wsID)
+		 FROM initiatives WHERE `+where+`
+		 ORDER BY `+col+` `+order+`, name, id`,
+		args...)
 	if err != nil {
 		return nil, err
 	}
