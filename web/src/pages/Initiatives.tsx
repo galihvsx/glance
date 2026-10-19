@@ -9,18 +9,25 @@
 // progress, so each card fetches its own rollup with a skeleton while
 // it loads.
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import {
+  initiativeActiveFilterCount,
+  toInitiativeApiParams,
+  useInitiativeFilters,
+} from "../lib/initiativeFilters";
 import type {
   Initiative,
   InitiativeRollup,
+  Member,
   Project,
   Workspace,
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import InitiativeProgressBar from "../components/initiatives/InitiativeProgressBar";
+import InitiativeFilterBar from "../components/initiatives/InitiativeFilterBar";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import {
@@ -121,7 +128,17 @@ export default function Initiatives() {
   const [formError, setFormError] = useState<string | null>(null);
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/initiatives`;
-  const initiativesKey = ["initiatives", slug] as const;
+
+  // C73T1: rich filter state lives in the URL search params (shareable
+  // links); the list query refetches whenever the serialized params change.
+  const [filters, setFilters, clearFilters] = useInitiativeFilters();
+  const filterCount = initiativeActiveFilterCount(filters);
+  const apiParamString = useMemo(
+    () => toInitiativeApiParams(filters).toString(),
+    [filters],
+  );
+  const initiativesKey = ["initiatives", slug, apiParamString] as const;
+  const listUrl = apiParamString ? `${base}?${apiParamString}` : base;
 
   // C26T0: same workspace role gate as the board/calendar — the create
   // affordances are hidden for guests (role < 15); the server 403 stays
@@ -136,21 +153,45 @@ export default function Initiatives() {
   const initiativesQuery = useQuery({
     queryKey: initiativesKey,
     queryFn: () =>
-      api.get<{ initiatives: Initiative[] }>(base).then((d) => d.initiatives),
+      api.get<{ initiatives: Initiative[] }>(listUrl).then((d) => d.initiatives),
   });
 
-  // Member-project picker: workspace projects, loaded only when the
-  // create dialog opens (same enabled-gate pattern as Cycles' add-issues
-  // dialog).
+  // Debounced search: the box stays local (300ms) and feeds `q` upstream —
+  // seeded from the URL so a pasted link shows its query in the box.
+  const [searchInput, setSearchInput] = useState(filters.q);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const trimmed = searchInput.trim();
+      if (trimmed !== filters.q) setFilters({ q: trimmed });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
+  useEffect(() => {
+    setSearchInput(filters.q);
+  }, [filters.q]);
+
+  // Member-project picker data: workspace projects (also feeds the create
+  // dialog's project picker). Loaded eagerly so the filter bar can use it.
   const projectsQuery = useQuery({
     queryKey: ["projects", slug],
-    enabled: createOpen,
     queryFn: () =>
       api
         .get<{ projects: Project[] }>(
           `/api/v1/workspaces/${encodeURIComponent(slug)}/projects`,
         )
         .then((d) => d.projects),
+  });
+
+  // Created-by picker data: workspace members (same endpoint FilterPanel uses).
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
   });
 
   const createMutation = useMutation({
@@ -177,7 +218,9 @@ export default function Initiatives() {
       setDescription("");
       setPicked(new Set());
       setFormError(null);
-      void queryClient.invalidateQueries({ queryKey: initiativesKey });
+      // Prefix key: invalidate every filter variant of the list, not just
+      // the currently active one.
+      void queryClient.invalidateQueries({ queryKey: ["initiatives", slug] });
     },
     onError: (e) => {
       setFormError(
@@ -309,25 +352,59 @@ export default function Initiatives() {
         )}
 
         <div className="mt-4">
+          <InitiativeFilterBar
+            filters={filters}
+            onChange={setFilters}
+            onClear={clearFilters}
+            members={membersQuery.data ?? []}
+            projects={projectsQuery.data ?? []}
+            searchInput={searchInput}
+            onSearchInput={setSearchInput}
+          />
+          {filterCount > 0 && !initiativesQuery.isPending && (
+            <p
+              className="mt-2 text-xs text-ink-muted"
+              aria-live="polite"
+              data-testid="initiatives-result-count"
+            >
+              {initiatives.length} result{initiatives.length === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4">
           {initiativesQuery.isPending ? (
             <div className="space-y-3">
               <Skeleton className="h-[110px] w-full rounded-md" />
               <Skeleton className="h-[110px] w-full rounded-md" />
             </div>
           ) : initiatives.length === 0 ? (
-            <div>
-              <OrgEmpty title="No initiatives yet">
-                Create the first initiative to group projects into a shared
-                program.
-              </OrgEmpty>
-              {canCreate && (
+            filterCount > 0 ? (
+              <div>
+                <OrgEmpty title="No initiatives match your filters">
+                  Try widening the search or clearing a filter.
+                </OrgEmpty>
                 <div className="mt-4 flex justify-center">
-                  <Button onClick={() => setCreateOpen(true)}>
-                    Create initiative
+                  <Button variant="outline" onClick={clearFilters}>
+                    Clear filters
                   </Button>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div>
+                <OrgEmpty title="No initiatives yet">
+                  Create the first initiative to group projects into a shared
+                  program.
+                </OrgEmpty>
+                {canCreate && (
+                  <div className="mt-4 flex justify-center">
+                    <Button onClick={() => setCreateOpen(true)}>
+                      Create initiative
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )
           ) : (
             <div className="space-y-3">
               {initiatives.map((i) => (
