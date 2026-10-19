@@ -227,3 +227,98 @@ Goal: close the highest value×cost gaps so a first-time evaluator sees Plane pa
 - Cycle-2 session ended without auto-starting cycle 3; PM+architect wrote the plan now. Plan: `.superpowers/sdd/2026-10-09-glance-cycle3/cycle3-plan.md`; this cycle's ledger: `.superpowers/sdd/2026-10-09-glance-cycle3/progress.md`.
 - 9 tasks C3T0–C3T8: invites endpoint, modules backend+frontend, wiki/pages backend+frontend, calendar view, workspace settings UI, time tracking, bug bundle C. NOT in cycle 3: gantt (cycle 4), analytics, releases, importers, public share, admin panel, attachments, AI.
 - v0.2.0 GitHub Release still unpublished — galih checkpoint, orthogonal to cycle 3.
+
+## 2026-10-15 ~19:55 WITA — Watchdog infra rebuild (wipe #44)
+- VM reimaged ~19:23 WITA (uptime 24 min on check). postgresql-16 package gone; pg_isready/psql missing; `/etc/apt/sources.list.d` reverted to dual-mirror config; 99-watchdog-fast gone.
+- Boot-time os-intent replay was mid-run; its `apt-get update` (pid 785) ran ~3.5 min with zero completed InRelease files (same dual-mirror stall as wipes #38/#39/#42). SIGTERMed the hung update child by PID — replay exited.
+- Manual rebuild: restored 99-watchdog-fast (timeouts/retries), rewrote ubuntu.sources to single azure URI (rm + recreate — in-place overwrite fails on this overlay), `apt-get update` finished in ~15s (26.6 MB), `apt-get install -y --no-install-recommends postgresql-16`, `service postgresql start` brought 16/main up.
+- Recreated per runbook: role `glance` (superuser, pw `glance`) via DO-block on unix socket as postgres OS user + DB `glance_test` (owner glance) via `createdb -O glance`.
+- TCP login verified (PGPASSWORD, select 1 → 1 on both postgres + glance_test); `pg_isready` accepting connections; smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Loop unaffected: cycle 30 remains OPEN at the prototype gate (C30T2 risk-radar prototype delivered 2026-10-13 ~02:30 WITA, C30T3 hard-gated on galih's approval); main clean at b2da8c2 (last commit 2026-10-13 ~02:08 WITA); `git branch -r --no-merged main` clean for cycle30 (all merged); ~/workspace/glance-worktrees/ empty; no coordinator/subagents.
+- No kickoff (cycle not closed), no resume (no dispatchable work — unfinished item is his checkpoint). Next action: nothing until galih taps the prototype.
+
+## 2026-10-16 ~09:25 WITA — Watchdog infra rebuild (wipe #59) + cycle 31 kickoff
+- VM reimaged ~09:05 WITA (uptime 12 min on check). postgresql-16 package gone; pg_isready/psql missing; `/etc/postgresql` missing; `/etc/apt/sources.list.d` reverted to dual-mirror config; 99-watchdog-fast gone.
+- Boot-time os-intent replay was mid-run; its `apt-get update` (pid 821) had been running ~7 min with files landing in partial/ but on the known-slow dual-mirror config. SIGTERMed the update child by PID — replay exited, dpkg lock free.
+- Manual rebuild: restored 99-watchdog-fast (timeouts/retries), rewrote ubuntu.sources to single azure URI (rm + recreate — in-place overwrite fails on this overlay), `apt-get update` finished in ~17s (23.2 MB), `apt-get install -y --no-install-recommends postgresql-16`, `service postgresql start` brought 16/main up (fresh cluster).
+- Recreated per runbook: role `glance` (superuser, pw `glance`) via DO-block on unix socket as postgres OS user + DB `glance_test` (owner glance) via `createdb -O glance`.
+- TCP login verified (PGPASSWORD, select 1 → 1 on both postgres + glance_test); `pg_isready` accepting connections; smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Loop state at kickoff: cycle 30 CLOSED (close commit 00cc9b8, 08:22 WITA, QA green, risk radar); no loop activity for ~60 min (last commit + ledger write 08:22 WITA); no cycle31 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 31 coordinator (race guard: re-check for `*cycle31*` dir/branch at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit.
+- Intended Linear status changes still pending from cycle 30 (parent applies on a user turn; background turns cannot update statuses): GLC-110..114 → Done.
+
+## 2026-10-16 ~10:17 WITA — Watchdog infra rebuild (wipe #60) — no kickoff yet
+- VM reimaged ~10:10 WITA (uptime 7–8 min on check). This wipe differed: postgresql-16 package + cluster config survived, but the cluster was fresh (no `glance` role, no `glance_test` DB) and down; `/etc/apt` reverted (99-watchdog-fast gone, dual-mirror sources back).
+- Rebuild: `pg_ctlcluster 16 main start` (cluster online), recreated role `glance` (superuser, pw `glance`) + DB `glance_test` via socket as postgres OS user; TCP login verified on both DBs; smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Restored 99-watchdog-fast + single-azure ubuntu.sources (rm + recreate) to keep future apt runs fast.
+- Loop state: cycle 31 CLOSED (close commit ce85e90, 09:52 WITA, QA green, Linear importer). Last activity 09:52 WITA (~25 min before this check) → under the 45-min threshold, so NO kickoff this run. No cycle32 dir/branch/worktree; ~/workspace/glance-worktrees/ empty.
+- Next: watchdog kicks off cycle 32 once inactivity reaches ≥45 min (after ~10:37 WITA) if nothing else lands.
+- Intended Linear status changes still pending (parent applies on a user turn): GLC-110..114 (cycle 30) → Done; GLC-115 + GLC-116 + GLC-117 (cycle 31) → Done.
+
+## 2026-10-16 ~10:52 WITA — Watchdog infra rebuild (wipe #61) + cycle 32 kickoff
+- VM reimaged ~10:35 WITA (uptime 12 min on check). postgresql-16 package gone; pg_isready/psql missing; `/etc/postgresql` missing; `/etc/apt/sources.list.d` reverted to dual-mirror config; 99-watchdog-fast gone. (The 10:17 run's rebuild was wiped with it.)
+- Manual rebuild: restored 99-watchdog-fast (timeouts/retries), rewrote ubuntu.sources to single azure URI (rm + recreate), `apt-get update` finished in ~22s (26.6 MB), `apt-get install -y --no-install-recommends postgresql-16`, `service postgresql start` brought 16/main up (fresh cluster).
+- Recreated per runbook: role `glance` (superuser, pw `glance`) via DO-block on unix socket as postgres OS user + DB `glance_test` (owner glance) via `createdb -O glance`.
+- TCP login verified (PGPASSWORD, select 1 → 1 on both postgres + glance_test); `pg_isready` accepting connections; smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Loop state at kickoff: cycle 31 CLOSED (close commit ce85e90, 09:52 WITA, QA green, Linear importer); no loop activity for ~56 min (last commit + ledger write 09:52 WITA); no cycle32 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 32 coordinator (race guard: re-check for `*cycle32*` dir/branch/worktree at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-110..114 (cycle 30) → Done; GLC-115 + GLC-116 + GLC-117 (cycle 31) → Done.
+
+## 2026-10-16 ~12:19 WITA — Watchdog infra rebuild (wipe #62) + cycle 33 kickoff
+- VM reimaged ~12:05 WITA (uptime 11 min on check). postgresql-16 package + cluster config survived, but the cluster was fresh (no `glance` role, no `glance_test` DB) and down; `/etc/apt` reverted (99-watchdog-fast gone, dual-mirror sources back).
+- Rebuild: `service postgresql start` (16/main online), recreated role `glance` (superuser, pw `glance`) via DO-block on unix socket as postgres OS user + DB `glance_test` via `createdb -O glance`.
+- TCP login verified on both DBs (select 1 → 1); smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Restored 99-watchdog-fast + single-azure ubuntu.sources (rm + recreate) to keep future apt runs fast.
+- Loop state at kickoff: cycle 32 CLOSED (close commit 42ca11d, 11:21 WITA, QA green, comment resolve threads); no loop activity for ~56 min (last commit + ledger write 11:21 WITA); no cycle33 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 33 coordinator (race guard: re-check for `*cycle33*` dir/branch/worktree at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-110..114 (cycle 30) → Done; GLC-115 + GLC-116 + GLC-117 (cycle 31) → Done; GLC-118 + GLC-119 + GLC-120 (cycle 32) → Done.
+
+## 2026-10-16 ~13:17 WITA — Watchdog infra rebuild (wipe #63) — no kickoff yet
+- VM reimaged ~13:06 WITA (uptime 11 min on check; prior run 12:49 WITA saw infra healthy). postgresql-16 package + cluster config survived, but the cluster was fresh (no `glance` role, no `glance_test` DB) and down; `/etc/apt` reverted (99-watchdog-fast gone, dual-mirror sources back).
+- Rebuild: `pg_ctlcluster 16 main start` (16/main online), recreated role `glance` (superuser, pw `glance`) + DB `glance_test` via socket as postgres OS user.
+- TCP login verified on both DBs (select 1 → 1); smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0.
+- Restored 99-watchdog-fast + single-azure ubuntu.sources (rm + recreate) to keep future apt runs fast.
+- Loop state: cycle 33 CLOSED (close commit 69bec12, 12:48 WITA, QA green, deferred list at zero). Last activity 12:48 WITA (~29 min before this check) → under the 45-min threshold, so NO kickoff this run. No cycle34 dir/branch/worktree; ~/workspace/glance-worktrees/ empty.
+- Next: watchdog kicks off cycle 34 once inactivity reaches ≥45 min (after ~13:33 WITA) if nothing else lands.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-110..114 (cycle 30) → Done; GLC-115 + GLC-116 + GLC-117 (cycle 31) → Done; GLC-118 + GLC-119 + GLC-120 (cycle 32) → Done; GLC-121 + GLC-122 + GLC-123 + GLC-124 (cycle 33) → Done.
+
+## 2026-10-16 ~17:47 WITA — Watchdog: infra healthy + cycle 36 kickoff dispatched
+- Infra healthy, no rebuild: `pg_isready` accepting connections; role `glance` + DB `glance_test` exist (TCP login verified). (First psql attempt hung on a password prompt — killed it, retried with PGPASSWORD; no infra issue.)
+- Loop state at kickoff: cycle 35 CLOSED (close commit df060d4, 16:50 WITA, QA green, OKRs); no loop activity for ~57 min (last commit 16:50 WITA; the 17:18 ledger mtime is the prior watchdog's own bookkeeping entry, not loop activity — counting it would defer kickoff forever); no cycle36 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 36 coordinator (race guard: re-check for `*cycle36*` dir/branch at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-110..114 (cycle 30), GLC-115..117 (cycle 31), GLC-118..120 (cycle 32), GLC-121..124 (cycle 33), GLC-125..128 (cycle 34), GLC-129..132 (cycle 35) → Done.
+
+## 2026-10-18 ~07:17 WITA — Watchdog: VM wiped again, Postgres gone; cycle 57 kickoff dispatched
+- Infra: VM reimaged (postgresql-16 package + cluster config GONE — no /etc/postgresql, no pg_isready, no postgresql.service). Rewrote /etc/apt/sources.list.d/ubuntu.sources to single azure mirror + restored /etc/apt/apt.conf.d/99-watchdog-fast, but a system OS-intent replay process (root, started 23:13 UTC) holds the apt lock on a slow `apt-get update` (still fetching at ~23:29 UTC, dual-mirror sources it started with). Did NOT kill it. Full Postgres reinstall (package + cluster start + role `glance` + DB `glance_test` + smoke test) delegated to the cycle-57 coordinator: wait for apt lock to free first, then install/start/recreate/smoke-test before running any tests.
+- Loop state at kickoff: cycle 56 CLOSED (close commit 8b8540f, ~06:33 WITA, QA green, webhook fan-out completeness); no loop activity for ~50 min (last commit + ledger write 22:33 UTC); no cycle57 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active. Commit identity verified: galihvsx / 180895227+galihvsx@users.noreply.github.com.
+- KICKOFF DISPATCHED: cycle 57 coordinator (race guard: re-check for `*cycle57*` dir/branch/worktree at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit; candidates from cycle-56 close: dispatcher test-isolation hardening; changed_fields vocabulary = product decision, not bugfix.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-193..213 (cycles 52–56) → Done; earlier cycles already carried forward in cycle-56 ledger.
+
+## 2026-10-18 ~10:4x WITA — WATCHDOG: INFRA REBUILD + CYCLE 58 KICKOFF
+- INFRA: `pg_isready` no response at run start; `service postgresql start` brought cluster 16/main online, but it was a FRESH default initdb — role `glance` and DB `glance_test` were GONE (only `postgres` role + default DBs). Recreated per runbook: role `glance` (superuser, pw `glance`) + DB `glance_test` (owner glance). Smoke: `go test ./internal/store/ -run TestMigrateAppliesPending` → ok (1.4s). Partial wipe: postgres package + /home survived, data dir re-initialized.
+- CYCLE 57 CLOSED (close commit 1a67dd0, 09:58 WITA, QA green per cycle 57 ledger). No loop activity ≥45 min (last commit + ledger write 09:58 WITA, now ~10:47 WITA), no cycle58 sdd dir / branches / worktrees. All kickoff conditions hold → dispatched ONE cycle-58 kickoff coordinator (race guard in brief).
+
+## 2026-10-18 ~23:17 WITA — Watchdog: cycle 66 kickoff dispatched
+- Infra healthy, no rebuild: `pg_isready` accepting connections; role `glance` + DB `glance_test` exist (TCP login verified). (First psql attempt hung on a password prompt again — killed, retried with PGPASSWORD; no infra issue.)
+- Loop state at kickoff: cycle 65 CLOSED (close commit c449d24, 22:21 WITA, QA green, single + bulk membership versions); no loop activity for ~56 min (last commit + ledger write 22:21 WITA); no cycle66 sdd dir / branches / worktrees; ~/workspace/glance-worktrees/ empty; no coordinator active. Commit identity verified: galihvsx / 180895227+galihvsx@users.noreply.github.com.
+- KICKOFF DISPATCHED: cycle 66 coordinator (race guard: re-check for `*cycle66*` dir/branch/worktree at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit; candidates from cycle-65 close: next functional parity gap after membership-version completeness; carried limits unchanged (webhook `changed_fields` row-field-only = product decision; pre-T0 move/reassign transitions; RestoreVersion no `issue.updated`); T12 Stickies stays out (galih's call).
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-238 + GLC-239 + GLC-240 (cycle 65) → Done; earlier cycles carried forward in prior entries.
+
+## 2026-10-18 ~23:28 WITA — Watchdog follow-up: double-kickoff race resolved
+- The cycle-66 coordinator I dispatched hit a duplicate kickoff: another cycle-66 coordinator had landed the same sdd dir with a fully established cycle while mine was auditing. Race guard fired — my coordinator exited quietly with zero side effects (same handling as the 2026-10-12 cycle-25 race). My only artifact was the empty dir via mkdir; the live coordinator populated it.
+- Live cycle 66 (owned by the other coordinator): theme "Global search covers Pages" (GET /api/v1/search + Cmd+K palette issues-only; Pages invisible to search — verified Plane-parity gap); Linear GLC-241 (cycle) + GLC-242 (C66T0) + GLC-243 (C66T1); wave 1 dispatched (branch cycle66/pages-search-backend, worktree active).
+
+## 2026-10-19 ~14:19 WITA — Watchdog infra rebuild (another VM wipe) + cycle 72 kickoff
+- Run 14:16 WITA found Postgres entirely gone again (no binaries, no cluster, no clients — `pg_isready: command not found`; `/var/cache/apt/archives` emptied; wipe happened between ~13:33 (cycle-71 close) and 14:14 (VM uptime 4 min at check)).
+- Repaired per runbook: rewrote ubuntu.sources to single azure URI (rm + recreate) + 99-watchdog-fast (timeouts/retries 2), `apt-get update` ~17s (26.6 MB), `DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-16`, `pg_ctlcluster 16 main start` (16/main up, accepting connections).
+- Recreated: role `glance` (superuser, pw `glance`) via DO-block + DB `glance_test` (owner glance) via unix socket as postgres OS user. TCP login verified (PGPASSWORD → `SELECT 1` = 1 on glance_test). One false start: a combined command hung on the psql password prompt over TCP — killed it, retried with PGPASSWORD set.
+- Smoke OK: `go test -count=1 ./internal/store/ -run TestMigrateAppliesPending` exit 0 (0.4s).
+- Loop state at kickoff: cycle 71 CLOSED (close commit 4a348ab, 13:33 WITA, QA gate green — gofmt/vet/test/govulncheck/tsc -b/build/vitest 1314; CHANGELOG entry; Linear GLC-257/258/259 → Done). No loop activity for ~45 min (last commit + ledger write 13:33 WITA); no cycle72 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 72 coordinator (race guard: re-check for `*cycle72*` dir/branch at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit.
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): all cycle-71 issues per the cycle-71 ledger tail.
+
+## 2026-10-19 ~20:47 WITA — Watchdog: infra healthy + cycle 76 kickoff dispatched
+- Infra healthy, no rebuild: `pg_isready` accepting connections; role `glance` + DB `glance_test` exist (TCP login verified). (The C75 close coordinator rebuilt Postgres mid-close during wipe #10; infra intact since.)
+- Loop state at kickoff: cycle 75 CLOSED (close commit d2d4415, 19:54 WITA, QA green — gofmt/vet/test/govulncheck, tsc -b, build, vitest 1416; CHANGELOG entry; parent-relationship filters for work items). No loop activity for ~53 min (last commit 19:54 WITA); no cycle76 dir/branch/worktree; ~/workspace/glance-worktrees/ empty; no coordinator active.
+- KICKOFF DISPATCHED: cycle 76 coordinator (race guard: re-check for `*cycle76*` dir/branch/worktree at start, exit quietly if one appeared). Theme TBD by coordinator from live-Plane audit; carried limits unchanged; T12 Stickies stays out (galih's call).
+- Intended Linear status changes still pending (parent applies on a user turn; background turns cannot update statuses): GLC-270 + GLC-271 + GLC-272 (cycle 75) → Done; earlier cycles carried forward in prior entries.

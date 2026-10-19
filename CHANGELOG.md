@@ -5,6 +5,44 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Project labels — workspace-level taxonomy for projects (cycle 76)**
+- Plane release v2.5.0 (2026-03-17), headline #2: "Project Labels — add
+  labels to projects at the workspace level to organize them by team,
+  function, priority, or any structure that fits your workflow; reusable
+  across projects; visible on Gallery cards, List blocks, Initiative
+  items, and the project sidebar; Board and List layouts group projects
+  by labels." Cycles 73–75 closed the "rich filters" line of the same
+  release. glance's label taxonomy covered work items only — no
+  project-level label surface existed.
+- Backend: migration 000070 — `project_labels` (workspace-scoped, flat
+  taxonomy; UNIQUE(workspace_id, name) → 409; hex color → 400) plus the
+  `project_project_labels` junction (cascades on project/label delete).
+  Workspace-mounted CRUD: `POST/GET /api/v1/workspaces/{slug}/project-labels`,
+  `PATCH/DELETE .../project-labels/{labelID}` (guests read-only; members
+  write). Assignment: `POST/DELETE
+  .../projects/{identifier}/project-labels/{labelID}` (the sibling
+  `/labels/{labelID}` path is owned by work-item labels, so the routes
+  are namespaced; duplicate assign → 409, unassign idempotent).
+  Every project payload and initiative member project now carries
+  `labels: [{id,name,color}]` ([] never null, shipped in-query); `GET
+  .../projects` takes repeatable/comma-separated `?label=` (OR
+  semantics; malformed or unknown UUID → 400 naming the value). OpenAPI
+  pins for all routes + the ProjectLabel schema.
+- Frontend: label chips on every Projects picker row (truncated +N
+  overflow), a URL-backed multi-select label filter in the page header
+  (active badge, per-section + global Clear, malformed pasted params
+  dropped), a workspace Manage-labels dialog (create/rename/recolor/
+  delete with live usage-count confirm; members only), per-project
+  label assignment on a new "Project labels" tab in ProjectSettings
+  (guests read-only), and member-project label chips on initiative
+  detail. Plane's Board/List grouping maps to label filtering —
+  glance's Projects page is a picker with no layouts (deliberate).
+- 50 new tests (10 backend, 40+ frontend); QA gate green
+  (gofmt/vet/go test/govulncheck, tsc -b, npm run build, full vitest).
+  UI-first gate not triggered: additive derivative UI on the existing
+  label-chip anatomy; the backend taxonomy contract was the spec
+  (C75 precedent).
+
 **Parent-relationship filters for work items (cycle 75)**
 - Plane release v2.5.0 (2026-03-17): "Rich filters added for work items,
   epics, and parent relationships." Cycles 73/74 closed the initiatives
