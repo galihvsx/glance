@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epics UI — C71 prototype-as-spec (static mock)</title>
+<style>
+/* ==========================================================================
+   glance tokens (web/src/index.css, Cycle 19) — duplicated here so the
+   static mock renders pixel-close to the app without the Tailwind build.
+   ========================================================================== */
+:root {
+  --canvas: #09090b;
+  --rail: #0b0b0d;
+  --surface: #141416;
+  --raised: #1a1a1e;
+  --hairline: rgba(255, 255, 255, 0.052);
+  --border: rgba(255, 255, 255, 0.09);
+  --ink: #f4f4f5;
+  --ink-secondary: #b0b0b9;
+  --ink-muted: #777780;
+  --blue: #4f8ef7;
+  --blue-hover: #649cf5;
+  --green: #42c88a;
+  --amber: #e7ad42;
+  --red: #df6b77;
+  --purple: #9c83e6;
+  --wash-hover: rgba(255, 255, 255, 0.05);
+  --wash-active: rgba(255, 255, 255, 0.085);
+  --g-backlog: #9aa0ae;
+  --g-unstarted: #e5a13c;
+  --g-started: #4f8ef7;
+  --g-completed: #42c88a;
+  --g-cancelled: #e5484d;
+  --focus: rgba(79, 142, 247, 0.8);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-muted); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a { color: var(--blue); text-decoration: none; }
+
+/* ---------- prototype chrome (NOT part of the app spec) ---------- */
+.proto-bar {
+  position: sticky; top: 0; z-index: 60;
+  background: #131308;
+  border-bottom: 1px solid rgba(231, 173, 66, 0.35);
+  padding: 8px 20px;
+}
+.proto-bar .kicker {
+  font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+  color: var(--amber); text-transform: uppercase;
+}
+.proto-bar h1 { font-size: 14px; margin: 2px 0 0; font-weight: 650; }
+.proto-bar p { font-size: 11px; color: var(--ink-secondary); margin: 4px 0 0; max-width: 900px; }
+.proto-bar p code { color: var(--amber); font-family: ui-monospace, monospace; font-size: 10.5px; }
+.surface-tabs { display: flex; gap: 6px; margin-top: 10px; }
+.surface-tabs button {
+  font: inherit; font-size: 11.5px; font-weight: 600;
+  color: var(--ink-secondary);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer;
+}
+.surface-tabs button:hover { background: var(--wash-hover); color: var(--ink); }
+.surface-tabs button[aria-selected="true"] {
+  background: var(--wash-active); color: var(--ink);
+  border-color: rgba(79, 142, 247, 0.5);
+}
+.surface { display: none; }
+.surface.active { display: block; }
+
+/* ---------- app shell ---------- */
+.app { display: flex; min-height: calc(100vh - 160px); }
+.rail {
+  width: 224px; flex-shrink: 0; background: var(--rail);
+  border-right: 1px solid var(--hairline); padding: 14px 10px;
+}
+.rail .ws { font-size: 12px; font-weight: 700; padding: 4px 8px 12px; }
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--ink-secondary);
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+}
+.nav-item:hover { background: var(--wash-hover); color: var(--ink); }
+.nav-item.active { background: var(--wash-active); color: var(--ink); font-weight: 600; }
+.nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--purple); flex-shrink: 0; }
+.main { flex: 1; min-width: 0; padding: 20px 28px 60px; max-width: 1180px; }
+
+/* ---------- PageHeader ---------- */
+.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.page-header h2 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.page-header .count {
+  font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 2px 8px;
+}
+.page-header .spacer { flex: 1; }
+
+/* ---------- buttons ---------- */
+.btn {
+  font: inherit; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; border-radius: 6px;
+  padding: 7px 13px; cursor: pointer; border: 1px solid transparent;
+}
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-hover); }
+.btn-ghost {
+  background: transparent; color: var(--ink-secondary);
+  border-color: var(--border);
+}
+.btn-ghost:hover { background: var(--wash-hover); color: var(--ink); }
+.btn-danger-ghost {
+  background: transparent; color: var(--ink-secondary);
+  border-color: var(--border);
+}
+.btn-danger-ghost:hover { color: var(--red); border-color: rgba(223, 107, 119, 0.5); background: rgba(223,107,119,0.08); }
+.btn svg { width: 13px; height: 13px; }
+
+/* ---------- org primitives (mirrors components/org/OrgViews) ---------- */
+.org-card {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 6px; padding: 14px 16px; cursor: pointer;
+}
+.org-card:hover { background: #17171a; border-color: var(--border); }
+.org-status-chip {
+  display: inline-flex; height: 22px; align-items: center; gap: 5px;
+  border-radius: 4px; border: 1px solid var(--border);
+  background: #111113; padding: 0 6px;
+  font-size: 9px; font-weight: 500; color: var(--ink-secondary);
+  white-space: nowrap;
+}
+.org-status-chip .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.org-empty {
+  border: 1px dashed var(--border); border-radius: 6px;
+  padding: 28px 20px; text-align: center; color: var(--ink-muted);
+  font-size: 12px; background: rgba(255,255,255,0.012);
+}
+.section-head {
+  display: flex; align-items: center; gap: 8px;
+  margin: 26px 0 12px; font-size: 13px; font-weight: 650;
+}
+.section-head .count {
+  font-size: 10.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 1px 7px; font-weight: 500;
+}
+.section-head .spacer { flex: 1; }
+.header-btn {
+  font: inherit; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; color: var(--ink-secondary);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px; cursor: pointer;
+}
+.header-btn:hover { background: var(--wash-hover); color: var(--ink); }
+.header-btn svg { width: 12px; height: 12px; }
+
+/* ---------- stacked state-group progress ---------- */
+.progress-track {
+  display: flex; height: 6px; width: 100%;
+  overflow: hidden; border-radius: 999px; background: var(--raised);
+}
+.progress-track .seg { height: 100%; }
+.progress-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+.legend-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.legend-chip .swatch { width: 8px; height: 8px; border-radius: 2px; }
+
+/* ---------- issue rows ---------- */
+.issue-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--hairline);
+  border-radius: 6px; background: var(--surface); cursor: pointer;
+}
+.issue-row:hover { background: #17171a; }
+.issue-row + .issue-row { margin-top: 6px; }
+.display-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; color: var(--ink-muted); flex-shrink: 0; width: 74px;
+}
+.issue-name { font-size: 12.5px; font-weight: 500; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.state-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.state-backlog { border: 1.5px solid var(--g-backlog); background: transparent; }
+.state-unstarted { background: var(--g-unstarted); }
+.state-started { background: var(--g-started); }
+.state-completed { background: var(--g-completed); }
+.state-cancelled { background: var(--g-cancelled); }
+.avatar {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: #fff;
+}
+.assignee { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-secondary); width: 150px; flex-shrink: 0; }
+
+/* ---------- tag chips (issue sidebar) ---------- */
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--ink-secondary);
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 6px; padding: 4px 6px 4px 8px; cursor: default;
+}
+.tag-chip button {
+  all: unset; cursor: pointer; display: inline-flex;
+  color: var(--ink-muted); border-radius: 3px; padding: 1px;
+}
+.tag-chip button:hover { color: var(--red); background: var(--wash-hover); }
+.tag-chip button svg { width: 11px; height: 11px; }
+.tag-chip.archived { opacity: 0.55; border-style: dashed; }
+.tag-chip.archived:hover { opacity: 0.85; }
+.tag-chip svg.epic-mark { width: 11px; height: 11px; color: var(--purple); }
+.tag-chip.archived svg.epic-mark { color: var(--ink-muted); }
+
+/* ---------- spec note callouts ---------- */
+.spec-note {
+  border: 1px solid rgba(79, 142, 247, 0.35); border-radius: 8px;
+  background: rgba(79, 142, 247, 0.06); padding: 12px 14px;
+  font-size: 11.5px; color: var(--ink-secondary); margin: 0 0 18px;
+  max-width: 1180px;
+}
+.spec-note b { color: var(--ink); }
+.spec-note code {
+  font-family: ui-monospace, monospace; font-size: 10.5px;
+  color: #9ec3f8; background: rgba(79,142,247,0.1);
+  padding: 1px 5px; border-radius: 4px;
+}
+.spec-note ul { margin: 6px 0 0; padding-left: 18px; }
+.spec-note li { margin: 3px 0; }
+
+/* ---------- filter row ---------- */
+.filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.search-box {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 6px; padding: 7px 10px; width: 260px;
+}
+.search-box svg { width: 13px; height: 13px; color: var(--ink-muted); flex-shrink: 0; }
+.search-box input {
+  all: unset; font-size: 12px; color: var(--ink); width: 100%;
+}
+.search-box input::placeholder { color: var(--ink-muted); }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-secondary); cursor: pointer; user-select: none; }
+.toggle .track {
+  width: 30px; height: 17px; border-radius: 999px;
+  background: var(--raised); border: 1px solid var(--border);
+  position: relative; transition: background 0.15s;
+}
+.toggle .track::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--ink-muted); transition: transform 0.15s, background 0.15s;
+}
+.toggle[aria-checked="true"] .track { background: rgba(79,142,247,0.35); border-color: rgba(79,142,247,0.6); }
+.toggle[aria-checked="true"] .track::after { transform: translateX(13px); background: var(--blue); }
+
+/* ---------- detail header ---------- */
+.detail-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+.detail-header .back {
+  all: unset; cursor: pointer; color: var(--ink-muted);
+  display: inline-flex; padding: 4px; border-radius: 5px;
+}
+.detail-header .back:hover { color: var(--ink); background: var(--wash-hover); }
+.detail-header .back svg { width: 15px; height: 15px; }
+.detail-header h2 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.detail-header .desc { font-size: 12.5px; color: var(--ink-secondary); margin: 6px 0 0; max-width: 760px; line-height: 1.55; }
+.detail-actions { margin-left: auto; display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ---------- dialogs (mock: toggled via JS) ---------- */
+.dialog-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: flex-start; justify-content: center;
+  padding-top: 12vh; z-index: 100;
+}
+.dialog-overlay.open { display: flex; }
+.dialog {
+  width: 480px; max-width: calc(100vw - 40px); max-height: 70vh;
+  background: var(--raised); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.dialog-head { padding: 14px 16px 10px; }
+.dialog-head h3 { margin: 0; font-size: 13.5px; font-weight: 650; }
+.dialog-head p { margin: 4px 0 0; font-size: 11px; color: var(--ink-muted); }
+.dialog .search-box { margin: 0 16px; width: auto; }
+.dialog-body { padding: 8px 8px 4px; overflow-y: auto; }
+.pick-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  font: inherit; text-align: left; color: var(--ink);
+  background: transparent; border: 0; border-radius: 6px;
+  padding: 9px 10px; cursor: pointer; font-size: 12.5px;
+}
+.pick-row:hover { background: var(--wash-hover); }
+.pick-row .sub { display: block; font-size: 10.5px; color: var(--ink-muted); margin-top: 2px; }
+.pick-row .check {
+  margin-left: auto; width: 16px; height: 16px; border-radius: 4px;
+  border: 1px solid var(--border); flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: transparent;
+}
+.pick-row.selected .check { background: var(--blue); border-color: var(--blue); color: #fff; }
+.pick-row.selected .check svg { width: 11px; height: 11px; }
+.pick-row .already { margin-left: auto; font-size: 10px; color: var(--ink-muted); }
+.dialog-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--hairline);
+}
+
+/* ---------- issue detail two-col ---------- */
+.issue-grid { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 28px; margin-top: 16px; }
+.issue-title-row { display: flex; align-items: center; gap: 10px; }
+.issue-title-row h2 { font-size: 17px; font-weight: 650; margin: 0; }
+.prop-label { font-size: 10.5px; font-weight: 600; color: var(--ink-muted); text-transform: none; margin: 0 0 6px; }
+.prop-cell { margin-bottom: 16px; }
+.add-cell-btn {
+  font: inherit; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--ink-muted);
+  background: transparent; border: 0; border-radius: 5px;
+  padding: 5px 7px; cursor: pointer;
+}
+.add-cell-btn:hover { background: var(--wash-hover); color: var(--ink); }
+.add-cell-btn svg { width: 12px; height: 12px; }
+.chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* epic cards grid (surface 1) */
+.epic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.epic-card .desc { font-size: 11px; color: var(--ink-muted); margin: 6px 0 0; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.epic-card .meta { display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  font-size: 10.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.epic-card .progress-wrap { margin-top: 10px; }
+.linked-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border: 1px solid var(--hairline); border-radius: 6px; background: var(--surface); }
+.linked-row + .linked-row { margin-top: 6px; }
+.linked-row .name { font-size: 12.5px; font-weight: 550; flex: 1; }
+.linked-row .sub { font-size: 10.5px; color: var(--ink-muted); }
+.icon-btn {
+  all: unset; cursor: pointer; display: inline-flex; padding: 5px;
+  border-radius: 5px; color: var(--ink-muted);
+}
+.icon-btn:hover { background: var(--wash-hover); color: var(--ink); }
+.icon-btn.danger:hover { color: var(--red); }
+.icon-btn svg { width: 13px; height: 13px; }
+.empty-progress { font-size: 11px; color: var(--ink-muted); margin-top: 10px; }
+kbd.hint { font-family: ui-monospace, monospace; font-size: 10px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--ink-secondary); }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ================= prototype chrome (not app UI) ================= -->
+<div class="proto-bar">
+  <div class="kicker">C71 prototype-as-spec &middot; static mock &middot; GLC-259</div>
+  <h1>Epics UI</h1>
+  <p>
+    Static HTML spec for the cycle-71 frontend task. The backend is already on <code>main</code>
+    (C71T0, commit <code>3a1afdb</code>). Each surface below carries a blue spec-note with the exact
+    contract the React implementation must honor. <b>Nothing here is the app</b> &mdash; it is the
+    visual + behavioral spec the coordinator reviews before implementation.
+  </p>
+  <nav class="surface-tabs" role="tablist" aria-label="Prototype surfaces">
+    <button role="tab" aria-selected="true" data-surface="s-list">1 &middot; Epics list</button>
+    <button role="tab" aria-selected="false" data-surface="s-detail">2 &middot; Epic detail</button>
+    <button role="tab" aria-selected="false" data-surface="s-issue">3 &middot; Issue detail &mdash; attach epic</button>
+  </nav>
+</div>
+<!-- ================= SURFACE 1: EPICS LIST ================= -->
+<section class="surface active" id="s-list">
+  <div class="spec-note">
+    <b>Surface 1 &mdash; Epics list (project scope).</b> Contract:
+    <ul>
+      <li><code>GET /api/v1/workspaces/:slug/projects/:identifier/epics</code> &rarr; <code>{epics: [{id, name, description, archived_at, issue_count, created_at}]}</code>. <b>Archived epics are excluded by the server unless <code>?include_archived=true</code></b> &mdash; the toggle re-issues the list query with that flag.</li>
+      <li>Row carries: name, description snippet (line-clamp-2), <code class="num">issue_count</code>, and the <b>stacked state-group progress bar</b>. The list endpoint ships no progress &mdash; each card fetches <code>GET /epics/:epicID</code> for <code>progress.by_group</code> (mirrors the Initiatives list &times; rollup pattern), or the list query may embed it &mdash; implementer&rsquo;s call, keep per-card skeleton.</li>
+      <li>Archived badge = <code>OrgStatusChip</code> muted (#777780) labeled <i>Archived</i>; archived cards dim to 55% opacity.</li>
+      <li><b>Out of scope this cycle:</b> group-by-epic in list/board/calendar layouts, duplicate-epic across projects, start/target dates (per cycle71-plan.md).</li>
+    </ul>
+  </div>
+
+  <div class="app">
+    <aside class="rail">
+      <div class="ws">devsameday</div>
+      <div class="nav-item">My work</div>
+      <div class="nav-item">Projects</div>
+      <div class="nav-item" style="padding-left:20px; color:var(--ink); font-weight:600;">glance</div>
+      <div class="nav-item" style="padding-left:32px;">Issues</div>
+      <div class="nav-item" style="padding-left:32px;">Cycles</div>
+      <div class="nav-item" style="padding-left:32px;">Modules</div>
+      <div class="nav-item active" style="padding-left:32px;"><span class="dot"></span>Epics</div>
+      <div class="nav-item" style="padding-left:32px;">Initiatives</div>
+      <div class="nav-item" style="padding-left:32px;">Pages</div>
+      <div class="nav-item">Settings</div>
+    </aside>
+
+    <main class="main">
+      <div class="page-header">
+        <h2>Epics</h2>
+        <span class="count num" id="epic-count">3</span>
+        <span class="spacer"></span>
+        <button class="btn btn-primary" data-open-dialog="new-epic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          New epic
+        </button>
+      </div>
+
+      <div class="filter-row">
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="epic-search" type="text" placeholder="Search epics&hellip;" aria-label="Search epics">
+        </div>
+        <div class="toggle" role="switch" aria-checked="false" id="archived-toggle" tabindex="0">
+          <span class="track"></span>
+          <span>Show archived</span>
+        </div>
+        <span class="muted" style="font-size:11px;">maps to <span class="num">?include_archived=true</span></span>
+      </div>
+
+      <div class="epic-grid" id="epic-grid">
+        <!-- card 1 -->
+        <div class="org-card epic-card" data-archived="false" data-name="auth revamp">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:13px; font-weight:600;" class="truncate">Auth revamp</span>
+          </div>
+          <p class="desc">Replace session auth with passwordless OTP + Google/GitHub OAuth; session cleanup and audit log included.</p>
+          <div class="meta"><span class="num">12</span> issues</div>
+          <div class="progress-wrap">
+            <div class="progress-track" role="progressbar" aria-label="Auth revamp progress" aria-valuemin="0" aria-valuemax="12" aria-valuenow="12">
+              <span class="seg" style="width:16.7%; background:var(--g-backlog);"></span>
+              <span class="seg" style="width:25%; background:var(--g-unstarted);"></span>
+              <span class="seg" style="width:33.3%; background:var(--g-started);"></span>
+              <span class="seg" style="width:25%; background:var(--g-completed);"></span>
+            </div>
+            <div class="progress-legend">
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-backlog);"></span>Backlog <span class="num">2</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-unstarted);"></span>Unstarted <span class="num">3</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-started);"></span>Started <span class="num">4</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-completed);"></span>Completed <span class="num">3</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-cancelled);"></span>Cancelled <span class="num">0</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- card 2 -->
+        <div class="org-card epic-card" data-archived="false" data-name="real-time collaboration">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:13px; font-weight:600;">Real-time collaboration</span>
+          </div>
+          <p class="desc">Live cursors, presence avatars, and broadcast announcements for issue updates across clients.</p>
+          <div class="meta"><span class="num">8</span> issues</div>
+          <div class="progress-wrap">
+            <div class="progress-track" role="progressbar" aria-label="Real-time collaboration progress" aria-valuemin="0" aria-valuemax="8" aria-valuenow="8">
+              <span class="seg" style="width:62.5%; background:var(--g-backlog);"></span>
+              <span class="seg" style="width:25%; background:var(--g-unstarted);"></span>
+              <span class="seg" style="width:12.5%; background:var(--g-started);"></span>
+            </div>
+            <div class="progress-legend">
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-backlog);"></span>Backlog <span class="num">5</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-unstarted);"></span>Unstarted <span class="num">2</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-started);"></span>Started <span class="num">1</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-completed);"></span>Completed <span class="num">0</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-cancelled);"></span>Cancelled <span class="num">0</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- card 3: zero issues -->
+        <div class="org-card epic-card" data-archived="false" data-name="offline-first mobile">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:13px; font-weight:600;">Offline-first mobile</span>
+          </div>
+          <p class="desc">Queue mutations while offline, conflict resolution on reconnect, and optimistic UI for the Expo client.</p>
+          <div class="meta"><span class="num">0</span> issues</div>
+          <p class="empty-progress">No issues yet &mdash; attach issues from the epic detail page.</p>
+        </div>
+
+        <!-- card 4: archived (hidden unless toggle on) -->
+        <div class="org-card epic-card hidden" data-archived="true" data-name="legacy import tools" style="opacity:0.55;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:13px; font-weight:600;">Legacy import tools</span>
+            <span style="margin-left:auto;"><span class="org-status-chip"><span class="chip-dot" style="background:#777780;"></span>Archived</span></span>
+          </div>
+          <p class="desc">CSV/Jira importers for the old tracker. Superseded by the v2 importer; kept for reference.</p>
+          <div class="meta"><span class="num">5</span> issues &middot; archived Oct 2, 2026</div>
+          <div class="progress-wrap">
+            <div class="progress-track" role="progressbar" aria-label="Legacy import tools progress" aria-valuemin="0" aria-valuemax="5" aria-valuenow="5">
+              <span class="seg" style="width:20%; background:var(--g-unstarted);"></span>
+              <span class="seg" style="width:20%; background:var(--g-started);"></span>
+              <span class="seg" style="width:40%; background:var(--g-completed);"></span>
+              <span class="seg" style="width:20%; background:var(--g-cancelled);"></span>
+            </div>
+            <div class="progress-legend">
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-backlog);"></span>Backlog <span class="num">0</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-unstarted);"></span>Unstarted <span class="num">1</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-started);"></span>Started <span class="num">1</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-completed);"></span>Completed <span class="num">2</span></span>
+              <span class="legend-chip"><span class="swatch" style="background:var(--g-cancelled);"></span>Cancelled <span class="num">1</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="org-empty hidden" id="epic-empty" style="margin-top:4px;">
+        No epics yet. Create the first one to group related work.
+      </div>
+    </main>
+  </div>
+</section>
+<!-- ================= SURFACE 2: EPIC DETAIL ================= -->
+<section class="surface" id="s-detail">
+  <div class="spec-note">
+    <b>Surface 2 &mdash; Epic detail.</b> Contract:
+    <ul>
+      <li><code>GET /epics/:epicID</code> &rarr; <code>{epic, progress: {total, by_group}, issue_count}</code>. <code>by_group</code> uses the API vocabulary <code>backlog | unstarted | started | completed | cancelled</code>; colors mirror <code>GROUP_COLORS</code> in <code>InitiativeDetail.tsx</code> (backlog <code>#9aa0ae</code>, unstarted <code>#e5a13c</code>, started <code>#4f8ef7</code>, completed <code>#42c88a</code>, cancelled <code>#e5484d</code>). <i>Done</i> caption = completed + cancelled (same rule as <code>InitiativeProgressBar</code>).</li>
+      <li>Header actions: <b>Archive</b> (<code>POST /epics/:id/archive</code>) toggles to <b>Restore</b> (<code>POST /epics/:id/unarchive</code>) when <code>archived_at</code> is set; <b>Edit</b> opens the name/description dialog (<code>PATCH</code>); <b>Delete</b> asks for force when <code>issue_count &gt; 0</code> (server 409 <code>ErrEpicHasIssues</code> unless <code>?force=true</code>).</li>
+      <li>Member issues: <code>GET /epics/:epicID/issues</code>. Attach = <code>POST /epics/:epicID/issues {issue_ids}</code> (idempotent, <b>never 409</b> &mdash; mirror <code>AddModuleIssues</code>); detach = <code>DELETE /epics/:epicID/issues</code>. Only this project&rsquo;s live issues are attachable. Attach/detach writes <code>issue_activities</code> (<code>epic_added</code>/<code>epic_removed</code>).</li>
+      <li>Linked initiatives: <code>GET/POST/DELETE /initiatives/:initiativeID/epics</code> (mirror initiative-project linking). Cross-scope read: the picker lists workspace initiatives.</li>
+    </ul>
+  </div>
+
+  <div class="app">
+    <aside class="rail">
+      <div class="ws">devsameday</div>
+      <div class="nav-item">My work</div>
+      <div class="nav-item">Projects</div>
+      <div class="nav-item" style="padding-left:20px; color:var(--ink); font-weight:600;">glance</div>
+      <div class="nav-item" style="padding-left:32px;">Issues</div>
+      <div class="nav-item" style="padding-left:32px;">Cycles</div>
+      <div class="nav-item" style="padding-left:32px;">Modules</div>
+      <div class="nav-item active" style="padding-left:32px;"><span class="dot"></span>Epics</div>
+      <div class="nav-item" style="padding-left:32px;">Initiatives</div>
+      <div class="nav-item" style="padding-left:32px;">Pages</div>
+      <div class="nav-item">Settings</div>
+    </aside>
+
+    <main class="main">
+      <div class="detail-header">
+        <button class="back" title="Back to epics" aria-label="Back to epics">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <div>
+          <h2>Auth revamp</h2>
+          <p class="desc">Replace session auth with passwordless OTP + Google/GitHub OAuth; session cleanup and audit log included.</p>
+        </div>
+        <div class="detail-actions">
+          <button class="btn btn-ghost" data-open-dialog="archive-epic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+            Archive
+          </button>
+          <button class="btn btn-ghost" data-open-dialog="edit-epic" aria-label="Edit epic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+            Edit
+          </button>
+          <button class="btn btn-danger-ghost" aria-label="Delete epic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- progress summary -->
+      <div class="org-card" style="cursor:default; margin-top:14px;">
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:10px;">
+          <span style="font-size:12px; font-weight:650;">Progress</span>
+          <span class="muted num" style="font-size:11px;">3 of 12 issues done</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-label="Auth revamp progress" aria-valuemin="0" aria-valuemax="12" aria-valuenow="12">
+          <span class="seg" style="width:16.7%; background:var(--g-backlog);"></span>
+          <span class="seg" style="width:25%; background:var(--g-unstarted);"></span>
+          <span class="seg" style="width:33.3%; background:var(--g-started);"></span>
+          <span class="seg" style="width:25%; background:var(--g-completed);"></span>
+        </div>
+        <div class="progress-legend">
+          <span class="legend-chip"><span class="swatch" style="background:var(--g-backlog);"></span>Backlog <span class="num">2</span></span>
+          <span class="legend-chip"><span class="swatch" style="background:var(--g-unstarted);"></span>Unstarted <span class="num">3</span></span>
+          <span class="legend-chip"><span class="swatch" style="background:var(--g-started);"></span>Started <span class="num">4</span></span>
+          <span class="legend-chip"><span class="swatch" style="background:var(--g-completed);"></span>Completed <span class="num">3</span></span>
+          <span class="legend-chip"><span class="swatch" style="background:var(--g-cancelled);"></span>Cancelled <span class="num">0</span></span>
+        </div>
+      </div>
+
+      <!-- member issues -->
+      <div class="section-head">
+        <span>Issues</span>
+        <span class="count num">12</span>
+        <span class="spacer"></span>
+        <button class="header-btn" data-open-dialog="attach-issues">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add issues
+        </button>
+      </div>
+      <div class="issue-row">
+        <span class="display-id num">GLC-101</span>
+        <span class="state-dot state-started" title="Started"></span>
+        <span class="issue-name">Implement email OTP login</span>
+        <span class="assignee"><span class="avatar" style="background:#4f8ef7;">GA</span>Galih</span>
+      </div>
+      <div class="issue-row">
+        <span class="display-id num">GLC-102</span>
+        <span class="state-dot state-unstarted" title="Unstarted"></span>
+        <span class="issue-name">Google OAuth provider</span>
+        <span class="assignee"><span class="avatar" style="background:#4f8ef7;">GA</span>Galih</span>
+      </div>
+      <div class="issue-row">
+        <span class="display-id num">GLC-107</span>
+        <span class="state-dot state-backlog" title="Backlog"></span>
+        <span class="issue-name">Rate-limit OTP attempts</span>
+        <span class="assignee muted">Unassigned</span>
+      </div>
+      <div class="issue-row">
+        <span class="display-id num">GLC-98</span>
+        <span class="state-dot state-completed" title="Completed"></span>
+        <span class="issue-name">Session cleanup job</span>
+        <span class="assignee"><span class="avatar" style="background:#4f8ef7;">GA</span>Galih</span>
+      </div>
+      <div class="issue-row">
+        <span class="display-id num">GLC-110</span>
+        <span class="state-dot state-cancelled" title="Cancelled"></span>
+        <span class="issue-name">Audit log for auth events</span>
+        <span class="assignee muted">Unassigned</span>
+      </div>
+      <p class="muted" style="font-size:11px; margin-top:8px;">Showing 5 of 12 &mdash; list continues. Rows link to issue detail. Detach via the issue&rsquo;s Epics property or bulk actions.</p>
+
+      <!-- linked initiatives -->
+      <div class="section-head">
+        <span>Linked initiatives</span>
+        <span class="count num">1</span>
+        <span class="spacer"></span>
+        <button class="header-btn" data-open-dialog="link-initiative">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Link initiative
+        </button>
+      </div>
+      <div class="linked-row">
+        <span class="org-status-chip"><span class="chip-dot" style="background:#4f8ef7;"></span>Active</span>
+        <span class="name">Q4 Platform Bets</span>
+        <span class="sub num">3 projects</span>
+        <button class="icon-btn danger" title="Unlink initiative" aria-label="Unlink Q4 Platform Bets">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <p class="muted" style="font-size:11px; margin-top:8px;">Linking is bidirectional: the epic also appears under the initiative&rsquo;s epics (<code style="font-family:ui-monospace,monospace;">GET /initiatives/:id/epics</code>).</p>
+    </main>
+  </div>
+</section>
+<!-- ================= SURFACE 3: ISSUE DETAIL — ATTACH EPIC ================= -->
+<section class="surface" id="s-issue">
+  <div class="spec-note">
+    <b>Surface 3 &mdash; Issue detail: attach-epic control.</b> Contract:
+    <ul>
+      <li>Issue detail carries <code>epics: [{id, name, archived_at}]</code>. <b>Archived epics stay visible on the issue</b> &mdash; the UI renders them <b>dimmed</b> (55% opacity, dashed border, archive icon) per the C71T0 contract. Removing a chip = <code>DELETE /epics/:epicID/issues</code> (writes <code>epic_removed</code> activity).</li>
+      <li>The picker lists <b>active project epics only</b> (archived hidden &mdash; the list call has no <code>?include_archived=true</code> here). Selecting attaches via <code>POST /epics/:epicID/issues {issue_ids: [issueId]}</code>; attaching an already-attached epic is a no-op (idempotent add, never 409). Picker placement: issue Properties panel, mirroring the existing Modules picker cell.</li>
+      <li>An issue may carry multiple epics; chips wrap. The picker shows per-epic <code class="num">issue_count</code> as the secondary line.</li>
+    </ul>
+  </div>
+
+  <div class="app">
+    <aside class="rail">
+      <div class="ws">devsameday</div>
+      <div class="nav-item">My work</div>
+      <div class="nav-item">Projects</div>
+      <div class="nav-item" style="padding-left:20px; color:var(--ink); font-weight:600;">glance</div>
+      <div class="nav-item active" style="padding-left:32px;">Issues</div>
+      <div class="nav-item" style="padding-left:32px;">Cycles</div>
+      <div class="nav-item" style="padding-left:32px;">Modules</div>
+      <div class="nav-item" style="padding-left:32px;"><span class="dot"></span>Epics</div>
+      <div class="nav-item" style="padding-left:32px;">Initiatives</div>
+      <div class="nav-item">Settings</div>
+    </aside>
+
+    <main class="main">
+      <div class="issue-title-row">
+        <span class="display-id num" style="width:auto; font-size:12px;">GLC-101</span>
+        <span class="org-status-chip"><span class="chip-dot" style="background:var(--g-started);"></span>In Progress</span>
+        <h2>Implement email OTP login</h2>
+      </div>
+
+      <div class="issue-grid">
+        <div>
+          <p style="font-size:12.5px; color:var(--ink-secondary); line-height:1.6; margin:0 0 16px;">
+            Passwordless sign-in via emailed one-time code. Covers code generation, 10-minute expiry,
+            rate limiting (see GLC-107), and the resend flow.
+          </p>
+          <div class="org-card" style="cursor:default;">
+            <span style="font-size:12px; font-weight:650;">Activity</span>
+            <p class="muted" style="font-size:11px; margin:8px 0 0;">Galih attached epic <b style="color:var(--ink-secondary);">Auth revamp</b> &middot; 2h ago</p>
+            <p class="muted" style="font-size:11px; margin:6px 0 0;">Galih moved this issue from Backlog to In Progress &middot; 5h ago</p>
+          </div>
+          <p class="muted" style="font-size:11px; margin-top:10px;">Activity feed shows <span class="num">epic_added</span>/<span class="num">epic_removed</span> rows &mdash; per contract, attach/detach writes <code style="font-family:ui-monospace,monospace;">issue_activities</code>.</p>
+        </div>
+
+        <aside>
+          <h2 style="font-size:12px; font-weight:650; margin:0 0 12px;">Properties</h2>
+
+          <div class="prop-cell">
+            <p class="prop-label">Assignee</p>
+            <span class="assignee"><span class="avatar" style="background:#4f8ef7;">GA</span>Galih</span>
+          </div>
+
+          <div class="prop-cell">
+            <p class="prop-label">State</p>
+            <span class="org-status-chip"><span class="chip-dot" style="background:var(--g-started);"></span>In Progress</span>
+          </div>
+
+          <div class="prop-cell">
+            <p class="prop-label">Epics</p>
+            <div class="chip-wrap">
+              <span class="tag-chip" title="Active epic">
+                <svg class="epic-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M12 5v12"/></svg>
+                Auth revamp
+                <button title="Detach epic" aria-label="Detach Auth revamp">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </span>
+              <span class="tag-chip archived" title="Archived epic — stays visible, dimmed">
+                <svg class="epic-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+                Legacy import tools
+                <button title="Detach archived epic" aria-label="Detach Legacy import tools">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </span>
+              <button class="add-cell-btn" data-open-dialog="attach-epic" aria-label="Attach epic">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                <span>Attach epic</span>
+              </button>
+            </div>
+            <p class="muted" style="font-size:10.5px; margin:8px 0 0;">Archived epics stay on the issue, dimmed &mdash; never silently dropped.</p>
+          </div>
+
+          <div class="prop-cell">
+            <p class="prop-label">Labels</p>
+            <span class="tag-chip"><span style="width:6px;height:6px;border-radius:50%;background:var(--blue);"></span>backend</span>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ================= DIALOGS (shared across surfaces) ================= -->
+<div class="dialog-overlay" id="dialog-new-epic">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ne-title">
+    <div class="dialog-head">
+      <h3 id="ne-title">New epic</h3>
+      <p>POST /api/v1/workspaces/:slug/projects/:identifier/epics &mdash; {name, description}</p>
+    </div>
+    <div class="dialog-body" style="padding:4px 16px;">
+      <label class="prop-label" for="ne-name">Name</label>
+      <input id="ne-name" type="text" placeholder="e.g. Auth revamp" style="all:unset; display:block; width:100%; font-size:12.5px; color:var(--ink); background:var(--surface); border:1px solid var(--hairline); border-radius:6px; padding:8px 10px; margin-bottom:12px;">
+      <label class="prop-label" for="ne-desc">Description</label>
+      <textarea id="ne-desc" rows="3" placeholder="What does this epic group?" style="all:unset; display:block; width:100%; font-size:12.5px; color:var(--ink); background:var(--surface); border:1px solid var(--hairline); border-radius:6px; padding:8px 10px;"></textarea>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary">Create epic</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-overlay" id="dialog-edit-epic">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ee-title">
+    <div class="dialog-head">
+      <h3 id="ee-title">Edit epic</h3>
+      <p>PATCH /epics/:epicID &mdash; partial {name?, description?}</p>
+    </div>
+    <div class="dialog-body" style="padding:4px 16px;">
+      <label class="prop-label" for="ee-name">Name</label>
+      <input id="ee-name" type="text" value="Auth revamp" style="all:unset; display:block; width:100%; font-size:12.5px; color:var(--ink); background:var(--surface); border:1px solid var(--hairline); border-radius:6px; padding:8px 10px; margin-bottom:12px;">
+      <label class="prop-label" for="ee-desc">Description</label>
+      <textarea id="ee-desc" rows="3" style="all:unset; display:block; width:100%; font-size:12.5px; color:var(--ink); background:var(--surface); border:1px solid var(--hairline); border-radius:6px; padding:8px 10px;">Replace session auth with passwordless OTP + Google/GitHub OAuth; session cleanup and audit log included.</textarea>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-overlay" id="dialog-archive-epic">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ae-title" style="width:420px;">
+    <div class="dialog-head">
+      <h3 id="ae-title">Archive epic?</h3>
+      <p>POST /epics/:epicID/archive &mdash; sets archived_at. Archived epics leave the active list but remain fully accessible; issues keep their (dimmed) link. Restore via POST /epics/:epicID/unarchive.</p>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary" style="background:var(--amber); color:#111;">Archive epic</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-overlay" id="dialog-attach-issues">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ai-title">
+    <div class="dialog-head">
+      <h3 id="ai-title">Add issues to Auth revamp</h3>
+      <p>POST /epics/:epicID/issues {issue_ids} &mdash; idempotent, never 409. Only this project&rsquo;s live issues.</p>
+    </div>
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="Search project issues&hellip;" data-filter-list="ai-list" aria-label="Search project issues">
+    </div>
+    <div class="dialog-body" id="ai-list">
+      <button class="pick-row" data-pick>
+        <span class="display-id num">GLC-112</span>
+        <span style="flex:1;"><span class="state-dot state-unstarted" style="display:inline-block; margin-right:7px;"></span>Resend-code rate limit<span class="sub">Unstarted &middot; unassigned</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+      <button class="pick-row" data-pick>
+        <span class="display-id num">GLC-113</span>
+        <span style="flex:1;"><span class="state-dot state-backlog" style="display:inline-block; margin-right:7px;"></span>OAuth account-linking flow<span class="sub">Backlog &middot; unassigned</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+      <button class="pick-row" data-pick>
+        <span class="display-id num">GLC-115</span>
+        <span style="flex:1;"><span class="state-dot state-backlog" style="display:inline-block; margin-right:7px;"></span>Magic-link fallback<span class="sub">Backlog &middot; Galih</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+      <button class="pick-row" disabled style="opacity:0.5; cursor:default;" aria-disabled="true">
+        <span class="display-id num">GLC-101</span>
+        <span style="flex:1;"><span class="state-dot state-started" style="display:inline-block; margin-right:7px;"></span>Implement email OTP login<span class="sub">Started &middot; Galih</span></span>
+        <span class="already">Already attached</span>
+      </button>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary" id="ai-add-btn" disabled style="opacity:0.5;">Add issues</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-overlay" id="dialog-link-initiative">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="li-title">
+    <div class="dialog-head">
+      <h3 id="li-title">Link initiative</h3>
+      <p>POST /initiatives/:initiativeID/epics {epic_id} &mdash; mirrors AddInitiativeProject.</p>
+    </div>
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="Search initiatives&hellip;" data-filter-list="li-list" aria-label="Search initiatives">
+    </div>
+    <div class="dialog-body" id="li-list">
+      <button class="pick-row" disabled style="opacity:0.5; cursor:default;" aria-disabled="true">
+        <span style="flex:1;"><span class="org-status-chip" style="margin-right:8px;"><span class="chip-dot" style="background:#4f8ef7;"></span>Active</span>Q4 Platform Bets<span class="sub">3 projects</span></span>
+        <span class="already">Linked</span>
+      </button>
+      <button class="pick-row" data-pick data-single>
+        <span style="flex:1;"><span class="org-status-chip" style="margin-right:8px;"><span class="chip-dot" style="background:#4f8ef7;"></span>Active</span>2027 Platform Vision<span class="sub">5 projects</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+      <button class="pick-row" data-pick data-single>
+        <span style="flex:1;"><span class="org-status-chip" style="margin-right:8px;"><span class="chip-dot" style="background:#777780;"></span>Archived</span>H1 Compliance Push<span class="sub">2 projects</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary" id="li-link-btn" disabled style="opacity:0.5;">Link initiative</button>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-overlay" id="dialog-attach-epic">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ae2-title">
+    <div class="dialog-head">
+      <h3 id="ae2-title">Attach epic to GLC-101</h3>
+      <p>POST /epics/:epicID/issues {issue_ids: [&hellip;]} &mdash; active project epics only. Archived epics are hidden here.</p>
+    </div>
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="Search epics&hellip;" data-filter-list="ae2-list" aria-label="Search epics">
+    </div>
+    <div class="dialog-body" id="ae2-list">
+      <button class="pick-row" disabled style="opacity:0.5; cursor:default;" aria-disabled="true">
+        <span style="flex:1;">Auth revamp<span class="sub num">12 issues</span></span>
+        <span class="already">Attached</span>
+      </button>
+      <button class="pick-row" data-pick data-single>
+        <span style="flex:1;">Real-time collaboration<span class="sub num">8 issues</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+      <button class="pick-row" data-pick data-single>
+        <span style="flex:1;">Offline-first mobile<span class="sub num">0 issues</span></span>
+        <span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+      </button>
+    </div>
+    <p class="muted" style="font-size:10.5px; padding:0 16px 4px;">Archived epics (e.g. Legacy import tools) are excluded from this picker &mdash; list call without <span class="num">?include_archived=true</span>.</p>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button class="btn btn-primary" id="ae2-attach-btn" disabled style="opacity:0.5;">Attach epic</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- surface tabs ---------- */
+document.querySelectorAll('.surface-tabs button').forEach(function (tab) {
+  tab.addEventListener('click', function () {
+    document.querySelectorAll('.surface-tabs button').forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
+    document.querySelectorAll('.surface').forEach(function (s) { s.classList.remove('active'); });
+    tab.setAttribute('aria-selected', 'true');
+    document.getElementById(tab.dataset.surface).classList.add('active');
+    window.scrollTo(0, 0);
+  });
+});
+
+/* ---------- surface 1: archived toggle + search ---------- */
+var toggle = document.getElementById('archived-toggle');
+function applyListFilters() {
+  var showArchived = toggle.getAttribute('aria-checked') === 'true';
+  var q = (document.getElementById('epic-search').value || '').toLowerCase();
+  var visible = 0;
+  document.querySelectorAll('#epic-grid .epic-card').forEach(function (card) {
+    var isArchived = card.dataset.archived === 'true';
+    var match = card.dataset.name.toLowerCase().indexOf(q) !== -1;
+    var show = match && (!isArchived || showArchived);
+    card.classList.toggle('hidden', !show);
+    if (show) visible++;
+  });
+  document.getElementById('epic-count').textContent = visible;
+  document.getElementById('epic-empty').classList.toggle('hidden', visible !== 0);
+}
+function flipToggle() {
+  toggle.setAttribute('aria-checked', toggle.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+  applyListFilters();
+}
+toggle.addEventListener('click', flipToggle);
+toggle.addEventListener('keydown', function (e) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flipToggle(); } });
+document.getElementById('epic-search').addEventListener('input', applyListFilters);
+
+/* ---------- dialogs ---------- */
+function openDialog(id) { document.getElementById('dialog-' + id).classList.add('open'); }
+function closeDialogs() { document.querySelectorAll('.dialog-overlay.open').forEach(function (o) { o.classList.remove('open'); }); }
+document.querySelectorAll('[data-open-dialog]').forEach(function (b) {
+  b.addEventListener('click', function () { openDialog(b.dataset.openDialog); });
+});
+document.querySelectorAll('[data-close-dialog]').forEach(function (b) {
+  b.addEventListener('click', closeDialogs);
+});
+document.querySelectorAll('.dialog-overlay').forEach(function (o) {
+  o.addEventListener('click', function (e) { if (e.target === o) closeDialogs(); });
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDialogs(); });
+
+/* ---------- picker search filter ---------- */
+document.querySelectorAll('[data-filter-list]').forEach(function (input) {
+  input.addEventListener('input', function () {
+    var q = input.value.toLowerCase();
+    document.querySelectorAll('#' + input.dataset.filterList + ' .pick-row').forEach(function (row) {
+      row.classList.toggle('hidden', row.textContent.toLowerCase().indexOf(q) === -1);
+    });
+  });
+});
+
+/* ---------- pick-row selection (multi or single) ---------- */
+function wirePicker(listId, btnId, label) {
+  var list = document.getElementById(listId);
+  var btn = document.getElementById(btnId);
+  list.querySelectorAll('[data-pick]').forEach(function (row) {
+    row.addEventListener('click', function () {
+      if (row.dataset.single !== undefined) {
+        list.querySelectorAll('[data-pick]').forEach(function (r) { r.classList.remove('selected'); });
+        row.classList.add('selected');
+      } else {
+        row.classList.toggle('selected');
+      }
+      var n = list.querySelectorAll('[data-pick].selected').length;
+      btn.disabled = n === 0;
+      btn.style.opacity = n === 0 ? '0.5' : '1';
+      btn.textContent = n === 0 ? label : label + ' (' + n + ')';
+    });
+  });
+}
+wirePicker('ai-list', 'ai-add-btn', 'Add issues');
+wirePicker('ae2-list', 'ae2-attach-btn', 'Attach epic');
+wirePicker('li-list', 'li-link-btn', 'Link initiative');
+</script>
+</body>
+</html>
