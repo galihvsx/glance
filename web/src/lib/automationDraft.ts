@@ -51,6 +51,7 @@ export const ACTION_LABELS: Record<ActionType, string> = {
   move_to_cycle: "Move to cycle",
   move_to_module: "Move to module",
   add_watcher: "Add watcher",
+  send_webhook: "Send webhook",
 };
 
 export const PRIORITY_OPTIONS = PRIORITY_LABELS.map((label, value) => ({
@@ -82,6 +83,35 @@ export const emptyTriggerDraft = (): TriggerDraft => ({
 
 export type DueDateMode = "absolute" | "relative";
 
+/** send_webhook payload_template vocabulary (mirrors the T0 backend
+ *  template contract in internal/service/automation_sendwebhook.go).
+ *  Placeholders substitute the JSON encoding of the value — never
+ *  quoted in the template. */
+export interface TemplateVariable {
+  placeholder: string;
+  description: string;
+}
+
+export const SEND_WEBHOOK_TEMPLATE_VARS: TemplateVariable[] = [
+  { placeholder: "{{issue.id}}", description: "issue UUID" },
+  { placeholder: "{{issue.identifier}}", description: "display id, e.g. ENG-123" },
+  { placeholder: "{{issue.title}}", description: "issue title" },
+  { placeholder: "{{issue.state}}", description: "state name" },
+  { placeholder: "{{issue.priority}}", description: "priority, 0–4" },
+  { placeholder: "{{issue.labels}}", description: "label names (array)" },
+  { placeholder: "{{issue.assignees}}", description: "assignee display names (array)" },
+  { placeholder: "{{rule.id}}", description: "rule UUID" },
+  { placeholder: "{{trigger}}", description: "trigger type" },
+  { placeholder: "{{fired_at}}", description: "firing time, RFC3339 UTC" },
+];
+
+/** The placeholder the API puts in send_webhook header values on reads.
+ *  It is rejected at write time, so the UI must never round-trip it. */
+export const SEND_WEBHOOK_MASKED_VALUE = "********";
+
+/** Transport-owned header names the backend rejects (case-insensitive). */
+export const SEND_WEBHOOK_BLOCKED_HEADERS = ["host", "content-length"];
+
 export interface DraftAction {
   type: ActionType;
   user_id: string;
@@ -95,6 +125,13 @@ export interface DraftAction {
   dueDateMode: DueDateMode; // set_due_date mode
   dueDate: string; // set_due_date absolute: YYYY-MM-DD
   dueDateOffset: string; // set_due_date relative: days ("" = unset)
+  webhookUrl: string; // send_webhook target ("" = unset)
+  webhookMethod: "POST" | "PUT"; // send_webhook HTTP method
+  /** send_webhook header rows. Values are write-only: on edit the names
+   *  load from the API with empty values; rows without a value are not
+   *  sent, so re-enter a value to keep the header. */
+  webhookHeaders: { name: string; value: string }[];
+  webhookPayloadTemplate: string; // send_webhook JSON template ("" = default envelope)
 }
 
 export const emptyDraftAction = (): DraftAction => ({
@@ -110,6 +147,10 @@ export const emptyDraftAction = (): DraftAction => ({
   dueDateMode: "absolute",
   dueDate: "",
   dueDateOffset: "",
+  webhookUrl: "",
+  webhookMethod: "POST",
+  webhookHeaders: [],
+  webhookPayloadTemplate: "",
 });
 
 export interface RuleDraft {
@@ -126,6 +167,17 @@ export const emptyRuleDraft = (): RuleDraft => ({
 
 const validPriorityStr = (s: string): boolean =>
   /^[0-4]$/.test(s.trim());
+
+/** Mirror the backend's send_webhook URL rule: absolute URL with an
+ *  http or https scheme and a host. */
+const validWebhookUrl = (s: string): boolean => {
+  try {
+    const u = new URL(s);
+    return (u.protocol === "http:" || u.protocol === "https:") && !!u.host;
+  } catch {
+    return false;
+  }
+};
 
 /** Parse a positive-integer window/days input; "" means "server default". */
 function parsePositive(s: string): number | null | "invalid" {
@@ -285,6 +337,55 @@ function actionToInput(
       if (!a.user_id)
         return { ok: false, error: `${label}: pick a user to watch.` };
       return { ok: true, action: { type: "add_watcher", user_id: a.user_id } };
+    case "send_webhook": {
+      const url = a.webhookUrl.trim();
+      if (!url)
+        return { ok: false, error: `${label}: enter a target URL.` };
+      if (!validWebhookUrl(url))
+        return {
+          ok: false,
+          error: `${label}: the URL must be an absolute http(s) URL.`,
+        };
+      if (a.webhookMethod !== "POST" && a.webhookMethod !== "PUT")
+        return { ok: false, error: `${label}: pick POST or PUT.` };
+      const headers: Record<string, string> = {};
+      for (const row of a.webhookHeaders) {
+        const name = row.name.trim();
+        const value = row.value;
+        if (!name && !value) continue; // untouched blank row
+        if (!name)
+          return {
+            ok: false,
+            error: `${label}: every header row needs a name.`,
+          };
+        if (SEND_WEBHOOK_BLOCKED_HEADERS.includes(name.toLowerCase()))
+          return {
+            ok: false,
+            error: `${label}: the “${name}” header is managed by glance and can't be set.`,
+          };
+        if (value === SEND_WEBHOOK_MASKED_VALUE)
+          return {
+            ok: false,
+            error: `${label}: the “${name}” header value can't be the placeholder “********” — re-enter the real value.`,
+          };
+        // Name-only rows (e.g. names echoed back on edit with no value
+        // re-entered) are dropped: PATCH replaces headers wholesale, so
+        // a header is kept only by re-sending its value.
+        if (!value) continue;
+        headers[name] = value;
+      }
+      const template = a.webhookPayloadTemplate.trim();
+      const action: AutomationAction = {
+        type: "send_webhook",
+        url,
+        method: a.webhookMethod,
+        headers,
+      };
+      // Blank template = the backend's default automation.webhook
+      // envelope; the template echoes verbatim otherwise.
+      if (template) action.payload_template = template;
+      return { ok: true, action };
+    }
   }
 }
 
@@ -342,6 +443,18 @@ export function draftFromRule(rule: AutomationRule): RuleDraft {
       dueDateOffset: (a.due_date ?? "").startsWith("+")
         ? (a.due_date ?? "").slice(1, -1)
         : "",
+      // send_webhook: header values come back masked ("********") — load
+      // the names only, with empty values, and never round-trip the mask.
+      webhookUrl: a.url ?? "",
+      webhookMethod:
+        String(a.method ?? "POST").trim().toUpperCase() === "PUT"
+          ? "PUT"
+          : "POST",
+      webhookHeaders: Object.keys(a.headers ?? {}).map((name) => ({
+        name,
+        value: "",
+      })),
+      webhookPayloadTemplate: a.payload_template ?? "",
     })),
   };
 }

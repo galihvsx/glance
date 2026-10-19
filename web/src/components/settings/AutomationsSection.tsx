@@ -140,6 +140,9 @@ export default function AutomationsSection({
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editing, setEditing] = useState<AutomationRule | null>(null);
   const [draft, setDraft] = useState<RuleDraft>(emptyRuleDraft);
+  // Save failures (client validation and backend 400s) surface inline
+  // in the builder so the user can fix and retry without losing input.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const rulesQuery = useQuery({
     queryKey: keys.rules,
@@ -229,6 +232,7 @@ export default function AutomationsSection({
       }
       return createAutomationRule(slug, identifier, input);
     },
+    onMutate: () => setSaveError(null),
     onSuccess: () => {
       setBuilderOpen(false);
       setEditing(null);
@@ -239,10 +243,12 @@ export default function AutomationsSection({
       });
     },
     onError: (e) =>
-      failToast(
-        editing ? "Could not update the rule" : "Could not create the rule",
-        e,
-        e instanceof Error ? e.message : "The rule was not saved.",
+      setSaveError(
+        e instanceof ApiError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : "The rule was not saved.",
       ),
   });
 
@@ -297,7 +303,8 @@ export default function AutomationsSection({
             on a schedule (due soon, overdue, stale, cycle ending),
             run actions automatically: assign or unassign users, add or
             remove labels, post a comment, set priority, estimate or due
-            date, move to a cycle or module, or add a watcher.
+            date, move to a cycle or module, add a watcher, or send a
+            webhook when the rule fires.
             Automation-driven changes never trigger other rules. Free in
             glance.
           </p>
@@ -383,7 +390,10 @@ export default function AutomationsSection({
           open={builderOpen}
           onOpenChange={(open) => {
             setBuilderOpen(open);
-            if (!open) setEditing(null);
+            if (!open) {
+              setEditing(null);
+              setSaveError(null);
+            }
           }}
         >
           <DialogContent className="max-w-lg">
@@ -464,6 +474,11 @@ export default function AutomationsSection({
                 )}
               </div>
             </div>
+            {saveError && (
+              <p role="alert" className="text-xs text-destructive">
+                {saveError}
+              </p>
+            )}
             <DialogFooter>
               <Button
                 variant="outline"
