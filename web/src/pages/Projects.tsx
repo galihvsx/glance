@@ -3,19 +3,26 @@
 // Shared PageHeader breadcrumb replaces the per-page h1; "New project"
 // moves to the header's primary button, My work / Settings to header
 // controls. Archived projects get the 12px/600 hairline group bar.
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronRight, Layers, Settings, User } from "lucide-react";
+import { ChevronRight, Layers, Settings, Tags, User } from "lucide-react";
 import { api, ApiError } from "../lib/api";
-import type { Project } from "../lib/types";
+import type { Project, Workspace } from "../lib/types";
 import {
   fetchProjectTemplates,
   summarizeProjectTemplatePayload,
   type ProjectTemplate,
 } from "../lib/projectTemplates";
+import {
+  projectLabelApiParams,
+  useProjectLabelFilters,
+} from "../lib/projectLabelFilters";
 import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
 import EmptyState from "../components/personal/EmptyState";
 import { SectionBar } from "../components/personal/SectionBar";
+import ProjectLabelChips from "../components/project/ProjectLabelChips";
+import ProjectLabelFilter from "../components/project/ProjectLabelFilter";
+import ManageProjectLabelsDialog from "../components/project/ManageProjectLabelsDialog";
 import { Button } from "../components/ui/button";
 import EmojiPicker from "../components/project/EmojiPicker";
 import {
@@ -75,6 +82,12 @@ function ProjectRow({
             {project.name}
           </span>
         </span>
+        {/* C76T1: workspace project-label chips (truncated overflow +N). */}
+        {(project.labels ?? []).length > 0 && (
+          <span className="hidden shrink-0 sm:block">
+            <ProjectLabelChips labels={project.labels ?? []} max={2} />
+          </span>
+        )}
         {project.archived_at && (
           <span className="shrink-0 text-[10px] text-ink-muted">
             archived {new Date(project.archived_at).toLocaleDateString()}
@@ -100,6 +113,13 @@ export default function Projects() {
   // C18T3: archived projects live in their own section below (the list
   // endpoint excludes them by default; ?archived=true includes them).
   const [archived, setArchived] = useState<Project[] | null>(null);
+  // C76T1: label filter — URL-backed (label=<id> repeatable), OR
+  // semantics, drives ?label= on the list fetches below.
+  const [labelIds, setLabelIds, clearLabelIds] = useProjectLabelFilters();
+  // C76T1: workspace role gates the Manage-labels affordance (members
+  // only; guests read + filter).
+  const [role, setRole] = useState<number | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState("");
   const [identifier, setIdentifier] = useState("");
@@ -114,10 +134,15 @@ export default function Projects() {
   const load = useCallback(async () => {
     if (!slug) return;
     setError(null);
+    // C76T1: repeatable ?label= (OR semantics). Only well-formed UUIDs
+    // reach the backend — malformed pasted URL params were already
+    // dropped by the filter hook, so the list never 400s.
+    const labelQs = projectLabelApiParams(labelIds);
+    const labelSuffix = labelQs ? `&${labelQs}` : "";
     try {
       // Wrapped shape: {"projects": [...]}
       const data = await api.get<{ projects: Project[] }>(
-        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects`,
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects${labelQs ? `?${labelQs}` : ""}`,
       );
       setProjects(data.projects);
     } catch (e) {
@@ -127,17 +152,46 @@ export default function Projects() {
     // Archived projects: separate section, never mixed into the live list.
     try {
       const data = await api.get<{ projects: Project[] }>(
-        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects?archived=true`,
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/projects?archived=true${labelSuffix}`,
       );
       setArchived(data.projects.filter((p) => p.archived_at));
     } catch {
       setArchived([]);
     }
-  }, [slug]);
+  }, [slug, labelIds]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Workspace role for the Manage-labels gate (members only).
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    api
+      .get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`)
+      .then((ws) => {
+        if (!cancelled) setRole(ws.role ?? 0);
+      })
+      .catch(() => {
+        if (!cancelled) setRole(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  const canManageLabels = (role ?? 0) >= 15;
+
+  // Label id → number of loaded projects carrying it (live + archived),
+  // for the manage dialog's delete confirm.
+  const projectUsage = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of [...(projects ?? []), ...(archived ?? [])]) {
+      for (const l of p.labels ?? []) m.set(l.id, (m.get(l.id) ?? 0) + 1);
+    }
+    return m;
+  }, [projects, archived]);
 
   // Load the workspace's project templates when the dialog opens so the
   // picker can offer them. Guests can't create projects anyway; a failed
@@ -197,6 +251,25 @@ export default function Projects() {
         showAnalytics={false}
         extraControls={
           <>
+            {/* C76T1: URL-backed label filter (OR semantics, ?label=). */}
+            <ProjectLabelFilter
+              slug={slug ?? ""}
+              selected={labelIds}
+              onChange={setLabelIds}
+              onClear={clearLabelIds}
+              triggerClassName={pageHeaderControlClass}
+            />
+            {/* C76T1: workspace-level label taxonomy CRUD (members only). */}
+            {canManageLabels && (
+              <button
+                type="button"
+                onClick={() => setManageOpen(true)}
+                className={pageHeaderControlClass}
+              >
+                <Tags className="h-[13px] w-[13px]" aria-hidden="true" />
+                Manage labels
+              </button>
+            )}
             <button
               type="button"
               onClick={() => navigate(`/w/${slug}/my-work`)}
@@ -215,6 +288,16 @@ export default function Projects() {
             </button>
           </>
         }
+      />
+
+      {/* C76T1: workspace-level project-label management. */}
+      <ManageProjectLabelsDialog
+        slug={slug ?? ""}
+        open={manageOpen}
+        onOpenChange={setManageOpen}
+        projectUsage={projectUsage}
+        canEdit={canManageLabels}
+        onChanged={load}
       />
 
       {/* The create dialog lives at page level so the header button and
@@ -320,17 +403,33 @@ export default function Projects() {
             <Skeleton className="h-[47px] w-full" />
           </div>
         ) : projects.length === 0 ? (
-          <EmptyState icon={Layers} title="No projects yet">
-            <p>Create the first project in this workspace.</p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-3"
-              onClick={() => setDialogOpen(true)}
-            >
-              New project
-            </Button>
-          </EmptyState>
+          // C76T1: when the label filter is active, an empty list means
+          // "no match", not "no projects".
+          labelIds.length > 0 ? (
+            <EmptyState icon={Layers} title="No projects match these labels">
+              <p>Try widening the selection or clearing the filter.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={clearLabelIds}
+              >
+                Clear label filter
+              </Button>
+            </EmptyState>
+          ) : (
+            <EmptyState icon={Layers} title="No projects yet">
+              <p>Create the first project in this workspace.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => setDialogOpen(true)}
+              >
+                New project
+              </Button>
+            </EmptyState>
+          )
         ) : (
           <ul className="divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
             {projects.map((p) => (

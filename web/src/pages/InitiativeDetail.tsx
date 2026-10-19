@@ -21,10 +21,12 @@ import {
 } from "../components/initiatives/stateGroups";
 import type {
   Initiative,
+  InitiativeProject,
   InitiativeProjectRollup,
   InitiativeRollup,
   InitiativeStatus,
 } from "../components/initiatives/types";
+import ProjectLabelChips from "../components/project/ProjectLabelChips";
 import {
   OrgDetailHeader,
   OrgEmpty,
@@ -177,6 +179,15 @@ export default function InitiativeDetail() {
     queryKey: ["initiative-rollup", slug, id],
     queryFn: () => api.get<InitiativeRollup>(`${base}/rollup`),
   });
+  // C76T0: member projects ship their workspace project-label chips
+  // in-query (the rollup's per-project slice does not carry them).
+  const memberProjectsQuery = useQuery({
+    queryKey: ["initiative-projects", slug, id],
+    queryFn: () =>
+      api
+        .get<{ projects: InitiativeProject[] }>(`${base}/projects`)
+        .then((d) => d.projects),
+  });
   const projectsQuery = useQuery({
     queryKey: ["projects", slug],
     queryFn: () =>
@@ -188,6 +199,9 @@ export default function InitiativeDetail() {
     void queryClient.invalidateQueries({ queryKey: ["initiative", slug, id] });
     void queryClient.invalidateQueries({
       queryKey: ["initiative-rollup", slug, id],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["initiative-projects", slug, id],
     });
     void queryClient.invalidateQueries({ queryKey: ["initiatives", slug] });
   };
@@ -277,6 +291,14 @@ export default function InitiativeDetail() {
     () => new Set((rollup?.projects ?? []).map((p) => p.project_id)),
     [rollup],
   );
+  // C76T1: project id → label chips for the member-project rows below.
+  const memberLabels = useMemo(() => {
+    const m = new Map<string, InitiativeProject["labels"]>();
+    for (const p of memberProjectsQuery.data ?? []) {
+      m.set(p.project_id, p.labels ?? []);
+    }
+    return m;
+  }, [memberProjectsQuery.data]);
   const addableProjects = useMemo(
     () =>
       (projectsQuery.data?.projects ?? [])
@@ -449,6 +471,12 @@ export default function InitiativeDetail() {
                       <h3 className="text-[13px] font-semibold text-ink">
                         {p.project_name}
                       </h3>
+                      {/* C76T1: member-project label chips (small, after
+                          the project name). */}
+                      <ProjectLabelChips
+                        labels={memberLabels.get(p.project_id) ?? []}
+                        max={3}
+                      />
                       {canEdit && (
                         <button
                           type="button"

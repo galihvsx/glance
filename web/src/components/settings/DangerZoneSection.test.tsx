@@ -39,6 +39,7 @@ const liveProject: Project = {
   id: "p-eng",
   workspace_id: "w1",
   identifier: "ENG",
+  labels: [],
   name: "Engineering",
   description: "",
   created_at: "",

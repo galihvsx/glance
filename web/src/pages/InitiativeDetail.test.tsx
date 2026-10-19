@@ -30,8 +30,13 @@ const initiative: Initiative = {
 };
 
 const memberProjects: InitiativeProject[] = [
-  { project_id: "p-1", project_name: "Web", added_at: "2026-10-01T00:00:00Z" },
-  { project_id: "p-2", project_name: "API", added_at: "2026-10-01T00:00:00Z" },
+  {
+    project_id: "p-1",
+    project_name: "Web",
+    labels: [{ id: "pl-1", name: "platform", color: "#3b82f6" }],
+    added_at: "2026-10-01T00:00:00Z",
+  },
+  { project_id: "p-2", project_name: "API", labels: [], added_at: "2026-10-01T00:00:00Z" },
 ];
 
 const rollup: InitiativeRollup = {
@@ -69,9 +74,9 @@ const rollup: InitiativeRollup = {
 };
 
 const workspaceProjects: Project[] = [
-  { id: "p-1", workspace_id: "ws-1", identifier: "WEB", name: "Web", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
-  { id: "p-2", workspace_id: "ws-1", identifier: "API", name: "API", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
-  { id: "p-4", workspace_id: "ws-1", identifier: "MOB", name: "Mobile", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-1", workspace_id: "ws-1", identifier: "WEB", labels: [], name: "Web", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-2", workspace_id: "ws-1", identifier: "API", labels: [], name: "API", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+  { id: "p-4", workspace_id: "ws-1", identifier: "MOB", labels: [], name: "Mobile", description: "", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
 ];
 
 // Workspace role for the current test: 15 = member, 5 = guest.
@@ -257,5 +262,23 @@ describe("InitiativeDetail", () => {
     } finally {
       testRole.value = 15;
     }
+  });
+
+  it("renders member-project label chips after the project name (C76T1)", async () => {
+    renderPage();
+    // The Web member project carries the "platform" label (fixture).
+    const webRow = (await screen.findAllByTestId("initiative-project-row")).find(
+      (r) => r.textContent?.includes("Web"),
+    )!;
+    expect(
+      within(webRow).getByTitle("platform"),
+    ).toBeInTheDocument();
+    // The API member project has no labels — no chip group rendered.
+    const apiRow = (await screen.findAllByTestId("initiative-project-row")).find(
+      (r) => r.textContent?.includes("API"),
+    )!;
+    expect(
+      within(apiRow).queryByRole("group", { name: /project labels/i }),
+    ).not.toBeInTheDocument();
   });
 });
