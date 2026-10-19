@@ -80,10 +80,13 @@ function renderPage(opts: {
   const ws: Workspace = { ...workspace, role: opts.role ?? 15 };
   const initiatives = opts.initiatives ?? [initiative];
   const rollups = opts.rollups ?? { [initiative.id]: rollup };
+  // The list query key carries the serialized filter params; with no filters
+  // active that is just the backend default sort (created_at desc).
   const seeds: [readonly unknown[], unknown][] = [
-    [["initiatives", "acme"], initiatives],
+    [["initiatives", "acme", "sort=created_at&order=desc"], initiatives],
     [["workspace", "acme"], ws],
     [["projects", "acme"], projects],
+    [["members", "acme"], []],
     [workspacesKey, [ws]],
   ];
   for (const [id, r] of Object.entries(rollups)) {
