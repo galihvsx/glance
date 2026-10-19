@@ -7,6 +7,7 @@ import {
   draftToInput,
   emptyDraftAction,
   emptyRuleDraft,
+  type DraftAction,
   type RuleDraft,
 } from "./automationDraft";
 import type { AutomationRule } from "./automations";
@@ -225,5 +226,174 @@ describe("emptyRuleDraft", () => {
     const d = emptyRuleDraft();
     expect(d.trigger.type).toBe("issue.state_changed");
     expect(d.actions).toHaveLength(1);
+  });
+});
+function webhookDraft(over: Partial<DraftAction> = {}): RuleDraft {
+  const d = emptyRuleDraft();
+  d.name = "Ping webhook";
+  d.actions = [
+    {
+      ...emptyDraftAction(),
+      type: "send_webhook",
+      webhookUrl: "https://hooks.example.com/deploy",
+      ...over,
+    },
+  ];
+  return d;
+}
+
+function webhookRule(over: Partial<AutomationRule["actions"][number]> = {}): AutomationRule {
+  return {
+    ...base,
+    id: "rule-9",
+    name: "Ping webhook",
+    actions: [
+      {
+        type: "send_webhook",
+        url: "https://hooks.example.com/deploy",
+        method: "PUT",
+        headers: { Authorization: "********", "X-Sig": "********" },
+        payload_template: '{"title": {{issue.title}}}',
+        ...over,
+      },
+    ],
+  };
+}
+
+describe("send_webhook draft (C77T1)", () => {
+  it("converts a full send_webhook draft to the API shape", () => {
+    const r = draftToInput(
+      webhookDraft({
+        webhookMethod: "PUT",
+        webhookHeaders: [
+          { name: "Authorization", value: "Bearer s3cret" },
+          { name: "X-Sig", value: "abc" },
+        ],
+        webhookPayloadTemplate: '{"title": {{issue.title}}}',
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.input.actions).toEqual([
+      {
+        type: "send_webhook",
+        url: "https://hooks.example.com/deploy",
+        method: "PUT",
+        headers: { Authorization: "Bearer s3cret", "X-Sig": "abc" },
+        payload_template: '{"title": {{issue.title}}}',
+      },
+    ]);
+  });
+
+  it("trims the URL and omits a blank payload template", () => {
+    const r = draftToInput(
+      webhookDraft({
+        webhookUrl: "  https://hooks.example.com/deploy  ",
+        webhookPayloadTemplate: "   ",
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const a = r.input.actions[0];
+    expect(a.url).toBe("https://hooks.example.com/deploy");
+    expect(a.method).toBe("POST");
+    expect(a.payload_template).toBeUndefined();
+    expect(a.headers).toEqual({});
+  });
+
+  it("rejects a missing URL", () => {
+    const r = draftToInput(webhookDraft({ webhookUrl: "   " }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/target URL/);
+  });
+
+  it("rejects non-absolute or non-http(s) URLs", () => {
+    for (const url of [
+      "ftp://hooks.example.com/x",
+      "/relative/path",
+      "not a url",
+      "javascript:alert(1)",
+    ]) {
+      const r = draftToInput(webhookDraft({ webhookUrl: url }));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/absolute http\(s\) URL/);
+    }
+  });
+
+  it("rejects transport-owned header names (case-insensitive)", () => {
+    for (const name of ["Host", "host", "Content-Length", "CONTENT-LENGTH"]) {
+      const r = draftToInput(
+        webhookDraft({ webhookHeaders: [{ name, value: "x" }] }),
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/managed by glance/);
+    }
+  });
+
+  it("rejects a header row with a value but no name", () => {
+    const r = draftToInput(
+      webhookDraft({ webhookHeaders: [{ name: "  ", value: "x" }] }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/needs a name/);
+  });
+
+  it("rejects the masked placeholder as a header value", () => {
+    const r = draftToInput(
+      webhookDraft({
+        webhookHeaders: [{ name: "Authorization", value: "********" }],
+      }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/placeholder/);
+  });
+
+  it("drops name-only header rows instead of round-tripping the mask", () => {
+    // The edit flow: names echoed back from the API, values not
+    // re-entered. The headers map must come back empty, never with
+    // "********" values.
+    const r = draftToInput(
+      webhookDraft({
+        webhookHeaders: [
+          { name: "Authorization", value: "" },
+          { name: "", value: "" },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.input.actions[0].headers).toEqual({});
+  });
+
+  it("draftFromRule loads the send_webhook config with header names only", () => {
+    const d = draftFromRule(webhookRule());
+    const a = d.actions[0];
+    expect(a.type).toBe("send_webhook");
+    expect(a.webhookUrl).toBe("https://hooks.example.com/deploy");
+    expect(a.webhookMethod).toBe("PUT");
+    expect(a.webhookPayloadTemplate).toBe('{"title": {{issue.title}}}');
+    // Names survive; the masked values are never loaded into the draft.
+    expect(a.webhookHeaders).toEqual([
+      { name: "Authorization", value: "" },
+      { name: "X-Sig", value: "" },
+    ]);
+  });
+
+  it("draftFromRule normalizes the method defensively", () => {
+    const lower = draftFromRule(webhookRule({ method: "put" }));
+    expect(lower.actions[0].webhookMethod).toBe("PUT");
+    const missing = draftFromRule(webhookRule({ method: undefined }));
+    expect(missing.actions[0].webhookMethod).toBe("POST");
+  });
+
+  it("edit round-trip never sends the mask back to the API", () => {
+    const d = draftFromRule(webhookRule());
+    d.name = "r";
+    const r = draftToInput(d);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const a = r.input.actions[0];
+    expect(a.headers).toEqual({});
+    expect(JSON.stringify(a)).not.toContain("********");
   });
 });

@@ -52,7 +52,8 @@ export interface AutomationTrigger {
 }
 
 /** One ordered action (C16T2 adds remove_label, unassign, set_estimate,
- *  set_due_date, move_to_cycle, move_to_module, add_watcher). */
+ *  set_due_date, move_to_cycle, move_to_module, add_watcher; C77T0 adds
+ *  send_webhook). */
 export interface AutomationAction {
   type:
     | "assign"
@@ -66,7 +67,8 @@ export interface AutomationAction {
     | "set_due_date"
     | "move_to_cycle"
     | "move_to_module"
-    | "add_watcher";
+    | "add_watcher"
+    | "send_webhook";
   user_id?: string;
   label_id?: string;
   body?: string;
@@ -82,6 +84,18 @@ export interface AutomationAction {
   estimate?: string;
   /** set_due_date: absolute ISO date "YYYY-MM-DD" or relative "+Nd". */
   due_date?: string;
+  /** send_webhook: target URL — absolute http(s), required. */
+  url?: string;
+  /** send_webhook: "POST" (default) | "PUT". */
+  method?: string;
+  /** send_webhook: extra request headers. Values are secrets: API reads
+   *  echo the names with every value masked ("********"), so the UI
+   *  never displays or round-trips values; PATCH replaces the map
+   *  wholesale, so keeping a header means re-sending its value. */
+  headers?: Record<string, string>;
+  /** send_webhook: optional JSON payload template; blank = the default
+   *  automation.webhook envelope. Echoed verbatim on reads. */
+  payload_template?: string;
 }
 
 /** A stored automation rule (backend AutomationRule shape). */
@@ -323,6 +337,15 @@ export function describeAction(
     case "add_watcher": {
       const u = users.find((x) => x.id === action.user_id);
       return `Add watcher ${u?.name || u?.email || "unknown user"}`;
+    }
+    case "send_webhook": {
+      const method = (action.method ?? "POST").toUpperCase();
+      const url = action.url || "no URL set";
+      // Header names only — values are masked by the API and must
+      // never surface in the summary.
+      const names = Object.keys(action.headers ?? {});
+      const headerPart = names.length ? ` (headers: ${names.join(", ")})` : "";
+      return `${method} → ${url}${headerPart}`;
     }
   }
 }

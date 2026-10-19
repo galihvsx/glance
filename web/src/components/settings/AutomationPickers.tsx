@@ -9,6 +9,7 @@ import {
   DEFAULT_WINDOW_HOURS,
   PRIORITY_OPTIONS,
   SCHEDULED_TRIGGER_TYPES,
+  SEND_WEBHOOK_TEMPLATE_VARS,
   TRIGGER_LABELS,
   type ActionType,
   type DraftAction,
@@ -18,6 +19,9 @@ import {
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
+import { Button } from "../ui/button";
+import { useState } from "react";
+import { Plus, X } from "lucide-react";
 
 const selectClass =
   "rounded-md border border-border bg-[#111113] px-2 py-1.5";
@@ -444,6 +448,199 @@ export function ActionFields({
           members={memberOptions}
         />
       )}
+      {action.type === "send_webhook" && (
+        <SendWebhookFields
+          index={index}
+          action={action}
+          onChange={onChange}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Preview of the default payload sent when the template is blank
+ *  (mirrors the T0 backend's defaultEnvelope). */
+export const SEND_WEBHOOK_DEFAULT_ENVELOPE_PREVIEW = `{
+  "event": "automation.webhook",
+  "rule_id": "<rule id>",
+  "trigger": "<trigger type>",
+  "fired_at": "<RFC3339 UTC time>",
+  "issue": {
+    "id": "<issue id>",
+    "identifier": "ENG-123",
+    "title": "…",
+    "state": "…",
+    "priority": 2,
+    "labels": ["…"],
+    "assignees": ["…"]
+  }
+}`;
+
+/** send_webhook (C77T1) editor: URL, method, header rows with
+ *  password-style masked values, and the JSON payload template with its
+ *  variable reference. Header values are write-only — never echoed. */
+function SendWebhookFields({
+  index,
+  action,
+  onChange,
+}: {
+  index: number;
+  action: DraftAction;
+  onChange: (patch: Partial<DraftAction>) => void;
+}) {
+  const [varsOpen, setVarsOpen] = useState(false);
+
+  function updateHeaderRow(i: number, patch: { name?: string; value?: string }) {
+    onChange({
+      webhookHeaders: action.webhookHeaders.map((row, j) =>
+        j === i ? { ...row, ...patch } : row,
+      ),
+    });
+  }
+
+  function removeHeaderRow(i: number) {
+    onChange({
+      webhookHeaders: action.webhookHeaders.filter((_, j) => j !== i),
+    });
+  }
+
+  return (
+    <div className="w-full space-y-3">
+      <div>
+        <Label htmlFor={`auto-webhook-url-${index}`}>URL</Label>
+        <Input
+          id={`auto-webhook-url-${index}`}
+          inputMode="url"
+          placeholder="https://example.com/hook"
+          value={action.webhookUrl}
+          onChange={(e) => onChange({ webhookUrl: e.target.value })}
+        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          Absolute URL with an http or https scheme. Private or internal
+          addresses are refused when the rule fires.
+        </p>
+      </div>
+
+      <div>
+        <Label htmlFor={`auto-webhook-method-${index}`}>Method</Label>
+        <select
+          id={`auto-webhook-method-${index}`}
+          className={`${selectClass} w-full`}
+          value={action.webhookMethod}
+          onChange={(e) =>
+            onChange({ webhookMethod: e.target.value as "POST" | "PUT" })
+          }
+        >
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+        </select>
+      </div>
+
+      <div>
+        <Label>Headers</Label>
+        <div className="mt-1 space-y-2">
+          {action.webhookHeaders.map((row, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                aria-label={`Action ${index + 1} header ${i + 1} name`}
+                placeholder="Header name"
+                value={row.name}
+                onChange={(e) => updateHeaderRow(i, { name: e.target.value })}
+              />
+              <Input
+                aria-label={`Action ${index + 1} header ${i + 1} value`}
+                type="password"
+                placeholder="value (write-only)"
+                value={row.value}
+                autoComplete="new-password"
+                onChange={(e) => updateHeaderRow(i, { value: e.target.value })}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => removeHeaderRow(i)}
+                aria-label={`Action ${index + 1} remove header ${i + 1}`}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() =>
+            onChange({
+              webhookHeaders: [
+                ...action.webhookHeaders,
+                { name: "", value: "" },
+              ],
+            })
+          }
+        >
+          <Plus className="mr-1 h-4 w-4" /> Add header
+        </Button>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Header values are write-only: glance echoes back names only and
+          never shows values. To keep an existing header when editing,
+          re-enter its value — rows without a value are not sent. The{" "}
+          <code>Host</code> and <code>Content-Length</code> headers are
+          managed by glance and can&apos;t be set.
+        </p>
+      </div>
+
+      <div>
+        <Label htmlFor={`auto-webhook-template-${index}`}>
+          Payload template (JSON)
+        </Label>
+        <Textarea
+          id={`auto-webhook-template-${index}`}
+          className="font-mono"
+          rows={4}
+          placeholder='{"title": {{issue.title}}, "state": {{issue.state}}}'
+          value={action.webhookPayloadTemplate}
+          onChange={(e) =>
+            onChange({ webhookPayloadTemplate: e.target.value })
+          }
+        />
+        <button
+          type="button"
+          className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
+          aria-expanded={varsOpen}
+          onClick={() => setVarsOpen((v) => !v)}
+        >
+          {varsOpen ? "Hide template variables" : "Show template variables"}
+        </button>
+        {varsOpen && (
+          <div className="mt-2 rounded-md border border-border-hairline p-2">
+            <ul className="space-y-1 text-xs">
+              {SEND_WEBHOOK_TEMPLATE_VARS.map((v) => (
+                <li key={v.placeholder} className="flex gap-2">
+                  <code className="font-mono">{v.placeholder}</code>
+                  <span className="text-muted-foreground">
+                    {v.description}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Placeholders are replaced with the JSON encoding of each
+              value — don&apos;t put quotes around them:{" "}
+              <code className="font-mono">
+                {'{"title": {{issue.title}}}'}
+              </code>{" "}
+              sends{" "}
+              <code className="font-mono">{'{"title": "My issue"}'}</code>.
+              Leave the template blank to send the default envelope:
+            </p>
+            <pre className="mt-1 overflow-x-auto rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
+              {SEND_WEBHOOK_DEFAULT_ENVELOPE_PREVIEW}
+            </pre>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

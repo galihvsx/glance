@@ -222,3 +222,145 @@ describe("ActionFields", () => {
     expect(screen.queryByLabelText("Action 1 user")).toBeNull();
   });
 });
+
+describe("ActionFields send_webhook (C77T1)", () => {
+  afterEach(() => document.body.innerHTML = "");
+
+  function renderWebhook(over: Partial<DraftAction> = {}) {
+    return renderAction({
+      ...emptyDraftAction(),
+      type: "send_webhook",
+      webhookUrl: "https://hooks.example.com/deploy",
+      ...over,
+    });
+  }
+
+  it("offers a Send webhook action type in the picker", () => {
+    render(
+      <ActionTypeSelect index={0} value="add_comment" onChange={() => {}} />,
+    );
+    const select = screen.getByLabelText(
+      "Action 1 type",
+    ) as HTMLSelectElement;
+    const byValue = new Map(
+      Array.from(select.options).map((o) => [o.value, o.text]),
+    );
+    expect(byValue.get("send_webhook")).toBe("Send webhook");
+  });
+
+  it("renders the URL, method, headers and template editors", () => {
+    renderWebhook();
+    expect(screen.getByLabelText("URL")).toHaveValue(
+      "https://hooks.example.com/deploy",
+    );
+    expect(screen.getByLabelText("Method")).toHaveValue("POST");
+    expect(screen.getByLabelText(/Payload template/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Add header/ }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Absolute URL with an http or https scheme/),
+    ).toBeTruthy();
+  });
+
+  it("masks header values like passwords", () => {
+    renderWebhook({
+      webhookHeaders: [{ name: "Authorization", value: "Bearer s3cret" }],
+    });
+    const value = screen.getByLabelText(
+      "Action 1 header 1 value",
+    ) as HTMLInputElement;
+    expect(value.type).toBe("password");
+    expect(
+      (screen.getByLabelText("Action 1 header 1 name") as HTMLInputElement)
+        .type,
+    ).toBe("text");
+  });
+
+  it("shows header names echoed back from the API with empty values", () => {
+    renderWebhook({
+      webhookHeaders: [{ name: "Authorization", value: "" }],
+    });
+    expect(screen.getByLabelText("Action 1 header 1 name")).toHaveValue(
+      "Authorization",
+    );
+    expect(screen.getByLabelText("Action 1 header 1 value")).toHaveValue("");
+    expect(
+      screen.getByText(/values are write-only/),
+    ).toBeTruthy();
+  });
+
+  it("adding a header row reports the new row via onChange", () => {
+    const onChange = renderWebhook({ webhookHeaders: [] });
+    fireEvent.click(screen.getByRole("button", { name: /Add header/ }));
+    expect(onChange).toHaveBeenCalledWith({
+      webhookHeaders: [{ name: "", value: "" }],
+    });
+  });
+
+  it("editing a header row reports the patch", () => {
+    const onChange = renderWebhook({
+      webhookHeaders: [{ name: "Authorization", value: "" }],
+    });
+    fireEvent.change(screen.getByLabelText("Action 1 header 1 value"), {
+      target: { value: "Bearer s3cret" },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      webhookHeaders: [{ name: "Authorization", value: "Bearer s3cret" }],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /remove header 1/i }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ webhookHeaders: [] });
+  });
+
+  it("lists the template variables with the unquoted-placeholder note", () => {
+    renderWebhook();
+    // Collapsed by default.
+    expect(screen.queryByText("{{issue.title}}")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Show template variables/ }),
+    );
+    for (const v of [
+      "{{issue.id}}",
+      "{{issue.identifier}}",
+      "{{issue.title}}",
+      "{{issue.state}}",
+      "{{issue.priority}}",
+      "{{issue.labels}}",
+      "{{issue.assignees}}",
+      "{{rule.id}}",
+      "{{trigger}}",
+      "{{fired_at}}",
+    ]) {
+      expect(screen.getByText(v)).toBeTruthy();
+    }
+    expect(screen.getByText(/don't put quotes around them/)).toBeTruthy();
+    // Default-envelope preview for a blank template.
+    expect(screen.getByText(/"automation\.webhook"/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Hide template variables/ }),
+    );
+    expect(screen.queryByText("{{issue.title}}")).toBeNull();
+  });
+
+  it("reports URL, method and template edits via onChange", () => {
+    const onChange = renderWebhook();
+    fireEvent.change(screen.getByLabelText("URL"), {
+      target: { value: "https://other.example/hook" },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      webhookUrl: "https://other.example/hook",
+    });
+    fireEvent.change(screen.getByLabelText("Method"), {
+      target: { value: "PUT" },
+    });
+    expect(onChange).toHaveBeenCalledWith({ webhookMethod: "PUT" });
+    fireEvent.change(screen.getByLabelText(/Payload template/), {
+      target: { value: '{"title": {{issue.title}}}' },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      webhookPayloadTemplate: '{"title": {{issue.title}}}',
+    });
+  });
+});

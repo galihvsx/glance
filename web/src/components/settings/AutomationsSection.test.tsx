@@ -14,7 +14,7 @@ import {
   describeAction,
 } from "../../lib/automations";
 import { fetchStates, fetchLabels } from "../../lib/taxonomy";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { toast } from "../ui/toast";
 import type { AutomationRule, AutomationRun } from "../../lib/automations";
 
@@ -298,5 +298,155 @@ describe("AutomationsSection", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText(/Could not load automation runs/)).toBeTruthy();
+  });
+});
+
+describe("AutomationsSection send_webhook (C77T1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    cleanup();
+  });
+
+  function setupWithRules(rules: AutomationRule[]) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    mockFetchRules.mockResolvedValue(rules);
+    mockFetchRuns.mockResolvedValue([]);
+    mockFetchStates.mockResolvedValue([]);
+    mockFetchLabels.mockResolvedValue([]);
+    mockApiGet.mockResolvedValue({ members: [] });
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <AutomationsSection slug="acme" identifier="ENG" canEdit={true} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const webhookRule: AutomationRule = {
+    ...rule,
+    id: "rule-9",
+    name: "Ping webhook",
+    actions: [
+      {
+        type: "send_webhook",
+        url: "https://hooks.example.com/deploy",
+        method: "PUT",
+        headers: { Authorization: "********", "X-Sig": "********" },
+        payload_template: '{"title": {{issue.title}}}',
+      },
+    ],
+  };
+
+  it("summarizes a send_webhook action with method, URL and header names only", async () => {
+    setupWithRules([webhookRule]);
+    expect(await screen.findByText("Ping webhook")).toBeTruthy();
+    expect(
+      await screen.findByText(/PUT → https:\/\/hooks\.example\.com\/deploy/),
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(/headers: Authorization, X-Sig/),
+    ).toBeTruthy();
+    // Masked values never surface in the summary.
+    expect(screen.queryByText(/\*\*\*\*\*\*\*\*/)).toBeNull();
+  });
+
+  it("describes send_webhook actions honestly", () => {
+    expect(
+      describeAction(
+        {
+          type: "send_webhook",
+          url: "https://hooks.example.com/deploy",
+          method: "PUT",
+          headers: { Authorization: "********" },
+        },
+        [],
+        [],
+      ),
+    ).toBe("PUT → https://hooks.example.com/deploy (headers: Authorization)");
+    expect(
+      describeAction(
+        { type: "send_webhook", url: "https://hooks.example.com/deploy" },
+        [],
+        [],
+      ),
+    ).toBe("POST → https://hooks.example.com/deploy");
+    expect(describeAction({ type: "send_webhook" }, [], [])).toBe(
+      "POST → no URL set",
+    );
+  });
+
+  it("shows a backend 400 validation error inline in the builder", async () => {
+    setup();
+    mockCreate.mockRejectedValueOnce(
+      new ApiError(400, "invalid automation action", "bad_request"),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /New rule/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Ping" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 type"), {
+      target: { value: "send_webhook" },
+    });
+    fireEvent.change(await screen.findByLabelText("URL"), {
+      target: { value: "https://hooks.example.com/deploy" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("invalid automation action");
+    // The builder stays open with the draft intact for a retry.
+    expect(screen.getByLabelText("URL")).toHaveValue(
+      "https://hooks.example.com/deploy",
+    );
+  });
+
+  it("shows client-side action validation errors inline", async () => {
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: /New rule/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Ping" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 type"), {
+      target: { value: "send_webhook" },
+    });
+    // No URL: the draft validator rejects before any request is made.
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("enter a target URL");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("clears the inline error on retry", async () => {
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: /New rule/ }));
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Ping" },
+    });
+    fireEvent.change(await screen.findByLabelText("Action 1 type"), {
+      target: { value: "send_webhook" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    await screen.findByRole("alert");
+    fireEvent.change(await screen.findByLabelText("URL"), {
+      target: { value: "https://hooks.example.com/deploy" },
+    });
+    mockCreate.mockResolvedValueOnce({ ...rule, id: "rule-9", name: "Ping" });
+    fireEvent.click(await screen.findByRole("button", { name: /Create rule/ }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    // The inline error is gone (dialog closed on success).
+    expect(screen.queryByRole("alert")).toBeNull();
+    const input = mockCreate.mock.calls[0][2];
+    expect(input.actions).toEqual([
+      {
+        type: "send_webhook",
+        url: "https://hooks.example.com/deploy",
+        method: "POST",
+        headers: {},
+      },
+    ]);
   });
 });
