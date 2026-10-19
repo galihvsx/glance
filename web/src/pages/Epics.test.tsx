@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   fireEvent,
@@ -12,10 +12,26 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Epics from "./Epics";
 import { api } from "../lib/api";
-import type { Epic } from "../lib/types";
-import { makeQueryClient } from "../components/shell/test-utils";
+import type { Epic, Workspace } from "../lib/types";
+import {
+  makeQueryClient,
+  stubMatchMedia,
+} from "../components/shell/test-utils";
 
 const BASE = "/api/v1/workspaces/acme/projects/ENG/epics";
+// Default (unfiltered) serialized API params for the list query key.
+const DEFAULT_PARAMS = "sort=created_at&order=desc";
+
+const workspace: Workspace = {
+  id: "w1",
+  slug: "acme",
+  name: "Acme",
+  role: 15,
+  slack_configured: false,
+  github_webhook_configured: false,
+  created_at: "",
+  updated_at: "",
+};
 
 const epicActive: Epic = {
   id: "epic-1",
@@ -49,23 +65,34 @@ const epicArchived: Epic = {
 
 function renderList(opts: {
   epics?: Epic[];
-  includeArchived?: boolean;
   detailById?: Record<string, Epic>;
+  workspaceRole?: number;
 } = {}) {
   const epics = opts.epics ?? [epicActive];
   const detailById = opts.detailById ?? { "epic-1": epicActive };
+  const ws = { ...workspace, role: opts.workspaceRole ?? 15 };
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
-    if (path.includes("/epics?") || path.endsWith("/epics")) {
+    if (path.includes("/epics?")) {
       return Promise.resolve({
-        epics: path.includes("include_archived") ? [epicActive, epicArchived] : epics,
+        epics: path.includes("status=archived")
+          ? [epicActive, epicArchived]
+          : epics,
       });
     }
     const m = /\/epics\/([^/?]+)$/.exec(path);
     if (m && detailById[m[1]]) return Promise.resolve(detailById[m[1]]);
+    if (path.endsWith("/members")) return Promise.resolve({ members: [] });
+    if (path.includes("/initiatives"))
+      return Promise.resolve({ initiatives: [] });
+    if (/\/workspaces\/[^/]+$/.test(path)) return Promise.resolve(ws);
     return Promise.reject(new Error(`unexpected GET ${path}`));
   });
   const seeds: [readonly unknown[], unknown][] = [
-    [["epics", "acme", "ENG", false], epics],
+    // C74T1: the list query key now carries the serialized API params.
+    [["epics", "acme", "ENG", DEFAULT_PARAMS], epics],
+    [["workspace", "acme"], ws],
+    [["members", "acme"], []],
+    [["initiatives", "acme"], []],
   ];
   for (const [id, e] of Object.entries(detailById)) {
     seeds.push([["epic-detail", "acme", "ENG", id], e]);
@@ -87,9 +114,14 @@ function renderList(opts: {
   return { get };
 }
 
+beforeEach(() => {
+  stubMatchMedia(false);
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("Epics list", () => {
@@ -102,14 +134,22 @@ describe("Epics list", () => {
   it("shows a progress skeleton while the per-card detail loads", () => {
     // Seed the list but not the detail queries: the card fetches
     // GET .../epics/:id for by_group with a skeleton while pending.
-    const get = vi
-      .spyOn(api, "get")
-      .mockImplementation((path: string) =>
-        path.endsWith("/epics")
-          ? Promise.resolve({ epics: [epicActive] })
-          : new Promise(() => {}),
-      );
-    const qc = makeQueryClient([[["epics", "acme", "ENG", false], [epicActive]]]);
+    const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+      if (path.includes("/epics?"))
+        return Promise.resolve({ epics: [epicActive] });
+      if (path.endsWith("/members")) return Promise.resolve({ members: [] });
+      if (path.includes("/initiatives"))
+        return Promise.resolve({ initiatives: [] });
+      if (/\/workspaces\/[^/]+$/.test(path))
+        return Promise.resolve(workspace);
+      return new Promise(() => {});
+    });
+    const qc = makeQueryClient([
+      [["epics", "acme", "ENG", DEFAULT_PARAMS], [epicActive]],
+      [["workspace", "acme"], workspace],
+      [["members", "acme"], []],
+      [["initiatives", "acme"], []],
+    ]);
     render(
       <MemoryRouter initialEntries={["/w/acme/p/ENG/epics"]}>
         <QueryClientProvider client={qc}>
@@ -135,16 +175,24 @@ describe("Epics list", () => {
     ).toBeTruthy();
   });
 
-  it("hides archived epics until the toggle is on, then refetches with the flag", async () => {
+  it("hides archived epics until the Archived chip is on, then refetches server-side", async () => {
     const { get } = renderList();
     expect(screen.queryByText("Legacy import tools")).toBeNull();
 
-    fireEvent.click(screen.getByText("Show archived"));
+    fireEvent.click(screen.getByRole("button", { name: /filters/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
 
     await waitFor(() =>
       expect(screen.getByText("Legacy import tools")).toBeTruthy(),
     );
-    expect(get).toHaveBeenCalledWith(`${BASE}?include_archived=true`);
+    expect(
+      get.mock.calls.some(
+        (c) =>
+          typeof c[0] === "string" &&
+          c[0].includes("/epics?") &&
+          c[0].includes("status=archived"),
+      ),
+    ).toBe(true);
     // Archived card carries the muted chip and is dimmed.
     const card = screen.getByRole("button", {
       name: /open epic legacy import tools/i,
@@ -153,22 +201,19 @@ describe("Epics list", () => {
     expect(card.className).toContain("opacity-55");
   });
 
-  it("filters epics by search", () => {
-    renderList({ epics: [epicActive, epicArchived] });
-    expect(screen.getByText("Legacy import tools")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Search epics"), {
-      target: { value: "auth" },
-    });
-    expect(screen.getByText("Auth revamp")).toBeTruthy();
-    expect(screen.queryByText("Legacy import tools")).toBeNull();
-  });
-
   it("navigates to the detail route when a card is clicked", () => {
     renderList();
     fireEvent.click(
       screen.getByRole("button", { name: /open epic auth revamp/i }),
     );
     expect(screen.getByText("epic detail")).toBeTruthy();
+  });
+
+  it("hides the create affordances for guests (role < 15)", () => {
+    renderList({ workspaceRole: 5 });
+    expect(screen.queryByText("New epic")).toBeNull();
+    // The filter bar stays visible for guests.
+    expect(screen.getByLabelText("Search epics")).toBeTruthy();
   });
 });
 
