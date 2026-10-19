@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 
@@ -3608,4 +3609,257 @@ func propNamesRaw(props map[string]json.RawMessage) []string {
 		names = append(names, n)
 	}
 	return names
+}
+
+// Response-shape pinning test (C70T0): time-in-state exposure.
+// Pins the live contract: state_entered_at (RFC3339) +
+// time_in_state_seconds (int64, >= 0) on issue detail + issue list,
+// per-transition durations on the history feed's state_id entries
+// (absent on every other entry), the created_at UPPER BOUND fallback
+// when no state_id activity row exists, and the doc-side schema pins
+// on Issue + ActivityEntry.
+func TestOpenAPIResponseShapesTimeInState(t *testing.T) {
+	pool := newTestPool(t)
+	e := testSatelliteServer(t, pool)
+	h := &IssueHandler{Pool: pool}
+	RegisterGitHubLinkRoutes(e, h)
+	RegisterReleaseRoutes(e, h)
+	RegisterCustomFieldRoutes(e, h)
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("openapi-tis"), "test-agent", uniqueIP())
+	slug := uniqueSlug("openapi-tis")
+	createWorkspaceHTTP(t, e, cookie, "TIS Co", slug)
+	ident := uniqueProjectIdentifier("TIS")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	projBase := "/api/v1/workspaces/" + slug + "/projects/" + ident
+	base := projBase + "/issues"
+
+	decode := func(rec *httptest.ResponseRecorder, v any) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+		}
+	}
+	topKeys := func(rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		decode(rec, &m)
+		return m
+	}
+	mustHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; !ok {
+				t.Fatalf("response missing key %q (keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	mustNotHave := func(t *testing.T, m map[string]json.RawMessage, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; ok {
+				t.Fatalf("response has forbidden key %q (body keys: %v)", k, rawKeysOf(m))
+			}
+		}
+	}
+	rfc3339 := func(t *testing.T, m map[string]json.RawMessage, key string) time.Time {
+		t.Helper()
+		var s string
+		if err := json.Unmarshal(m[key], &s); err != nil || s == "" {
+			t.Fatalf("key %q = %s, want an RFC3339 string", key, string(m[key]))
+		}
+		ts, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatalf("key %q = %q, not RFC3339: %v", key, s, err)
+		}
+		return ts
+	}
+	nonNegInt := func(t *testing.T, m map[string]json.RawMessage, key string) int64 {
+		t.Helper()
+		var n int64
+		if err := json.Unmarshal(m[key], &n); err != nil {
+			t.Fatalf("key %q = %s, want an int64", key, string(m[key]))
+		}
+		if n < 0 {
+			t.Fatalf("key %q = %d, want >= 0", key, n)
+		}
+		return n
+	}
+
+	// Create: no state_id activity row yet (created directly in the
+	// backlog state) → fallback case on both detail and list.
+	rec := postAuthedJSON(t, e, http.MethodPost, base, cookie, `{"name":"TIS issue"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+	}
+	decode(rec, &created)
+
+	// 1. Detail: fallback — state_entered_at == created_at (UPPER
+	// BOUND), time_in_state_seconds >= 0. The bare create response
+	// itself must NOT carry the derived fields (detail/list only).
+	mustNotHave(t, topKeys(rec), "state_entered_at", "time_in_state_seconds")
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+created.ID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get detail: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	detail := topKeys(rec)
+	mustHave(t, detail, "state_entered_at", "time_in_state_seconds")
+	entered := rfc3339(t, detail, "state_entered_at")
+	createdAt := rfc3339(t, detail, "created_at")
+	if !entered.Equal(createdAt) {
+		t.Fatalf("state_entered_at = %v, want created_at %v (no transitions yet)", entered, createdAt)
+	}
+	secs := nonNegInt(t, detail, "time_in_state_seconds")
+	if secs > int64(time.Since(createdAt).Seconds())+5 {
+		t.Fatalf("time_in_state_seconds = %d, exceeds now-created_at", secs)
+	}
+
+	// 2. List rows carry the same fields (fallback case too).
+	rec = getAuthed(t, e, http.MethodGet, base, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Results []map[string]json.RawMessage `json:"results"`
+	}
+	decode(rec, &list)
+	if len(list.Results) != 1 {
+		t.Fatalf("list results = %d, want 1", len(list.Results))
+	}
+	mustHave(t, list.Results[0], "state_entered_at", "time_in_state_seconds")
+	nonNegInt(t, list.Results[0], "time_in_state_seconds")
+	rfc3339(t, list.Results[0], "state_entered_at")
+
+	// 3. Transition the issue to another state → a state_id activity
+	// row exists; state_entered_at must move OFF created_at (to the
+	// transition time, which is >= created_at).
+	rec = getAuthed(t, e, http.MethodGet, projBase+"/states", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list states: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var stateList struct {
+		States []struct {
+			ID    string `json:"id"`
+			Group string `json:"group"`
+		} `json:"states"`
+	}
+	decode(rec, &stateList)
+	var startedID string
+	for _, s := range stateList.States {
+		if s.Group == "started" {
+			startedID = s.ID
+			break
+		}
+	}
+	if startedID == "" {
+		t.Fatal("no started-group state in the seeded defaults")
+	}
+	rec = postAuthedJSON(t, e, http.MethodPatch, base+"/"+created.ID, cookie,
+		`{"state_id":"`+startedID+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch state: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// The bare update response must NOT carry the derived fields.
+	mustNotHave(t, topKeys(rec), "state_entered_at", "time_in_state_seconds")
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+created.ID, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get detail after transition: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	detail = topKeys(rec)
+	mustHave(t, detail, "state_entered_at", "time_in_state_seconds")
+	entered = rfc3339(t, detail, "state_entered_at")
+	createdAt = rfc3339(t, detail, "created_at")
+	if entered.Before(createdAt) {
+		t.Fatalf("state_entered_at = %v, before created_at %v", entered, createdAt)
+	}
+	afterSecs := nonNegInt(t, detail, "time_in_state_seconds")
+	if afterSecs > secs {
+		t.Fatalf("time_in_state_seconds grew %d → %d across a transition", secs, afterSecs)
+	}
+
+	// 4. History feed: the state_id entry carries
+	// time_in_state_seconds; every other entry must not.
+	rec = getAuthed(t, e, http.MethodGet, base+"/"+created.ID+"/history", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get history: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var hist struct {
+		History []map[string]json.RawMessage `json:"history"`
+	}
+	decode(rec, &hist)
+	if len(hist.History) == 0 {
+		t.Fatal("history is empty, want the state transition row")
+	}
+	seenState := false
+	for _, en := range hist.History {
+		var field string
+		if err := json.Unmarshal(en["field"], &field); err != nil {
+			t.Fatalf("decode field: %v", err)
+		}
+		if field == "state_id" {
+			seenState = true
+			d := nonNegInt(t, en, "time_in_state_seconds")
+			// Latest transition's duration IS the current
+			// time_in_state_seconds (same formula, same read).
+			if d > afterSecs+5 {
+				t.Fatalf("transition time_in_state_seconds = %d, exceeds detail value %d", d, afterSecs)
+			}
+		} else {
+			mustNotHave(t, en, "time_in_state_seconds")
+		}
+	}
+	if !seenState {
+		t.Fatal("history has no state_id entry, want the transition row")
+	}
+
+	// 5. Doc-side pins: Issue schema carries both new fields with the
+	// right types; ActivityEntry carries the per-transition duration.
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	docProps := func(name string) map[string]json.RawMessage {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		var s struct {
+			Props map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		return s.Props
+	}
+	propType := func(props map[string]json.RawMessage, name, wantType, wantFormat string) {
+		t.Helper()
+		raw, ok := props[name]
+		if !ok {
+			t.Fatalf("schema properties lack %q", name)
+		}
+		var p struct {
+			Type   string `json:"type"`
+			Format string `json:"format"`
+		}
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("decode prop %s: %v", name, err)
+		}
+		if p.Type != wantType || p.Format != wantFormat {
+			t.Fatalf("prop %s = {%s %s}, want {%s %s}", name, p.Type, p.Format, wantType, wantFormat)
+		}
+	}
+	issueProps := docProps("Issue")
+	propType(issueProps, "state_entered_at", "string", "date-time")
+	propType(issueProps, "time_in_state_seconds", "integer", "int64")
+	activityProps := docProps("ActivityEntry")
+	propType(activityProps, "time_in_state_seconds", "integer", "int64")
 }

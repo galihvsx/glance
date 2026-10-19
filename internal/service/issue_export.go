@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -127,11 +128,15 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 	// always selected (exports are not a working-set view; sparse
 	// fieldsets don't apply). The subtask rollup rides along so export
 	// rows keep key/value parity with the list rows (export contract).
+	// C70T0: the state-entered-at subquery rides along too — same
+	// read-time derivation as the list rows, so the parity contract
+	// holds for the new fields as well (the streaming export cannot do
+	// a second batched lookup).
 	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, i.description,
 		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
 		s.name, ep.key, ` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` +
-		subtaskProgressAgg + ` AS subtask_progress`
+		subtaskProgressAgg + ` AS subtask_progress, ` + stateEnteredAtAgg
 	query := `SELECT ` + cols + ` FROM issues i
 		LEFT JOIN states s ON s.id = i.state_id
 		LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
@@ -144,11 +149,14 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 	}
 	defer rows.Close()
 
+	// One read instant for the whole stream.
+	now := time.Now()
 	for rows.Next() {
 		var item ExportIssue
 		var desc []byte
 		var stateName, estimateKey *string
 		var assigneesJSON, labelsJSON, progressJSON []byte
+		var enteredAt *time.Time
 		if err := rows.Scan(
 			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
 			&desc,
@@ -158,9 +166,11 @@ func StreamExportIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&stateName, &estimateKey,
 			&assigneesJSON, &labelsJSON, &progressJSON,
+			&enteredAt,
 		); err != nil {
 			return err
 		}
+		populateTimeInState(&item.Issue, enteredAt, now)
 		if desc != nil {
 			item.Description = json.RawMessage(desc)
 		}
