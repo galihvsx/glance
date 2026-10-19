@@ -93,9 +93,15 @@ type Project struct {
 	// Labels are the workspace project-labels assigned to this project
 	// (C76T0, migration 000070): [{id,name,color}] ordered by name.
 	// Always present ([] never null) on every project payload.
-	Labels    []ProjectLabel `json:"labels"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	// ParallelCycles is the per-project parallel-cycles toggle (C78T0,
+	// migration 000071): when true, multiple cycles of the project may
+	// run simultaneously with overlapping date ranges. When false
+	// (default), CreateCycle/UpdateCycle reject date ranges overlapping
+	// another live cycle of the project.
+	ParallelCycles bool           `json:"parallel_cycles"`
+	Labels         []ProjectLabel `json:"labels"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -241,7 +247,7 @@ func scanProjectBase(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -265,7 +271,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var labelsJSON []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt,
 		&labelsJSON,
 	)
 	if err != nil {
@@ -294,10 +300,10 @@ func scanProject(row pgx.Row) (*Project, error) {
 // the label-chip aggregate as the trailing column (scanProject decodes
 // it).
 const projectColumnsBase = `id::text, workspace_id::text, identifier, name, description,
-	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, created_at, updated_at`
+	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, parallel_cycles, created_at, updated_at`
 
 const projectColumnsBaseP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.created_at, p.updated_at`
+	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.parallel_cycles, p.created_at, p.updated_at`
 
 var projectColumns = projectColumnsBase + `,
 	` + projectLabelsAgg("projects")
@@ -430,6 +436,14 @@ type ProjectPatch struct {
 	// (or a NULL column = the 90-day default). Negative is rejected
 	// with ErrInvalidAutomationRunRetentionDays.
 	AutomationRunRetentionDays *int
+	// ParallelCycles is the parallel-cycles toggle (C78T0, migration
+	// 000071): nil = untouched. true lets cycles of this project overlap
+	// in date; false (default) makes CreateCycle/UpdateCycle reject
+	// date ranges overlapping another live (upcoming/current) cycle.
+	// Grandfathering is deliberate: flipping the toggle OFF with
+	// pre-existing overlapping cycles does NOT retroactively alter
+	// them — only new creates/updates are blocked.
+	ParallelCycles *bool
 }
 
 // UpdateProject applies a partial project update. Member (15) or admin
@@ -485,6 +499,10 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		}
 		args = append(args, *patch.AutomationRunRetentionDays)
 		sets = append(sets, fmt.Sprintf("automation_run_retention_days = $%d", len(args)+2))
+	}
+	if patch.ParallelCycles != nil {
+		args = append(args, *patch.ParallelCycles)
+		sets = append(sets, fmt.Sprintf("parallel_cycles = $%d", len(args)+2))
 	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate

@@ -154,6 +154,14 @@ type updateProjectBody struct {
 	// emoji sets it; an explicit "" clears it (NULL = unset). Anything
 	// else invalid is a 400.
 	Icon *string `json:"icon"`
+	// ParallelCycles is the parallel-cycles toggle (C78T0): nil =
+	// untouched; true lets cycles of this project overlap in date;
+	// false (default) makes cycle create/update reject ranges
+	// overlapping another live cycle. Member (15)+; guests read-only.
+	// No announce event: project-update has no broadcast path (verified
+	// in internal/service/broadcast.go), and no new domain events are
+	// added this cycle.
+	ParallelCycles *bool `json:"parallel_cycles"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -165,7 +173,7 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
 		service.ProjectPatch{Name: body.Name, Description: body.Description, Icon: body.Icon, CloseInDays: body.CloseInDays,
-			AutomationRunRetentionDays: body.AutomationRunRetentionDays})
+			AutomationRunRetentionDays: body.AutomationRunRetentionDays, ParallelCycles: body.ParallelCycles})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)

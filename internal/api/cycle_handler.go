@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -38,6 +39,16 @@ func cycleError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "cycle not found", nil)
 	case errors.Is(err, service.ErrCycleConflict):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cycle name already exists", nil)
+	case errors.Is(err, service.ErrCycleOverlap):
+		// C78T0: name the conflicting cycle in the message so the client
+		// can surface it inline (e.g. in the create-cycle dialog).
+		name := ""
+		var oe *service.CycleOverlapError
+		if errors.As(err, &oe) {
+			name = oe.Name
+		}
+		return WriteError(c, http.StatusConflict, ErrCodeConflict,
+			fmt.Sprintf("cycle dates overlap with %q", name), nil)
 	case errors.Is(err, service.ErrInvalidCycle):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid cycle: name is required and start_date must not be after end_date", nil)
 	case errors.Is(err, service.ErrInvalidCycleID):

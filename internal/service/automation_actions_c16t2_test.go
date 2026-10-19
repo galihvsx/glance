@@ -275,6 +275,13 @@ func c16t2ProjIdent(fx automationFixture) string { return strings.ToUpper(fx.ide
 
 func c16t2Cycle(t *testing.T, fx automationFixture, name string) string {
 	t.Helper()
+	// C78T0: these fixtures deliberately create identical date ranges —
+	// enable the parallel-cycles toggle (off by default since C78T0)
+	// via the new UpdateProject path; idempotent across calls.
+	if _, err := UpdateProject(context.Background(), fx.pool, fx.slug, fx.ident, fx.admin,
+		ProjectPatch{ParallelCycles: boolPtr(true)}); err != nil {
+		t.Fatalf("enable parallel_cycles: %v", err)
+	}
 	c, err := CreateCycle(context.Background(), fx.pool, fx.slug, c16t2ProjIdent(fx), fx.admin, CycleInput{
 		Name:      name,
 		StartDate: time.Now().UTC(),

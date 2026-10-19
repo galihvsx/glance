@@ -354,6 +354,14 @@ func TestScheduledCycleEndingSoonFires(t *testing.T) {
 	fx := setupAutomationFixture(t)
 	ctx := context.Background()
 
+	// C78T0: "ending soon" and "far away" deliberately overlap — enable
+	// the parallel-cycles toggle (off by default since C78T0) via the
+	// new UpdateProject path.
+	if _, err := UpdateProject(ctx, fx.pool, fx.slug, fx.ident, fx.admin,
+		ProjectPatch{ParallelCycles: boolPtr(true)}); err != nil {
+		t.Fatalf("enable parallel_cycles: %v", err)
+	}
+
 	in := schedRuleInput("cycle ending bot", AutomationTrigger{Type: "cycle.ending_soon"})
 	if _, err := CreateAutomationRule(ctx, fx.pool, fx.slug, fx.ident, fx.admin, in); err != nil {
 		t.Fatalf("CreateAutomationRule: %v", err)
