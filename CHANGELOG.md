@@ -5,6 +5,40 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Epics: the missing hierarchy level (cycle 71)**
+- Plane has Epics as a first-class planning entity (long-running container
+  spanning cycles, progress by state groups); glance had nothing above
+  projects. New project-scoped `epics` entity: create/edit/delete (409 →
+  "Delete anyway (detach N issues)" via `?force=true`), archive/unarchive
+  (archived issues demote through the epic's breakdown with a dimmed
+  dashed chip), multi-epic attach per issue (junction table, mirrors
+  Modules — deliberately NOT single-parent), initiative↔epic links, and
+  state-group progress (5 segments, no triage; done = completed +
+  cancelled) computed from the issues' live states.
+- Backend: migration `000069` (`epics` + `epic_issues` + `initiative_epics`,
+  `UNIQUE(project_id, name)` → 409, idempotent up/down); service mirrors
+  the module pattern (Create/List/Get/Update/Delete/Archive/Unarchive/
+  AddIssues/RemoveIssues/ListIssues + initiative link fns + one-query
+  state-group rollup); routes under
+  `/projects/{identifier}/epics` + initiative↔epic link routes;
+  `epic_added`/`epic_removed`/`epic_archived`/`epic_unarchived` activity
+  rows; `announceEpicUpdated` (`epic.updated`) broadcast; epics on issue
+  detail (detail-only, `omitempty`); OpenAPI pins. Idempotent adds write no
+  duplicate activity rows; malformed UUIDs → 400.
+- Frontend: UI-first with a static `prototype/epics.html` reviewed as
+  spec first. Epics list page (project nav tab + sidebar entry, progress
+  cards with per-card detail fetch + skeleton, show-archived toggle),
+  epic detail page (progress card via shared `InitiativeProgressBar` and
+  extracted `stateGroups.ts` — `GROUP_COLORS` byte-identical to the
+  InitiativeDetail constants it replaced, behavior unchanged; issues
+  section with add-issues picker; linked initiatives), issue-detail
+  attach-epic cell (multi-select, archived chip styling, `epic_added` feed
+  row), epic activity rows in the activity section, realtime `epic.updated`
+  invalidating the epic list + open detail/issues queries. 28 new vitest
+  tests. Known trade-off (documented): the epic → linked-initiatives
+  direction is derived client-side (one GET per initiative; the backend
+  only fans out initiative → epics), no backend change made for it.
+
 **Time in state (cycle 70)**
 - Plane parity (their redesigned work-item detail page): glance now computes
   **time in state** — how long a work item has been in its current state —
