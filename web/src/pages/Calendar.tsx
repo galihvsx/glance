@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
@@ -6,10 +6,12 @@ import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
+import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { IssueChip } from "../components/calendar/IssueChip";
 import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
 import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
 import { DroppableWeekColumn } from "../components/calendar/DroppableWeekColumn";
+import { EpicLaneHeader } from "../components/calendar/EpicLaneHeader";
 import { ScheduleDnd } from "../components/calendar/ScheduleDnd";
 import { UnscheduledStrip } from "../components/calendar/UnscheduledStrip";
 import {
@@ -52,6 +54,28 @@ function loadView(slug: string, identifier: string): CalendarView {
     // Private mode / storage unavailable — month default still applies.
   }
   return "month";
+}
+
+// C72T2: calendar-local group-by setting — deliberately NOT the shared
+// useDisplaySettings/DisplayPanel. Sharing the list's per-project display
+// key would couple two different views (changing Group By on the issue
+// list would unexpectedly restructure the calendar). A calendar-local key
+// keeps the swimlane grouping an independent per-view preference, like
+// the calendar's own view key above.
+type CalendarGroupBy = "none" | "epic";
+
+function groupByStorageKey(slug: string, identifier: string): string {
+  return `glance:calendar-groupby:${slug}:${identifier}`;
+}
+
+function loadGroupBy(slug: string, identifier: string): CalendarGroupBy {
+  try {
+    const raw = localStorage.getItem(groupByStorageKey(slug, identifier));
+    if (raw === "epic") return "epic";
+  } catch {
+    // Private mode / storage unavailable — "none" default still applies.
+  }
+  return "none";
 }
 
 /** 28px toolbar button in the C19 token ramp (matches PageHeader controls). */
@@ -101,6 +125,26 @@ export default function Calendar() {
       // Storage full / private mode — still applies for the session.
     }
     setCachedView((prev) => ({ ...prev, view: next }));
+  };
+
+  // C72T2: Group: None | Epic, per-project localStorage, same
+  // adjust-during-render pattern as the view setting above. A pure view
+  // preference — enabled for all roles (canEdit still gates DnD only).
+  const [cachedGroupBy, setCachedGroupBy] = useState(() => ({
+    key: viewKey,
+    groupBy: loadGroupBy(slug, identifier),
+  }));
+  if (cachedGroupBy.key !== viewKey) {
+    setCachedGroupBy({ key: viewKey, groupBy: loadGroupBy(slug, identifier) });
+  }
+  const groupBy = cachedGroupBy.groupBy;
+  const setGroupBy = (next: CalendarGroupBy) => {
+    try {
+      localStorage.setItem(groupByStorageKey(slug, identifier), next);
+    } catch {
+      // Storage full / private mode — still applies for the session.
+    }
+    setCachedGroupBy((prev) => ({ ...prev, groupBy: next }));
   };
 
   // Anchor date drives both views: the month view uses its year/month, the
@@ -193,6 +237,109 @@ export default function Calendar() {
     [dueQuery.data, startQuery.data],
   );
   const undated = useMemo(() => undatedQuery.data ?? [], [undatedQuery.data]);
+
+  // C72T2: epic swimlanes. Lanes are computed over every issue visible in
+  // the grid's range (first-appearance order); the shared pure
+  // groupIssuesByEpic carries the cycle-72 semantics — multi-appearance
+  // (an issue under EVERY live epic), archived-epic exclusion, Ungrouped
+  // last and hidden when empty. Empty epic lanes are hidden
+  // unconditionally (no showEmptyGroups toggle on the calendar, per the
+  // spec ruling). Progress counts derive from the loaded states — no
+  // extra fetches (the C70/C71 derived-data discipline).
+  const gridIssues = useMemo(() => [...byDay.values()].flat(), [byDay]);
+  const lanes = useMemo(
+    () =>
+      groupBy === "epic"
+        ? groupIssuesByEpic(
+            gridIssues,
+            (issue) => statesById.get(issue.state_id)?.group,
+          )
+        : [],
+    [groupBy, gridIssues, statesById],
+  );
+  // Lane membership as id sets, so each day cell's bands filter the
+  // day's (sequence-sorted) issues without recomputing epics per chip.
+  const laneMembers = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const lane of lanes) {
+      m.set(
+        lane.key,
+        new Set(lane.issues.map((i) => i.id)),
+      );
+    }
+    return m;
+  }, [lanes]);
+  // The day's issues in a lane's band, in the day's existing
+  // sequence order. Bands are render-only — the whole day cell stays
+  // the drop target.
+  const bandIssues = (key: string, laneKey: string): Issue[] => {
+    const ids = laneMembers.get(laneKey);
+    if (!ids) return [];
+    return (byDay.get(key) ?? []).filter((i) => ids.has(i.id));
+  };
+  // C72T2: the unscheduled strip gets the same lane clusters (live epics
+  // + Ungrouped last); the strip stays ONE droppable — the grouping is
+  // render-only.
+  const stripGroups = useMemo(
+    () =>
+      groupBy === "epic"
+        ? groupIssuesByEpic(
+            undated,
+            (issue) => statesById.get(issue.state_id)?.group,
+          )
+        : null,
+    [groupBy, undated, statesById],
+  );
+
+  // C72T2: the swimlane gutter's lane stack — the same component in
+  // every month week-row gutter and the single week-view gutter, in the
+  // fixed lane order (live epics first-appearance, Ungrouped last).
+  const laneStack = (
+    <div className="divide-y divide-border-hairline">
+      {lanes.map((lane) => (
+        <div key={lane.key} data-testid="epic-lane" data-lane-key={lane.key}>
+          <EpicLaneHeader
+            title={lane.title}
+            total={lane.issues.length}
+            byGroup={lane.byGroup}
+            isUngrouped={lane.isUngrouped}
+          />
+        </div>
+      ))}
+    </div>
+  );
+
+  // C72T2: one day's per-lane bands in the fixed lane order. Render-only
+  // — the day cell/column stays the drop target. Multi-appearance chips
+  // render plainly in every lane (no link glyph, spec ruling Q4) with
+  // per-lane draggable ids so the dnd registry never collides on
+  // duplicate issue ids.
+  const laneBands = (key: string, wrapClass: string, bandClass: string) => (
+    <div className={cn("divide-y divide-border-hairline", wrapClass)}>
+      {lanes.map((lane) => (
+        <div key={lane.key} className={cn("space-y-0.5 p-0.5", bandClass)}>
+          {bandIssues(key, lane.key).map((issue) => (
+            <DraggableIssueChip
+              key={issue.id}
+              dragId={`${issue.id}:${lane.key}`}
+              issue={issue}
+              state={statesById.get(issue.state_id)}
+              onOpen={() => openPeek(issue.id)}
+              disabled={!canEdit}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+
+  // C72T2: the month grid's 42 cells chunked into week rows so each row
+  // gets its own gutter cell (the mock's per-week-row lane stack).
+  const weekRows = useMemo(() => {
+    const rows: Date[][] = [];
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+    return rows;
+  }, [cells]);
 
   const loading = dueQuery.isLoading || startQuery.isLoading || undatedQuery.isLoading;
   const error = dueQuery.error ?? startQuery.error ?? undatedQuery.error;
@@ -363,6 +510,35 @@ export default function Calendar() {
           <h2 className="ml-2 text-[13px] font-semibold text-ink">
             {viewLabel}
           </h2>
+          {/* C72T2: calendar-local Group: None | Epic — same segmented
+              language as the Month/Week switcher. */}
+          <span className="ml-2 text-[11px] text-ink-muted">Group:</span>
+          <div
+            role="tablist"
+            aria-label="Group by"
+            className="flex h-[30px] items-center rounded-md border border-border bg-[#101012] p-[2px]"
+          >
+            {(["none", "epic"] as const).map((v) => {
+              const active = groupBy === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setGroupBy(v)}
+                  className={cn(
+                    "h-[24px] rounded px-2 text-[10px] font-medium transition-colors",
+                    active
+                      ? "bg-raised text-ink"
+                      : "text-ink-muted hover:text-ink-secondary",
+                  )}
+                >
+                  {v === "none" ? "None" : "Epic"}
+                </button>
+              );
+            })}
+          </div>
           <button
             type="button"
             onClick={copyICalURL}
@@ -411,6 +587,66 @@ export default function Calendar() {
                 onDragEnd={handleDragEnd}
                 overlay={scheduleOverlay}
               >
+              {groupBy === "epic" ? (
+                // C72T2: grouped week — swimlane gutter + per-lane bands.
+                // Bands are render-only; the whole columns stay the drop
+                // targets (DnD wiring unchanged).
+                <div className="overflow-hidden rounded-md border border-border">
+                  <div className="grid grid-cols-[200px_repeat(7,minmax(0,1fr))] border-b border-border-hairline bg-raised">
+                    <div className="flex items-center px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+                      Epic lane
+                    </div>
+                    {cells.map((date) => {
+                      const key = dayKey(date);
+                      const isToday = key === todayKey;
+                      return (
+                        <div
+                          key={key}
+                          className="flex items-center gap-1.5 border-l border-l-border-hairline px-2 py-1.5"
+                        >
+                          <span
+                            className={cn(
+                              "text-[10px] font-semibold uppercase tracking-[0.06em]",
+                              isToday ? "text-accent-blue" : "text-ink-muted",
+                            )}
+                          >
+                            {WEEKDAYS[(date.getDay() + 6) % 7]}
+                          </span>
+                          <span
+                            className={cn(
+                              "inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
+                              isToday
+                                ? "bg-accent-blue font-semibold text-white"
+                                : "text-ink-secondary",
+                            )}
+                          >
+                            {date.getDate()}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="grid grid-cols-[200px_repeat(7,minmax(0,1fr))]">
+                    <div className="min-h-64 border-r border-r-border-hairline bg-raised">
+                      {laneStack}
+                    </div>
+                    {cells.map((date) => {
+                      const key = dayKey(date);
+                      const isToday = key === todayKey;
+                      return (
+                        <DroppableWeekColumn
+                          key={key}
+                          dayKey={key}
+                          isToday={isToday}
+                          onQuickAdd={canEdit ? quickAdd : undefined}
+                        >
+                          {laneBands(key, "", "min-h-10")}
+                        </DroppableWeekColumn>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
               <div className="overflow-hidden rounded-md border border-border">
                 <div className="grid grid-cols-7 border-b border-border-hairline bg-raised">
                   {cells.map((date) => {
@@ -471,6 +707,7 @@ export default function Calendar() {
                   })}
                 </div>
               </div>
+              )}
               {/* C26T2: unscheduled strip — drop zone for unscheduling, drag
                   source for scheduling (members). */}
               <UnscheduledStrip
@@ -478,6 +715,7 @@ export default function Calendar() {
                 statesById={statesById}
                 canEdit={canEdit}
                 onOpen={(issue) => openPeek(issue.id)}
+                groups={stripGroups}
               />
               </ScheduleDnd>
             ) : (
@@ -488,6 +726,60 @@ export default function Calendar() {
                 onDragEnd={handleDragEnd}
                 overlay={scheduleOverlay}
               >
+              {groupBy === "epic" ? (
+                // C72T2: grouped month — 200px swimlane gutter + per-lane
+                // bands inside each day cell. The gutter repeats the lane
+                // stack once per week-row (mock tabs 1–2); bands are
+                // render-only and the whole day cells stay the drop
+                // targets (DnD wiring unchanged).
+                <div className="grid grid-cols-[200px_repeat(7,minmax(0,1fr))] overflow-hidden rounded-md border border-border">
+                  <div className="border-b border-border-hairline bg-raised px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted">
+                    Epic lane
+                  </div>
+                  {WEEKDAYS.map((d) => (
+                    <div
+                      key={d}
+                      className="border-b border-border-hairline border-l border-l-border-hairline bg-raised px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-muted"
+                    >
+                      {d}
+                    </div>
+                  ))}
+                  {weekRows.map((days, wi) => (
+                    <Fragment key={wi}>
+                      <div className="border-b border-border-hairline border-r border-r-border-hairline bg-raised">
+                        {laneStack}
+                      </div>
+                      {days.map((date) => {
+                        const key = dayKey(date);
+                        const isToday = key === todayKey;
+                        const isOtherMonth =
+                          date.getMonth() !== anchor.getMonth();
+                        return (
+                          <DroppableDayCell
+                            key={key}
+                            dayKey={key}
+                            isOtherMonth={isOtherMonth}
+                            onQuickAdd={canEdit ? quickAdd : undefined}
+                            columns={8}
+                          >
+                            <div
+                              className={cn(
+                                "mb-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px]",
+                                isToday
+                                  ? "bg-accent-blue font-semibold text-white"
+                                  : "text-ink-muted",
+                              )}
+                            >
+                              {date.getDate()}
+                            </div>
+                            {laneBands(key, "max-h-20 overflow-y-auto", "min-h-8")}
+                          </DroppableDayCell>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </div>
+              ) : (
               <div className="grid grid-cols-7 overflow-hidden rounded-md border border-border">
                 {WEEKDAYS.map((d) => (
                   <div
@@ -534,6 +826,7 @@ export default function Calendar() {
                   );
                 })}
               </div>
+              )}
               {/* C26T2: unscheduled strip — drop zone for unscheduling, drag
                   source for scheduling (members). */}
               <UnscheduledStrip
@@ -541,6 +834,7 @@ export default function Calendar() {
                 statesById={statesById}
                 canEdit={canEdit}
                 onOpen={(issue) => openPeek(issue.id)}
+                groups={stripGroups}
               />
               </ScheduleDnd>
             )}
