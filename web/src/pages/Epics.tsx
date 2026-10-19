@@ -1,19 +1,26 @@
-// C71T1: Epics list page. Project-scoped; mirrors Initiatives.tsx (its
-// workspace-scoped sibling): PageHeader + create dialog, and each card
-// fetches its own progress (GET .../epics/:id carries progress.by_group —
-// the list endpoint ships none) with a skeleton while it loads.
+// C74T1: Epics list page. Project-scoped; mirrors Initiatives.tsx (its
+// workspace-scoped sibling): PageHeader + create dialog, rich URL-backed
+// filter bar (C74T0 server-side params: status multi, q, created_by,
+// date range, initiative_id, sort/order), and each card fetches its own
+// progress (GET .../epics/:id carries progress.by_group — the list
+// endpoint ships none) with a skeleton while it loads.
 //
-// Archived epics are hidden from the list by the server unless
-// ?include_archived=true; the toggle re-issues the list query.
+// Guests (workspace role < 15) may read; the create affordances are hidden
+// for them (the server 403 stays the backstop).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
-import type { Epic } from "../lib/types";
+import {
+  epicActiveFilterCount,
+  toEpicApiParams,
+  useEpicFilters,
+} from "../lib/epicFilters";
+import type { Epic, Initiative, Member, Workspace } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import EpicForm from "../components/epics/EpicForm";
+import EpicFilterBar from "../components/epics/EpicFilterBar";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import {
   Dialog,
@@ -22,9 +29,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
-import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
-import { Switch } from "../components/ui/switch";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { OrgCard, OrgEmpty, OrgStatusChip } from "../components/org/OrgViews";
 
@@ -105,21 +111,75 @@ export default function Epics() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const base = epicBase(slug, identifier);
-  const epicsKey = ["epics", slug, identifier, showArchived] as const;
+
+  // C74T1: rich filter state lives in the URL search params (shareable
+  // links); the list query refetches whenever the serialized API params
+  // change. Filtering is server-side — no client-side name filter.
+  const [filters, setFilters, clearFilters] = useEpicFilters();
+  const filterCount = epicActiveFilterCount(filters);
+  const apiParamString = useMemo(
+    () => toEpicApiParams(filters).toString(),
+    [filters],
+  );
+  const epicsKey = ["epics", slug, identifier, apiParamString] as const;
+  const listUrl = `${base}?${apiParamString}`;
+
+  // Same workspace role gate as the initiatives page — the create
+  // affordances are hidden for guests (role < 15); the server 403 stays
+  // the backstop. The filter bar stays visible for everyone.
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", slug],
+    queryFn: () =>
+      api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
+  });
+  const canCreate = (workspaceQuery.data?.role ?? 0) >= 15;
 
   const epicsQuery = useQuery({
     queryKey: epicsKey,
     queryFn: () =>
       api
-        .get<{ epics: Epic[] }>(
-          `${base}${showArchived ? "?include_archived=true" : ""}`,
-        )
+        .get<{ epics: Epic[] }>(listUrl)
         .then((d) => d.epics),
+  });
+
+  // Debounced search: the box stays local (300ms) and feeds `q` upstream —
+  // seeded from the URL so a pasted link shows its query in the box.
+  const [searchInput, setSearchInput] = useState(filters.q);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const trimmed = searchInput.trim();
+      if (trimmed !== filters.q) setFilters({ q: trimmed });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
+  useEffect(() => {
+    setSearchInput(filters.q);
+  }, [filters.q]);
+
+  // Created-by picker data: workspace members (same endpoint FilterPanel uses).
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+  });
+
+  // Linked-initiative picker data: workspace initiatives (C73 endpoint).
+  const initiativesQuery = useQuery({
+    queryKey: ["initiatives", slug],
+    queryFn: () =>
+      api
+        .get<{ initiatives: Initiative[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/initiatives`,
+        )
+        .then((d) => d.initiatives),
   });
 
   const createMutation = useMutation({
@@ -131,6 +191,8 @@ export default function Epics() {
     onSuccess: (created) => {
       setCreateOpen(false);
       setFormError(null);
+      // Prefix key: invalidate every filter variant of the list, not just
+      // the currently active one.
       void queryClient.invalidateQueries({
         queryKey: ["epics", slug, identifier],
       });
@@ -144,45 +206,20 @@ export default function Epics() {
       ),
   });
 
-  const epics = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = epicsQuery.data ?? [];
-    if (!q) return list;
-    return list.filter((e) => e.name.toLowerCase().includes(q));
-  }, [epicsQuery.data, search]);
+  const epics = epicsQuery.data ?? [];
 
   return (
     <div className="w-full">
       <PageHeader
         viewName="Epics"
         count={epics.length}
-        addButton={{ label: "New epic", onClick: () => setCreateOpen(true) }}
+        addButton={
+          canCreate
+            ? { label: "New epic", onClick: () => setCreateOpen(true) }
+            : null
+        }
       />
       <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
-        <div className="mb-4 flex items-center gap-4">
-          <div className="relative w-[260px]">
-            <Search className="absolute left-2 top-[8px] h-3.5 w-3.5 text-ink-muted" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search epics…"
-              aria-label="Search epics"
-              className="pl-8"
-            />
-          </div>
-          <label
-            htmlFor="epic-show-archived"
-            className="flex cursor-pointer items-center gap-2 text-[12px] text-ink-secondary"
-          >
-            <Switch
-              id="epic-show-archived"
-              checked={showArchived}
-              onCheckedChange={setShowArchived}
-            />
-            Show archived
-          </label>
-        </div>
-
         {epicsQuery.isError && (
           <Alert variant="destructive" className="mb-4">
             <AlertDescription>
@@ -194,17 +231,49 @@ export default function Epics() {
         )}
 
         <div className="mt-4">
+          <EpicFilterBar
+            filters={filters}
+            onChange={setFilters}
+            onClear={clearFilters}
+            members={membersQuery.data ?? []}
+            initiatives={initiativesQuery.data ?? []}
+            searchInput={searchInput}
+            onSearchInput={setSearchInput}
+          />
+          {filterCount > 0 && !epicsQuery.isPending && (
+            <p
+              className="mt-2 text-xs text-ink-muted"
+              aria-live="polite"
+              data-testid="epics-result-count"
+            >
+              {epics.length} result{epics.length === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4">
           {epicsQuery.isPending ? (
             <div className="space-y-3">
               <Skeleton className="h-[110px] w-full rounded-md" />
               <Skeleton className="h-[110px] w-full rounded-md" />
             </div>
           ) : epics.length === 0 ? (
-            <OrgEmpty title="No epics yet">
-              {search
-                ? "No epics match your search."
-                : "Create the first epic to group related work."}
-            </OrgEmpty>
+            filterCount > 0 ? (
+              <div>
+                <OrgEmpty title="No epics match your filters">
+                  Try widening the search or clearing a filter.
+                </OrgEmpty>
+                <div className="mt-4 flex justify-center">
+                  <Button variant="outline" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <OrgEmpty title="No epics yet">
+                Create the first epic to group related work.
+              </OrgEmpty>
+            )
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {epics.map((e) => (
