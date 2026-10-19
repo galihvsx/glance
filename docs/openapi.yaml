@@ -1525,6 +1525,31 @@
         "responses": { "200": { "description": "Removed" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/epics": {
+      "get": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List an initiative's linked epics",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Linked epics", "content": { "application/json": { "schema": { "type": "object", "properties": { "epics": { "type": "array", "items": { "$ref": "#/components/schemas/InitiativeEpic" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Link an epic to an initiative",
+        "description": "Member (15)+. Idempotent: repeat links are no-ops. The epic must belong to a project of the same workspace.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["epic_id"], "properties": { "epic_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Linked" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/epics/{epicID}": {
+      "delete": {
+        "tags": ["initiatives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unlink an epic from an initiative",
+        "description": "Member (15)+. Idempotent: unlinking a non-link is a no-op.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Unlinked" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/objectives": {
       "get": {
         "tags": ["objectives"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -1679,6 +1704,89 @@
         "summary": "Remove issues from a module",
         "description": "Member (15)+.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "moduleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/epics": {
+      "get": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List epics",
+        "description": "Archived epics are excluded by default; ?include_archived=true includes them.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Epics", "content": { "application/json": { "schema": { "type": "object", "properties": { "epics": { "type": "array", "items": { "$ref": "#/components/schemas/Epic" } } } } } } } }
+      },
+      "post": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create an epic",
+        "description": "Member (15)+. Duplicate name in the project -> 409.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "description": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Created epic", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Epic" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/epics/{epicID}": {
+      "get": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get an epic",
+        "description": "Detail carries progress: live member-issue counts by state group + total.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Epic", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Epic" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update an epic",
+        "description": "Member (15)+. Partial semantics: missing keys untouched, empty string clears description.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Updated epic", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Epic" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete an epic",
+        "description": "Member (15)+. An epic that still has issues is 409 unless ?force=true; with force the membership rows cascade and the issues themselves are untouched.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/epics/{epicID}/archive": {
+      "post": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Archive an epic",
+        "description": "Member (15)+. Sets archived_at; the epic drops out of the default list. Writes an activity row on every member issue.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Archived epic", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Epic" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/epics/{epicID}/unarchive": {
+      "post": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Unarchive an epic",
+        "description": "Member (15)+. Clears archived_at. Writes an activity row on every member issue.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Unarchived epic", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Epic" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/epics/{epicID}/issues": {
+      "get": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List an epic's issues",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Epic issues", "content": { "application/json": { "schema": { "type": "object", "properties": { "issues": { "type": "array", "items": { "$ref": "#/components/schemas/Issue" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add issues to an epic",
+        "description": "Member (15)+. Idempotent: repeat adds are no-ops. Only the epic's own live project issues may attach. Writes an activity row on each newly-added issue.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Added", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["epics"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove issues from an epic",
+        "description": "Member (15)+. Idempotent: removing a non-member is a no-op. Writes an activity row on each actually-removed issue.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "epicID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
         "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ok" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
@@ -2627,6 +2735,17 @@
           "added_at": { "type": "string", "format": "date-time" }
         }
       },
+      "InitiativeEpic": {
+        "type": "object",
+        "description": "An epic linked to an initiative (service.InitiativeEpic), with its owning project.",
+        "properties": {
+          "epic_id": { "type": "string", "format": "uuid" },
+          "epic_name": { "type": "string" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "project_name": { "type": "string" },
+          "added_at": { "type": "string", "format": "date-time" }
+        }
+      },
       "InitiativeRollup": {
         "type": "object",
         "properties": {
@@ -2932,7 +3051,8 @@
           "assignees": { "type": "array", "items": { "$ref": "#/components/schemas/IssueAssignee" }, "description": "Always present ([]) on list/detail/trash responses; absent on single-issue write responses (create/update/clone/restore/convert/merge/move) and version snapshots, which return the bare issue row." },
           "labels": { "type": "array", "items": { "$ref": "#/components/schemas/IssueLabel" }, "description": "Always present ([]) on list/detail/trash responses; absent on single-issue write responses and version snapshots." },
           "subtask_progress": { "$ref": "#/components/schemas/SubtaskProgress", "nullable": true, "description": "Direct-child rollup; present on list/detail/trash responses, absent on single-issue write responses and version snapshots." },
-          "deleted_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Soft-delete timestamp; present only on trash-list (?deleted=1) rows, omitted everywhere else." }
+          "deleted_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Soft-delete timestamp; present only on trash-list (?deleted=1) rows, omitted everywhere else." },
+          "epics": { "type": "array", "items": { "$ref": "#/components/schemas/EpicRef" }, "description": "Epic memberships [{id, name, archived_at}]; archived epics stay visible (dimmed by the UI). Present ([]) on the issue DETAIL response only (C71T0); absent on list/write responses and version snapshots." }
         }
       },
       "IssueAssignee": {
@@ -3155,6 +3275,39 @@
           "start_date": { "type": "string", "format": "date" },
           "end_date": { "type": "string", "format": "date" },
           "status": { "type": "string" }
+        }
+      },
+      "Epic": {
+        "type": "object",
+        "description": "One project-scoped epic (service.Epic): a long-running container for work that spans cycles. Detail carries progress; the list carries issue_count only.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Archive timestamp; omitted when live. Set via POST .../epics/{epicID}/archive, cleared via .../unarchive." },
+          "created_by": { "type": "string", "format": "uuid", "nullable": true },
+          "issue_count": { "type": "integer", "description": "Live (non-deleted) member issues" },
+          "progress": { "$ref": "#/components/schemas/EpicProgress", "nullable": true, "description": "State-group progress; present on epic detail only." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "EpicProgress": {
+        "type": "object",
+        "description": "Epic state-group progress (service.EpicProgress): counts of live member issues by states.group + total, computed in one aggregate query on detail reads.",
+        "properties": {
+          "total": { "type": "integer" },
+          "by_group": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Counts keyed by state group (backlog/unstarted/started/completed/cancelled)" }
+        }
+      },
+      "EpicRef": {
+        "type": "object",
+        "description": "Per-issue epic reference (service.EpicRef) embedded in issue detail. Archived epics stay visible (dimmed by the UI).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "archived_at": { "type": "string", "format": "date-time", "nullable": true }
         }
       },
       "Module": {

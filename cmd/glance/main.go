@@ -312,6 +312,8 @@ func main() {
 	api.RegisterMyWorkRoutes(e, &api.MyWorkHandler{Pool: pool})
 	api.RegisterCycleRoutes(e, issueHandler)
 	api.RegisterModuleRoutes(e, issueHandler)
+	// C71T0: epics — the missing hierarchy level.
+	api.RegisterEpicRoutes(e, issueHandler)
 	api.RegisterInitiativeRoutes(e, issueHandler)
 	// C35T0: OKRs — objectives + key results.
 	api.RegisterObjectiveRoutes(e, issueHandler)

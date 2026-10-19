@@ -120,6 +120,11 @@ type Issue struct {
 	// by. Nil everywhere else — scanIssue never selects deleted_at, so
 	// omitempty keeps every other response shape byte-identical.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// Epics is the issue's epic memberships (C71T0): [{id, name,
+	// archived_at}]. Archived epics stay visible here (the UI dims
+	// them). Populated by getIssueRow (detail paths) only; omitempty
+	// keeps every other response shape byte-identical.
+	Epics []EpicRef `json:"epics,omitempty"`
 }
 
 // CreateIssueInput carries the fields for a new issue. Nil pointers mean
@@ -570,10 +575,10 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID string) (*IssueListItem, error) {
 	var item IssueListItem
 	var description []byte
-	var assigneesJSON, labelsJSON, progressJSON, refsJSON []byte
+	var assigneesJSON, labelsJSON, progressJSON, refsJSON, epicsJSON []byte
 	var enteredAt *time.Time
 	err := q.QueryRow(ctx,
-		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+`, `+externalRefsAgg+`, `+stateEnteredAtAgg+` FROM issues i
+		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+`, `+externalRefsAgg+`, `+epicsAgg+`, `+stateEnteredAtAgg+` FROM issues i
 		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
 		issueID, projectID).Scan(
 		&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
@@ -582,7 +587,7 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		&item.StartDate, &item.TargetDate, &item.EstimatePointID,
 		&item.IsDraft, &item.ArchivedAt,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-		&assigneesJSON, &labelsJSON, &progressJSON, &refsJSON,
+		&assigneesJSON, &labelsJSON, &progressJSON, &refsJSON, &epicsJSON,
 		&enteredAt,
 	)
 	if err != nil {
@@ -601,6 +606,9 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		return nil, err
 	}
 	if err := unmarshalExternalRefs(refsJSON, &item); err != nil {
+		return nil, err
+	}
+	if err := unmarshalEpicRefs(epicsJSON, &item); err != nil {
 		return nil, err
 	}
 	item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
@@ -2932,6 +2940,30 @@ const subtaskProgressAgg = `(SELECT json_build_object(
 	FROM issues c JOIN states s ON s.id = c.state_id
 	WHERE c.parent_id = i.id AND c.project_id = i.project_id
 	  AND c.deleted_at IS NULL)`
+
+// epicsAgg aggregates an issue's epic memberships (C71T0) as
+// [{id, name, archived_at}], name-ordered. Archived epics stay visible
+// (the UI dims them). Selected only by the detail query (getIssueRow);
+// the list query is untouched. archived_at serializes as JSON null when
+// NULL — unmarshalEpicRefs leaves it nil (omitempty on EpicRef).
+const epicsAgg = `(SELECT COALESCE(json_agg(jsonb_build_object(
+		'id', e.id::text,
+		'name', e.name,
+		'archived_at', e.archived_at)
+		ORDER BY e.name)::jsonb, '[]'::jsonb)
+	FROM epic_issues ei JOIN epics e ON e.id = ei.epic_id
+	WHERE ei.issue_id = i.id)`
+
+// unmarshalEpicRefs decodes the epicsAgg JSON array into the issue's
+// Epics slice. Always non-nil after a successful decode so the detail
+// contract always carries the key (possibly empty).
+func unmarshalEpicRefs(epicsJSON []byte, item *IssueListItem) error {
+	item.Epics = []EpicRef{}
+	if err := json.Unmarshal(epicsJSON, &item.Epics); err != nil {
+		return fmt.Errorf("service: decode epics: %w", err)
+	}
+	return nil
+}
 
 // unmarshalRelations decodes the two aggregated JSONB columns into the
 // list item's Assignees/Labels slices.

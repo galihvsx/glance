@@ -72,6 +72,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterMyWorkRoutes(e, &MyWorkHandler{})
 	RegisterCycleRoutes(e, issueHandler)
 	RegisterModuleRoutes(e, issueHandler)
+	// C71T0: keep in lockstep with cmd/glance/main.go.
+	RegisterEpicRoutes(e, issueHandler)
 	// C27T0: keep in lockstep with cmd/glance/main.go.
 	RegisterInitiativeRoutes(e, issueHandler)
 	// C28T2: keep in lockstep with cmd/glance/main.go.
@@ -3862,4 +3864,166 @@ func TestOpenAPIResponseShapesTimeInState(t *testing.T) {
 	propType(issueProps, "time_in_state_seconds", "integer", "int64")
 	activityProps := docProps("ActivityEntry")
 	propType(activityProps, "time_in_state_seconds", "integer", "int64")
+}
+
+// Response-shape pinning test (C71T0): for the epic endpoints, assert the
+// LIVE response envelope keys match the documented Epic / EpicProgress /
+// EpicRef / InitiativeEpic schemas in docs/openapi.yaml, and that the
+// documented schemas carry the promised keys. Same helper style as the
+// four-endpoints pin test: decode + top-level key assertions.
+
+func TestOpenAPIEpicShapes(t *testing.T) {
+	pool := newTestPool(t)
+	e := testServer(t, pool)
+	RegisterWorkspaceRoutes(e, &WorkspaceHandler{Pool: pool})
+	RegisterProjectRoutes(e, &ProjectHandler{Pool: pool})
+	RegisterIssueRoutes(e, &IssueHandler{Pool: pool})
+	RegisterEpicRoutes(e, &IssueHandler{Pool: pool})
+
+	cookie := loginTestUser(t, e, pool, uniqueEmail("openapi-epics"), "test-agent", uniqueIP())
+	slug := uniqueSlug("openapi-epics")
+	createWorkspaceHTTP(t, e, cookie, "Epic Shapes Co", slug)
+	ident := uniqueProjectIdentifier("OE")
+	createProjectHTTP(t, e, cookie, slug, "Engineering", ident)
+	epicBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/epics"
+	issueBase := "/api/v1/workspaces/" + slug + "/projects/" + ident + "/issues"
+
+	decode := func(rec *httptest.ResponseRecorder, v any) {
+		t.Helper()
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+		}
+	}
+	topKeys := func(rec *httptest.ResponseRecorder) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		decode(rec, &m)
+		return m
+	}
+
+	// 1. POST create → 201 bare Epic: pins the documented Epic schema
+	// keys and NOT the module shape (no status/lead_id/start_date).
+	rec := postAuthedJSON(t, e, http.MethodPost, epicBase, cookie,
+		`{"name":"Shapes","description":"d"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create epic: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	keys := topKeys(rec)
+	for _, k := range []string{"id", "project_id", "name", "created_at", "updated_at"} {
+		if _, ok := keys[k]; !ok {
+			t.Fatalf("create epic body lacks key %q (body: %s)", k, rec.Body.String())
+		}
+	}
+	for _, k := range []string{"status", "lead_id", "start_date", "target_date"} {
+		if _, ok := keys[k]; ok {
+			t.Fatalf("create epic body has module-only key %q (body: %s)", k, rec.Body.String())
+		}
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	decode(rec, &created)
+	epicURL := epicBase + "/" + created.ID
+
+	// 2. GET detail → 200 bare Epic with progress {total, by_group}.
+	iss := createIssueHTTP(t, e, cookie, issueBase, "shaped")
+	rec = postAuthedJSON(t, e, http.MethodPost, epicURL+"/issues", cookie,
+		`{"issue_ids":["`+iss+`"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	rec = getAuthed(t, e, http.MethodGet, epicURL, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get epic: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var detail struct {
+		Progress struct {
+			Total   int64            `json:"total"`
+			ByGroup map[string]int64 `json:"by_group"`
+		} `json:"progress"`
+	}
+	decode(rec, &detail)
+	if detail.Progress.Total != 1 {
+		t.Fatalf("progress.total = %d, want 1", detail.Progress.Total)
+	}
+	if _, ok := detail.Progress.ByGroup["backlog"]; !ok {
+		t.Fatalf("progress.by_group = %v, want a backlog key", detail.Progress.ByGroup)
+	}
+
+	// 3. POST archive → 200 bare Epic with archived_at.
+	rec = postAuthedJSON(t, e, http.MethodPost, epicURL+"/archive", cookie, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("archive: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if _, ok := topKeys(rec)["archived_at"]; !ok {
+		t.Fatalf("archive body lacks archived_at (body: %s)", rec.Body.String())
+	}
+
+	// 4. Issue detail → epics: [{id, name}] (archived stays visible).
+	rec = getAuthed(t, e, http.MethodGet, issueBase+"/"+iss, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get issue: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var issueDetail struct {
+		Epics []struct {
+			ID         string  `json:"id"`
+			Name       string  `json:"name"`
+			ArchivedAt *string `json:"archived_at"`
+		} `json:"epics"`
+	}
+	decode(rec, &issueDetail)
+	if len(issueDetail.Epics) != 1 || issueDetail.Epics[0].ID != created.ID ||
+		issueDetail.Epics[0].Name != "Shapes" {
+		t.Fatalf("issue epics = %+v", issueDetail)
+	}
+	if issueDetail.Epics[0].ArchivedAt == nil {
+		t.Fatalf("archived epic ref must carry archived_at: %+v", issueDetail.Epics[0])
+	}
+
+	// 5. The documented schemas carry the promised keys.
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	docProps := func(name string) map[string]json.RawMessage {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		var s struct {
+			Props map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &s); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		return s.Props
+	}
+	for _, k := range []string{"id", "project_id", "name", "archived_at", "issue_count", "progress", "created_at"} {
+		if _, ok := docProps("Epic")[k]; !ok {
+			t.Fatalf("Epic schema lacks %q", k)
+		}
+	}
+	for _, k := range []string{"total", "by_group"} {
+		if _, ok := docProps("EpicProgress")[k]; !ok {
+			t.Fatalf("EpicProgress schema lacks %q", k)
+		}
+	}
+	for _, k := range []string{"id", "name", "archived_at"} {
+		if _, ok := docProps("EpicRef")[k]; !ok {
+			t.Fatalf("EpicRef schema lacks %q", k)
+		}
+	}
+	for _, k := range []string{"epic_id", "epic_name", "project_id", "project_name", "added_at"} {
+		if _, ok := docProps("InitiativeEpic")[k]; !ok {
+			t.Fatalf("InitiativeEpic schema lacks %q", k)
+		}
+	}
+	if _, ok := docProps("Issue")["epics"]; !ok {
+		t.Fatalf("Issue schema lacks epics")
+	}
 }
