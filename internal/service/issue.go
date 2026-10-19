@@ -98,6 +98,19 @@ type Issue struct {
 	CreatedBy       string          `json:"created_by"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+	// StateEnteredAt is when the issue entered its current state
+	// (C70T0): created_at of the latest issue_activities state_id row.
+	// When no row exists (last transitioned before activity tracking,
+	// or created directly in a state) it falls back to created_at — an
+	// approximate UPPER BOUND on the true time in state. Populated only
+	// by the detail + list read paths; omitempty keeps every other
+	// response shape byte-identical.
+	StateEnteredAt *time.Time `json:"state_entered_at,omitempty"`
+	// TimeInStateSeconds is now − StateEnteredAt, computed server-side
+	// at READ time (C70T0) — never stored, never ticked. Terminal
+	// states keep counting. Deliberately absent from webhook payloads
+	// and realtime broadcasts (derived values go stale in payloads).
+	TimeInStateSeconds *int64 `json:"time_in_state_seconds,omitempty"`
 	// SubtaskProgress is populated only by the detail/list queries that
 	// select subtaskProgressAgg; omitempty keeps every other response
 	// shape byte-identical.
@@ -558,8 +571,9 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 	var item IssueListItem
 	var description []byte
 	var assigneesJSON, labelsJSON, progressJSON, refsJSON []byte
+	var enteredAt *time.Time
 	err := q.QueryRow(ctx,
-		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+`, `+externalRefsAgg+` FROM issues i
+		`SELECT `+issueColumns+`, `+assigneesAgg+`, `+labelsAgg+`, `+subtaskProgressAgg+`, `+externalRefsAgg+`, `+stateEnteredAtAgg+` FROM issues i
 		 WHERE i.id = $1::uuid AND i.project_id = $2::uuid AND i.deleted_at IS NULL`,
 		issueID, projectID).Scan(
 		&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
@@ -569,10 +583,14 @@ func getIssueRow(ctx context.Context, q queryRower, ident, projectID, issueID st
 		&item.IsDraft, &item.ArchivedAt,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 		&assigneesJSON, &labelsJSON, &progressJSON, &refsJSON,
+		&enteredAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	// C70T0: time-in-state is derived at read time inside the same
+	// query (the correlated stateEnteredAtAgg above) — never stored.
+	populateTimeInState(&item.Issue, enteredAt, time.Now())
 	if description != nil {
 		item.Description = json.RawMessage(description)
 	}
@@ -3162,11 +3180,14 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 
 	// C17T2: the subtask rollup rides along in the same query (one
 	// correlated aggregate per row, no extra round-trips) so list and
-	// board cards can render the compact progress bar.
+	// board cards can render the compact progress bar. C70T0: the
+	// state-entered-at subquery rides along the same way — the export
+	// (C8T3) contract demands list-shape parity, and the streaming
+	// export cannot do a second batched lookup.
 	cols := `i.id::text, i.project_id::text, i.sequence_id, i.name, ` + descCol + `,
 		i.priority, i.state_id::text, i.parent_id::text, i.sort_order, i.start_date, i.target_date,
 		i.estimate_point_id::text, i.is_draft, i.archived_at, i.created_by::text, i.created_at, i.updated_at,
-		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` + subtaskProgressAgg + ` AS subtask_progress`
+		` + assigneesAgg + ` AS assignees, ` + labelsAgg + ` AS labels, ` + subtaskProgressAgg + ` AS subtask_progress, ` + stateEnteredAtAgg + ` AS state_entered_at`
 
 	var args []any
 	arg := func(v any) string {
@@ -3206,11 +3227,15 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	}
 	defer rows.Close()
 
+	// C70T0: one read instant for the whole page — every row's
+	// time_in_state_seconds shares it.
+	now := time.Now()
 	items := []IssueListItem{}
 	for rows.Next() {
 		var item IssueListItem
 		var desc []byte
 		var assigneesJSON, labelsJSON, progressJSON []byte
+		var enteredAt *time.Time
 		if err := rows.Scan(
 			&item.ID, &item.ProjectID, &item.SequenceID, &item.Name,
 			&desc,
@@ -3219,6 +3244,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 			&item.IsDraft, &item.ArchivedAt,
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&assigneesJSON, &labelsJSON, &progressJSON,
+			&enteredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3231,6 +3257,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		if err := unmarshalSubtaskProgress(progressJSON, &item); err != nil {
 			return nil, err
 		}
+		populateTimeInState(&item.Issue, enteredAt, now)
 		item.DisplayID = ident + "-" + strconv.Itoa(item.SequenceID)
 		items = append(items, item)
 	}

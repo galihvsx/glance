@@ -290,6 +290,23 @@ func TestExportJSONShape(t *testing.T) {
 		if !ok {
 			t.Fatalf("exported row missing list key %q", k)
 		}
+		// C70T0: time_in_state_seconds is derived at read time, so two
+		// separate requests can straddle a second boundary — exact
+		// cross-request equality is unpinnable by construction. Pin
+		// presence + a sane non-negative value instead; everything else
+		// stays byte-exact.
+		if k == "time_in_state_seconds" {
+			for _, side := range []struct {
+				name string
+				val  any
+			}{{"list", v}, {"export", ev}} {
+				f, ok := side.val.(float64)
+				if !ok || f < 0 || f != float64(int64(f)) {
+					t.Fatalf("%s time_in_state_seconds = %v, want a non-negative integer", side.name, side.val)
+				}
+			}
+			continue
+		}
 		if fmt.Sprintf("%v", ev) != fmt.Sprintf("%v", v) {
 			t.Fatalf("key %q: export = %v, list = %v", k, ev, v)
 		}

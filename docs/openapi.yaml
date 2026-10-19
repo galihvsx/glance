@@ -2917,6 +2917,8 @@
           "description": { "description": "Rich-text JSON document. Omitted when unset; on the issue list only included with ?fields=description (sparse fieldsets)." },
           "priority": { "type": "integer", "description": "0-4" },
           "state_id": { "type": "string", "format": "uuid", "description": "Always a UUID string, never null (states.state_id is NOT NULL; create defaults an omitted state_id to the project's backlog-group state)." },
+          "state_entered_at": { "type": "string", "format": "date-time", "description": "When the issue entered its current state: created_at of the latest issue_activities state_id row. When no such row exists (last transitioned before activity tracking, or created directly in a state) this falls back to created_at — an approximate UPPER BOUND on the true time in state. Present on list/detail responses; absent on write responses and version snapshots." },
+          "time_in_state_seconds": { "type": "integer", "format": "int64", "description": "Seconds from state_entered_at to read time, computed server-side on every read — never stored, never ticked. Terminal states keep counting. Present on list/detail responses; absent on write responses and version snapshots. Deliberately absent from webhook payloads and realtime broadcasts (derived values go stale in payloads)." },
           "parent_id": { "type": "string", "format": "uuid", "nullable": true },
           "sort_order": { "type": "number" },
           "start_date": { "type": "string", "format": "date", "nullable": true },
@@ -3402,7 +3404,8 @@
           "actor": { "$ref": "#/components/schemas/User" },
           "action": { "type": "string" },
           "issue_id": { "type": "string", "format": "uuid", "nullable": true },
-          "created_at": { "type": "string", "format": "date-time" }
+          "created_at": { "type": "string", "format": "date-time" },
+          "time_in_state_seconds": { "type": "integer", "format": "int64", "nullable": true, "description": "Present only on state_id entries of the issue history feed: the seconds the issue spent in the state that transition entered — until the next transition's created_at, or until now for the latest entry. Same formula as the issue-level time_in_state_seconds." }
         }
       },
       "WorkspaceAuditEntry": {

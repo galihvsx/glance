@@ -1551,6 +1551,13 @@ type HistoryEntry struct {
 	NewValue  json.RawMessage `json:"new_value,omitempty"`
 	Actor     ActorRef        `json:"actor"`
 	CreatedAt time.Time       `json:"created_at"`
+	// TimeInStateSeconds is present only on state_id entries (C70T0):
+	// the seconds the issue spent in the state this transition entered
+	// — until the next transition, or until now for the latest. Same
+	// byte-exact formula as the issue-level time_in_state; the latest
+	// entry's duration IS the current time_in_state_seconds.
+	// omitempty keeps every other entry shape byte-identical.
+	TimeInStateSeconds *int64 `json:"time_in_state_seconds,omitempty"`
 }
 
 // GetIssueHistory returns the issue's activity rows in chronological
@@ -1586,5 +1593,36 @@ func GetIssueHistory(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier
 		}
 		out = append(out, &h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// C70T0: per-transition durations. The state_id entries ride the
+	// same (created_at ASC, id ASC) order as stateTransitionsForIssue,
+	// so durations attach in order; non-state entries keep the field
+	// nil (omitempty keeps their shape byte-identical). The extra
+	// query is skipped entirely when no state_id entry exists.
+	hasTransition := false
+	for _, h := range out {
+		if h.Field == "state_id" {
+			hasTransition = true
+			break
+		}
+	}
+	if hasTransition {
+		transitions, err := stateTransitionsForIssue(ctx, pool, issueID)
+		if err != nil {
+			return nil, err
+		}
+		durations := TransitionDurations(transitions, time.Now())
+		i := 0
+		for _, h := range out {
+			if h.Field != "state_id" || i >= len(durations) {
+				continue
+			}
+			d := durations[i]
+			h.TimeInStateSeconds = &d
+			i++
+		}
+	}
+	return out, nil
 }
