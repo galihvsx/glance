@@ -37,6 +37,8 @@ export default function ProjectNav({ trailing }: { trailing?: ReactNode }) {
     { label: "Analytics", to: `${base}/analytics` },
     { label: "Cycles", to: `${base}/cycles` },
     { label: "Modules", to: `${base}/modules` },
+    // C71T1: project-scoped epics sit between Modules and Releases.
+    { label: "Epics", to: `${base}/epics` },
     { label: "Releases", to: `${base}/releases` },
     { label: "Pages", to: `${base}/pages` },
     { label: "Activity", to: `${base}/activity` },

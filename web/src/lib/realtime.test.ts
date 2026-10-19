@@ -169,6 +169,22 @@ describe("handleRealtimeEvent", () => {
     expect(keys).toEqual([["initiatives", "acme"]]);
   });
 
+  it("epic.updated invalidates epics list, detail, and issues", () => {
+    const { qc, keys } = spiedClient();
+    handleRealtimeEvent(qc, CTX, frame("epic.updated", { id: "epic-1" }));
+    expect(keys).toEqual([
+      ["epics", "acme", "ENG"],
+      ["epic-detail", "acme", "ENG", "epic-1"],
+      ["epic-issues", "acme", "ENG", "epic-1"],
+    ]);
+  });
+
+  it("epic.updated without an id invalidates only the epics list", () => {
+    const { qc, keys } = spiedClient();
+    handleRealtimeEvent(qc, CTX, frame("epic.updated", {}));
+    expect(keys).toEqual([["epics", "acme", "ENG"]]);
+  });
+
   it("notification.created invalidates ONLY the notifications prefix", () => {
     const { qc, keys } = spiedClient();
     handleRealtimeEvent(qc, CTX, frame("notification.created", { id: "n1" }));

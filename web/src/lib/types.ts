@@ -138,6 +138,10 @@ export interface Issue {
   /** Linked PRs/commits (C17T0). Always present as an array on the detail
    *  endpoint (empty when nothing is linked); omitted on list rows. */
   external_refs?: ExternalRef[];
+  /** Epic memberships (C71T0): [{id, name, archived_at}]; present on the
+   *  detail endpoint (omitted when the issue has none). Archived epics
+   *  stay in this list — the UI dims them, never drops them. */
+  epics?: EpicRef[];
 }
 
 /** One linked PR or commit on an issue (C17T0), as returned by
@@ -413,6 +417,47 @@ export interface Module {
   issue_count: number;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * An epic (C71T0): a long-running container for work that spans cycles,
+ * with archive (not delete) as the lifecycle and state-group progress.
+ * Mirrors the backend Epic contract; the list endpoint ships no progress
+ * (detail only).
+ */
+export interface Epic {
+  id: string;
+  project_id: string;
+  name: string;
+  description?: string | null;
+  /** Set when archived; archived epics hide from the default list. */
+  archived_at?: string | null;
+  created_by?: string | null;
+  issue_count: number;
+  /** State-group progress; present on the detail endpoint only. */
+  progress?: { total: number; by_group: Record<string, number> } | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * An epic membership ref on issue detail (C71T0): [{id, name,
+ * archived_at}]. Archived epics stay visible — the UI dims them instead
+ * of dropping them.
+ */
+export interface EpicRef {
+  id: string;
+  name: string;
+  archived_at?: string | null;
+}
+
+/** An epic linked to an initiative (C71T0), from GET .../initiatives/:id/epics. */
+export interface InitiativeEpic {
+  epic_id: string;
+  epic_name: string;
+  project_id: string;
+  project_name: string;
+  added_at: string;
 }
 
 /** A project release/milestone (C4T6). release_date is YYYY-MM-DD or null.
