@@ -203,6 +203,39 @@ function EventCopy({
         <Strong>{n(entry.new_value)}</Strong>
       </>
     );
+  } else if (
+    entry.field === "epic_added" ||
+    entry.field === "epic_removed" ||
+    entry.field === "epic_archived" ||
+    entry.field === "epic_unarchived"
+  ) {
+    // C71T0: attach/detach/archive writes issue_activities with
+    // new_value = {"epic_id":…, "epic_name":…} (string or object; may
+    // be absent on legacy rows — fall back gracefully).
+    let epicName = "";
+    try {
+      const v =
+        typeof entry.new_value === "string"
+          ? (JSON.parse(entry.new_value) as { epic_name?: unknown })
+          : (entry.new_value as { epic_name?: unknown } | null);
+      if (v) epicName = String(v.epic_name ?? "");
+    } catch {
+      // keep the fallback
+    }
+    const verb =
+      entry.field === "epic_added"
+        ? "attached epic"
+        : entry.field === "epic_removed"
+          ? "detached epic"
+          : entry.field === "epic_archived"
+            ? "archived epic"
+            : "restored epic";
+    body = (
+      <>
+        <Strong>{actor}</Strong> {verb}{" "}
+        <Strong>{epicName || "—"}</Strong>
+      </>
+    );
   } else {
     const nv = jsonText(entry.new_value);
     // The description's new_value is a TipTap JSON doc — never render it

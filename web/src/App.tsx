@@ -35,6 +35,8 @@ import Archived from "./pages/Archived";
 import Trash from "./pages/Trash";
 import Cycles from "./pages/Cycles";
 import Modules from "./pages/Modules";
+import Epics from "./pages/Epics";
+import EpicDetail from "./pages/EpicDetail";
 import Initiatives from "./pages/Initiatives";
 import InitiativeDetail from "./pages/InitiativeDetail";
 import Goals from "./pages/Goals";
@@ -148,6 +150,15 @@ export default function App() {
                     <Route
                       path="/w/:slug/p/:identifier/modules"
                       element={<Modules />}
+                    />
+                    {/* C71T1: project-scoped epics. */}
+                    <Route
+                      path="/w/:slug/p/:identifier/epics"
+                      element={<Epics />}
+                    />
+                    <Route
+                      path="/w/:slug/p/:identifier/epics/:epicID"
+                      element={<EpicDetail />}
                     />
                     <Route
                       path="/w/:slug/p/:identifier/releases"

@@ -466,6 +466,8 @@ interface SubLink {
   label: string;
   suffix: string; // path remainder after the project base
   activeOn: (rest: string) => boolean;
+  /** Optional accent dot before the label (C71: epics get the purple dot). */
+  dot?: string;
 }
 
 const VIEW_SUFFIXES = ["", "/board", "/spreadsheet", "/calendar", "/gantt", "/roadmap"];
@@ -484,6 +486,14 @@ const SUB_LINKS: SubLink[] = [
   },
   { label: "Cycles", suffix: "/cycles", activeOn: (rest) => rest === "/cycles" },
   { label: "Modules", suffix: "/modules", activeOn: (rest) => rest === "/modules" },
+  // C71T1: Epics sit between Modules and Initiatives per the spec
+  // (project rail); the purple dot marks the new entry.
+  {
+    label: "Epics",
+    suffix: "/epics",
+    activeOn: (rest) => rest === "/epics" || rest.startsWith("/epics/"),
+    dot: "#9c83e6",
+  },
   {
     label: "Releases",
     suffix: "/releases",
@@ -557,6 +567,13 @@ function ProjectRow({
                     : "text-ink-secondary hover:bg-wash-hover hover:text-ink",
                 )}
               >
+                {l.dot && (
+                  <span
+                    aria-hidden="true"
+                    className="mr-2 size-1.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: l.dot }}
+                  />
+                )}
                 {l.label}
               </Link>
             );

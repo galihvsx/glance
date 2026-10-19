@@ -14,6 +14,11 @@ import { api, ApiError } from "../lib/api";
 import { toast } from "../components/ui/toast";
 import type { Project, Workspace } from "../lib/types";
 import InitiativeProgressBar from "../components/initiatives/InitiativeProgressBar";
+import {
+  GROUP_COLORS,
+  GROUP_ORDER,
+  groupLabel,
+} from "../components/initiatives/stateGroups";
 import type {
   Initiative,
   InitiativeProjectRollup,
@@ -69,28 +74,6 @@ function statusColor(status: InitiativeStatus): string {
     case "archived":
       return "#777780"; // muted
   }
-}
-
-/** State-group colors for the by_group breakdown (matches board dots). */
-const GROUP_COLORS: Record<string, string> = {
-  triage: "#8b7cf6",
-  backlog: "#9aa0ae",
-  unstarted: "#e5a13c",
-  started: "#4f8ef7",
-  completed: "#42c88a",
-  cancelled: "#e5484d",
-};
-const GROUP_ORDER = [
-  "triage",
-  "backlog",
-  "unstarted",
-  "started",
-  "completed",
-  "cancelled",
-];
-
-function groupLabel(group: string): string {
-  return group.charAt(0).toUpperCase() + group.slice(1);
 }
 
 /** Stacked state-group segments + legend chips (labeled, with counts). */

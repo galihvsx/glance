@@ -6,6 +6,8 @@ import { formatDateTime } from "../../lib/format";
 import { formatStateDuration } from "../../lib/timeState";
 import type {
   Cycle,
+  Epic,
+  EpicRef,
   Issue,
   IssueProjectStructure,
   Label as ProjectLabel,
@@ -29,11 +31,14 @@ function Cell({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function TagChip({ children, onRemove, title }: { children: ReactNode; onRemove?: () => void; title?: string }) {
+function TagChip({ children, onRemove, title, archived }: { children: ReactNode; onRemove?: () => void; title?: string; archived?: boolean }) {
   return (
     <span
       title={title}
-      className="inline-flex h-[20px] items-center gap-1 rounded-[4px] border border-border px-[6px] text-[10px] text-ink-secondary"
+      className={cn(
+        "inline-flex h-[20px] items-center gap-1 rounded-[4px] border border-border px-[6px] text-[10px] text-ink-secondary",
+        archived && "border-dashed opacity-55",
+      )}
     >
       {children}
       {onRemove && (
@@ -148,6 +153,8 @@ export default function IssueProperties({
   const [cycleOpen, setCycleOpen] = useState(false);
   const [moduleOpen, setModuleOpen] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
+  const [epicOpen, setEpicOpen] = useState(false);
+  const [pickedEpics, setPickedEpics] = useState<Set<string>>(new Set());
 
   const cyclesQuery = useQuery({
     queryKey: ["cycles", slug, identifier],
@@ -160,6 +167,13 @@ export default function IssueProperties({
   const releasesQuery = useQuery({
     queryKey: ["releases", slug, identifier],
     queryFn: () => api.get<{ releases: Release[] }>(`${base}/releases`).then((d) => d.releases),
+  });
+  // C71T1: the picker lists ACTIVE project epics only (no
+  // ?include_archived=true — archived epics are never attachable here).
+  const epicsQuery = useQuery({
+    queryKey: ["epics", slug, identifier, false],
+    enabled: epicOpen,
+    queryFn: () => api.get<{ epics: Epic[] }>(`${base}/epics`).then((d) => d.epics),
   });
 
   function invalidate() {
@@ -202,6 +216,36 @@ export default function IssueProperties({
     },
     onError: (e) => fail(e, "Failed to remove module"),
   });
+  // C71T1: multi-epic attach is first-class (junction table, mirrors
+  // Modules) — one POST per epic, each idempotent server-side.
+  const epicAddMutation = useMutation({
+    mutationFn: async (epicIds: string[]) => {
+      for (const epicId of epicIds) {
+        await api.post(
+          `${base}/epics/${encodeURIComponent(epicId)}/issues`,
+          { issue_ids: [issue.id] },
+        );
+      }
+    },
+    onSuccess: () => {
+      onError(null);
+      setEpicOpen(false);
+      setPickedEpics(new Set());
+      invalidate();
+    },
+    onError: (e) => fail(e, "Failed to attach epic"),
+  });
+  const epicRemoveMutation = useMutation({
+    mutationFn: (epicId: string) =>
+      api.del(`${base}/epics/${encodeURIComponent(epicId)}/issues`, {
+        issue_ids: [issue.id],
+      }),
+    onSuccess: () => {
+      onError(null);
+      invalidate();
+    },
+    onError: (e) => fail(e, "Failed to detach epic"),
+  });
 
   const cycles = cyclesQuery.data ?? [];
   const modules = modulesQuery.data ?? [];
@@ -211,6 +255,12 @@ export default function IssueProperties({
   const currentRelease = structure?.release ?? null;
   const moduleIds = new Set(currentModules.map((m) => m.id));
   const addableModules = modules.filter((m) => !moduleIds.has(m.id));
+  // C71T1: epic memberships live on the issue itself (detail endpoint,
+  // `epics: [{id, name, archived_at}]`). Archived epics stay visible —
+  // dimmed, never dropped.
+  const currentEpics: EpicRef[] = issue.epics ?? [];
+  const epicIds = new Set(currentEpics.map((e) => e.id));
+  const addableEpics = (epicsQuery.data ?? []).filter((e) => !epicIds.has(e.id));
 
   const cellTrigger =
     "h-[23px] min-h-[23px] gap-[6px] whitespace-nowrap rounded-[4px] border-0 bg-transparent px-1 text-[10px] font-normal text-ink-secondary shadow-none hover:bg-wash-hover hover:text-ink";
@@ -355,6 +405,81 @@ export default function IssueProperties({
                     {m.name}
                   </OptionRow>
                 ))
+              )}
+            </PopoverContent>
+          </Popover>
+        </Cell>
+        <Cell label="Epics">
+          {currentEpics.map((e) => {
+            const archived = !!e.archived_at;
+            return (
+              <TagChip
+                key={e.id}
+                title={archived ? `${e.name} (archived)` : e.name}
+                archived={archived}
+                onRemove={disabled ? undefined : () => epicRemoveMutation.mutate(e.id)}
+              >
+                <span
+                  aria-hidden
+                  className={`h-[6px] w-[6px] rounded-full ${archived ? "bg-ink-muted" : "bg-[#9c83e6]"}`}
+                />
+                {e.name}
+              </TagChip>
+            );
+          })}
+          <Popover open={epicOpen} onOpenChange={(o) => { setEpicOpen(o); if (!o) setPickedEpics(new Set()); }}>
+            <PopoverTrigger disabled={disabled} className={cn(cellTrigger, "text-ink-muted")}>
+              <Plus className="h-3 w-3" />
+              <span>{currentEpics.length === 0 ? "Add epics" : "Edit"}</span>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-1" align="start">
+              {epicsQuery.isPending ? (
+                <p className="px-2 py-1.5 text-xs text-ink-muted">Loading epics…</p>
+              ) : addableEpics.length === 0 ? (
+                <p className="px-2 py-1.5 text-xs text-ink-muted">
+                  {(epicsQuery.data ?? []).length === 0
+                    ? "No active epics in this project."
+                    : "All active epics attached."}
+                </p>
+              ) : (
+                <>
+                  {addableEpics.map((e) => (
+                    <label
+                      key={e.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-[4px] px-2 py-1.5 text-xs text-ink-secondary hover:bg-wash-hover hover:text-ink"
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-[#4f8ef7]"
+                        checked={pickedEpics.has(e.id)}
+                        onChange={() =>
+                          setPickedEpics((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(e.id)) next.delete(e.id);
+                            else next.add(e.id);
+                            return next;
+                          })
+                        }
+                      />
+                      <span className="flex-1 truncate">{e.name}</span>
+                      <span className="font-mono text-[10px] text-ink-muted">
+                        {e.issue_count}
+                      </span>
+                    </label>
+                  ))}
+                  <div className="flex justify-end p-1">
+                    <button
+                      type="button"
+                      disabled={pickedEpics.size === 0 || epicAddMutation.isPending}
+                      onClick={() => epicAddMutation.mutate([...pickedEpics])}
+                      className="rounded-[4px] bg-[#4f8ef7] px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      {epicAddMutation.isPending
+                        ? "Attaching…"
+                        : `Attach ${pickedEpics.size} epic${pickedEpics.size === 1 ? "" : "s"}`}
+                    </button>
+                  </div>
+                </>
               )}
             </PopoverContent>
           </Popover>

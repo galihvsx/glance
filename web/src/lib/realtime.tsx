@@ -186,6 +186,22 @@ export function handleRealtimeEvent(
         });
       }
       break;
+    case "epic.updated":
+      // C71T1: epics are project-scoped — the backend broadcasts on both
+      // the project and workspace channels. Invalidate the project epic
+      // list plus the detail/issues queries so open views refresh.
+      void queryClient.invalidateQueries({
+        queryKey: ["epics", slug, identifier],
+      });
+      if (id) {
+        void queryClient.invalidateQueries({
+          queryKey: ["epic-detail", slug, identifier, id],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["epic-issues", slug, identifier, id],
+        });
+      }
+      break;
     case "objective.updated":
       // Objectives are workspace-scoped (cross-task contract, cycle 43):
       // event `objective.updated`, channel `workspace:{slug}` ONLY,
