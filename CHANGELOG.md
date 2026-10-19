@@ -5,6 +5,33 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Parallel cycles — run multiple cycles at once with overlapping dates (cycle 78)**
+
+- Plane's Cycles docs, "Parallel cycles" (Enterprise Grid): by default only
+  one cycle can be active at a time and cycles cannot have overlapping dates;
+  with parallel cycles enabled, multiple cycles may run simultaneously with
+  overlapping date ranges (e.g. a two-week sprint alongside a longer release
+  cycle). glance adds the per-project toggle and the Plane default semantics.
+- New `parallel_cycles` boolean on project payloads and `PATCH
+  /api/v1/workspaces/{slug}/projects/{identifier}` (member 15+; guests
+  read-only). Migration 000071, default false.
+- With the toggle **off** (default), creating or moving a cycle into a date
+  range that overlaps another live (`upcoming`/`current`) cycle of the
+  project is rejected with **409** naming the conflicting cycle
+  (`cycle dates overlap with "Sprint 12"`). Completed cycles never block;
+  with the toggle **on**, overlapping ranges are allowed. Turning the toggle
+  off never retroactively changes existing overlapping cycles (deliberate
+  grandfathering — only new creates/updates are blocked).
+- Cycle completion/rollover rulings (documented, no behavior change needed):
+  the transfer target stays the next non-overlapping cycle; issues attached
+  to a still-running parallel cycle keep that membership; `close_in_days`
+  detach applies unchanged.
+- ProjectSettings gains a "Cycles" tab: a Parallel cycles toggle with
+  Plane's wording, the grandfathering note, and inline error feedback;
+  failed toggles revert. The create-cycle dialog surfaces the backend 409
+  message inline (naming the conflicting cycle) and stays open for retry.
+- 23 new tests (12 backend service/API, 11 frontend).
+
 **`send_webhook` automation action — call an HTTP endpoint when a rule fires (cycle 77, backend)**
 - Plane release v3.0.0 (commercial), headline: "Send webhooks from
   workflows: automation rules can now include a *send webhook* step. When
