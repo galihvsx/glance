@@ -60,6 +60,7 @@ const seeds: [readonly unknown[], unknown][] = [
         description: "",
         created_at: "",
         updated_at: "",
+        parallel_cycles: false,
       } satisfies Project,
     ],
   ],

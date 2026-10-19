@@ -26,6 +26,9 @@ export interface Project {
   icon?: string | null;
   /** Project archive timestamp (C18T3); null/undefined = live. */
   archived_at?: string | null;
+  /** Per-project parallel cycles toggle (C78T0); off = single active
+   *  cycle, no overlapping dates. Server always emits it. */
+  parallel_cycles: boolean;
   /** Workspace-scoped project labels (C76T0): [{id,name,color}] ordered
    *  by name — [] never null. */
   labels: ProjectLabel[];

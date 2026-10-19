@@ -55,6 +55,7 @@ const project: Project = {
   labels: [pl("l1", "platform")],
   created_at: "",
   updated_at: "",
+  parallel_cycles: false,
 };
 
 function renderAssignment(canEdit: boolean) {

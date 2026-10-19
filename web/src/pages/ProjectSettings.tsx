@@ -10,6 +10,7 @@ import type { Workspace } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import GeneralSection from "../components/settings/GeneralSection";
+import CyclesSection from "../components/settings/CyclesSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import ProjectLabelAssignment from "../components/project/ProjectLabelAssignment";
 import StatesSection from "../components/settings/StatesSection";
@@ -64,6 +65,9 @@ export default function ProjectSettings() {
           <Tabs defaultValue="general">
             <TabsList>
               <TabsTrigger value="general">General</TabsTrigger>
+              {/* C78T1: per-project parallel-cycles toggle lives next to
+                  General (Plane: Project Settings → Features → Cycles). */}
+              <TabsTrigger value="cycles">Cycles</TabsTrigger>
               <TabsTrigger value="labels">Labels</TabsTrigger>
               {/* C76T1: workspace project-label taxonomy, assigned
                   per-project (the Labels tab is the issue-label
@@ -82,6 +86,9 @@ export default function ProjectSettings() {
             </TabsList>
             <TabsContent value="general" className="mt-4">
               <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
+            </TabsContent>
+            <TabsContent value="cycles" className="mt-4">
+              <CyclesSection slug={slug} identifier={identifier} canEdit={canEdit} />
             </TabsContent>
             <TabsContent value="labels" className="mt-4">
               <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
