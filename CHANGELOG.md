@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Initiatives rich filters (cycle 73)**
+- Plane changelog 2026-02-28: "Initiatives now support rich filters,
+  making it easier to narrow down and find exactly what you're looking
+  for by assignee, status, priority, and more." glance's Initiatives
+  page had zero filtering — list + create only.
+- Backend: `GET /api/v1/workspaces/{slug}/initiatives` takes repeatable
+  `?status=` (active/completed/archived; explicit list wins over the
+  legacy `?include_archived=1|true`, which stays backward-compatible),
+  `?q=` (ILIKE on name + description, parameterized), `?created_by=`,
+  `?created_from=`/`?created_to=` (ISO-8601 on created_at), `?project_id=`
+  (member-project via the initiative_projects junction), and
+  `?sort=name|created_at|updated_at|project_count` with
+  `?order=asc|desc` (unknown values → 400 with a clear message;
+  sort column whitelisted to static SQL). No migration; response shape
+  unchanged (`[]` never null); OpenAPI pins.
+- Frontend: URL-backed filter bar on the Initiatives page mirroring the
+  FilterPanel anatomy — status multi-select chips, debounced search,
+  created-by member picker, created date range, member-project picker,
+  sort dropdown (Newest/Oldest/Name A–Z/Most projects); filter state in
+  shareable URL params (invalid values dropped, never throws), clear-all,
+  active-filter count badge, result count, and a token-style empty state
+  when filters match nothing. Guests keep read-only access; create
+  dialog, per-card rollups, and the guest rule untouched.
+- Default list order is now newest-first (`created_at desc`, was
+  oldest-first) — deliberate, matches the new sort control's default.
+- 31 new tests (11 backend, 20 frontend). UI-first gate not triggered:
+  additive bar mirroring existing anatomy; backend contract was the
+  spec (C66–C69 precedent).
+
 **Group by Epic across all layouts (cycle 72)**
 - Plane changelog 2026-02-17: "Group by Epics — work items can now be
   grouped by their parent epic across all layouts." C71 shipped the epic
