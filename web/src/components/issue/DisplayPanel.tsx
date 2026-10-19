@@ -30,6 +30,7 @@ const FIELD_ROWS: { key: keyof DisplayFields; label: string; hint: string }[] = 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "state", label: "State" },
   { value: "priority", label: "Priority" },
+  { value: "epic", label: "Epic" },
   { value: "none", label: "None" },
 ];
 
@@ -73,7 +74,9 @@ export default function DisplayPanel({
 }) {
   const groupOptions =
     view === "board"
-      ? GROUP_OPTIONS.filter((o) => o.value !== "none")
+      ? // C72T0: "epic" grouping is implemented on the list only; the board
+        // variant (with its own prototype-as-spec spec) lands in C72T1.
+        GROUP_OPTIONS.filter((o) => o.value !== "none" && o.value !== "epic")
       : GROUP_OPTIONS;
   // The board's State field is meaningless (columns already imply it).
   const fieldRows =
