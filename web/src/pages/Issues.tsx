@@ -71,6 +71,8 @@ import {
 import { fetchEstimates, type Estimate } from "../lib/taxonomy";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
+import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import PageHeader, {
@@ -745,7 +747,10 @@ export default function Issues() {
     settings.groupBy === "state" && sortedStates.length > 0 && !filters.state;
   const groupByPriority =
     settings.groupBy === "priority" && filters.priorities.length !== 1;
-  const groupingActive = groupByState || groupByPriority;
+  // C72T0: epic grouping needs no skip — epic memberships ride on the
+  // list rows themselves, so filters narrow the members, not the groups.
+  const groupByEpic = settings.groupBy === "epic";
+  const groupingActive = groupByState || groupByPriority || groupByEpic;
 
   interface IssueGroup {
     key: string;
@@ -753,6 +758,9 @@ export default function Issues() {
     color?: string;
     /** Workflow group for the header state-dot (state grouping). */
     stateGroup?: string;
+    /** C72T0: per-state-group member counts for the epic header progress
+     *  bar (epic grouping only). */
+    byGroup?: Record<string, number>;
     issues: Issue[];
     stateId?: string;
     priority?: number;
@@ -777,6 +785,20 @@ export default function Issues() {
         stateId: sortedStates[0]?.id,
         priority: p,
       }));
+    } else if (groupByEpic) {
+      // C72T0: group by LIVE epic membership (see groupByEpic.ts for the
+      // multi-appearance + archived-exclusion + Ungrouped-last semantics).
+      // Progress counts come from the loaded states — no extra fetches.
+      gs = groupIssuesByEpic(
+        issues,
+        (i) => stateById.get(i.state_id)?.group,
+      ).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        byGroup: g.byGroup,
+        stateId: sortedStates[0]?.id,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -784,6 +806,7 @@ export default function Issues() {
   }, [
     groupByState,
     groupByPriority,
+    groupByEpic,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1257,6 +1280,19 @@ export default function Issues() {
                       {g.issues.length}
                     </span>
                   </div>
+                  {/* C72T0: epic group header progress — the shared
+                      EpicGroupBreakdown (5 segments, no triage, done =
+                      completed + cancelled), counts computed client-side
+                      from the loaded members. */}
+                  {g.byGroup && (
+                    <div className="mb-1 mt-2 max-w-[480px]">
+                      <EpicGroupBreakdown
+                        byGroup={g.byGroup}
+                        total={g.issues.length}
+                        epicName={g.title}
+                      />
+                    </div>
+                  )}
                   <div>
                     {g.issues.map((issue) => (
                       <IssueRow

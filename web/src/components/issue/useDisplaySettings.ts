@@ -11,7 +11,9 @@ export interface DisplayFields {
   dates: boolean;
 }
 
-export type GroupBy = "state" | "priority" | "none";
+/** C72T0: "epic" groups list rows by live epic membership (multi-appearance:
+ * an issue with N live epics shows under every epic group). */
+export type GroupBy = "state" | "priority" | "epic" | "none";
 
 /** Whitelisted ?order_by= values the backend accepts (internal/service/issue.go). */
 export type OrderBy =
@@ -38,7 +40,7 @@ export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   showEmptyGroups: true,
 };
 
-const GROUP_BYS: GroupBy[] = ["state", "priority", "none"];
+const GROUP_BYS: GroupBy[] = ["state", "priority", "epic", "none"];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
   "updated_at",
