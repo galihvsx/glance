@@ -43,6 +43,18 @@ All notable changes to glance are documented here. The format follows
   ad-hoc delivery incl. SSRF refusal, redaction, API CRUD, OpenAPI pins);
   QA gate green.
 
+**`send_webhook` action editor — rule-builder UI for the new action (cycle 77, frontend)**
+- "Send webhook" card in the automation action picker; editor fields:
+  URL input (scheme hint), method select (POST/PUT), headers key/value
+  rows (values masked like passwords — write-only, never echoed), payload
+  template textarea (JSON) with a collapsible list of the 10 available
+  `{{…}}` template variables and a default-envelope preview.
+- Rule summary lines render `POST → https://…` with header values
+  redacted; backend 400 validation errors (and client-side draft errors)
+  surface inline with the draft kept open for retry.
+- 24 new vitest (draft validation/masking/round-trip, editor, summary
+  lines); `tsc -b` + `npm run build` green.
+
 **Project labels — workspace-level taxonomy for projects (cycle 76)**
 - Plane release v2.5.0 (2026-03-17), headline #2: "Project Labels — add
   labels to projects at the workspace level to organize them by team,
