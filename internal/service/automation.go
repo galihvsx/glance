@@ -20,7 +20,8 @@ package service
 // Actions run in order
 // inside the firing transaction: assign, add_label, add_comment,
 // set_priority, set_state (C12T2), remove_label, unassign, set_estimate,
-// set_due_date, move_to_cycle, move_to_module, add_watcher (C16T2). An
+// set_due_date, move_to_cycle, move_to_module, add_watcher (C16T2),
+// send_webhook (C77T0). An
 // action failure is LOGGED (slog), recorded on the run row as ok:false,
 // and ABORTS the rule's remaining actions (C16T2 — a half-applied rule
 // is worse than a stopped one); it never rolls back the firing event.
@@ -122,7 +123,12 @@ type AutomationTrigger struct {
 // (cycle_id, a cycle UUID in this project — the issue leaves any other
 // cycles), move_to_module (module_id, a module UUID in this project —
 // the issue leaves any other modules), add_watcher (user_id, a workspace
-// member, added as an issue subscriber).
+// member, added as an issue subscriber), send_webhook (url, an absolute
+// http(s) URL called when the rule fires; method POST (default) or PUT;
+// headers, an optional string→string map of extra request headers whose
+// VALUES ARE SECRETS — redacted in API reads and logs; payload_template,
+// an optional JSON template over the firing context, defaulting to the
+// documented automation.webhook envelope — see automation_sendwebhook.go).
 type AutomationAction struct {
 	Type     string  `json:"type"`
 	UserID   *string `json:"user_id,omitempty"`
@@ -134,6 +140,14 @@ type AutomationAction struct {
 	ModuleID *string `json:"module_id,omitempty"`
 	Estimate *string `json:"estimate,omitempty"`
 	DueDate  *string `json:"due_date,omitempty"`
+	// send_webhook only: the target URL (required), HTTP method (POST
+	// default, PUT), extra request headers (values are secrets-capable
+	// — never serialized in reads), and the optional JSON payload
+	// template.
+	URL             *string           `json:"url,omitempty"`
+	Method          *string           `json:"method,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	PayloadTemplate *string           `json:"payload_template,omitempty"`
 }
 
 // AutomationRule is a stored rule row.
@@ -166,6 +180,17 @@ type AutomationRulePatch struct {
 
 const automationRuleColumns = `id::text, project_id::text, name, trigger, actions,
 	enabled, created_by::text, created_at, updated_at`
+
+// redactAutomationRuleForRead masks send_webhook header values on the
+// rule's action JSON for API reads (values are secrets-capable). The
+// stored row is untouched; the firing path reads the row directly and
+// needs the real values.
+func redactAutomationRuleForRead(r *AutomationRule) {
+	if r == nil {
+		return
+	}
+	r.Actions = redactAutomationRuleActions(r.Actions)
+}
 
 func scanAutomationRule(row pgx.Row) (*AutomationRule, error) {
 	var r AutomationRule
@@ -315,7 +340,12 @@ func validateAutomationTrigger(ctx context.Context, q queryRower, wsID, projectI
 // checkEstimatePoint — a mismatch is an honest 400), set_due_date an
 // absolute ISO date or a "+Nd" offset, move_to_cycle a cycle in this
 // project, move_to_module a module in this project, add_watcher a
-// workspace member. Targets can still vanish later — execution failures
+// workspace member, send_webhook (C77T0: required absolute http(s) url,
+// optional method POST (default) | PUT, optional headers with
+// transport-owned names rejected and secrets-capable values, optional
+// payload_template trial-rendered at write time — see
+// validateSendWebhookAction in automation_sendwebhook.go). Targets can
+// still vanish later — execution failures
 // are logged, recorded on the run row, and abort the rule's remaining
 // actions, never the firing event.
 func validateAutomationActions(ctx context.Context, q queryRower, wsID, projectID string, actions []AutomationAction) error {
@@ -453,6 +483,10 @@ func validateAutomationActions(ctx context.Context, q queryRower, wsID, projectI
 				}
 				return err
 			}
+		case "send_webhook":
+			if err := validateSendWebhookAction(a); err != nil {
+				return err
+			}
 		default:
 			return ErrInvalidAutomationAction
 		}
@@ -534,6 +568,8 @@ func ListAutomationRules(ctx context.Context, pool *pgxpool.Pool, wsSlug, identi
 		if err != nil {
 			return nil, err
 		}
+		// Header values are secrets-capable: masked on reads.
+		redactAutomationRuleForRead(r)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -588,6 +624,8 @@ func CreateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 	if err != nil {
 		return nil, err
 	}
+	// Header values are secrets-capable: masked on reads.
+	redactAutomationRuleForRead(r)
 	return r, nil
 }
 
@@ -657,6 +695,8 @@ func UpdateAutomationRule(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 		}
 		return nil, err
 	}
+	// Header values are secrets-capable: masked on reads.
+	redactAutomationRuleForRead(r)
 	return r, nil
 }
 
@@ -933,7 +973,7 @@ func runAutomationRuleActionsTx(ctx context.Context, tx pgx.Tx, wsID, projectID,
 	results := make([]AutomationActionResult, 0, len(actions))
 	anyEffect := false
 	for i, a := range actions {
-		ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a)
+		ns, noop, err := execAutomationActionTx(actx, tx, wsID, projectID, ident, issueID, actorID, a, r.ID, trig.Type)
 		if err != nil {
 			// C16T2: a failed action aborts the rule's remaining
 			// actions — the failure is recorded ok:false on the run
@@ -971,8 +1011,10 @@ func runAutomationRuleActionsTx(ctx context.Context, tx pgx.Tx, wsID, projectID,
 // evaluated cleanly but changed nothing (C12T2: set_priority/set_state
 // targeting the current value) — the caller records it ok:true but a
 // firing whose every action was a no-op writes no run row. Failures are
-// returned for the caller to log; the tx is untouched.
-func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, a AutomationAction) ([]*Notification, bool, error) {
+// returned for the caller to log; the tx is untouched. ruleID and
+// triggerType are the firing rule's identity for actions that need it
+// (send_webhook's template context and default envelope).
+func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, issueID, actorID string, a AutomationAction, ruleID, triggerType string) ([]*Notification, bool, error) {
 	switch a.Type {
 	case "assign":
 		if a.UserID == nil {
@@ -1041,6 +1083,8 @@ func execAutomationActionTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ide
 		}
 		return automationAddWatcherTx(ctx, tx, wsID, issueID, actorID,
 			strings.ToLower(strings.TrimSpace(*a.UserID)))
+	case "send_webhook":
+		return automationSendWebhookTx(ctx, tx, ident, issueID, a, ruleID, triggerType)
 	default:
 		return nil, false, ErrInvalidAutomationAction
 	}
