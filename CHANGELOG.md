@@ -5,6 +5,38 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Time in state (cycle 70)**
+- Plane parity (their redesigned work-item detail page): glance now computes
+  **time in state** — how long a work item has been in its current state —
+  and shows per-transition durations. No migration, no stored column, no
+  background job: derived server-side at read time from
+  `issue_activities.state_id` rows (written for every live state change
+  since cycle 47); issues with no history row fall back to `created_at`
+  (documented as an approximate upper bound).
+- Backend (`internal/service/time_in_state.go`): pure helpers
+  (`StateEnteredAt`, `TimeInStateSeconds`, `TransitionDurations`) +
+  `stateEnteredAtAgg` correlated subquery riding the existing
+  `issue_activities_issue_idx` — detail, list, and export row queries embed
+  it in the same query (one read instant per page/stream; the streaming
+  export keeps streaming). Issue detail + list + export rows carry
+  `state_entered_at` (RFC3339) and `time_in_state_seconds` (int64);
+  history-feed `state_id` entries carry `time_in_state_seconds` (duration
+  until the next transition, or until now for the latest — byte-exact with
+  the property formula; terminal states keep counting). Webhook payloads
+  and realtime broadcasts deliberately excluded (derived values go stale
+  in payloads). OpenAPI pins on `Issue` and `ActivityEntry`.
+- Frontend (UI-first, prototype-as-spec:
+  `.superpowers/sdd/2026-10-19-glance-cycle70/prototype/time-in-state.html`):
+  "Time in state" property cell in the Details group of the issue
+  properties pane (Hourglass icon, non-interactive, hidden when the field
+  is absent, `Since {date}` tooltip fallback); duration pill on every
+  activity-feed row whose entry carries the field (All / Activity /
+  History / Transition tabs share `EventItem`), right-aligned on the
+  timestamp line with `Time spent in {state}` tooltip. New
+  `lib/timeState.ts` `formatStateDuration` (`<1m` / `45s` / `54m` /
+  `2h 15m` / `3d 4h` — TimeTracker's `formatDuration` untouched) + 18 new
+  vitest tests.
+
 **Webhook event filters (cycle 69)**
 - Per-webhook condition lists: each webhook can now carry a `filter`
   (nullable JSONB) of conditions over `priority`, `state_group`,
