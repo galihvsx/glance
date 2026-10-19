@@ -5,6 +5,43 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by Epic across all layouts (cycle 72)**
+- Plane changelog 2026-02-17: "Group by Epics — work items can now be
+  grouped by their parent epic across all layouts." C71 shipped the epic
+  entity; this cycle adds **Epic** to the grouping control on the issue
+  list, the board, and the calendar — pure frontend, no backend changes
+  (epic membership already rides on every issue list row).
+- Semantics (consistent across all three views): an issue attached to N
+  live epics appears under EVERY epic group (multi-appearance, the
+  coherent extension of C71's multi-epic-first-class ruling); archived
+  epics are excluded from grouping; an **Ungrouped** group sits last and
+  is hidden when empty; group headers carry the state-group progress bar
+  (5 segments, no triage; done = completed + cancelled), computed
+  client-side from the loaded members — no extra fetches.
+- List: `GroupBy` extended to `state | priority | epic | none`; epic
+  groups mirror the existing state/priority path, with the shared
+  `EpicGroupBreakdown` in each header. Board: epic columns (per-card
+  state badge, since the column no longer implies state); dropping a
+  card into an epic column attaches it to that epic (idempotent,
+  multi-epic aware — never detaches others); dropping into Ungrouped is
+  a deliberate no-op; column quick-add creates + attaches (attach
+  failure surfaces a banner, card lands in Ungrouped); PageHeader shows
+  UNIQUE issues under multi-appearance; no C68 drop-blocked hints on
+  epic columns (epic drops never change state). Calendar: epic
+  swimlanes on month + week (200px gutter, per-lane bands inside day
+  cells, bands render-only — day cells stay the drop targets; DnD
+  wiring unchanged), lane clusters in the unscheduled strip (still one
+  droppable), via a calendar-local `Group: None | Epic` toolbar control
+  persisted per-project under `glance:calendar-groupby:…` (independent
+  of the list/board display key by design).
+- UI-first per cycle-53/70 precedent: static `prototype/group-by-epic-
+  board.html` and `prototype/group-by-epic-calendar.html` reviewed as
+  spec before implementation. 38 new vitest tests (10 list, 17 board,
+  11 calendar). Known minor gap (documented): board quick-expand to the
+  full create form doesn't carry the epic — the issue lands in
+  Ungrouped until attached via the issue-detail control, same as the
+  list behavior.
+
 **Epics: the missing hierarchy level (cycle 71)**
 - Plane has Epics as a first-class planning entity (long-running container
   spanning cycles, progress by state groups); glance had nothing above
