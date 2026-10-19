@@ -63,7 +63,7 @@ func TestInitiativeCRUD(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
-	list, err := ListInitiatives(ctx, pool, slug, actor, false)
+	list, err := ListInitiatives(ctx, pool, slug, actor, InitiativeListFilter{})
 	if err != nil {
 		t.Fatalf("ListInitiatives: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestInitiativeTenancy(t *testing.T) {
 	if _, err := GetInitiativeRollup(ctx, pool, otherSlug, otherActor, init.ID); !errors.Is(err, ErrInitiativeNotFound) {
 		t.Fatalf("cross-ws rollup err = %v, want ErrInitiativeNotFound", err)
 	}
-	list, err := ListInitiatives(ctx, pool, otherSlug, otherActor, false)
+	list, err := ListInitiatives(ctx, pool, otherSlug, otherActor, InitiativeListFilter{})
 	if err != nil {
 		t.Fatalf("cross-ws list: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestInitiativeArchivedFiltering(t *testing.T) {
 		t.Fatalf("create b: %v", err)
 	}
 
-	list, err := ListInitiatives(ctx, pool, slug, actor, false)
+	list, err := ListInitiatives(ctx, pool, slug, actor, InitiativeListFilter{})
 	if err != nil {
 		t.Fatalf("ListInitiatives: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestInitiativeArchivedFiltering(t *testing.T) {
 		t.Fatalf("default list = %+v, want only active", list)
 	}
 
-	list, err = ListInitiatives(ctx, pool, slug, actor, true)
+	list, err = ListInitiatives(ctx, pool, slug, actor, InitiativeListFilter{IncludeArchived: true})
 	if err != nil {
 		t.Fatalf("ListInitiatives include: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestInitiativeArchivedFiltering(t *testing.T) {
 	if _, err := UpdateInitiative(ctx, pool, slug, actor, a.ID, InitiativePatch{Status: strptr("archived")}); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
-	list, err = ListInitiatives(ctx, pool, slug, actor, false)
+	list, err = ListInitiatives(ctx, pool, slug, actor, InitiativeListFilter{})
 	if err != nil {
 		t.Fatalf("ListInitiatives after archive: %v", err)
 	}
