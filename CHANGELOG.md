@@ -5,6 +5,37 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Parent-relationship filters for work items (cycle 75)**
+- Plane release v2.5.0 (2026-03-17): "Rich filters added for work items,
+  epics, and parent relationships." Cycles 73/74 closed the initiatives
+  and epics halves; work-item rich filters (C2T5) are long done. glance's
+  issues list had no way to filter by parent relationship — no parent or
+  epic filter on the API or in the FilterPanel.
+- Backend: `GET /api/v1/workspaces/{slug}/projects/{identifier}/issues`
+  takes repeatable/comma-separated `?parent=` (parent issue UUIDs,
+  OR-matched; `"none"` = top-level issues, parent_id IS NULL) and
+  `?epic=` (epic UUIDs via the epic_issues junction, OR-matched;
+  `"none"` = issues in no epic). Malformed UUIDs → 400 with a clear
+  message; empty params = no filter. All input parameterized (no string
+  interpolation); the `i` outer-alias verified. The export path shares
+  `issueListConds`, so the filters apply there too; trash/archived
+  exclusion unchanged. OpenAPI pins (28→30 list params).
+- Frontend: new Parent and Epic dimensions in `web/src/lib/filters.ts`
+  (URL-backed `parent=`/`epic=`, repeatable + comma forms; invalid
+  values dropped, never throw) shared by the list, board, and
+  spreadsheet views; FilterPanel sections with a debounced searchable
+  parent-issue picker (display_id badge, "No parent (top-level)"
+  sentinel, stale-id fallback rows) and an epic picker (archived listed
+  last with issue-count/archived hints, "No epic" sentinel); per-section
+  Clear buttons on every section; active-filter count badge, existing
+  result counts, and empty states unchanged. Guests keep read-only
+  access (panel has no create affordances).
+- 35 new tests (11 backend, 24 frontend); QA gate green
+  (gofmt/vet/go test/govulncheck, tsc -b, npm run build, 1416 vitest).
+  UI-first gate not triggered: additive filter dimensions on the
+  existing FilterPanel anatomy; backend contract was the spec (C73/C74
+  precedent).
+
 **Epics rich filters (cycle 74)**
 - Plane release v2.5.0 (2026-03-17): "Rich filters added for work items,
   epics, and parent relationships." Cycle 73 closed the initiatives half;
