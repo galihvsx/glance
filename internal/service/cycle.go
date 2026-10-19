@@ -56,7 +56,36 @@ var (
 	// passed to a cycle endpoint — is not a syntactically valid UUID.
 	// The handler maps it to 400 bad_request.
 	ErrInvalidCycleID = errors.New("service: invalid cycle id")
+	// ErrCycleOverlap is returned when a cycle's date range would
+	// overlap another live (upcoming/current) cycle of the same project
+	// while the project's parallel_cycles toggle is off (C78T0,
+	// migration 000071). The concrete *CycleOverlapError names the
+	// conflicting cycle; the handler maps it to 409 conflict.
+	// Grandfathering is deliberate: flipping the toggle OFF with
+	// pre-existing overlaps does NOT retroactively alter them — only
+	// new creates/updates are blocked.
+	ErrCycleOverlap = errors.New("service: cycle dates overlap another cycle")
 )
+
+// CycleOverlapError is the concrete ErrCycleOverlap: the create/update
+// was refused because [start_date, end_date] overlaps another live
+// cycle of the same project. Name is the conflicting cycle's name,
+// surfaced in the 409 message (e.g. cycle dates overlap with "Sprint
+// 12"). NonArchivedIssues-style: handlers extract the detail via
+// errors.As; errors.Is matches the ErrCycleOverlap sentinel.
+type CycleOverlapError struct {
+	Name string
+}
+
+func (e *CycleOverlapError) Error() string {
+	return fmt.Sprintf("service: cycle dates overlap with %q", e.Name)
+}
+
+// Is makes *CycleOverlapError match the ErrCycleOverlap sentinel via
+// errors.Is, so handlers can map it without knowing the concrete type.
+func (e *CycleOverlapError) Is(target error) bool {
+	return target == ErrCycleOverlap
+}
 
 // state groups counted in a progress snapshot. All six groups from the
 // states CHECK vocabulary — triage counts as incomplete, and the frozen
@@ -204,6 +233,47 @@ func cycleProgressSnapshot(ctx context.Context, q queryQuerier, cycleID string) 
 	return snap, rows.Err()
 }
 
+// projectParallelCycles reports the project's parallel-cycles toggle
+// (C78T0, migration 000071).
+func projectParallelCycles(ctx context.Context, q queryRower, projectID string) (bool, error) {
+	var parallel bool
+	if err := q.QueryRow(ctx,
+		`SELECT parallel_cycles FROM projects WHERE id = $1::uuid`,
+		projectID).Scan(&parallel); err != nil {
+		return false, err
+	}
+	return parallel, nil
+}
+
+// findOverlappingCycle returns the name of a live (upcoming/current)
+// cycle of the project whose [start_date, end_date] overlaps [start,
+// end]. The predicate is inclusive on both ends: existing.start_date <=
+// new.end_date AND existing.end_date >= new.start_date. Completed cycles
+// never block. excludeID skips one cycle (the update's own row on
+// UpdateCycle; "" on create skips none). ok=false when nothing overlaps.
+func findOverlappingCycle(ctx context.Context, q queryRower, projectID, excludeID string, start, end time.Time) (name string, ok bool, err error) {
+	cond := ""
+	args := []any{projectID, end, start}
+	if excludeID != "" {
+		cond = " AND id <> $4::uuid"
+		args = append(args, excludeID)
+	}
+	err = q.QueryRow(ctx,
+		`SELECT name FROM cycles
+		 WHERE project_id = $1::uuid
+		   AND status IN ('upcoming', 'current')
+		   AND start_date <= $2::date AND end_date >= $3::date`+cond+`
+		 ORDER BY start_date, created_at
+		 LIMIT 1`, args...).Scan(&name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
 // CreateCycle creates a cycle in the project. Member (15)+; guests get
 // ErrForbidden.
 func CreateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in CycleInput) (*Cycle, error) {
@@ -217,6 +287,34 @@ func CreateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, true)
 	if err != nil {
 		return nil, err
+	}
+	// Name-conflict precedence (existing contract): a duplicate name
+	// reports ErrCycleConflict even when the dates would also overlap.
+	// The unique-violation fallback below covers the race window.
+	var nameTaken bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM cycles WHERE project_id = $1::uuid AND name = $2)`,
+		projectID, name).Scan(&nameTaken); err != nil {
+		return nil, err
+	}
+	if nameTaken {
+		return nil, ErrCycleConflict
+	}
+	// Overlap validation (C78T0): with the parallel_cycles toggle off,
+	// the new range must not overlap a live cycle of the project. With
+	// the toggle on there is no restriction (today's behavior).
+	parallel, err := projectParallelCycles(ctx, pool, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !parallel {
+		cname, ok, err := findOverlappingCycle(ctx, pool, projectID, "", in.StartDate, in.EndDate)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return nil, &CycleOverlapError{Name: cname}
+		}
 	}
 	status := cycleStatusFor(in.StartDate, in.EndDate, time.Now())
 	c, err := scanCycle(pool.QueryRow(ctx,
@@ -319,11 +417,13 @@ func UpdateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
+	renamed := false
 	if patch.Name != nil {
 		name := strings.TrimSpace(*patch.Name)
 		if name == "" {
 			return nil, ErrNameRequired
 		}
+		renamed = name != c.Name
 		sets = append(sets, "name = "+arg(name))
 		c.Name = name
 	}
@@ -338,6 +438,39 @@ func UpdateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	}
 	if start.After(end) {
 		return nil, ErrInvalidCycle
+	}
+	if renamed {
+		// Name-conflict precedence (existing contract, symmetric with
+		// CreateCycle): a rename to a taken name reports ErrCycleConflict
+		// even when the dates would also overlap.
+		var nameTaken bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM cycles WHERE project_id = $1::uuid AND id <> $2::uuid AND name = $3)`,
+			projectID, cycleID, c.Name).Scan(&nameTaken); err != nil {
+			return nil, err
+		}
+		if nameTaken {
+			return nil, ErrCycleConflict
+		}
+	}
+	if patch.StartDate != nil || patch.EndDate != nil {
+		// Overlap validation (C78T0) runs only when the date range
+		// actually changes: a name-only update of a grandfathered
+		// overlapping cycle stays legal — flipping the toggle OFF never
+		// retroactively alters existing cycles (deliberate).
+		parallel, err := projectParallelCycles(ctx, pool, projectID)
+		if err != nil {
+			return nil, err
+		}
+		if !parallel {
+			cname, ok, err := findOverlappingCycle(ctx, pool, projectID, cycleID, start, end)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return nil, &CycleOverlapError{Name: cname}
+			}
+		}
 	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
@@ -456,6 +589,18 @@ func incompleteCycleIssues(ctx context.Context, q queryQuerier, cycleID string) 
 //  2. moveIncompleteIssuesTx: transfer to the next cycle when one is
 //     queued, else detach to the backlog once the close_in_days grace
 //     passes.
+//
+// Parallel-cycles rulings (C78T0, documented contract):
+//   - The transfer target stays the existing "next cycle" query
+//     (earliest upcoming/current cycle with start_date >= the completed
+//     cycle's end_date). It is non-overlapping by construction, so a
+//     still-current overlapping parallel cycle is NEVER a transfer
+//     target — an issue attached to one keeps that membership.
+//   - Completion deletes only the completed cycle's cycle_issues rows;
+//     membership rows of still-running parallel cycles are untouched
+//     (an issue may legitimately sit in several live cycles at once).
+//   - If no non-overlapping next cycle exists, the close_in_days detach
+//     rule applies unchanged.
 func CompleteCycle(ctx context.Context, pool *pgxpool.Pool, cycleID, projectID string, now time.Time) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

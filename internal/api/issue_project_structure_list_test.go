@@ -73,6 +73,12 @@ func TestIssueListIncludeProjectStructure(t *testing.T) {
 
 	// Two cycles: the batch must pick the first by NAME ("Sprint 1"),
 	// mirroring the detail endpoint's LIMIT 1 ORDER BY name.
+	// C78T0: the two cycles deliberately share a date range, so enable
+	// the parallel-cycles toggle first (off by default since C78T0).
+	rec = postAuthedJSON(t, e, http.MethodPatch, base, cookie, `{"parallel_cycles":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable parallel_cycles: status = %d (body: %s)", rec.Code, rec.Body.String())
+	}
 	start := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	end := time.Now().AddDate(0, 0, 13).Format("2006-01-02")
 	var cycleIDs []string

@@ -452,9 +452,9 @@
       "patch": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a project",
-        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default).",
+        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default). parallel_cycles is the parallel-cycles toggle: true lets cycles overlap in date; false (default) makes cycle create/update reject ranges overlapping another live cycle (grandfathering: turning it off does not change existing overlapping cycles).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" }, "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). true = multiple cycles may run simultaneously with overlapping dates; false (default) = cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle. Grandfathering: turning this off does not change existing overlapping cycles." } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -1447,7 +1447,7 @@
         "description": "Member (15)+.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "start_date", "end_date"], "properties": { "name": { "type": "string" }, "start_date": { "type": "string", "format": "date" }, "end_date": { "type": "string", "format": "date" } } } } } },
-        "responses": { "201": { "description": "Created cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+        "responses": { "201": { "description": "Created cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "description": "Cycle dates overlap another live (upcoming/current) cycle of the project and the project's parallel_cycles toggle is off (C78T0). The error message names the conflicting cycle (e.g. cycle dates overlap with \"Sprint 12\"). Enable parallel_cycles on the project to allow overlapping ranges.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}": {
@@ -1463,7 +1463,7 @@
         "description": "Member (15)+.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "start_date": { "type": "string", "format": "date" }, "end_date": { "type": "string", "format": "date" } } } } } },
-        "responses": { "200": { "description": "Updated cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+        "responses": { "200": { "description": "Updated cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cycle" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "description": "The new date range overlaps another live (upcoming/current) cycle of the project and the project's parallel_cycles toggle is off (C78T0). The error message names the conflicting cycle (e.g. cycle dates overlap with \"Sprint 12\"). Only checked when the date range actually changes; name-only updates of grandfathered overlapping cycles stay legal.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       },
       "delete": {
         "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3083,6 +3083,7 @@
           "automation_run_retention_days": { "type": "integer", "nullable": true, "description": "Automation run retention window in days; null = 90-day default, 0 = keep forever" },
           "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Project archive timestamp; null = live. Archived projects are excluded from the project list, sidebar and global search" },
           "labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" }, "description": "Workspace project-label chips [{id,name,color}] ordered by name. Always present ([]) on every project payload (C76T0)." },
+          "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). When true, multiple cycles of the project may run simultaneously with overlapping date ranges (e.g. a two-week sprint alongside a longer release cycle). When false (default), cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle with 409. Grandfathering: turning this off does not change existing overlapping cycles — only new overlapping creates/updates are rejected." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
