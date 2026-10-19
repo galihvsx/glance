@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v5"
 
@@ -298,6 +300,7 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 
 // listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
 // filters (?state=&assignee=&label=&priority=&estimate=&cycle=&q=,
+// ?parent=&epic= (C75T0: comma-separated or repeatable; "none" = top-level / no epic),
 // ?created_after/before=&updated_after/before=&due_after/before=,
 // ?start_after/before= (C3T5: bracket issues.start_date for the calendar),
 // ?undated=1 (C3T5: issues with neither target nor start date),
@@ -350,6 +353,39 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	labels := parseIDList("label")
 	assignees := parseIDList("assignee")
 	estimatePoints := parseIDList("estimate")
+	// C75T0: parent=/epic= take repeatable AND comma-separated values —
+	// parseIDList above only reads the first value, so this iterates
+	// every occurrence. "none" is the top-level / no-epic sentinel (the
+	// "none" convention of assignee=/estimate=); every other value must
+	// be a UUID — garbage is 400 naming the bad value, never silently
+	// ignored. The service re-validates (validateListFilterValues) as
+	// defense-in-depth for direct internal callers.
+	parseRepeatIDList := func(name string) ([]string, error) {
+		var out []string
+		for _, raw := range qp[name] {
+			for _, part := range strings.Split(raw, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				if part != "none" {
+					if _, err := uuid.Parse(part); err != nil {
+						return nil, fmt.Errorf("invalid %s: %q is not a UUID or \"none\"", name, part)
+					}
+				}
+				out = append(out, part)
+			}
+		}
+		return out, nil
+	}
+	parents, err := parseRepeatIDList("parent")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
+	epics, err := parseRepeatIDList("epic")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	// C2T8: per_page is REJECTED (400) when out of range, on every list
 	// endpoint — never silently clamped. Rationale: the documented
 	// contract is "want 1-100"; fail-fast surfaces client bugs instead of
@@ -430,6 +466,8 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		Labels:         labels,
 		Assignees:      assignees,
 		EstimatePoints: estimatePoints,
+		Parents:        parents,
+		Epics:          epics,
 		Cycle:          qp.Get("cycle"),
 		Q:              qp.Get("q"),
 		OrderBy:        qp.Get("order_by"),

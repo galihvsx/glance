@@ -2464,7 +2464,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 		}
 	}
 
-	// 2. Parameter set: exactly the 28 query params the handler
+	// 2. Parameter set: exactly the 30 query params the handler
 	// reads (parseIssueListInput + the listIssues include_links
 	// branch) plus the Slug/Identifier path refs — no page,
 	// no search, no sort.
@@ -2503,6 +2503,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 	wantParams := []string{
 		"per_page", "cursor", "order_by",
 		"state", "priority", "label", "assignee", "estimate", "cycle",
+		"parent", "epic",
 		"q", "fields", "draft", "sequence_id",
 		"undated", "subscribed", "archived", "deleted",
 		"include_links", "include_project_structure",
@@ -2639,6 +2640,16 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 	for _, name := range []string{"assignee", "estimate"} {
 		if !strings.Contains(param(name).Schema.Description, `"none"`) {
 			t.Fatalf("%s description lacks the \"none\" sentinel: %q", name, param(name).Schema.Description)
+		}
+	}
+	// C75T0: parent=/epic= are comma-separated (repeatable), UUID-valued,
+	// "none"-sentineled filters with 400-on-malformed semantics.
+	for _, name := range []string{"parent", "epic"} {
+		desc := param(name).Schema.Description
+		for _, want := range []string{"UUID", `"none"`, "malformed", "repeatable"} {
+			if !strings.Contains(desc, want) {
+				t.Fatalf("%s description lacks %q: %q", name, want, desc)
+			}
 		}
 	}
 	for _, name := range []string{"include_links", "include_project_structure"} {
