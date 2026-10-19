@@ -90,8 +90,12 @@ type Project struct {
 	// archives all its issues in the same transaction (reusing the
 	// issue archived_at semantics).
 	ArchivedAt *time.Time `json:"archived_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	// Labels are the workspace project-labels assigned to this project
+	// (C76T0, migration 000070): [{id,name,color}] ordered by name.
+	// Always present ([] never null) on every project payload.
+	Labels    []ProjectLabel `json:"labels"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -232,7 +236,7 @@ var defaultStates = []struct{ name, group, color string }{
 // scanProject scans the full project column list produced by the queries
 // below. view_flags is nullable JSONB: a NULL scans into a nil []byte and
 // stays omitted from the JSON response via omitempty.
-func scanProject(row pgx.Row) (*Project, error) {
+func scanProjectBase(row pgx.Row) (*Project, error) {
 	var p Project
 	var viewFlags []byte
 	err := row.Scan(
@@ -245,17 +249,61 @@ func scanProject(row pgx.Row) (*Project, error) {
 	if viewFlags != nil {
 		p.ViewFlags = json.RawMessage(viewFlags)
 	}
+	// Labels default to [] — callers that select the chip aggregate
+	// overwrite this via scanProject; write paths that cannot carry
+	// the aggregate load them separately.
+	p.Labels = []ProjectLabel{}
 	return &p, nil
 }
 
-// projectColumns is the bare column list for INSERT/UPDATE ... RETURNING
-// (no table alias exists there); projectColumnsP is the same list with
-// the p. alias for SELECT ... FROM projects p.
-const projectColumns = `id::text, workspace_id::text, identifier, name, description,
+// scanProject scans a row carrying the trailing C76T0 label-chip
+// aggregate (projectColumns / projectColumnsP): the base columns plus
+// the decoded chips, [] never null.
+func scanProject(row pgx.Row) (*Project, error) {
+	var p Project
+	var viewFlags []byte
+	var labelsJSON []byte
+	err := row.Scan(
+		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.CreatedAt, &p.UpdatedAt,
+		&labelsJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if viewFlags != nil {
+		p.ViewFlags = json.RawMessage(viewFlags)
+	}
+	labels, err := decodeProjectLabels(labelsJSON)
+	if err != nil {
+		return nil, err
+	}
+	p.Labels = labels
+	return &p, nil
+}
+
+// projectColumnsBase is the bare column list without the C76T0
+// label-chip aggregate — for the one context where the aggregate
+// cannot correlate: UPDATE ... RETURNING (PostgreSQL does not expose
+// the target table by name to subqueries there). That path loads the
+// chips separately via loadProjectLabels.
+//
+// projectColumns is the bare column list for INSERT ... RETURNING and
+// SELECT ... FROM projects (no alias); projectColumnsP is the same
+// list with the p. alias for SELECT ... FROM projects p. Both carry
+// the label-chip aggregate as the trailing column (scanProject decodes
+// it).
+const projectColumnsBase = `id::text, workspace_id::text, identifier, name, description,
 	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, created_at, updated_at`
 
-const projectColumnsP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
+const projectColumnsBaseP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
 	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.created_at, p.updated_at`
+
+var projectColumns = projectColumnsBase + `,
+	` + projectLabelsAgg("projects")
+
+var projectColumnsP = projectColumnsBaseP + `,
+	` + projectLabelsAgg("p")
 
 // CreateProject inserts the project and seeds its default states in one
 // transaction. The caller must be a workspace member (15) or admin (20);
@@ -270,8 +318,12 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, nam
 // ListProjects returns the workspace's live projects ordered by name.
 // Archived projects are excluded unless includeArchived is true (C18T3:
 // the projects page renders them in a separate "Archived" section).
-// Non-members get ErrNotFound (see GetWorkspace).
-func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, includeArchived bool) ([]Project, error) {
+// labelIDs (C76T0) optionally filters to projects carrying ANY of the
+// given project-label ids (EXISTS on the junction, OR semantics,
+// parameterized — never interpolated). Malformed values, or ids that
+// name no label of the workspace, are ErrInvalidProjectLabelFilter
+// (400). Non-members get ErrNotFound (see GetWorkspace).
+func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, includeArchived bool, labelIDs []string) ([]Project, error) {
 	wsID, _, err := workspaceIDForActor(pool.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
@@ -282,13 +334,33 @@ func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID strin
 		return nil, err
 	}
 
-	query := `SELECT ` + projectColumnsP + ` FROM projects p
-		 WHERE p.workspace_id = $1::uuid`
-	if !includeArchived {
-		query += ` AND p.archived_at IS NULL`
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
 	}
-	query += ` ORDER BY p.name`
-	rows, err := pool.Query(ctx, query, wsID)
+	wsArg := arg(wsID)
+
+	var conds []string
+	conds = append(conds, `p.workspace_id = `+wsArg+`::uuid`)
+	if !includeArchived {
+		conds = append(conds, `p.archived_at IS NULL`)
+	}
+	if len(labelIDs) > 0 {
+		ids, err := validateProjectLabelFilter(ctx, pool, wsID, labelIDs)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) > 0 {
+			conds = append(conds, `EXISTS (SELECT 1 FROM project_project_labels ppl
+				WHERE ppl.project_id = p.id AND ppl.label_id = ANY(`+arg(ids)+`::uuid[]))`)
+		}
+	}
+
+	query := `SELECT ` + projectColumnsP + ` FROM projects p
+		 WHERE ` + strings.Join(conds, " AND ") + `
+		 ORDER BY p.name`
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -437,15 +509,21 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		return nil, ErrForbidden
 	}
 
-	p, err := scanProject(tx.QueryRow(ctx,
+	p, err := scanProjectBase(tx.QueryRow(ctx,
 		`UPDATE projects p SET `+strings.Join(sets, ", ")+`, updated_at = now()
 		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2
-		 RETURNING `+projectColumns,
+		 RETURNING `+projectColumnsBase,
 		append([]any{wsID, ident}, args...)...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProjectNotFound
 		}
+		return nil, err
+	}
+	// UPDATE ... RETURNING cannot correlate the chip aggregate
+	// (projectColumns is unusable here), so the chips load in-tx.
+	p.Labels, err = loadProjectLabels(ctx, tx, p.ID)
+	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

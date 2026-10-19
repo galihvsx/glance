@@ -365,8 +365,8 @@
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List projects in a workspace",
         "description": "Archived projects are excluded by default; ?archived=true includes them (the projects page renders them in a separate Archived section).",
-        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "archived", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Include archived projects" } ],
-        "responses": { "200": { "description": "Project list", "content": { "application/json": { "schema": { "type": "object", "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } } } } } } 
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "archived", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Include archived projects" }, { "name": "label", "in": "query", "schema": { "type": "array", "items": { "type": "string", "format": "uuid" } }, "description": "Filter to projects carrying any of these project-label ids (C76T0): repeatable and comma-separated. Malformed or unknown ids are 400." } ],
+        "responses": { "200": { "description": "Project list", "content": { "application/json": { "schema": { "type": "object", "properties": { "projects": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
       },
       "post": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -375,6 +375,62 @@
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "identifier"], "properties": { "name": { "type": "string" }, "identifier": { "type": "string", "description": "Uppercase short key, e.g. GLA" }, "template_id": { "type": "string", "format": "uuid", "description": "Optional project template id; unknown id is 400" }, "icon": { "type": "string", "description": "Optional project emoji icon; single emoji, empty string = unset; anything else invalid is 400" } } } } } },
         "responses": { "201": { "description": "Created project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/project-labels": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List a workspace's project labels",
+        "description": "Workspace-level project-label taxonomy (C76T0): reusable across projects, flat (no hierarchy). Any member (guest 5+) may read. The envelope is {\"project_labels\": [...]} — never null.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Project label list", "content": { "application/json": { "schema": { "type": "object", "properties": { "project_labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a project label",
+        "description": "Member (15)+. Name is required (trimmed, 1-120 chars) and unique per workspace — a duplicate is 409. Color must be #rrggbb (400), defaulting to #6b7280 when omitted.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" }, "color": { "type": "string", "description": "Hex #rrggbb; defaults to #6b7280 when omitted" } } } } } },
+        "responses": { "201": { "description": "Created project label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectLabel" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/project-labels/{labelID}": {
+      "get": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get a project label",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Project label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectLabel" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update a project label",
+        "description": "Member (15)+. Partial semantics — nil fields are untouched. Renaming onto an existing name is 409; bad hex color is 400; an empty body is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "color": { "type": "string", "description": "Hex #rrggbb" } } } } } },
+        "responses": { "200": { "description": "Updated project label", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectLabel" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a project label",
+        "description": "Member (15)+. The label's project assignments cascade; the projects themselves are never touched.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/project-labels/{labelID}": {
+      "post": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Assign a project label to a project",
+        "description": "Member (15)+. The label must belong to the workspace. Assigning a label the project already carries is 409 (deliberate — unlike the idempotent issue-label re-attach). Namespaced as project-labels because the work-item label taxonomy already owns .../labels/{labelID} on this path.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Label assigned" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["taxonomy"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a project label from a project",
+        "description": "Member (15)+. Idempotent: 204 even when the label was never assigned.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "labelID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Label removed" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/templates": {
@@ -2731,9 +2787,11 @@
       },
       "InitiativeProject": {
         "type": "object",
+        "description": "A member project of an initiative (service.InitiativeProject), with its project-label chips.",
         "properties": {
           "project_id": { "type": "string", "format": "uuid" },
           "project_name": { "type": "string" },
+          "labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" }, "description": "Workspace project-label chips [{id,name,color}] ordered by name. Always present ([]) (C76T0)." },
           "added_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -3024,6 +3082,7 @@
           "close_in_days": { "type": "integer", "description": "Cycle-rollover grace in days" },
           "automation_run_retention_days": { "type": "integer", "nullable": true, "description": "Automation run retention window in days; null = 90-day default, 0 = keep forever" },
           "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Project archive timestamp; null = live. Archived projects are excluded from the project list, sidebar and global search" },
+          "labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" }, "description": "Workspace project-label chips [{id,name,color}] ordered by name. Always present ([]) on every project payload (C76T0)." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -3232,6 +3291,18 @@
           "name": { "type": "string" },
           "color": { "type": "string", "description": "Hex #rrggbb; defaults to #6b7280 when omitted on create. Never null." },
           "parent_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Parent label for the hierarchy; omitted for root labels." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProjectLabel": {
+        "type": "object",
+        "description": "One workspace-scoped project tag (service.ProjectLabel), serialized directly by the project-label endpoints and embedded as chips on project payloads.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "color": { "type": "string", "description": "Hex #rrggbb; defaults to #6b7280 when omitted on create. Never null." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
