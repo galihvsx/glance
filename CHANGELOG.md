@@ -5,6 +5,39 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Epics rich filters (cycle 74)**
+- Plane release v2.5.0 (2026-03-17): "Rich filters added for work items,
+  epics, and parent relationships." Cycle 73 closed the initiatives half;
+  glance's Epics page had zero server-side filtering — list + create
+  only, with a client-side name search and a show-archived toggle.
+- Backend: `GET /api/v1/workspaces/{slug}/projects/{identifier}/epics`
+  takes repeatable `?status=` (active/archived; explicit list wins over
+  the legacy `?include_archived=1|true`, which stays
+  backward-compatible), `?q=` (ILIKE on name + description,
+  parameterized), `?created_by=`, `?created_from=`/`?created_to=`
+  (ISO-8601 on created_at), `?initiative_id=` (linked initiative via
+  the initiative_epics junction), and `?sort=name|created_at|updated_at
+  |issue_count` with `?order=asc|desc` (unknown values → 400 with a
+  clear message; sort column whitelisted to static SQL). No migration;
+  response shape unchanged (`[]` never null); OpenAPI pins.
+- Frontend: URL-backed filter bar on the Epics page mirroring the C73
+  Initiatives filter bar anatomy — status multi-select chips
+  (Active/Archived), debounced search (server-side, replaces the
+  client-side search), created-by member picker, created date range,
+  linked-initiative picker, sort dropdown (Newest/Oldest/Name
+  A–Z/Most issues); filter state in shareable URL params (invalid
+  values dropped, never throws), clear-all, active-filter count badge,
+  result count, and a token-style empty state when filters match
+  nothing. Guests keep read-only access (the "New epic" affordance is
+  now hidden for role < 15, matching the initiatives page — the server
+  403 was already the backstop). Card-level rollups, archive/unarchive,
+  and delete flows untouched.
+- Default list order is now newest-first (`created_at desc`, was
+  oldest-first) — deliberate, matches the new sort control's default.
+- 29 new tests (9 backend, 20 frontend). UI-first gate not triggered:
+  additive bar mirroring existing anatomy; backend contract was the
+  spec (C73 precedent).
+
 **Initiatives rich filters (cycle 73)**
 - Plane changelog 2026-02-28: "Initiatives now support rich filters,
   making it easier to narrow down and find exactly what you're looking
