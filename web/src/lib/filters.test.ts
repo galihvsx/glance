@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activeFilterCount,
   EMPTY_FILTERS,
+  isFilterParam,
   parseFilters,
   serializeFilters,
   toApiParams,
@@ -15,6 +16,8 @@ const FULL: IssueFilters = {
   labels: ["label-uuid-1", "label-uuid-2"],
   assignees: ["user-uuid-1", "none"],
   estimates: ["none"],
+  parents: ["123e4567-e89b-12d3-a456-426614174000", "none"],
+  epics: ["123e4567-e89b-12d3-a456-426614174001"],
   createdAfter: "2026-10-01",
   createdBefore: "2026-10-09",
   updatedAfter: "",
@@ -82,6 +85,10 @@ describe("toApiParams", () => {
     expect(p.get("priority")).toBe("1,3");
     expect(p.get("label")).toBe("label-uuid-1,label-uuid-2");
     expect(p.get("assignee")).toBe("user-uuid-1,none");
+    expect(p.get("parent")).toBe(
+      "123e4567-e89b-12d3-a456-426614174000,none",
+    );
+    expect(p.get("epic")).toBe("123e4567-e89b-12d3-a456-426614174001");
     expect(p.get("subscribed")).toBe("1");
   });
 
@@ -94,8 +101,94 @@ describe("toApiParams", () => {
 describe("activeFilterCount", () => {
   it("counts dimensions, not values", () => {
     expect(activeFilterCount(EMPTY_FILTERS)).toBe(0);
-    // q, state, priority, label, assignee, estimate, created pair,
-    // due pair, subscribed, archived = 10 dimensions
-    expect(activeFilterCount(FULL)).toBe(10);
+    // q, state, priority, label, assignee, estimate, parent, epic,
+    // created pair, due pair, subscribed, archived = 12 dimensions
+    expect(activeFilterCount(FULL)).toBe(12);
+  });
+});
+
+describe("parent/epic filters (C75T1)", () => {
+  const P1 = "123e4567-e89b-12d3-a456-426614174000";
+  const P2 = "123e4567-e89b-12d3-a456-426614174001";
+  const E1 = "123e4567-e89b-12d3-a456-426614174002";
+
+  it("round-trips parents and epics through the URL", () => {
+    const params = serializeFilters({
+      ...EMPTY_FILTERS,
+      parents: [P1, "none"],
+      epics: [E1],
+    });
+    expect(params.get("parent")).toBe(`${P1},none`);
+    expect(params.get("epic")).toBe(E1);
+    const back = parseFilters(params);
+    expect(back.parents).toEqual([P1, "none"]);
+    expect(back.epics).toEqual([E1]);
+  });
+
+  it("keeps the 'none' sentinel for parent and epic", () => {
+    const back = parseFilters(new URLSearchParams("parent=none&epic=none"));
+    expect(back.parents).toEqual(["none"]);
+    expect(back.epics).toEqual(["none"]);
+  });
+
+  it("supports repeatable and comma-separated forms together", () => {
+    const back = parseFilters(
+      new URLSearchParams(`parent=${P1}&parent=${P2},none&epic=${E1},${P1}`),
+    );
+    expect(back.parents).toEqual([P1, P2, "none"]);
+    expect(back.epics).toEqual([E1, P1]);
+  });
+
+  it("drops malformed parent/epic values and never throws", () => {
+    const back = parseFilters(
+      new URLSearchParams(
+        "parent=garbage,,none,123&epic=not-a-uuid,&q=still-fine",
+      ),
+    );
+    expect(back.parents).toEqual(["none"]);
+    expect(back.epics).toEqual([]);
+    // The rest of the schema keeps parsing around the garbage.
+    expect(back.q).toBe("still-fine");
+  });
+
+  it("rejects almost-UUIDs (wrong length, non-hex)", () => {
+    const back = parseFilters(
+      new URLSearchParams(
+        "parent=123e4567-e89b-12d3-a456-42661417400,zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+      ),
+    );
+    expect(back.parents).toEqual([]);
+  });
+
+  it("passes parent/epic through toApiParams comma-joined", () => {
+    const p = toApiParams({
+      ...EMPTY_FILTERS,
+      parents: [P1, "none"],
+      epics: [E1],
+    });
+    expect(p.get("parent")).toBe(`${P1},none`);
+    expect(p.get("epic")).toBe(E1);
+  });
+
+  it("omits empty parent/epic dimensions from the query string", () => {
+    const p = serializeFilters(EMPTY_FILTERS);
+    expect(p.get("parent")).toBeNull();
+    expect(p.get("epic")).toBeNull();
+    const api = toApiParams(EMPTY_FILTERS);
+    expect(api.get("parent")).toBeNull();
+    expect(api.get("epic")).toBeNull();
+  });
+
+  it("counts parent and epic as separate badge dimensions", () => {
+    expect(activeFilterCount({ ...EMPTY_FILTERS, parents: [P1] })).toBe(1);
+    expect(
+      activeFilterCount({ ...EMPTY_FILTERS, epics: [E1], parents: ["none"] }),
+    ).toBe(2);
+  });
+
+  it("recognizes parent/epic as filter params (peek= etc. still preserved)", () => {
+    expect(isFilterParam("parent")).toBe(true);
+    expect(isFilterParam("epic")).toBe(true);
+    expect(isFilterParam("peek")).toBe(false);
   });
 });

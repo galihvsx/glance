@@ -20,6 +20,12 @@ import { useSearchParams } from "react-router-dom";
  *                   ?assignee=<uuid>,none
  *   estimate        comma-separated estimate_point UUIDs; "none" matches
  *                   issues with no estimate point
+ *   parent          repeatable and comma-separated issue UUIDs (OR-matched);
+ *                   "none" matches top-level issues (parent_id IS NULL),
+ *                   e.g. ?parent=<uuid>,none. Malformed values are dropped.
+ *   epic            repeatable and comma-separated epic UUIDs (OR-matched,
+ *                   via the epic_issues junction); "none" matches issues in
+ *                   no epic. Malformed values are dropped.
  *   created_after   YYYY-MM-DD, inclusive
  *   created_before  YYYY-MM-DD, inclusive of the whole day
  *   updated_after   YYYY-MM-DD, inclusive
@@ -47,6 +53,10 @@ export interface IssueFilters {
   assignees: string[];
   /** Estimate-point UUIDs; "none" = no estimate. */
   estimates: string[];
+  /** Parent issue UUIDs (OR-matched); "none" = top-level issues. */
+  parents: string[];
+  /** Epic UUIDs via the epic_issues junction (OR-matched); "none" = no epic. */
+  epics: string[];
   createdAfter: string;
   createdBefore: string;
   updatedAfter: string;
@@ -65,6 +75,8 @@ export const EMPTY_FILTERS: IssueFilters = {
   labels: [],
   assignees: [],
   estimates: [],
+  parents: [],
+  epics: [],
   createdAfter: "",
   createdBefore: "",
   updatedAfter: "",
@@ -89,6 +101,25 @@ function splitPriorities(v: string | null): number[] {
   return splitIds(v)
     .map((s) => Number(s))
     .filter((n) => Number.isInteger(n) && n >= 0 && n <= 4);
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Split the parent=/epic= params: repeatable AND comma-separated (the
+ *  backend accepts both forms). Only the "none" sentinel and well-formed
+ *  UUIDs survive — garbage is dropped so a pasted URL can never 400 the
+ *  list (the list API 400s malformed UUIDs). */
+function splitParentEpicIds(values: string[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    for (const part of v.split(",")) {
+      const s = part.trim();
+      if (!s) continue;
+      if (s === "none" || UUID_RE.test(s)) out.push(s);
+    }
+  }
+  return out;
 }
 
 function validDate(v: string | null): string {
@@ -118,6 +149,8 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     labels: splitIds(search.get("label")),
     assignees: splitIds(search.get("assignee")),
     estimates: splitIds(search.get("estimate")),
+    parents: splitParentEpicIds(search.getAll("parent")),
+    epics: splitParentEpicIds(search.getAll("epic")),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
     updatedAfter: validDate(search.get("updated_after")),
@@ -139,6 +172,8 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.labels.length > 0) p.set("label", f.labels.join(","));
   if (f.assignees.length > 0) p.set("assignee", f.assignees.join(","));
   if (f.estimates.length > 0) p.set("estimate", f.estimates.join(","));
+  if (f.parents.length > 0) p.set("parent", f.parents.join(","));
+  if (f.epics.length > 0) p.set("epic", f.epics.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
   if (f.createdBefore) p.set("created_before", f.createdBefore);
   if (f.updatedAfter) p.set("updated_after", f.updatedAfter);
@@ -192,6 +227,8 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.labels.length > 0) n++;
   if (f.assignees.length > 0) n++;
   if (f.estimates.length > 0) n++;
+  if (f.parents.length > 0) n++;
+  if (f.epics.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore) n++;
@@ -244,6 +281,8 @@ const FILTER_PARAM_NAMES = new Set([
   "label",
   "assignee",
   "estimate",
+  "parent",
+  "epic",
   "created_after",
   "created_before",
   "updated_after",
