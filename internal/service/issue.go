@@ -2795,6 +2795,14 @@ type ListIssuesInput struct {
 	Labels         []string
 	Assignees      []string
 	EstimatePoints []string
+	// Parents filters on issues.parent_id (C75T0): parent issue UUIDs,
+	// OR-matched; the sentinel "none" matches top-level issues
+	// (parent_id IS NULL).
+	Parents []string
+	// Epics filters on the epic_issues junction (C75T0): epic UUIDs,
+	// OR-matched; the sentinel "none" matches issues in no epic
+	// (NOT EXISTS on the junction).
+	Epics []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -2855,7 +2863,8 @@ func validateListFilterValues(in ListIssuesInput) error {
 		}
 	}
 	// Multi-value UUID filters; Assignees/EstimatePoints also accept the
-	// "none" sentinel (validated separately below).
+	// "none" sentinel (validated separately below). Parents/Epics (C75T0)
+	// accept it too: top-level issues / issues in no epic.
 	for _, id := range in.Labels {
 		if !isUUIDFormat(id) {
 			return ErrInvalidListFilter
@@ -2867,6 +2876,16 @@ func validateListFilterValues(in ListIssuesInput) error {
 		}
 	}
 	for _, id := range in.EstimatePoints {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.Parents {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.Epics {
 		if id != filterNone && !isUUIDFormat(id) {
 			return ErrInvalidListFilter
 		}
@@ -3070,6 +3089,50 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 		}
 		if wantNone {
 			parts = append(parts, "i.estimate_point_id IS NULL")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.Parents) > 0 {
+		// C75T0: parent is a direct column (parent_id), same shape as
+		// the EstimatePoints filter: UUIDs OR-matched, "none" = top-level
+		// (parent_id IS NULL).
+		var ids []string
+		wantNone := false
+		for _, p := range in.Parents {
+			if p == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, p)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.parent_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.parent_id IS NULL")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.Epics) > 0 {
+		// C75T0: epic membership rides the epic_issues junction
+		// (migration 000069: PK (epic_id, issue_id)), same shape as the
+		// Assignees filter: UUIDs OR-matched, "none" = in no epic.
+		var ids []string
+		wantNone := false
+		for _, e := range in.Epics {
+			if e == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, e)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)")
 		}
 		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
