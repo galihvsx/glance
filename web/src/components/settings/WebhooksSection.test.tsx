@@ -52,6 +52,7 @@ const HOOK: Webhook = {
   last_delivery_at: null,
   last_delivery_status: null,
   last_error: null,
+  filter: null,
 };
 
 const FAILED: WebhookDelivery = {

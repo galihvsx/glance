@@ -200,6 +200,10 @@ describe("deliveryStatusLabel (C57T2)", () => {
     active: true,
     created_at: "2026-10-18T00:00:00Z",
     updated_at: "2026-10-18T00:00:00Z",
+    last_delivery_at: null,
+    last_delivery_status: null,
+    last_error: null,
+    filter: null,
   };
   const now = new Date("2026-10-18T00:05:00Z");
 

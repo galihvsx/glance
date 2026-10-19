@@ -41,6 +41,7 @@
 
 import { api } from "./api";
 import { relativeTime } from "./relativeTime";
+import type { WebhookFilter } from "./webhookFilter";
 
 export interface Webhook {
   id: string;
@@ -62,6 +63,11 @@ export interface Webhook {
   // Error from the most recent failed attempt; null after a success
   // or when never attempted.
   last_error: string | null;
+  // Event filter (C69T0): per-webhook condition list over work-item
+  // attributes, evaluated at enqueue time; null when unset (deliver
+  // everything). Same present-but-null convention as the last-delivery
+  // fields above.
+  filter: WebhookFilter | null;
 }
 
 // POST 201 response shape — the only response that reveals the signing
@@ -380,6 +386,11 @@ export interface WebhookUpdateBody {
   secret?: string;
   events?: string[];
   active?: boolean;
+  // Tri-state (C69T0): undefined = untouched, null = clear the filter,
+  // array = replace. JSON.stringify drops undefined keys but keeps
+  // null, so the three states survive serialization — see
+  // buildFilterPatch in webhookFilter.ts.
+  filter?: WebhookFilter | null;
 }
 
 export function updateWebhook(
