@@ -14,6 +14,7 @@ export function DraggableIssueChip({
   onOpen,
   disabled,
   fromStrip,
+  dragId,
 }: {
   issue: Issue;
   state?: IssueState;
@@ -26,10 +27,17 @@ export function DraggableIssueChip({
    * and keep the delta-move behavior).
    */
   fromStrip?: boolean;
+  /**
+   * C72T2: overrides the dnd-kit draggable id. Required when the same
+   * issue renders in multiple epic lane bands (multi-appearance) —
+   * duplicate draggable ids would collide in the dnd registry. The drag
+   * payload still carries the issue, so drop handling is unchanged.
+   */
+  dragId?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
-      id: issue.id,
+      id: dragId ?? issue.id,
       data: { issue, fromStrip },
       disabled,
     });
