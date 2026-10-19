@@ -100,7 +100,11 @@ type InitiativePatch struct {
 type InitiativeProject struct {
 	ProjectID   string `json:"project_id"`
 	ProjectName string `json:"project_name"`
-	AddedAt     string `json:"added_at"`
+	// Labels are the project's workspace project-label chips (C76T0):
+	// [{id,name,color}] ordered by name, [] never null — shipped in the
+	// same query, no per-project round trip.
+	Labels  []ProjectLabel `json:"labels"`
+	AddedAt string         `json:"added_at"`
 }
 
 // InitiativeProjectRollup is the per-project slice of a rollup.
@@ -556,7 +560,7 @@ func ListInitiativeProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, act
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT p.id::text, p.name, ip.added_at::text
+		`SELECT p.id::text, p.name, ip.added_at::text, `+projectLabelsAgg("p")+`
 		 FROM initiative_projects ip
 		 JOIN projects p ON p.id = ip.project_id
 		 WHERE ip.initiative_id = $1::uuid
@@ -568,9 +572,15 @@ func ListInitiativeProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, act
 	out := []InitiativeProject{}
 	for rows.Next() {
 		var mp InitiativeProject
-		if err := rows.Scan(&mp.ProjectID, &mp.ProjectName, &mp.AddedAt); err != nil {
+		var labelsJSON []byte
+		if err := rows.Scan(&mp.ProjectID, &mp.ProjectName, &mp.AddedAt, &labelsJSON); err != nil {
 			return nil, err
 		}
+		labels, err := decodeProjectLabels(labelsJSON)
+		if err != nil {
+			return nil, err
+		}
+		mp.Labels = labels
 		out = append(out, mp)
 	}
 	return out, rows.Err()

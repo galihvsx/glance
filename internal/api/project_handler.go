@@ -30,6 +30,9 @@ func RegisterProjectRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.POST("/:identifier/archive", h.archiveProject)
 	g.POST("/:identifier/unarchive", h.unarchiveProject)
 	g.GET("/:identifier/states", h.listStates)
+
+	// C76T0: workspace-level project-label taxonomy + assignment.
+	registerProjectLabelRoutes(e, h)
 }
 
 // projectError maps service sentinel errors to HTTP statuses. Unknown
@@ -106,12 +109,19 @@ func (h *ProjectHandler) createProject(c *echo.Context) error {
 // listProjects implements GET /api/v1/workspaces/{slug}/projects.
 // Archived projects are excluded by default (sidebar + list + the
 // C18T0 palette all consume this); ?archived=true includes them for the
-// projects page's "Archived" section.
+// projects page's "Archived" section. ?label= (C76T0) filters to
+// projects carrying any of the given project-label ids — repeatable
+// and comma-separated; a malformed value is 400 naming it, and an id
+// that names no label of the workspace is 400 via the service.
 func (h *ProjectHandler) listProjects(c *echo.Context) error {
 	includeArchived := c.QueryParam("archived") == "true" || c.QueryParam("archived") == "1"
-	projects, err := service.ListProjects(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, includeArchived)
+	labelIDs, err := parseProjectLabelParam(c.QueryParams())
 	if err != nil {
-		return projectError(c, err)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
+	}
+	projects, err := service.ListProjects(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, includeArchived, labelIDs)
+	if err != nil {
+		return projectLabelError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"projects": projects})
 }

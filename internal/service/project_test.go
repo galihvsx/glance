@@ -112,7 +112,7 @@ func TestCreateProjectDuplicateIdentifier(t *testing.T) {
 	if !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("sentinel check: err = %v, want ErrProjectNotFound", err)
 	}
-	projects, err := ListProjects(ctx, pool, ws.Slug, creator, false)
+	projects, err := ListProjects(ctx, pool, ws.Slug, creator, false, nil)
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestListProjects(t *testing.T) {
 	createTestProject(t, pool, ws.Slug, creator, "Engineering", uniqueTestIdentifier())
 	createTestProject(t, pool, ws.Slug, creator, "Design", uniqueTestIdentifier())
 
-	projects, err := ListProjects(ctx, pool, ws.Slug, creator, false)
+	projects, err := ListProjects(ctx, pool, ws.Slug, creator, false, nil)
 	if err != nil {
 		t.Fatalf("ListProjects: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestListProjects(t *testing.T) {
 	}
 
 	outsider := createTestUser(t, pool, uniqueTestEmail("proj-list-out"))
-	if _, err := ListProjects(ctx, pool, ws.Slug, outsider, false); !errors.Is(err, ErrNotFound) {
+	if _, err := ListProjects(ctx, pool, ws.Slug, outsider, false, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("non-member list: err = %v, want ErrNotFound", err)
 	}
 }
