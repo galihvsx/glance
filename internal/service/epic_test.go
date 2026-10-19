@@ -85,7 +85,7 @@ func TestEpicCRUD(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
-	list, err := ListEpics(ctx, pool, slug, ident, actor, false)
+	list, err := ListEpics(ctx, pool, slug, ident, actor, EpicListFilter{})
 	if err != nil {
 		t.Fatalf("ListEpics: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestEpicArchive(t *testing.T) {
 	}
 
 	// Archived hidden from the default list.
-	list, err := ListEpics(ctx, pool, slug, ident, actor, false)
+	list, err := ListEpics(ctx, pool, slug, ident, actor, EpicListFilter{})
 	if err != nil {
 		t.Fatalf("ListEpics: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestEpicArchive(t *testing.T) {
 		t.Fatalf("list = %+v, want empty", list)
 	}
 	// ?include_archived=true shows it.
-	all, err := ListEpics(ctx, pool, slug, ident, actor, true)
+	all, err := ListEpics(ctx, pool, slug, ident, actor, EpicListFilter{IncludeArchived: true})
 	if err != nil {
 		t.Fatalf("ListEpics incl archived: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestEpicArchive(t *testing.T) {
 	if unarch.ArchivedAt != nil {
 		t.Fatalf("archived_at = %v, want nil after unarchive", unarch.ArchivedAt)
 	}
-	list, err = ListEpics(ctx, pool, slug, ident, actor, false)
+	list, err = ListEpics(ctx, pool, slug, ident, actor, EpicListFilter{})
 	if err != nil {
 		t.Fatalf("ListEpics after unarchive: %v", err)
 	}

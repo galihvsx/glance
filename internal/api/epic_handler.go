@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 
@@ -50,6 +51,8 @@ func epicError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid epic", nil)
 	case errors.Is(err, service.ErrInvalidEpicID):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid id", nil)
+	case errors.Is(err, service.ErrInvalidEpicFilter):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, epicFilterMessage(err), nil)
 	case errors.Is(err, service.ErrEpicHasIssues):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "epic still has issues: remove them or retry with ?force=true", nil)
 	default:
@@ -85,14 +88,47 @@ func (h *IssueHandler) createEpic(c *echo.Context) error {
 	return c.JSON(http.StatusCreated, epic)
 }
 
+// epicFilterMessage surfaces the wrapped detail of an
+// ErrInvalidEpicFilter (e.g. "unknown sort \"x\" (...)") as the 400
+// message — "clear error message" per the C74 contract.
+func epicFilterMessage(err error) string {
+	const prefix = "service: invalid epic list filter"
+	msg := strings.TrimPrefix(err.Error(), prefix+": ")
+	if msg == "" || msg == err.Error() {
+		return "invalid epic filter"
+	}
+	return msg
+}
+
 // listEpics implements GET
-// /api/v1/workspaces/{slug}/projects/{identifier}/epics. Archived epics
-// are hidden unless ?include_archived=true.
+// /api/v1/workspaces/{slug}/projects/{identifier}/epics with rich
+// filters (C74T0 — mirror of the C73 initiative filters):
+//   - ?status=active&status=archived — repeatable status multi-value;
+//     replaces the binary includeArchived. ?include_archived=1|true is
+//     kept backward-compatible and maps to "no status exclusion" (an
+//     explicit status list wins over it).
+//   - ?q= — text search (ILIKE) on name + description.
+//   - ?created_by=, ?initiative_id= — uuid filters (400 on malformed).
+//   - ?created_from=, ?created_to= — ISO-8601 on created_at, date-only
+//     is whole-day-inclusive (400 on unparseable).
+//   - ?sort=name|created_at|updated_at|issue_count,
+//     ?order=asc|desc — unknown values → 400 with a clear message.
 func (h *IssueHandler) listEpics(c *echo.Context) error {
-	q := c.QueryParam("include_archived")
-	includeArchived := q == "true" || q == "1"
+	qp := c.QueryParams()
+	inc := qp.Get("include_archived")
 	epics, err := service.ListEpics(c.Request().Context(), h.Pool,
-		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, includeArchived)
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
+		service.EpicListFilter{
+			IncludeArchived: inc == "1" || inc == "true",
+			Statuses:        qp["status"],
+			Q:               qp.Get("q"),
+			CreatedBy:       qp.Get("created_by"),
+			CreatedFrom:     qp.Get("created_from"),
+			CreatedTo:       qp.Get("created_to"),
+			InitiativeID:    qp.Get("initiative_id"),
+			Sort:            qp.Get("sort"),
+			Order:           qp.Get("order"),
+		})
 	if err != nil {
 		return epicError(c, err)
 	}

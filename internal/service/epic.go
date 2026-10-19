@@ -58,6 +58,11 @@ var (
 	// ErrEpicHasIssues is returned when deleting an epic that still
 	// has issues without force=true. The handler maps it to 409.
 	ErrEpicHasIssues = errors.New("service: epic still has issues")
+	// ErrInvalidEpicFilter is returned when a ListEpics filter param
+	// fails validation: unknown status, malformed uuid, unparseable
+	// date, unknown sort/order. The handler maps it to 400 with the
+	// wrapped detail as the message.
+	ErrInvalidEpicFilter = errors.New("service: invalid epic list filter")
 )
 
 // Epic is one project-scoped long-running container for work that spans
@@ -242,22 +247,167 @@ func CreateEpic(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	return &e, nil
 }
 
-// ListEpics returns the project's epics with live issue counts, ordered
-// by creation. Archived epics are hidden unless includeArchived.
-// Any role may read.
-func ListEpics(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, includeArchived bool) ([]Epic, error) {
+// EpicListFilter carries the rich filter params for ListEpics
+// (C74T0 — Plane "epics rich filters" parity, mirroring the C73
+// initiative filters). All user input is parameterized in the query;
+// Sort/Order are whitelisted to static SQL fragments, never
+// interpolated.
+//
+// Status semantics: an explicit Statuses list always wins. Otherwise
+// IncludeArchived (the legacy ?include_archived=1|true) means "no
+// status exclusion"; the default excludes archived.
+type EpicListFilter struct {
+	IncludeArchived bool
+	Statuses        []string
+	Q               string
+	CreatedBy       string
+	CreatedFrom     string // ISO-8601 (RFC3339 or date-only); "" = unbounded
+	CreatedTo       string
+	InitiativeID    string
+	Sort            string // name|created_at|updated_at|issue_count; "" = created_at
+	Order           string // asc|desc; "" = asc for name, desc otherwise
+}
+
+// epicSortColumns whitelists sort keys to static ORDER BY expressions.
+// issue_count is a correlated subquery over the epic_issues junction —
+// computed, not interpolated.
+var epicSortColumns = map[string]string{
+	"name":        `name`,
+	"created_at":  `created_at`,
+	"updated_at":  `updated_at`,
+	"issue_count": `(SELECT COUNT(*) FROM epic_issues ei WHERE ei.epic_id = epics.id)`,
+}
+
+// parseEpicDate accepts ISO-8601: full RFC3339 timestamps and bare
+// dates (2006-01-02). "" means unbounded. A bare date is
+// whole-day-inclusive: for a lower bound it means the day's start,
+// for an upper bound the day's end.
+func parseEpicDate(v string, endOfDay bool) (*time.Time, error) {
+	if v == "" {
+		return nil, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return &t, nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		if endOfDay {
+			end := t.Add(24*time.Hour - time.Nanosecond)
+			return &end, nil
+		}
+		return &t, nil
+	}
+	return nil, fmt.Errorf("%w: unparseable date %q (want ISO-8601)", ErrInvalidEpicFilter, v)
+}
+
+// ListEpics returns the project's epics with rich filters (C74T0 —
+// mirror of the C73 initiative filters) and live issue counts. The
+// result is never nil — an empty match is []. Any role may read.
+func ListEpics(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, filter EpicListFilter) ([]Epic, error) {
 	projectID, _, err := resolveEpicProject(ctx, pool, wsSlug, identifier, actorID, false)
 	if err != nil {
 		return nil, err
 	}
-	where := `WHERE project_id = $1::uuid`
-	if !includeArchived {
-		where += ` AND archived_at IS NULL`
+
+	var conds []string
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
 	}
+	projArg := arg(projectID)
+
+	// Status: explicit list wins; otherwise legacy includeArchived maps
+	// to "no status exclusion"; default excludes archived. Epics carry
+	// no status vocabulary — lifecycle is archive, so the values are
+	// "active" (archived_at IS NULL) and "archived" (IS NOT NULL).
+	if len(filter.Statuses) > 0 {
+		wantActive, wantArchived := false, false
+		for _, s := range filter.Statuses {
+			switch s {
+			case "active":
+				wantActive = true
+			case "archived":
+				wantArchived = true
+			default:
+				return nil, fmt.Errorf("%w: unknown status %q (want active|archived)", ErrInvalidEpicFilter, s)
+			}
+		}
+		if wantActive && !wantArchived {
+			conds = append(conds, `archived_at IS NULL`)
+		} else if wantArchived && !wantActive {
+			conds = append(conds, `archived_at IS NOT NULL`)
+		}
+		// Both (or repeats): no exclusion.
+	} else if !filter.IncludeArchived {
+		conds = append(conds, `archived_at IS NULL`)
+	}
+
+	// Text search: ILIKE on name + description, fully parameterized.
+	if q := strings.TrimSpace(filter.Q); q != "" {
+		conds = append(conds, `(name ILIKE `+arg("%"+q+"%")+` OR description ILIKE `+arg("%"+q+"%")+`)`)
+	}
+
+	// Created-by: malformed uuid is a client error, not a ::uuid 500.
+	if filter.CreatedBy != "" {
+		if !isUUIDFormat(filter.CreatedBy) {
+			return nil, fmt.Errorf("%w: malformed created_by %q", ErrInvalidEpicFilter, filter.CreatedBy)
+		}
+		conds = append(conds, `created_by = `+arg(filter.CreatedBy)+`::uuid`)
+	}
+
+	// Created-at range: unparseable dates are client errors.
+	if from, err := parseEpicDate(filter.CreatedFrom, false); err != nil {
+		return nil, err
+	} else if from != nil {
+		conds = append(conds, `created_at >= `+arg(*from))
+	}
+	if to, err := parseEpicDate(filter.CreatedTo, true); err != nil {
+		return nil, err
+	} else if to != nil {
+		conds = append(conds, `created_at <= `+arg(*to))
+	}
+
+	// Linked initiative via the initiative_epics junction; a
+	// valid-but-unknown initiative id simply matches nothing.
+	if filter.InitiativeID != "" {
+		if !isUUIDFormat(filter.InitiativeID) {
+			return nil, fmt.Errorf("%w: malformed initiative_id %q", ErrInvalidEpicFilter, filter.InitiativeID)
+		}
+		conds = append(conds, `EXISTS (SELECT 1 FROM initiative_epics ie
+			WHERE ie.epic_id = epics.id AND ie.initiative_id = `+arg(filter.InitiativeID)+`::uuid)`)
+	}
+
+	// Sort/order: whitelisted columns only — unknown values are 400.
+	sort := filter.Sort
+	if sort == "" {
+		sort = "created_at"
+	}
+	col, ok := epicSortColumns[sort]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown sort %q (want name|created_at|updated_at|issue_count)", ErrInvalidEpicFilter, filter.Sort)
+	}
+	order := strings.ToLower(filter.Order)
+	if order == "" {
+		order = "desc"
+		if sort == "name" {
+			order = "asc"
+		}
+	}
+	if order != "asc" && order != "desc" {
+		return nil, fmt.Errorf("%w: unknown order %q (want asc|desc)", ErrInvalidEpicFilter, filter.Order)
+	}
+
+	where := `project_id = ` + projArg + `::uuid`
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	// Deterministic default sort (created_at desc) with a name,id
+	// tiebreak so pagination-free lists are stable.
 	rows, err := pool.Query(ctx,
 		`SELECT `+epicColumnsCounted+`
-		 FROM epics `+where+`
-		 ORDER BY created_at`, projectID)
+		 FROM epics WHERE `+where+`
+		 ORDER BY `+col+` `+order+`, name, id`,
+		args...)
 	if err != nil {
 		return nil, err
 	}
