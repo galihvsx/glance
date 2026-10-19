@@ -24,6 +24,19 @@ package service
 //     transfer immediately; otherwise they detach to the project backlog
 //     once now >= end_date + close_in_days (NULL = 0 = detach at
 //     completion).
+//   - Manual start/end (C79T0): POST .../cycles/{id}/start flips an
+//     upcoming cycle to current (member 15+), reusing the C78 overlap
+//     check (dates unchanged, self excluded) and announcing
+//     cycle.updated "current"; POST .../cycles/{id}/end delegates to the
+//     EXACT CompleteCycle ticker path (freeze + rollover + announce) and
+//     never rewrites end_date.
+//   - Ticker interplay (documented contract): a manually-started cycle
+//     keeps its future start_date, and the ticker's activate pass only
+//     touches status='upcoming' rows, so a manual start is never
+//     reverted. A manually-started cycle still auto-completes at
+//     end_date (the complete pass touches status IN
+//     ('current','upcoming') with end_date < today) — the override
+//     applies to the start, the scheduled end still holds.
 
 import (
 	"context"
@@ -65,6 +78,16 @@ var (
 	// pre-existing overlaps does NOT retroactively alter them — only
 	// new creates/updates are blocked.
 	ErrCycleOverlap = errors.New("service: cycle dates overlap another cycle")
+	// ErrCycleNotStartable is returned by StartCycle when the cycle is
+	// not upcoming (already current or already completed). The manual
+	// start overrides the schedule, but a start is a no-op when there is
+	// nothing to start — the handler maps it to 400 bad_request.
+	ErrCycleNotStartable = errors.New("service: only upcoming cycles can be started manually")
+	// ErrCycleAlreadyCompleted is returned by EndCycle when the cycle is
+	// already completed. CompleteCycle itself no-ops on completed cycles
+	// (the ticker may race itself); the manual API must not silently
+	// accept a repeat — the handler maps it to 400 bad_request.
+	ErrCycleAlreadyCompleted = errors.New("service: cycle is already completed")
 )
 
 // CycleOverlapError is the concrete ErrCycleOverlap: the create/update
@@ -495,6 +518,114 @@ func UpdateCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	}
 	c.ProgressSnapshot = snap
 	announceCycleUpdated(ctx, pool, c.ID, projectID, c.Status)
+	return &c, nil
+}
+
+// StartCycle is the manual-start half of the "Override scheduled
+// cycles" contract (C79T0): it flips an upcoming cycle to current ahead
+// of its scheduled start_date. Member (15)+; guests get ErrForbidden.
+//
+// Semantics:
+//   - Allowed only from upcoming. The final UPDATE carries the
+//     predicate status = 'upcoming', so a ticker activate pass that
+//     flips the row between the resolve and the UPDATE cannot produce a
+//     double start — the flip becomes a no-op and StartCycle reports
+//     ErrCycleNotStartable.
+//   - The date range is unchanged, but the C78 overlap invariant is
+//     re-checked (self excluded): with parallel_cycles off, starting a
+//     cycle that overlaps another live cycle of the project is 409 with
+//     the conflicting cycle named, exactly like create/update.
+//   - Announces via BroadcastCycleUpdated(..., "current") — the same
+//     fan-out the ticker's activate pass uses — so realtime clients,
+//     webhooks and automations see manual starts identically to
+//     scheduled ones. end_date is never touched: the ticker's complete
+//     pass still auto-completes the cycle on schedule (see the package
+//     comment).
+func StartCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, cycleID string) (*Cycle, error) {
+	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, true)
+	if err != nil {
+		return nil, err
+	}
+	c, err := resolveCycle(ctx, pool, projectID, cycleID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Status != "upcoming" {
+		return nil, ErrCycleNotStartable
+	}
+	// Overlap validation (C78 invariant, self excluded): starting must
+	// not introduce a live overlap while parallel_cycles is off. Dates
+	// are unchanged — the check guards the now-live range against the
+	// other live cycles.
+	parallel, err := projectParallelCycles(ctx, pool, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !parallel {
+		cname, ok, err := findOverlappingCycle(ctx, pool, projectID, cycleID, c.StartDate, c.EndDate)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return nil, &CycleOverlapError{Name: cname}
+		}
+	}
+	started, err := scanCycle(pool.QueryRow(ctx,
+		`UPDATE cycles SET status = 'current', updated_at = now()
+		 WHERE id = $1::uuid AND project_id = $2::uuid AND status = 'upcoming'
+		 RETURNING `+cycleColumns,
+		cycleID, projectID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The ticker (or another start) flipped the row between
+			// resolve and update: nothing to start anymore.
+			return nil, ErrCycleNotStartable
+		}
+		return nil, err
+	}
+	snap, err := cycleProgressSnapshot(ctx, pool, started.ID)
+	if err != nil {
+		return nil, err
+	}
+	started.ProgressSnapshot = snap
+	// Same fan-out as the ticker's activate pass.
+	BroadcastCycleUpdated(ctx, pool, started.ID, projectID, "current")
+	return &started, nil
+}
+
+// EndCycle is the manual-end half of the "Override scheduled cycles"
+// contract (C79T0): it ends a live (upcoming or current) cycle early.
+// Member (15)+; guests get ErrForbidden.
+//
+// It delegates to the EXISTING CompleteCycle — the exact ticker path
+// (freeze progress snapshot + moveIncompleteIssuesTx rollover +
+// announceCycleUpdated "completed"). There is no divergent manual
+// implementation: automations, webhooks and realtime clients see a
+// manual end identically to a ticker end. end_date is NOT rewritten —
+// the completed cycle keeps its scheduled dates for the report. A
+// repeat end is ErrCycleAlreadyCompleted (400), not a silent no-op.
+func EndCycle(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, cycleID string) (*Cycle, error) {
+	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, true)
+	if err != nil {
+		return nil, err
+	}
+	c, err := resolveCycle(ctx, pool, projectID, cycleID)
+	if err != nil {
+		return nil, err
+	}
+	if c.Status == "completed" {
+		return nil, ErrCycleAlreadyCompleted
+	}
+	if err := CompleteCycle(ctx, pool, cycleID, projectID, time.Now()); err != nil {
+		return nil, err
+	}
+	c, err = resolveCycle(ctx, pool, projectID, cycleID)
+	if err != nil {
+		return nil, err
+	}
+	if err := fillSnapshot(ctx, pool, &c); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 

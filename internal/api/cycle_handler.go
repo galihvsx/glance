@@ -27,6 +27,9 @@ func RegisterCycleRoutes(e *echo.Echo, h *IssueHandler) {
 	g.PATCH("/:cycleID", h.updateCycle)
 	g.DELETE("/:cycleID", h.deleteCycle)
 	g.POST("/:cycleID/issues", h.addCycleIssues)
+	// C79T0: manual start/end ("Override scheduled cycles").
+	g.POST("/:cycleID/start", h.startCycle)
+	g.POST("/:cycleID/end", h.endCycle)
 }
 
 // cycleError maps cycle sentinel errors to HTTP statuses, delegating the
@@ -49,6 +52,13 @@ func cycleError(c *echo.Context, err error) error {
 		}
 		return WriteError(c, http.StatusConflict, ErrCodeConflict,
 			fmt.Sprintf("cycle dates overlap with %q", name), nil)
+	case errors.Is(err, service.ErrCycleNotStartable):
+		// C79T0: manual start on a non-upcoming cycle — already
+		// current (or completed) — is 400, not a silent no-op.
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "only upcoming cycles can be started manually", nil)
+	case errors.Is(err, service.ErrCycleAlreadyCompleted):
+		// C79T0: a repeat manual end is 400, not a silent no-op.
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "cycle is already completed", nil)
 	case errors.Is(err, service.ErrInvalidCycle):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid cycle: name is required and start_date must not be after end_date", nil)
 	case errors.Is(err, service.ErrInvalidCycleID):
@@ -196,6 +206,44 @@ func (h *IssueHandler) deleteCycle(c *echo.Context) error {
 		return cycleError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// startCycle implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/start
+// (C79T0): manual start — flips an upcoming cycle to current ahead of
+// its scheduled start_date. Already current/completed → 400; an
+// overlapping live cycle with parallel_cycles off → 409 naming the
+// cycle. Member (15)+; the service enforces it.
+func (h *IssueHandler) startCycle(c *echo.Context) error {
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
+	cycle, err := service.StartCycle(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID)
+	if err != nil {
+		return cycleError(c, err)
+	}
+	return c.JSON(http.StatusOK, cycle)
+}
+
+// endCycle implements POST
+// /api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/end
+// (C79T0): manual end — completes a live (upcoming or current) cycle
+// early through the exact ticker path (freeze snapshot + issue rollover
+// + cycle.updated announce); end_date is kept. Already completed → 400.
+// Member (15)+; the service enforces it.
+func (h *IssueHandler) endCycle(c *echo.Context) error {
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
+	cycle, err := service.EndCycle(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID)
+	if err != nil {
+		return cycleError(c, err)
+	}
+	return c.JSON(http.StatusOK, cycle)
 }
 
 type addCycleIssuesBody struct {
