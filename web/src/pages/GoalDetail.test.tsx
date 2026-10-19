@@ -99,6 +99,7 @@ const projects: Project[] = [
     id: "p-1",
     workspace_id: "w1",
     identifier: "ENG",
+    labels: [],
     name: "Engineering",
     description: "",
     created_at: "",

@@ -11,6 +11,7 @@ import PageHeader from "../components/shell/PageHeader";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import GeneralSection from "../components/settings/GeneralSection";
 import LabelsSection from "../components/settings/LabelsSection";
+import ProjectLabelAssignment from "../components/project/ProjectLabelAssignment";
 import StatesSection from "../components/settings/StatesSection";
 import WorkflowSection from "../components/settings/WorkflowSection";
 import TemplatesSection from "../components/settings/TemplatesSection";
@@ -64,6 +65,10 @@ export default function ProjectSettings() {
             <TabsList>
               <TabsTrigger value="general">General</TabsTrigger>
               <TabsTrigger value="labels">Labels</TabsTrigger>
+              {/* C76T1: workspace project-label taxonomy, assigned
+                  per-project (the Labels tab is the issue-label
+                  taxonomy — a separate thing). */}
+              <TabsTrigger value="project-labels">Project labels</TabsTrigger>
               <TabsTrigger value="states">States</TabsTrigger>
               <TabsTrigger value="workflow">Workflow</TabsTrigger>
               <TabsTrigger value="estimates">Estimates</TabsTrigger>
@@ -80,6 +85,13 @@ export default function ProjectSettings() {
             </TabsContent>
             <TabsContent value="labels" className="mt-4">
               <LabelsSection slug={slug} identifier={identifier} canEdit={canEdit} />
+            </TabsContent>
+            <TabsContent value="project-labels" className="mt-4">
+              <ProjectLabelAssignment
+                slug={slug}
+                identifier={identifier}
+                canEdit={canEdit}
+              />
             </TabsContent>
             <TabsContent value="states" className="mt-4">
               <StatesSection slug={slug} identifier={identifier} canEdit={canEdit} />

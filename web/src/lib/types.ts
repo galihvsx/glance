@@ -26,6 +26,9 @@ export interface Project {
   icon?: string | null;
   /** Project archive timestamp (C18T3); null/undefined = live. */
   archived_at?: string | null;
+  /** Workspace-scoped project labels (C76T0): [{id,name,color}] ordered
+   *  by name — [] never null. */
+  labels: ProjectLabel[];
   created_at: string;
   updated_at: string;
 }
@@ -242,6 +245,21 @@ export interface Label {
   parent_id?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One workspace-scoped project label (C76T0): reusable across projects
+ * in the workspace (Plane "at the workspace level"). The taxonomy
+ * endpoints return the full row (workspace_id, timestamps); the project
+ * payloads embed the [{id,name,color}] chip subset.
+ */
+export interface ProjectLabel {
+  id: string;
+  name: string;
+  color: string;
+  workspace_id?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ActorRef {
@@ -526,10 +544,14 @@ export interface Initiative {
   updated_at: string;
 }
 
-/** One member project of an initiative. */
+/** One member project of an initiative. `labels` is the project's
+ *  workspace project-label chips (C76T0): [{id,name,color}], [] never
+ *  null — shipped in the same query, no per-project round trip. */
 export interface InitiativeProject {
   project_id: string;
   project_name: string;
+  /** Workspace project-label chips (C76T0): [{id,name,color}]. */
+  labels: ProjectLabel[];
   added_at: string;
 }
 

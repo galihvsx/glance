@@ -2,6 +2,8 @@
 // backend contract in docs/openapi.yaml (#/components/schemas/Initiative*)
 // and internal/service/initiative.go.
 
+import type { ProjectLabel } from "../../lib/types";
+
 export type InitiativeStatus = "active" | "completed" | "archived";
 
 export interface Initiative {
@@ -19,6 +21,9 @@ export interface Initiative {
 export interface InitiativeProject {
   project_id: string;
   project_name: string;
+  /** Workspace project-label chips (C76T0): [{id,name,color}], [] never
+   *  null — shipped by GET .../initiatives/:id/projects in-query. */
+  labels: ProjectLabel[];
   added_at: string;
 }
 
