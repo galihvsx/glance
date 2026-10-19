@@ -575,6 +575,16 @@ type webhookDelivery struct {
 	Secret    string         `json:"secret"`
 	Event     string         `json:"event"`
 	Data      map[string]any `json:"data"`
+	// C77T0: ad-hoc automation (send_webhook) delivery fields. An empty
+	// WebhookID marks an ad-hoc row: no registered webhook row exists,
+	// so deliverRow skips the active lookup and the status/history
+	// writers no-op on it. Method defaults to POST (PUT allowed); when
+	// Body is set it is sent verbatim instead of the event/data
+	// envelope; Headers are extra request headers (transport-owned
+	// names are skipped defensively at send time).
+	Method  string            `json:"method,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Body    json.RawMessage   `json:"body,omitempty"`
 }
 
 // WebhookDispatcher delivers due "webhook.%" outbox rows. Run performs a
@@ -805,34 +815,73 @@ func (d *WebhookDispatcher) deliverRow(ctx context.Context, r webhookOutboxRow) 
 	// mark the row done (skip), not failed. No delivery was attempted,
 	// so no delivery status is written either (empty webhook id —
 	// the outcome writes treat it as "no webhook to attribute").
-	var active bool
-	if err := d.pool.QueryRow(ctx,
-		`SELECT active FROM webhooks WHERE id = $1::uuid`, wd.WebhookID).Scan(&active); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+	//
+	// C77T0: ad-hoc automation rows carry no webhook id — there is no
+	// registered webhook row to look up, so the active check is skipped
+	// and delivery proceeds straight to the guard.
+	if wd.WebhookID != "" {
+		var active bool
+		if err := d.pool.QueryRow(ctx,
+			`SELECT active FROM webhooks WHERE id = $1::uuid`, wd.WebhookID).Scan(&active); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+				return d.markDone(ctx, webhookOutcome{outboxID: r.id})
+			}
+			return fmt.Errorf("webhook: lookup webhook: %w", err)
+		}
+		if !active {
 			return d.markDone(ctx, webhookOutcome{outboxID: r.id})
 		}
-		return fmt.Errorf("webhook: lookup webhook: %w", err)
-	}
-	if !active {
-		return d.markDone(ctx, webhookOutcome{outboxID: r.id})
 	}
 
-	body, err := json.Marshal(map[string]any{
-		"event":        wd.Event,
-		"data":         wd.Data,
-		"delivered_at": time.Now().UTC(),
-	})
-	if err != nil {
-		return d.markFailed(ctx, oc, fmt.Errorf("webhook: marshal body: %w", err))
+	// C77T0: ad-hoc rows may override the method (registered rows always
+	// POST — their payloads predate the field). Anything outside
+	// POST/PUT fails permanently: it was rejected at rule-write time,
+	// so a stored bad value will never become valid.
+	method := wd.Method
+	if method == "" {
+		method = http.MethodPost
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wd.URL, bytes.NewReader(body))
+	if method != http.MethodPost && method != http.MethodPut {
+		return d.markFailed(ctx, oc, fmt.Errorf("webhook: unsupported method %q", wd.Method))
+	}
+
+	var body []byte
+	if len(wd.Body) > 0 {
+		// C77T0: automation send_webhook renders the full body (template
+		// or default envelope) — it goes on the wire verbatim.
+		body = wd.Body
+	} else {
+		var marshalErr error
+		body, marshalErr = json.Marshal(map[string]any{
+			"event":        wd.Event,
+			"data":         wd.Data,
+			"delivered_at": time.Now().UTC(),
+		})
+		if marshalErr != nil {
+			return d.markFailed(ctx, oc, fmt.Errorf("webhook: marshal body: %w", marshalErr))
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, wd.URL, bytes.NewReader(body))
 	if err != nil {
 		return d.markFailed(ctx, oc, fmt.Errorf("webhook: build request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// C77T0: rule-authored headers for ad-hoc rows. Transport-owned
+	// names were rejected at rule-write time; skip them defensively
+	// here in case a stored row predates the check.
+	for k, v := range wd.Headers {
+		name := strings.TrimSpace(k)
+		if name == "" || sendWebhookBlockedHeaders[strings.ToLower(name)] {
+			continue
+		}
+		req.Header.Set(name, v)
+	}
 	req.Header.Set("X-Glance-Event", wd.Event)
 	req.Header.Set("X-Glance-Delivery", fmt.Sprintf("%d", r.id))
-	req.Header.Set("X-Glance-Signature", "sha256="+webhookSignature(wd.Secret, body))
+	if wd.Secret != "" {
+		// Ad-hoc rows carry no secret: no signature header.
+		req.Header.Set("X-Glance-Signature", "sha256="+webhookSignature(wd.Secret, body))
+	}
 
 	// SSRF guard (Task 28): resolve the target at delivery time and refuse
 	// to dial non-public addresses — webhook URLs are admin-controlled, but
@@ -916,6 +965,14 @@ func (d *WebhookDispatcher) guardTarget(ctx context.Context, rawURL string) ([]n
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("%w: unparseable url %q", errWebhookTargetBlocked, rawURL)
+	}
+	// C77T0: rule-authored automation URLs reach this shared guard, so
+	// the scheme check lives here too — a non-http(s) target fails
+	// permanently (it will never become dialable), same as a private IP.
+	// Registered webhooks already pass write-time scheme validation, so
+	// this changes nothing for them.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("%w: unsupported scheme %q", errWebhookTargetBlocked, u.Scheme)
 	}
 	host := u.Hostname()
 	var ips []net.IP

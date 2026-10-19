@@ -5,6 +5,44 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`send_webhook` automation action — call an HTTP endpoint when a rule fires (cycle 77, backend)**
+- Plane release v3.0.0 (commercial), headline: "Send webhooks from
+  workflows: automation rules can now include a *send webhook* step. When
+  a work item meets the rule conditions, Plane calls your endpoint."
+  glance's automation engine had no webhook action — this cycle adds it.
+- New `send_webhook` action type on automation rules: `url` (required,
+  absolute http(s), validated at rule write time), `method` POST
+  (default) | PUT, `headers` (optional map; `host`/`content-length`
+  rejected; VALUES ARE SECRETS — redacted as `********` in every API
+  read and never logged; write-only on PATCH), `payload_template`
+  (optional JSON with `{{issue.id}}`, `{{issue.identifier}}`,
+  `{{issue.title}}`, `{{issue.state}}`, `{{issue.priority}}`,
+  `{{issue.labels}}`, `{{issue.assignees}}`, `{{rule.id}}`,
+  `{{trigger}}`, `{{fired_at}}` placeholders substituted with their JSON
+  encoding — trial-rendered at write time, so unknown variables /
+  unbalanced braces / non-JSON results are an honest 400). Absent
+  template → the default envelope `{event:"automation.webhook",
+  rule_id, trigger, fired_at, issue:{id, identifier, title, state,
+  priority, labels, assignees}}`.
+- Delivery reuses the existing webhook outbox pipeline — no parallel
+  path: the action enqueues a `webhook.deliver` row (empty webhook_id =
+  ad-hoc delivery), so retry/backoff/dead-letter behavior applies
+  uniformly, and the shared SSRF guard (delivery-time DNS resolution,
+  non-public IPs refused, http(s)-only scheme check) vets the
+  rule-authored URL. The dispatcher sends the rendered body verbatim
+  with the configured method and headers (no signature header — ad-hoc
+  rows carry no secret).
+- Failure semantics follow the action contract: a render/enqueue failure
+  records ok:false on the run row and aborts the rule's remaining
+  actions, never the firing event. Success means enqueued (async HTTP
+  outcome). The call writes no rows — no activity, no `issue.updated`.
+  RBAC mirrors the existing automation gates (project-scoped,
+  member(15)+ writes).
+- OpenAPI: `AutomationAction` schema pins the new type + properties.
+- 40+ new tests (validation matrix, renderer, firing path, dispatcher
+  ad-hoc delivery incl. SSRF refusal, redaction, API CRUD, OpenAPI pins);
+  QA gate green.
+
 **Project labels — workspace-level taxonomy for projects (cycle 76)**
 - Plane release v2.5.0 (2026-03-17), headline #2: "Project Labels — add
   labels to projects at the workspace level to organize them by team,

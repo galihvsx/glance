@@ -4038,3 +4038,71 @@ func TestOpenAPIEpicShapes(t *testing.T) {
 		t.Fatalf("Issue schema lacks epics")
 	}
 }
+
+// Doc-side pinning test (C77T0): the AutomationAction schema documents
+// the send_webhook action — the type enum entry plus the url / method /
+// headers / payload_template properties with their validation shapes.
+// This is the doc-side complement to the live contract pins in
+// TestAutomationSendWebhookHTTP (201 redaction, 400 validation matrix).
+func TestOpenAPIDocAutomationSendWebhookAction(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]struct {
+					Enum        []string `json:"enum"`
+					Type        string   `json:"type"`
+					Format      string   `json:"format"`
+					Default     any      `json:"default"`
+					Description string   `json:"description"`
+				} `json:"properties"`
+				Description string `json:"description"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	action, ok := spec.Components.Schemas["AutomationAction"]
+	if !ok {
+		t.Fatal("spec has no AutomationAction schema")
+	}
+	found := false
+	for _, e := range action.Properties["type"].Enum {
+		if e == "send_webhook" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AutomationAction type enum lacks send_webhook: %v",
+			action.Properties["type"].Enum)
+	}
+	urlProp, ok := action.Properties["url"]
+	if !ok || urlProp.Format != "uri" {
+		t.Fatalf("AutomationAction url property = %+v, want format uri", urlProp)
+	}
+	methodProp, ok := action.Properties["method"]
+	if !ok || len(methodProp.Enum) != 2 ||
+		methodProp.Enum[0] != "POST" || methodProp.Enum[1] != "PUT" {
+		t.Fatalf("AutomationAction method property = %+v, want enum [POST PUT]", methodProp)
+	}
+	headersProp, ok := action.Properties["headers"]
+	if !ok || headersProp.Type != "object" {
+		t.Fatalf("AutomationAction headers property = %+v, want type object", headersProp)
+	}
+	if !strings.Contains(headersProp.Description, "********") {
+		t.Fatalf("AutomationAction headers description does not document redaction: %q",
+			headersProp.Description)
+	}
+	tmplProp, ok := action.Properties["payload_template"]
+	if !ok || tmplProp.Type != "string" {
+		t.Fatalf("AutomationAction payload_template property = %+v, want type string", tmplProp)
+	}
+	if !strings.Contains(tmplProp.Description, "{{variable}}") ||
+		!strings.Contains(tmplProp.Description, "issue.identifier") {
+		t.Fatalf("AutomationAction payload_template description does not document the vocabulary: %q",
+			tmplProp.Description)
+	}
+	if !strings.Contains(action.Description, "send_webhook") {
+		t.Fatal("AutomationAction description does not mention send_webhook")
+	}
+}
