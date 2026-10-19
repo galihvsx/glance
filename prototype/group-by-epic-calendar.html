@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Group by Epic — Calendar — C72T2 prototype-as-spec (static mock)</title>
+<style>
+/* ==========================================================================
+   glance tokens (web/src/index.css, Cycle 19) — duplicated here so the
+   static mock renders pixel-close to the app without the Tailwind build.
+   ========================================================================== */
+:root {
+  --canvas: #09090b;
+  --rail: #0b0b0d;
+  --surface: #141416;
+  --raised: #1a1a1e;
+  --hairline: rgba(255, 255, 255, 0.052);
+  --border: rgba(255, 255, 255, 0.09);
+  --ink: #f4f4f5;
+  --ink-secondary: #b0b0b9;
+  --ink-muted: #777780;
+  --blue: #4f8ef7;
+  --blue-hover: #649cf5;
+  --green: #42c88a;
+  --amber: #e7ad42;
+  --red: #df6b77;
+  --purple: #9c83e6;
+  --wash-hover: rgba(255, 255, 255, 0.05);
+  --wash-active: rgba(255, 255, 255, 0.085);
+  --g-backlog: #9aa0ae;
+  --g-unstarted: #e5a13c;
+  --g-started: #4f8ef7;
+  --g-completed: #42c88a;
+  --g-cancelled: #e5484d;
+  --focus: rgba(79, 142, 247, 0.8);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-muted); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a { color: var(--blue); text-decoration: none; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--amber); }
+
+/* ---------- prototype chrome (NOT part of the app spec) ---------- */
+.proto-bar {
+  position: sticky; top: 0; z-index: 60;
+  background: #131308;
+  border-bottom: 1px solid rgba(231, 173, 66, 0.35);
+  padding: 10px 20px;
+}
+.proto-bar .kicker {
+  font-size: 10px; letter-spacing: 0.08em; font-weight: 700;
+  color: var(--amber); text-transform: uppercase;
+}
+.proto-bar h1 { font-size: 14px; margin: 3px 0 0; font-weight: 650; }
+.proto-bar p { font-size: 11.5px; color: var(--ink-secondary); margin: 5px 0 0; max-width: 980px; line-height: 1.55; }
+.surface-tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.surface-tabs button {
+  font: inherit; font-size: 11.5px; font-weight: 600;
+  color: var(--ink-secondary);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer;
+}
+.surface-tabs button:hover { background: var(--wash-hover); color: var(--ink); }
+.surface-tabs button[aria-selected="true"] {
+  background: var(--wash-active); color: var(--ink);
+  border-color: rgba(79, 142, 247, 0.5);
+}
+.surface { display: none; padding: 20px; }
+.surface.active { display: block; }
+
+/* ---------- app shell (approximation) ---------- */
+.page { max-width: 1280px; margin: 0 auto; }
+.pagehead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 0; border-bottom: 1px solid var(--hairline);
+  margin-bottom: 14px;
+}
+.pagehead .crumb { color: var(--ink-muted); font-size: 12px; }
+.pagehead .title { font-weight: 650; font-size: 13px; }
+.seg {
+  display: inline-flex; align-items: center; height: 30px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: #101012; padding: 2px;
+}
+.seg button {
+  font: inherit; height: 24px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--ink-muted);
+  font-size: 10px; font-weight: 500; padding: 0 8px; cursor: pointer;
+}
+.seg button[aria-selected="true"] { background: var(--raised); color: var(--ink); }
+.seg button:hover:not([aria-selected="true"]) { color: var(--ink-secondary); }
+
+/* ---------- calendar toolbar (mirrors calControlClass) ---------- */
+.toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; height: 28px; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: var(--ink-secondary); font-size: 11px; font-weight: 500;
+  padding: 0 8px; cursor: pointer;
+}
+.btn:hover { background: var(--raised); color: var(--ink); }
+.toolbar .month-label { font-size: 13px; font-weight: 600; margin-left: 8px; }
+.toolbar .hint { margin-left: auto; font-size: 11px; color: var(--ink-muted); }
+.group-label { font-size: 11px; color: var(--ink-muted); margin-left: 10px; }
+
+/* ---------- grouped grids: swimlane gutter + 7 day columns ---------- */
+.cal-grid, .week-grid {
+  display: grid; grid-template-columns: 200px repeat(7, 1fr);
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  background: var(--surface);
+}
+.cal-grid > .wd {
+  background: var(--raised); border-bottom: 1px solid var(--hairline);
+  padding: 6px 8px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted);
+}
+.week-grid > .wd {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--raised); border-bottom: 1px solid var(--hairline);
+  padding: 6px 8px;
+}
+.week-grid > .wd .dow { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.week-grid > .wd.today .dow { color: var(--blue); }
+.week-grid > .wd .dnum {
+  display: inline-flex; height: 24px; width: 24px; align-items: center; justify-content: center;
+  border-radius: 999px; font-size: 11px; color: var(--ink-secondary);
+}
+.week-grid > .wd.today .dnum { background: var(--blue); color: #fff; font-weight: 600; }
+.daycell { border-bottom: 1px solid var(--hairline); min-height: 90px; }
+.daycell:not(.gutter-cell) { border-left: 1px solid var(--hairline); }
+.daynum {
+  display: inline-flex; height: 24px; width: 24px; align-items: center; justify-content: center;
+  border-radius: 999px; font-size: 11px; color: var(--ink-muted); margin: 4px 0 2px 4px;
+}
+.daynum.today { background: var(--blue); color: #fff; font-weight: 600; }
+.daynum.other { opacity: 0.55; }
+/* render-only lane bands inside each day cell — fixed order, one per lane */
+.band { border-top: 1px solid var(--hairline); min-height: 32px; padding: 2px; }
+.band:first-of-type { border-top: 0; }
+
+/* swimlane gutter cells: one label stack per week-row, same lane order */
+.gutter-cell { background: var(--raised); }
+.gutter-cell + .daycell { border-left: 0; }
+.lane-sec { padding: 8px 10px; }
+.lane-sec + .lane-sec { border-top: 1px solid var(--hairline); }
+.lane-name { font-size: 12px; font-weight: 600; color: var(--ink); }
+.lane-count { font-family: ui-monospace, monospace; font-size: 10px; color: var(--ink-muted); margin-left: 6px; }
+.lane-sec.lane-ungrouped .lane-name { color: var(--ink-secondary); font-weight: 500; font-style: italic; }
+.mini-bar {
+  display: flex; height: 4px; border-radius: 999px; overflow: hidden;
+  background: rgba(255,255,255,0.06); margin-top: 6px; max-width: 150px;
+}
+.mini-bar > div { height: 100%; }
+.lane-caption { font-size: 10px; color: var(--ink-muted); margin-top: 4px; }
+.wcol { border-bottom: 1px solid var(--hairline); min-height: 230px; }
+.wcol:not(.gutter-cell) { border-left: 1px solid var(--hairline); }
+.wcol .band { min-height: 42px; }
+
+/* ---------- IssueChip (mirrors web/src/components/calendar/IssueChip.tsx) ---------- */
+.chip {
+  display: flex; width: 100%; align-items: center; gap: 6px;
+  border-radius: 4px; padding: 3px 6px;
+  font-size: 11px; color: var(--ink-secondary); text-align: left;
+  background: transparent; border: 0; cursor: pointer; font: inherit;
+}
+.chip:hover { background: var(--wash-hover); color: var(--ink); }
+.chip .dot { width: 6px; height: 6px; border-radius: 999px; flex-shrink: 0; }
+.chip .id { flex-shrink: 0; font-family: ui-monospace, monospace; font-size: 10px; color: var(--ink-muted); }
+.chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .ma { flex-shrink: 0; color: var(--ink-muted); display: inline-flex; }
+.chip .ma:hover { color: var(--blue); }
+
+/* ---------- unscheduled strip (grouped lane clusters) ---------- */
+.strip { margin-top: 12px; }
+.strip h3 { font-size: 12px; font-weight: 500; color: var(--ink-secondary); margin: 0 0 8px; }
+.strip-drop {
+  border: 1px dashed var(--border); border-radius: 6px; background: var(--surface);
+  padding: 8px 12px;
+}
+.strip-lane { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; }
+.strip-lane + .strip-lane { border-top: 1px solid var(--hairline); }
+.strip-lane .lane-tag {
+  flex-shrink: 0; width: 160px; font-size: 11px; font-weight: 600; color: var(--ink-secondary);
+  padding-top: 4px;
+}
+.strip-lane .lane-tag.ug { font-weight: 500; font-style: italic; color: var(--ink-muted); }
+.strip-lane .chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
+.strip-lane .chips .chip { width: auto; max-width: 230px; border: 1px solid var(--hairline); }
+
+/* ---------- notes surface ---------- */
+.notes { max-width: 940px; }
+.notes h2 { font-size: 13px; margin: 22px 0 8px; }
+.notes h2:first-child { margin-top: 0; }
+.notes p, .notes li { font-size: 12px; color: var(--ink-secondary); line-height: 1.6; }
+.notes ul { padding-left: 18px; margin: 6px 0; }
+.notes li { margin-bottom: 4px; }
+.notes strong { color: var(--ink); }
+.callout {
+  border: 1px solid var(--border); border-left: 3px solid var(--blue);
+  border-radius: 6px; background: var(--surface);
+  padding: 10px 14px; margin: 12px 0;
+}
+.callout.warn { border-left-color: var(--amber); }
+.callout h3 { font-size: 12px; margin: 0 0 6px; }
+.callout p { margin: 4px 0; font-size: 12px; color: var(--ink-secondary); line-height: 1.6; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 8px 0 14px; align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-secondary); }
+.legend .dot { width: 7px; height: 7px; border-radius: 999px; }
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <div class="kicker">C72T2 · prototype-as-spec · static mock — NOT implemented</div>
+  <h1>Group by Epic — Calendar (swimlane rows per live epic + Ungrouped)</h1>
+  <p>
+    This mock rules the <strong style="color:var(--ink)">C72T2</strong> implementation spec once the coordinator signs it.
+    Tabs: <code>Month</code> and <code>Week</code> show the grouped grids; <code>Unscheduled strip</code> shows the
+    grouped drag source/drop zone; <code>Decisions &amp; notes</code> documents where the groupBy setting lives,
+    the DnD contract, and open questions for the spec ruling.
+    Semantics (cycle-72 plan): <strong style="color:var(--ink)">multi-appearance</strong> (an issue under every live epic),
+    <strong style="color:var(--ink)">archived epics excluded</strong>, <strong style="color:var(--ink)">Ungrouped last, hidden when empty</strong>.
+  </p>
+  <div class="surface-tabs" role="tablist" aria-label="Mock surfaces">
+    <button role="tab" aria-selected="true" data-surface="month">Month — grouped</button>
+    <button role="tab" aria-selected="false" data-surface="week">Week — grouped</button>
+    <button role="tab" aria-selected="false" data-surface="strip">Unscheduled strip — grouped</button>
+    <button role="tab" aria-selected="false" data-surface="notes">Decisions &amp; notes</button>
+  </div>
+</div>
+
+<div class="page">
+<!-- ============================ MONTH ============================ -->
+<section class="surface active" data-surface="month">
+  <div class="pagehead">
+    <span class="crumb">Acme / Mobile App</span>
+    <span class="title">Calendar</span>
+    <div class="seg" role="tablist" aria-label="Views" style="margin-left:auto">
+      <button type="button">Issues</button><button type="button">Board</button>
+      <button type="button" aria-selected="true">Calendar</button><button type="button">Analytics</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button class="btn" type="button" aria-label="Previous month">‹</button>
+    <button class="btn" type="button">Today</button>
+    <button class="btn" type="button" aria-label="Next month">›</button>
+    <div class="seg" role="tablist" aria-label="Calendar view">
+      <button type="button" aria-selected="true">Month</button><button type="button">Week</button>
+    </div>
+    <span class="month-label">October 2026</span>
+    <span class="group-label">Group:</span>
+    <div class="seg" role="tablist" aria-label="Group by">
+      <button type="button">None</button><button type="button" aria-selected="true">Epic</button>
+    </div>
+    <button class="btn" type="button" style="margin-left:auto">⧉ Copy iCal URL</button>
+    <span class="hint">Placed by due date, start date when there is no due date</span>
+  </div>
+
+  <div class="legend" aria-label="Legend">
+    <span><span class="dot" style="background:var(--g-backlog)"></span>Backlog</span>
+    <span><span class="dot" style="background:var(--g-unstarted)"></span>Unstarted</span>
+    <span><span class="dot" style="background:var(--g-started)"></span>In progress</span>
+    <span><span class="dot" style="background:var(--g-completed)"></span>Done</span>
+    <span><span class="dot" style="background:var(--g-cancelled)"></span>Cancelled</span>
+    <span style="margin-left:8px"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>&nbsp;= multi-appearance chip (lives in 2 epic lanes)</span>
+  </div>
+
+  <div class="cal-grid" role="grid" aria-label="October 2026 grouped by epic">
+    <div class="wd">Epic lane</div>
+    <div class="wd">Mon</div><div class="wd">Tue</div><div class="wd">Wed</div>
+    <div class="wd">Thu</div><div class="wd">Fri</div><div class="wd">Sat</div><div class="wd">Sun</div>
+
+    <!-- week 1: Sep 28 – Oct 4 -->
+    <div class="daycell gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">4</span>
+        <div class="mini-bar" role="progressbar" aria-label="Auth revamp progress" aria-valuemin="0" aria-valuemax="4" aria-valuenow="1">
+          <div style="width:50%;background:var(--g-unstarted)" title="Unstarted: 2"></div>
+          <div style="width:25%;background:var(--g-started)" title="Started: 1"></div>
+          <div style="width:25%;background:var(--g-completed)" title="Completed: 1"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 4</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">3</span>
+        <div class="mini-bar" role="progressbar" aria-label="Payments v2 progress" aria-valuemin="0" aria-valuemax="3" aria-valuenow="0">
+          <div style="width:33.3%;background:var(--g-backlog)" title="Backlog: 1"></div>
+          <div style="width:33.3%;background:var(--g-unstarted)" title="Unstarted: 1"></div>
+          <div style="width:33.4%;background:var(--g-started)" title="Started: 1"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 3</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">2</span>
+        <div class="mini-bar" role="progressbar" aria-label="Ungrouped progress" aria-valuemin="0" aria-valuemax="2" aria-valuenow="1">
+          <div style="width:50%;background:var(--g-backlog)" title="Backlog: 1"></div>
+          <div style="width:50%;background:var(--g-cancelled)" title="Cancelled: 1"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 2</div>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum other">28</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum other">29</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum other">30</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">1</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">2</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">3</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">4</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+
+    <!-- week 2: Oct 5 – 11 ; GLC-108 (archived-epic-only) lands in Ungrouped -->
+    <div class="daycell gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">4</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-unstarted)"></div>
+          <div style="width:25%;background:var(--g-started)"></div>
+          <div style="width:25%;background:var(--g-completed)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 4</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">3</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:33.3%;background:var(--g-backlog)"></div>
+          <div style="width:33.3%;background:var(--g-unstarted)"></div>
+          <div style="width:33.4%;background:var(--g-started)"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 3</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">2</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-backlog)"></div>
+          <div style="width:50%;background:var(--g-cancelled)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 2</div>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum">5</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">6</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">7</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">8</span><div class="band"></div><div class="band"></div>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-108: Decommission SSO — its only epic (Legacy SSO) is archived, so it lands in Ungrouped">
+          <span class="dot" style="background:var(--g-cancelled)"></span><span class="id">GLC-108</span><span class="nm">Decommission SSO</span>
+        </button>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum">9</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">10</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">11</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+
+    <!-- week 3: Oct 12 – 18 -->
+    <div class="daycell gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">4</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-unstarted)"></div>
+          <div style="width:25%;background:var(--g-started)"></div>
+          <div style="width:25%;background:var(--g-completed)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 4</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">3</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:33.3%;background:var(--g-backlog)"></div>
+          <div style="width:33.3%;background:var(--g-unstarted)"></div>
+          <div style="width:33.4%;background:var(--g-started)"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 3</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">2</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-backlog)"></div>
+          <div style="width:50%;background:var(--g-cancelled)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 2</div>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum">12</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">13</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">14</span>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-101: Mobile login screen">
+          <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-101</span><span class="nm">Mobile login screen</span>
+        </button>
+        <button class="chip" type="button" title="GLC-102: OAuth token refresh">
+          <span class="dot" style="background:var(--g-completed)"></span><span class="id">GLC-102</span><span class="nm">OAuth token refresh</span>
+        </button>
+      </div>
+      <div class="band"></div><div class="band"></div>
+    </div>
+    <div class="daycell"><span class="daynum">15</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">16</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">17</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">18</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+
+    <!-- week 4: Oct 19 – 25 ; multi-appearance GLC-107 on Oct 21 -->
+    <div class="daycell gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">4</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-unstarted)"></div>
+          <div style="width:25%;background:var(--g-started)"></div>
+          <div style="width:25%;background:var(--g-completed)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 4</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">3</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:33.3%;background:var(--g-backlog)"></div>
+          <div style="width:33.3%;background:var(--g-unstarted)"></div>
+          <div style="width:33.4%;background:var(--g-started)"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 3</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">2</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-backlog)"></div>
+          <div style="width:50%;background:var(--g-cancelled)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 2</div>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum today">19</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">20</span>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-103: Biometric unlock">
+          <span class="dot" style="background:var(--g-started)"></span><span class="id">GLC-103</span><span class="nm">Biometric unlock</span>
+        </button>
+      </div>
+      <div class="band"></div><div class="band"></div>
+    </div>
+    <div class="daycell"><span class="daynum">21</span>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-107: Mobile SDK release — attached to Auth revamp AND Payments v2; renders in both lanes">
+          <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-107</span><span class="nm">Mobile SDK release</span>
+          <span class="ma" title="Also renders in the Payments v2 lane"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+        </button>
+      </div>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-107: Mobile SDK release — attached to Auth revamp AND Payments v2; renders in both lanes">
+          <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-107</span><span class="nm">Mobile SDK release</span>
+          <span class="ma" title="Also renders in the Auth revamp lane"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+        </button>
+        <button class="chip" type="button" title="GLC-104: Stripe webhook handler">
+          <span class="dot" style="background:var(--g-started)"></span><span class="id">GLC-104</span><span class="nm">Stripe webhook handler</span>
+        </button>
+      </div>
+      <div class="band"></div>
+    </div>
+    <div class="daycell"><span class="daynum">22</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">23</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">24</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">25</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+
+    <!-- week 5: Oct 26 – Nov 1 -->
+    <div class="daycell gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">4</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-unstarted)"></div>
+          <div style="width:25%;background:var(--g-started)"></div>
+          <div style="width:25%;background:var(--g-completed)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 4</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">3</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:33.3%;background:var(--g-backlog)"></div>
+          <div style="width:33.3%;background:var(--g-unstarted)"></div>
+          <div style="width:33.4%;background:var(--g-started)"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 3</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">2</span>
+        <div class="mini-bar" aria-hidden="true">
+          <div style="width:50%;background:var(--g-backlog)"></div>
+          <div style="width:50%;background:var(--g-cancelled)"></div>
+        </div>
+        <div class="lane-caption num">Done 1 of 2</div>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum">26</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">27</span><div class="band"></div>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-106: Payment retry queue">
+          <span class="dot" style="background:var(--g-backlog)"></span><span class="id">GLC-106</span><span class="nm">Payment retry queue</span>
+        </button>
+      </div>
+      <div class="band"></div>
+    </div>
+    <div class="daycell"><span class="daynum">28</span><div class="band"></div><div class="band"></div>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-109: Update API docs">
+          <span class="dot" style="background:var(--g-backlog)"></span><span class="id">GLC-109</span><span class="nm">Update API docs</span>
+        </button>
+      </div>
+    </div>
+    <div class="daycell"><span class="daynum">29</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">30</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum">31</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="daycell"><span class="daynum other">1</span><div class="band"></div><div class="band"></div><div class="band"></div></div>
+  </div>
+
+  <p class="muted" style="font-size:11px;margin-top:10px">
+    Mock note: bands are <em>render-only</em> — a chip dropped on a day keeps the whole day cell as its drop target
+    (<code>resolveScheduleDrop(issue, dayKey, fromStrip)</code> unchanged); the epic lane a chip renders in is derived
+    from the issue's live <code>epics</code> rows. The gutter repeats the lane stack once per week-row (same component,
+    vertical alignment with the bands).
+  </p>
+</section>
+
+<!-- ============================ WEEK ============================ -->
+<section class="surface" data-surface="week">
+  <div class="pagehead">
+    <span class="crumb">Acme / Mobile App</span>
+    <span class="title">Calendar</span>
+    <div class="seg" role="tablist" aria-label="Views" style="margin-left:auto">
+      <button type="button">Issues</button><button type="button">Board</button>
+      <button type="button" aria-selected="true">Calendar</button><button type="button">Analytics</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button class="btn" type="button" aria-label="Previous week">‹</button>
+    <button class="btn" type="button">Today</button>
+    <button class="btn" type="button" aria-label="Next week">›</button>
+    <div class="seg" role="tablist" aria-label="Calendar view">
+      <button type="button">Month</button><button type="button" aria-selected="true">Week</button>
+    </div>
+    <span class="month-label">Oct 19 – 25, 2026</span>
+    <span class="group-label">Group:</span>
+    <div class="seg" role="tablist" aria-label="Group by">
+      <button type="button">None</button><button type="button" aria-selected="true">Epic</button>
+    </div>
+    <button class="btn" type="button" style="margin-left:auto">⧉ Copy iCal URL</button>
+    <span class="hint">Placed by due date, start date when there is no due date</span>
+  </div>
+
+  <div class="week-grid" role="grid" aria-label="Week of Oct 19 2026 grouped by epic">
+    <div class="wd">Epic lane</div>
+    <div class="wd today"><span class="dow">Mon</span><span class="dnum">19</span></div>
+    <div class="wd"><span class="dow">Tue</span><span class="dnum">20</span></div>
+    <div class="wd"><span class="dow">Wed</span><span class="dnum">21</span></div>
+    <div class="wd"><span class="dow">Thu</span><span class="dnum">22</span></div>
+    <div class="wd"><span class="dow">Fri</span><span class="dnum">23</span></div>
+    <div class="wd"><span class="dow">Sat</span><span class="dnum">24</span></div>
+    <div class="wd"><span class="dow">Sun</span><span class="dnum">25</span></div>
+
+    <div class="wcol gutter-cell">
+      <div class="lane-sec">
+        <span class="lane-name">Auth revamp</span><span class="lane-count num">2</span>
+        <div class="mini-bar" role="progressbar" aria-label="Auth revamp progress" aria-valuemin="0" aria-valuemax="2" aria-valuenow="0">
+          <div style="width:50%;background:var(--g-unstarted)" title="Unstarted: 1"></div>
+          <div style="width:50%;background:var(--g-started)" title="Started: 1"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 2</div>
+      </div>
+      <div class="lane-sec">
+        <span class="lane-name">Payments v2</span><span class="lane-count num">2</span>
+        <div class="mini-bar" role="progressbar" aria-label="Payments v2 progress" aria-valuemin="0" aria-valuemax="2" aria-valuenow="0">
+          <div style="width:50%;background:var(--g-unstarted)" title="Unstarted: 1"></div>
+          <div style="width:50%;background:var(--g-started)" title="Started: 1"></div>
+        </div>
+        <div class="lane-caption num">Done 0 of 2</div>
+      </div>
+      <div class="lane-sec lane-ungrouped">
+        <span class="lane-name">Ungrouped</span><span class="lane-count num">0</span>
+        <div class="lane-caption">Hidden when empty — shown here for the spec: the band collapses and the lane disappears.</div>
+      </div>
+    </div>
+
+    <div class="wcol"><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="wcol">
+      <div class="band">
+        <button class="chip" type="button" title="GLC-103: Biometric unlock">
+          <span class="dot" style="background:var(--g-started)"></span><span class="id">GLC-103</span><span class="nm">Biometric unlock</span>
+        </button>
+      </div>
+      <div class="band"></div><div class="band"></div>
+    </div>
+    <div class="wcol">
+      <div class="band">
+        <button class="chip" type="button" title="GLC-107: Mobile SDK release — multi-appearance, renders in both lanes">
+          <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-107</span><span class="nm">Mobile SDK release</span>
+          <span class="ma" title="Also renders in the Payments v2 lane"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+        </button>
+      </div>
+      <div class="band">
+        <button class="chip" type="button" title="GLC-107: Mobile SDK release — multi-appearance, renders in both lanes">
+          <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-107</span><span class="nm">Mobile SDK release</span>
+          <span class="ma" title="Also renders in the Auth revamp lane"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+        </button>
+        <button class="chip" type="button" title="GLC-104: Stripe webhook handler">
+          <span class="dot" style="background:var(--g-started)"></span><span class="id">GLC-104</span><span class="nm">Stripe webhook handler</span>
+        </button>
+      </div>
+      <div class="band"></div>
+    </div>
+    <div class="wcol"><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="wcol"><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="wcol"><div class="band"></div><div class="band"></div><div class="band"></div></div>
+    <div class="wcol"><div class="band"></div><div class="band"></div><div class="band"></div></div>
+  </div>
+
+  <p class="muted" style="font-size:11px;margin-top:10px">
+    Mock note: this week has no Ungrouped issues — per the plan rule the Ungrouped lane is hidden when empty
+    (the lane stack and the third band collapse; the spec note in the gutter above shows where it would go).
+    Drop targets stay the whole week columns; DnD mechanics unchanged.
+  </p>
+</section>
+
+<!-- ============================ UNSCHEDULED STRIP ============================ -->
+<section class="surface" data-surface="strip">
+  <div class="pagehead">
+    <span class="crumb">Acme / Mobile App</span>
+    <span class="title">Calendar</span>
+    <div class="seg" role="tablist" aria-label="Views" style="margin-left:auto">
+      <button type="button">Issues</button><button type="button">Board</button>
+      <button type="button" aria-selected="true">Calendar</button><button type="button">Analytics</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button class="btn" type="button" aria-label="Previous month">‹</button>
+    <button class="btn" type="button">Today</button>
+    <button class="btn" type="button" aria-label="Next month">›</button>
+    <div class="seg" role="tablist" aria-label="Calendar view">
+      <button type="button" aria-selected="true">Month</button><button type="button">Week</button>
+    </div>
+    <span class="month-label">October 2026</span>
+    <span class="group-label">Group:</span>
+    <div class="seg" role="tablist" aria-label="Group by">
+      <button type="button">None</button><button type="button" aria-selected="true">Epic</button>
+    </div>
+    <button class="btn" type="button" style="margin-left:auto">⧉ Copy iCal URL</button>
+    <span class="hint">Placed by due date, start date when there is no due date</span>
+  </div>
+
+  <p class="muted" style="font-size:11px;margin:0 0 10px">
+    (Month grid above, grouped as on the Month tab — the strip below is the focus of this surface.)
+  </p>
+
+  <div class="strip">
+    <h3>Unscheduled (3)</h3>
+    <div class="strip-drop">
+      <div class="strip-lane">
+        <div class="lane-tag">Auth revamp <span class="lane-count num">1</span></div>
+        <div class="chips">
+          <button class="chip" type="button" title="GLC-110: Dark mode for settings">
+            <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-110</span><span class="nm">Dark mode for settings</span>
+          </button>
+        </div>
+      </div>
+      <div class="strip-lane">
+        <div class="lane-tag">Payments v2 <span class="lane-count num">1</span></div>
+        <div class="chips">
+          <button class="chip" type="button" title="GLC-111: Refund webhook event">
+            <span class="dot" style="background:var(--g-unstarted)"></span><span class="id">GLC-111</span><span class="nm">Refund webhook event</span>
+          </button>
+        </div>
+      </div>
+      <div class="strip-lane">
+        <div class="lane-tag ug">Ungrouped <span class="lane-count num">1</span></div>
+        <div class="chips">
+          <button class="chip" type="button" title="GLC-112: Changelog draft">
+            <span class="dot" style="background:var(--g-backlog)"></span><span class="id">GLC-112</span><span class="nm">Changelog draft</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <h3>Strip DnD contract (unchanged)</h3>
+    <p>The whole strip stays <strong>one droppable</strong> (<code>UNSCHEDULED_STRIP_ID</code> → <code>resolveUnscheduleDrop</code>);
+    lane clusters are render-only. Chips keep <code>fromStrip</code> draggables so drops onto day cells schedule them
+    (<code>resolveScheduleDrop(issue, dayKey, true)</code>). The C26T2 rules stand: the section always renders for
+    members (drop target even when empty); guests see it only when it has chips, as plain buttons.</p>
+  </div>
+</section>
+
+<!-- ============================ DECISIONS & NOTES ============================ -->
+<section class="surface" data-surface="notes">
+  <div class="notes">
+    <h2>1 · Where the groupBy setting lives (mock recommendation)</h2>
+    <div class="callout">
+      <h3>Recommendation: calendar-local control, not DisplayPanel / useDisplaySettings</h3>
+      <p>The calendar currently has <strong>no</strong> groupBy and no display-settings plumbing — its toolbar holds only
+      nav, Month/Week, iCal, and the hint. A <code>Group: None | Epic</code> segmented control sits in that toolbar
+      (same segmented language as Month/Week), persisted per-project in localStorage under
+      <code>glance:calendar-groupby:${slug}:${identifier}</code>, value <code>"none" | "epic"</code>
+      (a narrowing of the shared <code>GroupBy</code> type), default <code>"none"</code>, using the same
+      adjust-during-render pattern as the calendar's view setting (<code>glance:calendar-view:…</code>).</p>
+      <p><strong>Why not <code>useDisplaySettings</code>?</strong> (a) The calendar has no field toggles / group headers
+      infrastructure — wiring the full DisplayPanel would drag in list-specific semantics (state/priority groups,
+      showEmptyGroups, quick-add state targets). (b) Sharing the list's per-project display-settings key would
+      <em>couple two different views</em>: changing Group By on the issue list would unexpectedly restructure the
+      calendar, and vice versa. A calendar-local key keeps the swimlane grouping an independent, per-view preference —
+      consistent with how the calendar already keeps its own view key separate.</p>
+    </div>
+
+    <h2>2 · Rendering model (what the mock shows)</h2>
+    <ul>
+      <li><strong>Swimlane gutter + render-only bands.</strong> The grid gains a 200px gutter column; every week-row's
+      gutter cell stacks one lane section per live epic (+ Ungrouped), in first-appearance order. Each day cell is
+      vertically partitioned into the same fixed-order bands (one per lane). Bands have no droppable of their own —
+      the <strong>whole day cell stays the drop target</strong>, exactly as today.</li>
+      <li><strong>Multi-appearance:</strong> an issue with N live epics renders a chip in every lane's band of its day
+      cell. Mock: <code>GLC-107</code> on Oct 21 appears in both <em>Auth revamp</em> and <em>Payments v2</em>, with a
+      link glyph (<code>title="Also renders in the … lane"</code>) so users can see it's one issue, not two.</li>
+      <li><strong>Archived exclusion:</strong> <code>GLC-108</code>'s only epic (<em>Legacy SSO</em>) is archived →
+      no lane, lands in <strong>Ungrouped</strong> on Oct 8.</li>
+      <li><strong>Ungrouped:</strong> always last; hidden when empty (week tab shows the collapsed state).</li>
+      <li><strong>Empty epic swimlanes:</strong> hidden (an epic with no dated issues in the visible range gets no lane
+      and no band). The calendar has no <code>showEmptyGroups</code> toggle today — mocked as always-hide.</li>
+      <li><strong>Lane headers:</strong> epic name + mono count + compact 5-segment progress bar
+      (<code>EPIC_GROUP_ORDER</code>, <code>GROUP_COLORS</code>, done = completed + cancelled) + "Done X of N" caption.
+      The full <code>EpicGroupBreakdown</code> legend is too heavy for a 200px gutter — the mock uses a compact inline bar.</li>
+      <li><strong>Counts:</strong> lane count = number of the lane's issues <em>visible in this grid's range</em>;
+      the progress bar derives from the already-loaded issues (states → <code>state.group</code> via the existing
+      <code>statesById</code> map — no extra fetches, same derived-data discipline as C70/C71).</li>
+      <li><strong>Unscheduled strip:</strong> same grouping as lane clusters; the strip remains one droppable /
+      one drag source family (see strip tab). Ungrouped cluster last, hidden when empty.</li>
+      <li><strong>Guests:</strong> the Group control is a pure view preference — enabled for all; <code>canEdit</code>
+      still gates DnD only (unchanged C26T0 behavior).</li>
+    </ul>
+
+    <h2>3 · What does NOT change</h2>
+    <ul>
+      <li>DnD wiring: <code>ScheduleDnd</code>, <code>handleDragStart/End</code>, <code>useScheduleMutation</code>,
+      <code>resolveScheduleDrop(issue, overId, fromStrip)</code> / <code>resolveUnscheduleDrop</code> — untouched.
+      <code>overId</code> stays the day key / <code>UNSCHEDULED_STRIP_ID</code>.</li>
+      <li>Data: the three bounded queries (due/start/undated) already return <code>epics: EpicRef[]</code> on every row
+      (C71 <code>epicsAgg</code>) — grouping is client-side via the shared pure <code>groupIssuesByEpic</code>.</li>
+      <li>Quick-add, peek drawer, iCal flow, empty-state copy — untouched.</li>
+      <li>No backend, no migrations, no webhook changes.</li>
+    </ul>
+
+    <h2>4 · Open questions for the coordinator's spec ruling</h2>
+    <div class="callout warn">
+      <h3>Rulings needed before implementation</h3>
+      <p><strong>Q1 — Compact bar vs full <code>EpicGroupBreakdown</code>:</strong> the mock uses a compact inline
+      5-segment bar (no legend) in the gutter. Accept, or require byte-identical reuse of the full component
+      (its legend would dominate a 200px gutter)?</p>
+      <p><strong>Q2 — Hide-empty-swimlanes vs toggle:</strong> mock hides empty epic lanes unconditionally. Keep, or add
+      a <code>showEmptyGroups</code>-style control to the calendar?</p>
+      <p><strong>Q3 — Strip grouping:</strong> mock groups the unscheduled strip into lane clusters. Accept, or keep the
+      strip flat (grouping applies to the day grid only)?</p>
+      <p><strong>Q4 — Multi-appearance marker:</strong> mock adds a link glyph on multi-epic chips. Keep the marker,
+      or render plain duplicate chips with no indicator?</p>
+      <p><strong>Q5 — Setting location:</strong> calendar-local <code>Group: None | Epic</code> control +
+      <code>glance:calendar-groupby:…</code> key (recommended), vs wiring the shared <code>useDisplaySettings</code> /
+      DisplayPanel onto the calendar page.</p>
+    </div>
+
+    <h2>5 · Scenario data used in this mock (October 2026)</h2>
+    <ul>
+      <li>Live epics: <strong>Auth revamp</strong> (4 issues: GLC-101 unstarted, GLC-102 completed, GLC-103 started,
+      GLC-107 unstarted), <strong>Payments v2</strong> (3: GLC-104 started, GLC-106 backlog, GLC-107 unstarted).</li>
+      <li>Archived epic: <strong>Legacy SSO</strong> — its only issue GLC-108 (cancelled, Oct 8) renders in Ungrouped.</li>
+      <li>Ungrouped: GLC-108 + GLC-109 (backlog, Oct 28). Multi-appearance: GLC-107 (Auth revamp + Payments v2, Oct 21).</li>
+      <li>Strip: GLC-110 (Auth revamp), GLC-111 (Payments v2), GLC-112 (Ungrouped).</li>
+    </ul>
+  </div>
+</section>
+</div>
+
+<script>
+document.querySelectorAll(".surface-tabs [data-surface]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".surface-tabs [data-surface]").forEach((b) =>
+      b.setAttribute("aria-selected", b === btn ? "true" : "false"));
+    document.querySelectorAll(".surface").forEach((s) =>
+      s.classList.toggle("active", s.dataset.surface === btn.dataset.surface));
+    window.scrollTo(0, 0);
+  });
+});
+</script>
+</body>
+</html>
