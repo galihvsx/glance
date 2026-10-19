@@ -52,6 +52,9 @@ import {
 import { relativeTime } from "../../lib/relativeTime";
 import { formatDateTime } from "../../lib/format";
 import { copyText } from "../../lib/clipboard";
+import WebhookFilterEditor, {
+  FilterBadge,
+} from "./WebhookFilterEditor";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -618,6 +621,8 @@ export default function WebhooksSection({ slug }: { slug: string }) {
   const [editEvents, setEditEvents] = useState<string[]>([]);
   const [editActive, setEditActive] = useState(true);
   const [editError, setEditError] = useState<string | null>(null);
+  // C69T1: which webhook's event-filter editor dialog is open.
+  const [filterEditing, setFilterEditing] = useState<Webhook | null>(null);
 
   function openEdit(w: Webhook) {
     setEditing(w);
@@ -753,6 +758,10 @@ export default function WebhooksSection({ slug }: { slug: string }) {
                         </Badge>
                       ))
                     )}
+                    <FilterBadge
+                      webhook={w}
+                      onOpen={() => setFilterEditing(w)}
+                    />
                     <span
                       className="text-xs text-muted-foreground"
                       title={formatDateTime(w.created_at)}
@@ -878,6 +887,16 @@ export default function WebhooksSection({ slug }: { slug: string }) {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ---------- Event filter editor (C69T1) ---------- */}
+      {filterEditing && (
+        <WebhookFilterEditor
+          slug={slug}
+          webhook={filterEditing}
+          open={filterEditing !== null}
+          onClose={() => setFilterEditing(null)}
+        />
+      )}
 
       {/* ---------- Edit dialog ---------- */}
       <Dialog open={editing !== null} onOpenChange={(open) => !open && closeEdit()}>
