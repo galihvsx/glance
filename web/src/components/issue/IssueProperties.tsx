@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Clock, Plus, X } from "lucide-react";
+import { Check, ChevronDown, Clock, Hourglass, Plus, X } from "lucide-react";
 import { api, ApiError } from "../../lib/api";
+import { formatDateTime } from "../../lib/format";
+import { formatStateDuration } from "../../lib/timeState";
 import type {
   Cycle,
   Issue,
@@ -270,6 +272,25 @@ export default function IssueProperties({
             {formatDuration(trackedSeconds)}
           </button>
         </Cell>
+        {issue.time_in_state_seconds != null && (
+          <Cell label="Time in state">
+            {/* C70T1: non-interactive. The current state name is not in
+             *  scope here (no prop-drilling), so the tooltip falls back to
+             *  "Since {date}". When state_entered_at is absent the duration
+             *  renders with no tooltip. */}
+            <span
+              title={
+                issue.state_entered_at
+                  ? `Since ${formatDateTime(issue.state_entered_at)}`
+                  : undefined
+              }
+              className="inline-flex min-h-[23px] items-center gap-[6px] px-1 text-[10px] text-ink-secondary"
+            >
+              <Hourglass className="h-3 w-3 text-ink-muted" />
+              {formatStateDuration(issue.time_in_state_seconds)}
+            </span>
+          </Cell>
+        )}
       </Group>
 
       <Group title="Project structure">

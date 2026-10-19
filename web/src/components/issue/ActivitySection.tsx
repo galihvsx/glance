@@ -5,11 +5,13 @@ import {
   Bold,
   Check,
   History as HistoryIcon,
+  Hourglass,
   Italic,
   Link2,
   Plus,
 } from "lucide-react";
 import { api } from "../../lib/api";
+import { formatStateDuration } from "../../lib/timeState";
 import { textToTipTapDoc, tiptapText } from "../../lib/tiptap";
 import {
   applyMention,
@@ -388,6 +390,18 @@ function CommentItem({
 }
 
 function EventItem({ entry, states }: { entry: HistoryEntry; states: IssueState[] }) {
+  const stateNames = useMemo(
+    () => new Map(states.map((s) => [s.id, s.name])),
+    [states],
+  );
+  const pillSeconds = entry.time_in_state_seconds;
+  // C70T1: rows whose entry carries time_in_state_seconds get a
+  // right-aligned duration pill on the timestamp line; rows without the
+  // field keep the plain timestamp (never crash on absent fields).
+  const newStateName =
+    pillSeconds != null
+      ? (stateNames.get(jsonText(entry.new_value)) ?? "—")
+      : null;
   return (
     <div className="grid grid-cols-[27px_1fr] gap-[9px] py-[17px]">
       <span
@@ -398,7 +412,18 @@ function EventItem({ entry, states }: { entry: HistoryEntry; states: IssueState[
       </span>
       <div className="min-w-0">
         <EventCopy entry={entry} states={states} />
-        <p className="mt-0.5 text-[9px] text-ink-muted">{fmtFeedTime(entry.created_at)}</p>
+        <div className="mt-0.5 flex items-center justify-between">
+          <p className="text-[9px] text-ink-muted">{fmtFeedTime(entry.created_at)}</p>
+          {pillSeconds != null && (
+            <span
+              className="inline-flex h-[20px] items-center gap-1 rounded-[4px] border border-border px-[6px] text-[10px] tabular-nums text-ink-secondary"
+              title={`Time spent in ${newStateName}`}
+            >
+              <Hourglass className="h-[11px] w-[11px] text-ink-muted" />
+              {formatStateDuration(pillSeconds)}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -128,6 +128,13 @@ export interface Issue {
   labels: IssueLabel[];
   /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
   subtask_progress?: SubtaskProgress | null;
+  /** Seconds spent in the current workflow state (C70T1); present on the
+   *  detail (and list) endpoints when the backend selects it.
+   *  Null/undefined = unknown (the property row is hidden). */
+  time_in_state_seconds?: number | null;
+  /** RFC3339 timestamp of when the issue entered its current state
+   *  (C70T1); detail (and list) endpoints only. */
+  state_entered_at?: string;
   /** Linked PRs/commits (C17T0). Always present as an array on the detail
    *  endpoint (empty when nothing is linked); omitted on list rows. */
   external_refs?: ExternalRef[];
@@ -292,6 +299,9 @@ export interface HistoryEntry {
   field: string;
   old_value?: unknown;
   new_value?: unknown;
+  /** Seconds spent in the state that a `state_id` transition left
+   *  (C70T1); absent on all other history entries. */
+  time_in_state_seconds?: number | null;
   actor: ActorRef;
   created_at: string;
 }
