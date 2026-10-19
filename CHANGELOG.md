@@ -5,6 +5,36 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Webhook event filters (cycle 69)**
+- Per-webhook condition lists: each webhook can now carry a `filter`
+  (nullable JSONB) of conditions over `priority`, `state_group`,
+  `state_id`, `assignee_id`, `label_id`, `project_id`, `target_date` with
+  `eq`/`in` ops. Filters are evaluated at enqueue time against the
+  work-item event's issue snapshot; non-matching events never enqueue
+  (fail-closed: corrupt stored filters and evaluation failures skip
+  delivery). AND semantics across conditions; assignee/label match with
+  ANY semantics. PUT is tri-state: absent = untouched, `null` = clear,
+  array = replace.
+- Backend: migration `000068` (`webhooks.filter` nullable JSONB, idempotent
+  up/down); `internal/service/webhook_filter.go` (validation + match;
+  enqueue hook in the webhook outbox path); `WebhookInput`/`WebhookPatch`
+  gain `Filter` with nil-absent discipline; list/get/create/update
+  responses carry `filter` (`null` when unset); OpenAPI
+  `WebhookCondition` schema + `Webhook.filter` pins. `state_group`
+  vocabulary mirrors Plane's 5 groups exactly (`triage` rejected).
+- Frontend: filter builder dialog per webhook (`WebhookFilterEditor`):
+  field+op+value condition rows (NativeSelect, checkbox multi-selects,
+  native date input; `target_date in` via comma-separated list,
+  client-validated), per-row live summary chip, Save → PATCH
+  `{filter:[...]}`, Clear all → PATCH `{filter:null}` (house confirm
+  pattern), inline Alert on 400. Webhook rows show "N filters"/"No
+  filters" badge (click opens editor, tooltip lists summaries).
+  `state_id` deliberately UI-omitted; `state_group` options exclude
+  triage. Shared `lib/webhookFilter.ts` (field/op vocabularies,
+  validation mirror, `conditionSummary`, tri-state `buildFilterPatch`) +
+  19 new vitest tests. Labels picker reads workspace-scoped labels via
+  the first project's `/labels` route (scope/authz only).
+
 **Workflow transition controls (cycle 68, backend)**
 - Plane paywalls state-transition governance (Business/Enterprise Grid);
   glance ships it free. New per-project transition allowlist: each row
