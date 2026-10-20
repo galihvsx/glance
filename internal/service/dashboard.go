@@ -1,33 +1,61 @@
 package service
 
-// Customizable dashboards, phase 1 (C81T0): workspace-scoped data
-// canvases à la Plane Dashboards — a 12-column grid of widgets, each
-// independently configured (chart type, grouping, filters, project
-// scope) and recomputed live from work-item data.
+// Customizable dashboards, phases 1+2 (C81T0, C83T0): workspace-scoped
+// data canvases à la Plane Dashboards — a 12-column grid of widgets,
+// each independently configured (chart type, grouping, filters,
+// project scope) and recomputed live from work-item data.
 //
-// AuthZ (Plane's exact rule):
-//   - Reads (list/get/widget data): workspace member (15)+; guests
-//     (5) get ErrForbidden, bad slug / non-member ErrNotFound.
-//   - Visibility: public dashboards are visible to all members;
-//     a private dashboard is visible only to its creator — any other
-//     caller gets ErrNotFound (never a 403 that would leak existence).
-//   - Edit (PATCH/DELETE dashboard, all widget writes): the creator, or
-//     a workspace admin (20) on PUBLIC dashboards only; on private
-//     dashboards only the creator. Non-creator non-admin on a public
-//     dashboard → ErrForbidden; on a private dashboard → ErrNotFound.
+// Phase 2 adds Plane's newer widget types (smart_counter, smart_gauge,
+// table_2d, intake_breakdown), intake source tracking (in_app|form|
+// email on intake_issues), per-member dashboard sharing (owner-managed,
+// View/Edit access), a static template catalog with create-from-
+// template, and per-widget CSV export.
+//
+// AuthZ:
+//   - Reads (list/get/widget data/export.csv): workspace member (15)+;
+//     guests (5) get ErrForbidden, bad slug / non-member ErrNotFound.
+//   - Visibility: public dashboards are visible to all members; a
+//     private dashboard is visible only to its creator and to members
+//     holding a share row — any other caller gets ErrNotFound (never
+//     a 403 that would leak existence).
+//   - Effective access per caller: "owner" (creator), "edit"/"view"
+//     (share row), else on public dashboards "edit" for workspace
+//     admins (20) / "view" for members (phase-1 rule); on private
+//     dashboards without a share: none (ErrNotFound).
+//   - Edit ("edit" or "owner"): widget CRUD, layout PATCH, dashboard
+//     PATCH of name/description. Anything less → ErrForbidden (the
+//     caller CAN see the dashboard, so 403 is safe).
+//   - Owner-only: delete dashboard, change visibility, manage shares.
+//     Everyone else — admins and edit-shared members included — gets
+//     ErrForbidden.
 //   - Malformed UUIDs never reach the service: the API layer 400s them
 //     first (requireUUIDParam); the service still guards with
 //     isUUIDFormat where it parses stored/filter input.
 //
 // Config validation (honest 400s at write time):
-//   - widget_type ∈ bar|line|area|donut|pie|number (also a DB CHECK).
-//   - group_by ∈ state|priority|assignee|label — required for the five
-//     chart types, optional and ignored for number.
-//   - metric is reserved: when present it must be "count" (phase 1 has
-//     no other metric).
+//   - widget_type ∈ bar|line|area|donut|pie|number|smart_counter|
+//     smart_gauge|table_2d|intake_breakdown (also a DB CHECK).
+//   - group_by ∈ state|priority|assignee|label|state_group|project|
+//     created_by — required for the chart and phase-2 grouped types,
+//     optional and ignored for number; ignored (not required) for
+//     intake_breakdown.
+//   - metric ∈ count|estimate_points (default count) for
+//     smart_counter|smart_gauge; reserved to "count" for the phase-1
+//     chart types and number; accepted-but-ignored for table_2d (its
+//     metric is fixed to count — Plane parity) and intake_breakdown.
+//   - smart_counter: max_rows 1..100 (default 10),
+//     visualization ∈ grid|table (default grid).
+//   - smart_gauge: max_rows 1..100 (default 10), gauge_color #rrggbb
+//     (default #3b82f6), show_percentage bool (default true).
+//   - table_2d: max_rows 1..100 (default 10).
+//   - intake_breakdown: view ∈ grid|table (default grid). Widget-level
+//     filters AND project_ids are ignored — it honors the dashboard's
+//     project scope (every non-archived project of the workspace) only.
 //   - filters.{assignees,states,labels} are UUID arrays;
 //     filters.priorities are ints 0..4; unknown keys are rejected.
-//   - project_ids is a UUID array; unknown keys are rejected.
+//   - project_ids is a UUID array; unknown keys are rejected. Keys that
+//     are meaningless for a widget's type (e.g. max_rows on a bar
+//     chart) are rejected — each type documents its own key set.
 //   - grid_w/grid_h are clamped to 1..12, grid_x/grid_y to ≥ 0 (never
 //     an error — the canvas just clamps).
 //
@@ -40,15 +68,26 @@ package service
 // config.group_by. Group keys are the human labels the frontend
 // renders: state name, priority label (None/Low/Medium/High/Urgent —
 // the web/src/lib/types.ts PRIORITY_LABELS order), assignee display
-// name (COALESCE(NULLIF(name,''), email)), label name. Assignee
+// name (COALESCE(NULLIF(name,''), email)), label name, state-group
+// display name (Triage/Backlog/Unstarted/Started/Completed/Cancelled),
+// project name, creator display name. Same-named buckets across
+// projects merge (documented per-widget-type behavior). Assignee
 // grouping adds an "Unassigned" bucket and label grouping a "No label"
 // bucket so the groups partition every counted issue.
+//
+// Smart gauge completion = the share of the group sitting in a
+// 'completed'-group state. With metric=estimate_points it is the sum
+// of completed-group points over the sum of all points; when nothing
+// is estimated the percentage is 0 (Plane parity — estimates are
+// optional in glance).
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,20 +103,48 @@ const (
 
 // Widget types (also a DB CHECK on dashboard_widgets).
 const (
-	WidgetTypeBar    = "bar"
-	WidgetTypeLine   = "line"
-	WidgetTypeArea   = "area"
-	WidgetTypeDonut  = "donut"
-	WidgetTypePie    = "pie"
-	WidgetTypeNumber = "number"
+	WidgetTypeBar          = "bar"
+	WidgetTypeLine         = "line"
+	WidgetTypeArea         = "area"
+	WidgetTypeDonut        = "donut"
+	WidgetTypePie          = "pie"
+	WidgetTypeNumber       = "number"
+	WidgetTypeSmartCounter = "smart_counter"
+	WidgetTypeSmartGauge   = "smart_gauge"
+	WidgetTypeTable2D      = "table_2d"
+	WidgetTypeIntake       = "intake_breakdown"
 )
 
 // Widget group-by dimensions.
 const (
-	WidgetGroupByState    = "state"
-	WidgetGroupByPriority = "priority"
-	WidgetGroupByAssignee = "assignee"
-	WidgetGroupByLabel    = "label"
+	WidgetGroupByState      = "state"
+	WidgetGroupByPriority   = "priority"
+	WidgetGroupByAssignee   = "assignee"
+	WidgetGroupByLabel      = "label"
+	WidgetGroupByStateGroup = "state_group"
+	WidgetGroupByProject    = "project"
+	WidgetGroupByCreatedBy  = "created_by"
+)
+
+// Widget metrics.
+const (
+	WidgetMetricCount          = "count"
+	WidgetMetricEstimatePoints = "estimate_points"
+)
+
+// Dashboard access levels: the caller's effective standing on one
+// dashboard (my_access in the list/detail responses).
+const (
+	DashboardAccessOwner = "owner"
+	DashboardAccessEdit  = "edit"
+	DashboardAccessView  = "view"
+	DashboardAccessNone  = "none"
+)
+
+// Dashboard share access values (also a DB CHECK on dashboard_shares).
+const (
+	DashboardShareView = "view"
+	DashboardShareEdit = "edit"
 )
 
 var (
@@ -93,12 +160,24 @@ var (
 	// private dashboard the caller may not see.
 	ErrWidgetNotFound = errors.New("service: widget not found")
 	// ErrInvalidWidgetType is returned when widget_type is not one of
-	// the six chart types. The handler maps it to 400 bad_request.
+	// the ten chart types. The handler maps it to 400 bad_request.
 	ErrInvalidWidgetType = errors.New("service: invalid widget_type")
 	// ErrInvalidWidgetConfig is returned when the widget config JSON
-	// fails validation (bad group_by, non-"count" metric, malformed
-	// filter/project_ids values, unknown keys). 400 bad_request.
+	// fails validation (bad group_by, bad metric, bad max_rows,
+	// malformed filter/project_ids values, unknown keys, keys that are
+	// meaningless for the widget's type). 400 bad_request.
 	ErrInvalidWidgetConfig = errors.New("service: invalid widget config")
+	// ErrInvalidWidgetPage is returned when the widget-data page query param
+	// is not an integer >= 1. The handler maps it to 400 bad_request.
+	ErrInvalidWidgetPage = errors.New("service: invalid page: want an integer >= 1")
+	// ErrInvalidDashboardShare is returned when a dashboard share entry fails
+	// validation (bad member, guest, duplicate, bad access value). The
+	// handler maps it to 400 bad_request.
+	ErrInvalidDashboardShare = errors.New("service: invalid dashboard share")
+	// ErrUnknownDashboardTemplate is returned when a create-from-
+	// template references a template id outside the static catalog. The
+	// handler maps it to 400 bad_request.
+	ErrUnknownDashboardTemplate = errors.New("service: unknown dashboard template")
 )
 
 // priorityLabels mirrors web/src/lib/types.ts PRIORITY_LABELS — the
@@ -107,7 +186,12 @@ var priorityLabels = []string{"None", "Low", "Medium", "High", "Urgent"}
 
 // Dashboard is a workspace-scoped widget canvas. Widgets ride along on
 // the detail read only (the list read omits them); the frontend fetches
-// per-widget data separately via GetWidgetData.
+// per-widget data separately via GetWidgetData. SharedWithMe,
+// MyAccess, and Shared are the caller's sharing standing: SharedWithMe
+// is true when the caller holds a share row on someone else's
+// dashboard; MyAccess is the effective access (owner|view|edit) the
+// frontend gates affordances on; Shared is true on dashboards the
+// caller owns that have at least one share (feeds the Shared tab).
 type Dashboard struct {
 	ID            string    `json:"id"`
 	WorkspaceID   string    `json:"workspace_id"`
@@ -119,6 +203,9 @@ type Dashboard struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	Widgets       []Widget  `json:"widgets"`
+	SharedWithMe  bool      `json:"shared_with_me"`
+	MyAccess      string    `json:"my_access"`
+	Shared        bool      `json:"shared"`
 }
 
 // Widget is one configured visualization on a dashboard canvas.
@@ -138,20 +225,51 @@ type Widget struct {
 
 // WidgetDataGroup is one bucket of a grouped widget. The key IS the
 // human label the frontend renders (state name, priority label,
-// assignee display name, label name) — same-named buckets across
+// assignee display name, label name, state-group display name,
+// project name, creator display name) — same-named buckets across
 // projects merge. "Unassigned" (assignee) and "No label" (label) are
 // synthetic buckets so the groups partition every counted issue.
+// Completed and Percentage are set only for smart_gauge widgets:
+// completed is the completed share of the group (count of issues in a
+// 'completed'-group state, or sum of their estimate points when
+// metric=estimate_points) and percentage is 100*completed/value (0
+// when value is 0 — e.g. nothing estimated).
 type WidgetDataGroup struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-	Value int    `json:"value"`
+	Key        string   `json:"key"`
+	Label      string   `json:"label"`
+	Value      int      `json:"value"`
+	Completed  *int     `json:"completed,omitempty"`
+	Percentage *float64 `json:"percentage,omitempty"`
 }
 
-// WidgetData is the live recompute result: groups for the five chart
-// types, a scalar value for number widgets.
+// IntakeBreakdown is the six-number intake health summary of the
+// intake_breakdown widget: in-app vs form vs email intake volume,
+// terminal triage outcomes, and the mean time from intake-row creation
+// to a terminal decision (rejected/accepted/duplicate), in seconds.
+// EmailVolume is ALWAYS 0: glance has no email ingestion, and the
+// frontend renders the tile with an honest "no email ingestion yet"
+// tooltip rather than a fake number.
+type IntakeBreakdown struct {
+	InAppVolume      int     `json:"in_app_volume"`
+	EmailVolume      int     `json:"email_volume"`
+	FormVolume       int     `json:"form_volume"`
+	TotalAccepted    int     `json:"total_accepted"`
+	TotalRejected    int     `json:"total_rejected"`
+	AvgDecideSeconds float64 `json:"avg_decide_seconds"`
+}
+
+// WidgetData is the live recompute result: groups for the chart and
+// phase-2 grouped types, a scalar value for number widgets, the intake
+// summary for intake_breakdown widgets. Paginated types
+// (smart_counter, smart_gauge, table_2d) also carry page, max_rows, and
+// total_groups; groups holds only the requested page.
 type WidgetData struct {
-	Groups []WidgetDataGroup `json:"groups,omitempty"`
-	Value  *int              `json:"value,omitempty"`
+	Groups      []WidgetDataGroup `json:"groups,omitempty"`
+	Value       *int              `json:"value,omitempty"`
+	Page        *int              `json:"page,omitempty"`
+	MaxRows     *int              `json:"max_rows,omitempty"`
+	TotalGroups *int              `json:"total_groups,omitempty"`
+	Intake      *IntakeBreakdown  `json:"intake,omitempty"`
 }
 
 // dashboardRow is the internal dashboard row plus the creator check.
@@ -161,11 +279,13 @@ type dashboardRow struct {
 	role      int
 }
 
-// validWidgetType reports whether t is one of the six chart types.
+// validWidgetType reports whether t is one of the ten widget types.
 func validWidgetType(t string) bool {
 	switch t {
 	case WidgetTypeBar, WidgetTypeLine, WidgetTypeArea,
-		WidgetTypeDonut, WidgetTypePie, WidgetTypeNumber:
+		WidgetTypeDonut, WidgetTypePie, WidgetTypeNumber,
+		WidgetTypeSmartCounter, WidgetTypeSmartGauge,
+		WidgetTypeTable2D, WidgetTypeIntake:
 		return true
 	}
 	return false
@@ -174,28 +294,73 @@ func validWidgetType(t string) bool {
 // validGroupBy reports whether g is a supported grouping dimension.
 func validGroupBy(g string) bool {
 	switch g {
-	case WidgetGroupByState, WidgetGroupByPriority, WidgetGroupByAssignee, WidgetGroupByLabel:
+	case WidgetGroupByState, WidgetGroupByPriority, WidgetGroupByAssignee,
+		WidgetGroupByLabel, WidgetGroupByStateGroup, WidgetGroupByProject,
+		WidgetGroupByCreatedBy:
 		return true
 	}
 	return false
 }
 
+// validMetric reports whether m is a supported widget metric.
+func validMetric(m string) bool {
+	return m == WidgetMetricCount || m == WidgetMetricEstimatePoints
+}
+
+// stateGroupLabels maps states."group" slugs to the display names the
+// frontend renders for state_group buckets.
+var stateGroupLabels = map[string]string{
+	"triage":    "Triage",
+	"backlog":   "Backlog",
+	"unstarted": "Unstarted",
+	"started":   "Started",
+	"completed": "Completed",
+	"cancelled": "Cancelled",
+}
+
+// stateGroupOrder is the canonical display order of state groups
+// (mirrors validStateGroups in state.go).
+var stateGroupOrder = []string{"triage", "backlog", "unstarted", "started", "completed", "cancelled"}
+
 // widgetConfig is the validated, normalized form of a widget's config
 // JSON. Filters are ANDed; an empty projectIDs means "every
-// non-archived project of the workspace".
+// non-archived project of the workspace". Phase-2 fields carry their
+// defaults when absent: maxRows 10, visualization "grid",
+// gaugeColor "#3b82f6", showPercentage true, view "grid".
 type widgetConfig struct {
-	groupBy    string
-	metric     string
-	assignees  []string
-	priorities []int
-	states     []string
-	labels     []string
-	projectIDs []string
+	groupBy        string
+	metric         string
+	assignees      []string
+	priorities     []int
+	states         []string
+	labels         []string
+	projectIDs     []string
+	maxRows        int
+	visualization  string
+	gaugeColor     string
+	showPercentage bool
+	view           string
+}
+
+// hexColor reports whether s is a #rrggbb hex color.
+func hexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // parseWidgetConfig validates raw config JSON for the given widget type
 // and returns its normalized form. Unknown keys, bad enums, malformed
-// UUIDs, and out-of-range priorities are all ErrInvalidWidgetConfig.
+// UUIDs, out-of-range priorities, and keys that are meaningless for the
+// widget's type are all ErrInvalidWidgetConfig. Defaults are applied
+// for the phase-2 presentation keys (max_rows 10, visualization/view
+// "grid", gauge_color "#3b82f6", show_percentage true).
 func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, error) {
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
@@ -206,26 +371,97 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 	}
 	for k := range top {
 		switch k {
-		case "group_by", "metric", "filters", "project_ids":
+		case "group_by", "metric", "filters", "project_ids",
+			"max_rows", "visualization", "gauge_color", "show_percentage", "view":
 		default:
 			return nil, fmt.Errorf("%w: unknown config key %q", ErrInvalidWidgetConfig, k)
 		}
 	}
-	cfg := &widgetConfig{metric: "count"}
+	cfg := &widgetConfig{
+		metric:         WidgetMetricCount,
+		maxRows:        10,
+		visualization:  "grid",
+		gaugeColor:     "#3b82f6",
+		showPercentage: true,
+		view:           "grid",
+	}
+
+	// Each widget type documents its own key set; a key that exists but
+	// is meaningless for the type is a 400 (honest config surface).
+	allow := func(key string, types ...string) error {
+		for _, t := range types {
+			if t == widgetType {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %q is not supported for %q widgets", ErrInvalidWidgetConfig, key, widgetType)
+	}
+	charts := []string{WidgetTypeBar, WidgetTypeLine, WidgetTypeArea, WidgetTypeDonut, WidgetTypePie}
+	grouped := append(append([]string{}, charts...),
+		WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D)
+	// metric is a known key on every type: charts/number/counter/gauge
+	// validate its value; table_2d and intake_breakdown accept and
+	// ignore it (their metric is fixed/meaningless — Plane parity).
+	metricTypes := append(append([]string{}, charts...),
+		WidgetTypeNumber, WidgetTypeSmartCounter, WidgetTypeSmartGauge,
+		WidgetTypeTable2D, WidgetTypeIntake)
+	for k := range top {
+		switch k {
+		case "group_by", "filters", "project_ids":
+			// Accepted on every type; group_by is ignored (not
+			// required) for number and intake_breakdown.
+		case "metric":
+			if err := allow(k, metricTypes...); err != nil {
+				return nil, err
+			}
+		case "max_rows":
+			if err := allow(k, WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D); err != nil {
+				return nil, err
+			}
+		case "visualization":
+			if err := allow(k, WidgetTypeSmartCounter); err != nil {
+				return nil, err
+			}
+		case "gauge_color", "show_percentage":
+			if err := allow(k, WidgetTypeSmartGauge); err != nil {
+				return nil, err
+			}
+		case "view":
+			if err := allow(k, WidgetTypeIntake); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	if rawGB, ok := top["group_by"]; ok {
 		var gb string
 		if err := json.Unmarshal(rawGB, &gb); err != nil || !validGroupBy(gb) {
-			return nil, fmt.Errorf("%w: group_by must be one of state|priority|assignee|label", ErrInvalidWidgetConfig)
+			return nil, fmt.Errorf("%w: group_by must be one of state|priority|assignee|label|state_group|project|created_by", ErrInvalidWidgetConfig)
 		}
 		cfg.groupBy = gb
 	}
 	if rawM, ok := top["metric"]; ok {
 		var m string
-		if err := json.Unmarshal(rawM, &m); err != nil || m != "count" {
-			return nil, fmt.Errorf("%w: metric is reserved: only \"count\" is supported in phase 1", ErrInvalidWidgetConfig)
+		if err := json.Unmarshal(rawM, &m); err != nil {
+			return nil, fmt.Errorf("%w: metric must be a string", ErrInvalidWidgetConfig)
 		}
-		cfg.metric = m
+		switch widgetType {
+		case WidgetTypeSmartCounter, WidgetTypeSmartGauge:
+			if !validMetric(m) {
+				return nil, fmt.Errorf("%w: metric must be one of count|estimate_points", ErrInvalidWidgetConfig)
+			}
+			cfg.metric = m
+		case WidgetTypeTable2D, WidgetTypeIntake:
+			// Fixed to count (table_2d) / meaningless (intake):
+			// accepted and ignored with a note, like phase 1's
+			// number widget ignored group_by. Any string is
+			// tolerated; non-strings were rejected above.
+		default:
+			if m != WidgetMetricCount {
+				return nil, fmt.Errorf("%w: metric is reserved: only \"count\" is supported for %q widgets", ErrInvalidWidgetConfig, widgetType)
+			}
+			cfg.metric = m
+		}
 	}
 	if rawF, ok := top["filters"]; ok {
 		var f map[string]json.RawMessage
@@ -290,13 +526,63 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		}
 		cfg.projectIDs = ids
 	}
+	if rawMR, ok := top["max_rows"]; ok {
+		var n float64
+		if err := json.Unmarshal(rawMR, &n); err != nil || n != float64(int(n)) || n < 1 || n > 100 {
+			return nil, fmt.Errorf("%w: max_rows must be an integer 1-100", ErrInvalidWidgetConfig)
+		}
+		cfg.maxRows = int(n)
+	}
+	if rawV, ok := top["visualization"]; ok {
+		var v string
+		if err := json.Unmarshal(rawV, &v); err != nil || (v != "grid" && v != "table") {
+			return nil, fmt.Errorf("%w: visualization must be one of grid|table", ErrInvalidWidgetConfig)
+		}
+		cfg.visualization = v
+	}
+	if rawC, ok := top["gauge_color"]; ok {
+		var c string
+		if err := json.Unmarshal(rawC, &c); err != nil || !hexColor(c) {
+			return nil, fmt.Errorf("%w: gauge_color must be a #rrggbb hex color", ErrInvalidWidgetConfig)
+		}
+		cfg.gaugeColor = c
+	}
+	if rawS, ok := top["show_percentage"]; ok {
+		var b bool
+		if err := json.Unmarshal(rawS, &b); err != nil {
+			return nil, fmt.Errorf("%w: show_percentage must be a boolean", ErrInvalidWidgetConfig)
+		}
+		cfg.showPercentage = b
+	}
+	if rawV, ok := top["view"]; ok {
+		var v string
+		if err := json.Unmarshal(rawV, &v); err != nil || (v != "grid" && v != "table") {
+			return nil, fmt.Errorf("%w: view must be one of grid|table", ErrInvalidWidgetConfig)
+		}
+		cfg.view = v
+	}
 
-	if widgetType == WidgetTypeNumber {
+	switch widgetType {
+	case WidgetTypeNumber:
 		// group_by is meaningless for a scalar; ignore it rather than
 		// rejecting a stale config when the type flips to number.
 		cfg.groupBy = ""
-	} else if cfg.groupBy == "" {
-		return nil, fmt.Errorf("%w: group_by is required for %q widgets", ErrInvalidWidgetConfig, widgetType)
+	case WidgetTypeIntake:
+		// No group_by, no metric: the six headline numbers are
+		// computed over the dashboard's project scope only.
+		// Widget-level filters AND project_ids are ignored (Plane
+		// parity — the breakdown is never narrowed per widget).
+		cfg.groupBy = ""
+		cfg.assignees, cfg.priorities, cfg.states, cfg.labels = nil, nil, nil, nil
+		cfg.projectIDs = nil
+	default:
+		if cfg.groupBy == "" {
+			for _, t := range grouped {
+				if t == widgetType {
+					return nil, fmt.Errorf("%w: group_by is required for %q widgets", ErrInvalidWidgetConfig, widgetType)
+				}
+			}
+		}
 	}
 	return cfg, nil
 }
@@ -360,11 +646,48 @@ func scanDashboard(row pgx.Row, withCreatorFlag bool) (dashboardRow, error) {
 	return dr, err
 }
 
-// loadDashboard fetches the dashboard and enforces the visibility + edit
-// rules. edit=true additionally requires Plane's edit rule (creator, or
-// admin on public dashboards). A private dashboard of another creator
-// is ErrNotFound for everyone else — admins included.
-func loadDashboard(ctx context.Context, pool *pgxpool.Pool, wsID string, role int, dashboardID, actorID string, edit bool) (dashboardRow, error) {
+// dashboardAccessOf computes the caller's effective access level on a
+// dashboard: the creator is "owner"; a share row grants exactly its
+// access ("view"|"edit"); otherwise a public dashboard is "edit" for
+// workspace admins (20) and "view" for members (the phase-1 rule), and
+// a private dashboard is "none" (invisible — the caller gets
+// ErrNotFound, never a 403 that would leak existence).
+func dashboardAccessOf(visibility, share string, role int) string {
+	switch share {
+	case DashboardShareEdit:
+		return DashboardAccessEdit
+	case DashboardShareView:
+		return DashboardAccessView
+	}
+	if visibility == DashboardVisibilityPublic {
+		if role >= RoleAdmin {
+			return DashboardAccessEdit
+		}
+		return DashboardAccessView
+	}
+	return DashboardAccessNone
+}
+
+// shareAccessOf returns the caller's share access on the dashboard, ""
+// when no share row exists.
+func shareAccessOf(ctx context.Context, pool *pgxpool.Pool, dashboardID, actorID string) (string, error) {
+	var access string
+	err := pool.QueryRow(ctx,
+		`SELECT access FROM dashboard_shares WHERE dashboard_id = $1::uuid AND member_id = $2::uuid`,
+		dashboardID, actorID).Scan(&access)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return access, nil
+}
+
+// resolveDashboardAccess loads the dashboard row and resolves the
+// caller's effective access (owner|edit|view|none). A confirmed-missing
+// dashboard is ErrDashboardNotFound.
+func resolveDashboardAccess(ctx context.Context, pool *pgxpool.Pool, wsID string, role int, dashboardID, actorID string) (dashboardRow, string, error) {
 	dr, err := scanDashboard(pool.QueryRow(ctx,
 		`SELECT `+dashboardColumns+`, d.created_by = $3::uuid
 		   FROM dashboards d
@@ -373,15 +696,54 @@ func loadDashboard(ctx context.Context, pool *pgxpool.Pool, wsID string, role in
 		dashboardID, wsID, actorID), true)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return dashboardRow{}, ErrDashboardNotFound
+			return dashboardRow{}, "", ErrDashboardNotFound
 		}
-		return dashboardRow{}, err
+		return dashboardRow{}, "", err
 	}
 	dr.role = role
-	if dr.Dashboard.Visibility == DashboardVisibilityPrivate && !dr.isCreator {
+	if dr.isCreator {
+		return dr, DashboardAccessOwner, nil
+	}
+	share, err := shareAccessOf(ctx, pool, dashboardID, actorID)
+	if err != nil {
+		return dashboardRow{}, "", err
+	}
+	return dr, dashboardAccessOf(dr.Dashboard.Visibility, share, role), nil
+}
+
+// loadDashboard fetches the dashboard and enforces the visibility + edit
+// rules. edit=false requires read access (owner|edit|view); a private
+// dashboard invisible to the caller is ErrNotFound (never a leak).
+// edit=true additionally requires the edit level (owner or edit-share,
+// or admin on public dashboards without a share) — anything less is
+// ErrForbidden.
+func loadDashboard(ctx context.Context, pool *pgxpool.Pool, wsID string, role int, dashboardID, actorID string, edit bool) (dashboardRow, error) {
+	dr, access, err := resolveDashboardAccess(ctx, pool, wsID, role, dashboardID, actorID)
+	if err != nil {
+		return dashboardRow{}, err
+	}
+	if access == DashboardAccessNone {
 		return dashboardRow{}, ErrNotFound
 	}
-	if edit && !dr.isCreator && role < RoleAdmin {
+	if edit && access != DashboardAccessOwner && access != DashboardAccessEdit {
+		return dashboardRow{}, ErrForbidden
+	}
+	return dr, nil
+}
+
+// loadDashboardOwner is the owner-only gate: delete dashboard, change
+// visibility, manage shares. Everyone else — admins and edit-shared
+// members included — gets ErrForbidden; an invisible dashboard is
+// ErrNotFound.
+func loadDashboardOwner(ctx context.Context, pool *pgxpool.Pool, wsID string, role int, dashboardID, actorID string) (dashboardRow, error) {
+	dr, access, err := resolveDashboardAccess(ctx, pool, wsID, role, dashboardID, actorID)
+	if err != nil {
+		return dashboardRow{}, err
+	}
+	if access == DashboardAccessNone {
+		return dashboardRow{}, ErrNotFound
+	}
+	if access != DashboardAccessOwner {
 		return dashboardRow{}, ErrForbidden
 	}
 	return dr, nil
@@ -501,21 +863,50 @@ func CreateDashboard(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, n
 	return &out, nil
 }
 
+// populateDashboardAccess fills the caller's sharing standing on a
+// dashboard row: SharedWithMe (a share row on someone else's
+// dashboard), MyAccess (owner|view|edit — the effective access the
+// frontend gates affordances on), and Shared (owned by the caller AND
+// shared out to at least one member — feeds the Shared tab).
+func populateDashboardAccess(d *Dashboard, isCreator bool, share string, role int, hasShares bool) {
+	switch {
+	case isCreator:
+		d.MyAccess = DashboardAccessOwner
+		d.Shared = hasShares
+	case share != "":
+		d.SharedWithMe = true
+		d.MyAccess = share
+	default:
+		// No share row: public dashboards fall back to the phase-1
+		// rule (admins edit, members view). Private dashboards never
+		// reach here without a share row.
+		if d.Visibility == DashboardVisibilityPublic && role >= RoleAdmin {
+			d.MyAccess = DashboardAccessEdit
+		} else {
+			d.MyAccess = DashboardAccessView
+		}
+	}
+}
+
 // ListDashboards returns the workspace's dashboards visible to the
-// caller: public ones plus the caller's own private ones, newest
-// updated first. Member (15)+; guests ErrForbidden. Widgets are NOT
-// included (the detail read carries them).
+// caller: public ones, the caller's own private ones, and private ones
+// shared with the caller (view or edit), newest updated first. Member
+// (15)+; guests ErrForbidden. Widgets are NOT included (the detail
+// read carries them). Each row carries shared_with_me, my_access, and
+// the shared indicator for dashboards the caller owns and shares out.
 func ListDashboards(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string) ([]Dashboard, error) {
-	wsID, _, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
+	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT `+dashboardColumns+`
+		`SELECT `+dashboardColumns+`, d.created_by = $2::uuid, s.access,
+		        EXISTS (SELECT 1 FROM dashboard_shares x WHERE x.dashboard_id = d.id)
 		   FROM dashboards d
 		   JOIN users u ON u.id = d.created_by
+		   LEFT JOIN dashboard_shares s ON s.dashboard_id = d.id AND s.member_id = $2::uuid
 		  WHERE d.workspace_id = $1::uuid
-		    AND (d.visibility = 'public' OR d.created_by = $2::uuid)
+		    AND (d.visibility = 'public' OR d.created_by = $2::uuid OR s.member_id IS NOT NULL)
 		  ORDER BY d.updated_at DESC, d.id DESC`,
 		wsID, actorID)
 	if err != nil {
@@ -524,33 +915,67 @@ func ListDashboards(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 	defer rows.Close()
 	out := []Dashboard{}
 	for rows.Next() {
-		dr, err := scanDashboard(rows, false)
+		var d Dashboard
+		var isCreator bool
+		var share *string
+		var hasShares bool
+		// dashboardColumns order, then the is_creator flag, the
+		// caller's share access (nullable), and the has-shares flag.
+		err := rows.Scan(&d.ID, &d.WorkspaceID, &d.Name, &d.Description, &d.Visibility,
+			&d.CreatedBy, &d.CreatedByName, &d.CreatedAt, &d.UpdatedAt,
+			&isCreator, &share, &hasShares)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, dr.Dashboard)
+		shareAccess := ""
+		if share != nil {
+			shareAccess = *share
+		}
+		populateDashboardAccess(&d, isCreator, shareAccess, role, hasShares)
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }
 
 // GetDashboard returns one dashboard with its widgets (config only —
 // data is fetched per widget via GetWidgetData). Private dashboards of
-// another creator are ErrNotFound.
+// another creator are ErrNotFound unless the caller holds a share row.
+// The response carries the caller's sharing standing (shared_with_me,
+// my_access, shared) for affordance gating.
 func GetDashboard(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardID, actorID string) (*Dashboard, error) {
 	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
 	if err != nil {
 		return nil, err
 	}
-	dr, err := loadDashboard(ctx, pool, wsID, role, dashboardID, actorID, false)
+	dr, access, err := resolveDashboardAccess(ctx, pool, wsID, role, dashboardID, actorID)
 	if err != nil {
 		return nil, err
+	}
+	if access == DashboardAccessNone {
+		return nil, ErrNotFound
 	}
 	widgets, err := listWidgets(ctx, pool, dr.Dashboard.ID)
 	if err != nil {
 		return nil, err
 	}
+	var share string
+	var hasShares bool
+	if !dr.isCreator {
+		share, err = shareAccessOf(ctx, pool, dashboardID, actorID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		err = pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM dashboard_shares WHERE dashboard_id = $1::uuid)`,
+			dashboardID).Scan(&hasShares)
+		if err != nil {
+			return nil, err
+		}
+	}
 	out := dr.Dashboard
 	out.Widgets = widgets
+	populateDashboardAccess(&out, dr.isCreator, share, role, hasShares)
 	return &out, nil
 }
 
@@ -561,15 +986,24 @@ type UpdateDashboardInput struct {
 	Visibility  *string
 }
 
-// UpdateDashboard applies a partial update under Plane's edit rule:
-// creator, or admin on public dashboards; private dashboards creator
-// only (everyone else sees ErrNotFound).
+// UpdateDashboard applies a partial update. Name/description need the
+// edit level (owner, edit-share, or admin on public dashboards);
+// changing visibility is owner-only (everyone else gets 403, never a
+// leak — the caller can already see the dashboard). Private dashboards
+// invisible to the caller are ErrNotFound.
 func UpdateDashboard(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardID, actorID string, in UpdateDashboardInput) (*Dashboard, error) {
 	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
 	if err != nil {
 		return nil, err
 	}
-	dr, err := loadDashboard(ctx, pool, wsID, role, dashboardID, actorID, true)
+	var dr dashboardRow
+	if in.Visibility != nil {
+		// Visibility flips are owner-only, even for admins and
+		// edit-shared members.
+		dr, err = loadDashboardOwner(ctx, pool, wsID, role, dashboardID, actorID)
+	} else {
+		dr, err = loadDashboard(ctx, pool, wsID, role, dashboardID, actorID, true)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -848,14 +1282,14 @@ func DeleteWidget(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID str
 	return err
 }
 
-// DeleteDashboard removes a dashboard (widgets cascade) under Plane's
-// edit rule.
+// DeleteDashboard removes a dashboard (widgets and shares cascade).
+// Owner-only: admins and edit-shared members get ErrForbidden.
 func DeleteDashboard(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardID, actorID string) error {
 	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
 	if err != nil {
 		return err
 	}
-	if _, err := loadDashboard(ctx, pool, wsID, role, dashboardID, actorID, true); err != nil {
+	if _, err := loadDashboardOwner(ctx, pool, wsID, role, dashboardID, actorID); err != nil {
 		return err
 	}
 	_, err = pool.Exec(ctx, `DELETE FROM dashboards WHERE id = $1::uuid`, dashboardID)
@@ -930,13 +1364,22 @@ func widgetIssueFilter(cfg *widgetConfig, projectIDs []string, args *[]any) stri
 	return strings.Join(conds, " AND ")
 }
 
-// GetWidgetData recomputes a widget's data live from the issues table.
-// Chart widgets return {groups:[{key,label,value}]}; number widgets
-// return {value}. Viewer role: any member (15)+ may read; a private
-// dashboard of another creator reads as a missing widget.
-func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (*WidgetData, error) {
-	// Widget routes are top-level (/api/v1/widgets/…): tenancy resolves
-	// through the widget→dashboard→workspace join.
+// widgetCompute is the resolved context shared by the live data and
+// CSV export paths: the dashboard row, the widget, its validated
+// config, and its project scope.
+type widgetCompute struct {
+	dr         dashboardRow
+	widget     Widget
+	cfg        *widgetConfig
+	projectIDs []string
+}
+
+// resolveWidgetCompute enforces the dashboard's read rule (owner|edit|
+// view — a private dashboard of another creator without a share reads
+// as a missing widget), validates the stored config, and resolves the
+// project scope. Widget routes are top-level (/api/v1/widgets/…), so
+// tenancy comes from the widget→dashboard→workspace join.
+func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (*widgetCompute, error) {
 	dr, wd, err := loadWidgetDashboard(ctx, pool, widgetID, actorID, false)
 	if err != nil {
 		return nil, err
@@ -952,154 +1395,552 @@ func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID st
 	if err != nil {
 		return nil, err
 	}
-	var args []any
-	where := widgetIssueFilter(cfg, projectIDs, &args)
+	return &widgetCompute{dr: dr, widget: wd, cfg: cfg, projectIDs: projectIDs}, nil
+}
 
-	if wd.WidgetType == WidgetTypeNumber {
+// GetWidgetData recomputes a widget's data live from the issues table.
+// Chart widgets return {groups:[{key,label,value}]}; number widgets
+// return {value}; the paginated types (smart_counter, smart_gauge,
+// table_2d) return {groups, page, max_rows, total_groups} with groups
+// holding only the requested page (page >= 1, default 1 — anything else
+// is ErrInvalidWidgetPage); intake_breakdown widgets return {intake:{…}}.
+// Viewer role: any member (15)+ may read; a private dashboard of
+// another creator without a share reads as a missing widget.
+func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string, page int) (*WidgetData, error) {
+	if page < 1 {
+		return nil, ErrInvalidWidgetPage
+	}
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	return computeWidgetData(ctx, pool, wc, page, true)
+}
+
+// computeWidgetData runs the widget's live recompute. When paginate is
+// true the paginated types return only the requested page; when false
+// they return every group (the CSV export path — full dataset).
+func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, page int, paginate bool) (*WidgetData, error) {
+	cfg := wc.cfg
+	var args []any
+	where := widgetIssueFilter(cfg, wc.projectIDs, &args)
+
+	switch wc.widget.WidgetType {
+	case WidgetTypeNumber:
 		var n int
 		if err := pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM issues i WHERE `+where, args...).Scan(&n); err != nil {
 			return nil, err
 		}
 		return &WidgetData{Value: &n}, nil
+	case WidgetTypeIntake:
+		bd, err := computeIntakeBreakdown(ctx, pool, wc.dr.Dashboard.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		return &WidgetData{Intake: bd}, nil
 	}
 
-	groups := []WidgetDataGroup{}
-	switch cfg.groupBy {
+	groups, err := computeGrouped(ctx, pool, cfg, where, args)
+	if err != nil {
+		return nil, err
+	}
+	out := &WidgetData{}
+	if wc.widget.WidgetType == WidgetTypeSmartCounter ||
+		wc.widget.WidgetType == WidgetTypeSmartGauge ||
+		wc.widget.WidgetType == WidgetTypeTable2D {
+		total := len(groups)
+		maxRows := cfg.maxRows
+		if maxRows < 1 {
+			maxRows = 10
+		}
+		if paginate {
+			start := (page - 1) * maxRows
+			if start < total {
+				end := start + maxRows
+				if end > total {
+					end = total
+				}
+				groups = groups[start:end]
+			} else {
+				groups = []WidgetDataGroup{}
+			}
+		}
+		out.Groups = groups
+		out.Page = &page
+		out.MaxRows = &maxRows
+		out.TotalGroups = &total
+		return out, nil
+	}
+	out.Groups = groups
+	return out, nil
+}
+
+// metricAggregates returns the (total, completed) aggregate expressions
+// for a grouped widget query. Every grouped query joins states AS s
+// (for the completed share) and estimate_points AS ep (LEFT — issues
+// without an estimate contribute 0 to point sums).
+func metricAggregates(metric string) (total, completed string) {
+	if metric == WidgetMetricEstimatePoints {
+		return `COALESCE(SUM(ep.value), 0)`,
+			`COALESCE(SUM(CASE WHEN s."group" = 'completed' THEN ep.value ELSE 0 END), 0)`
+	}
+	return `COUNT(*)`, `COUNT(*) FILTER (WHERE s."group" = 'completed')`
+}
+
+// groupDim describes one grouping dimension: the SELECT/GROUP BY
+// expressions for the key, the extra joins it needs, its ordering, and
+// whether it needs the synthetic bucket query (unassigned / no label).
+type groupDim struct {
+	keyExpr string
+	joins   string
+	groupBy string
+	orderBy string
+	bucket  string // "", "unassigned", or "unlabeled"
+}
+
+// groupDimFor resolves the SQL fragments for a group_by dimension. The
+// states join (AS s) is always included: the gauge completion share
+// needs it, and it is harmless for the other types.
+func groupDimFor(dim string) (groupDim, error) {
+	states := `JOIN states s ON s.id = i.state_id`
+	ep := `LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id`
+	switch dim {
 	case WidgetGroupByState:
-		// Keyed by state NAME (the human label the frontend renders):
-		// same-named states across projects merge into one bucket.
-		rows, err := pool.Query(ctx,
-			`SELECT s.name, COUNT(*)
-			   FROM issues i
-			   JOIN states s ON s.id = i.state_id
-			  WHERE `+where+`
-			  GROUP BY s.name
-			  ORDER BY MIN(s.sequence), s.name`,
-			args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var g WidgetDataGroup
-			if err := rows.Scan(&g.Label, &g.Value); err != nil {
-				return nil, err
-			}
-			g.Key = g.Label
-			groups = append(groups, g)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
+		return groupDim{
+			keyExpr: `s.name`,
+			joins:   states + "\n\t\t\t   " + ep,
+			groupBy: `s.name`,
+			orderBy: `MIN(s.sequence), s.name`,
+		}, nil
 	case WidgetGroupByPriority:
-		rows, err := pool.Query(ctx,
-			`SELECT i.priority, COUNT(*)
-			   FROM issues i
-			  WHERE `+where+`
-			  GROUP BY i.priority
-			  ORDER BY i.priority`,
-			args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var prio, n int
-			if err := rows.Scan(&prio, &n); err != nil {
-				return nil, err
-			}
-			label := fmt.Sprintf("P%d", prio)
-			if prio >= 0 && prio < len(priorityLabels) {
-				label = priorityLabels[prio]
-			}
-			groups = append(groups, WidgetDataGroup{
-				Key:   label,
-				Label: label,
-				Value: n,
-			})
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
+		return groupDim{
+			keyExpr: `i.priority::text`,
+			joins:   states + "\n\t\t\t   " + ep,
+			groupBy: `i.priority`,
+			orderBy: `i.priority`,
+		}, nil
 	case WidgetGroupByAssignee:
-		// Keyed by display name (the human label): same-named members
-		// merge into one bucket.
-		rows, err := pool.Query(ctx,
-			`SELECT COALESCE(NULLIF(u.name, ''), u.email), COUNT(*)
-			   FROM issues i
+		return groupDim{
+			keyExpr: `COALESCE(NULLIF(u.name, ''), u.email)`,
+			joins: states + `
 			   JOIN issue_assignees ia ON ia.issue_id = i.id
 			   JOIN users u ON u.id = ia.user_id
-			  WHERE `+where+`
-			  GROUP BY COALESCE(NULLIF(u.name, ''), u.email)
-			  ORDER BY COUNT(*) DESC, COALESCE(NULLIF(u.name, ''), u.email)`,
-			args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var g WidgetDataGroup
-			if err := rows.Scan(&g.Label, &g.Value); err != nil {
-				return nil, err
-			}
-			g.Key = g.Label
-			groups = append(groups, g)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		var unassigned int
-		if err := pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM issues i
-			  WHERE `+where+`
-			    AND NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)`,
-			args...).Scan(&unassigned); err != nil {
-			return nil, err
-		}
-		if unassigned > 0 {
-			groups = append(groups, WidgetDataGroup{Key: "unassigned", Label: "Unassigned", Value: unassigned})
-		}
+			   ` + ep,
+			groupBy: `COALESCE(NULLIF(u.name, ''), u.email)`,
+			orderBy: `total DESC, key`,
+			bucket:  "unassigned",
+		}, nil
 	case WidgetGroupByLabel:
-		// Keyed by label name (the human label): workspace labels are
-		// UNIQUE(workspace_id, name), so the name is a stable key.
-		rows, err := pool.Query(ctx,
-			`SELECT l.name, COUNT(*)
-			   FROM issues i
+		return groupDim{
+			keyExpr: `l.name`,
+			joins: states + `
 			   JOIN issue_labels il ON il.issue_id = i.id
 			   JOIN labels l ON l.id = il.label_id
+			   ` + ep,
+			groupBy: `l.name`,
+			orderBy: `total DESC, key`,
+			bucket:  "unlabeled",
+		}, nil
+	case WidgetGroupByStateGroup:
+		return groupDim{
+			keyExpr: `s."group"`,
+			joins:   states + "\n\t\t\t   " + ep,
+			groupBy: `s."group"`,
+			orderBy: `CASE s."group" WHEN 'triage' THEN 0 WHEN 'backlog' THEN 1 WHEN 'unstarted' THEN 2 WHEN 'started' THEN 3 WHEN 'completed' THEN 4 WHEN 'cancelled' THEN 5 ELSE 6 END`,
+		}, nil
+	case WidgetGroupByProject:
+		return groupDim{
+			keyExpr: `p.name`,
+			joins: states + `
+			   JOIN projects p ON p.id = i.project_id
+			   ` + ep,
+			groupBy: `p.name`,
+			orderBy: `total DESC, key`,
+		}, nil
+	case WidgetGroupByCreatedBy:
+		return groupDim{
+			keyExpr: `COALESCE(NULLIF(u.name, ''), u.email)`,
+			joins: states + `
+			   JOIN users u ON u.id = i.created_by
+			   ` + ep,
+			groupBy: `COALESCE(NULLIF(u.name, ''), u.email)`,
+			orderBy: `total DESC, key`,
+		}, nil
+	}
+	return groupDim{}, ErrInvalidWidgetConfig
+}
+
+// bucketWhere returns the extra WHERE fragment for a synthetic bucket.
+func bucketWhere(bucket string) string {
+	if bucket == "unassigned" {
+		return `AND NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)`
+	}
+	return `AND NOT EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id)`
+}
+
+// computeGrouped runs the per-group aggregation for the widget's
+// group_by dimension and metric, returning every group in display
+// order (pagination slices later). The value of a group is the issue
+// count, or the summed estimate points when metric=estimate_points.
+// For smart_gauge widgets each group also carries its completed share
+// (issues in a 'completed'-group state) and 100*completed/value.
+func computeGrouped(ctx context.Context, pool *pgxpool.Pool, cfg *widgetConfig, where string, args []any) ([]WidgetDataGroup, error) {
+	dim, err := groupDimFor(cfg.groupBy)
+	if err != nil {
+		return nil, err
+	}
+	totalAgg, completedAgg := metricAggregates(cfg.metric)
+	groups := []WidgetDataGroup{}
+	rows, err := pool.Query(ctx,
+		`SELECT `+dim.keyExpr+` AS key, `+totalAgg+` AS total, `+completedAgg+` AS completed
+		   FROM issues i
+		   `+dim.joins+`
+		  WHERE `+where+`
+		  GROUP BY `+dim.groupBy+`
+		  ORDER BY `+dim.orderBy,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var total, completed int
+		if err := rows.Scan(&key, &total, &completed); err != nil {
+			return nil, err
+		}
+		groups = append(groups, labelGroup(cfg.groupBy, key, total, completed))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if dim.bucket != "" {
+		var key, label string
+		var total, completed, n int
+		if dim.bucket == "unassigned" {
+			key, label = "unassigned", "Unassigned"
+		} else {
+			key, label = "none", "No label"
+		}
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(*), `+totalAgg+`, `+completedAgg+`
+			   FROM issues i
+			   JOIN states s ON s.id = i.state_id
+			   LEFT JOIN estimate_points ep ON ep.id = i.estimate_point_id
 			  WHERE `+where+`
-			  GROUP BY l.name
-			  ORDER BY COUNT(*) DESC, l.name`,
-			args...)
+			    `+bucketWhere(dim.bucket),
+			args...).Scan(&n, &total, &completed); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			groups = append(groups, WidgetDataGroup{
+				Key: key, Label: label, Value: total,
+				Completed: &completed, Percentage: gaugePct(completed, total),
+			})
+		}
+	}
+	return groups, nil
+}
+
+// gaugePct returns 100*completed/total, or 0 when total is 0 (nothing
+// counted or nothing estimated — Plane parity).
+func gaugePct(completed, total int) *float64 {
+	var pct float64
+	if total > 0 {
+		pct = 100.0 * float64(completed) / float64(total)
+	}
+	return &pct
+}
+
+// labelGroup maps a raw group key to the human label the frontend
+// renders, attaching the gauge completion fields.
+func labelGroup(dim, key string, total, completed int) WidgetDataGroup {
+	g := WidgetDataGroup{Key: key, Label: key, Value: total,
+		Completed: &completed, Percentage: gaugePct(completed, total)}
+	switch dim {
+	case WidgetGroupByPriority:
+		label := key
+		if n, err := strconv.Atoi(key); err == nil && n >= 0 && n < len(priorityLabels) {
+			label = priorityLabels[n]
+		}
+		g.Key, g.Label = label, label
+	case WidgetGroupByStateGroup:
+		if l, ok := stateGroupLabels[key]; ok {
+			g.Label = l
+		}
+	}
+	return g
+}
+
+// computeIntakeBreakdown computes the six headline numbers of the
+// intake_breakdown widget over the dashboard's project scope (every
+// non-archived project of the workspace). Widget-level filters and
+// project_ids are deliberately ignored (Plane parity). Decided rows
+// are the terminal triage states (rejected/accepted/duplicate); the
+// average time to decide is the mean of updated_at − created_at over
+// those rows, in seconds (0 when nothing is decided yet).
+func computeIntakeBreakdown(ctx context.Context, pool *pgxpool.Pool, wsID string) (*IntakeBreakdown, error) {
+	var b IntakeBreakdown
+	var avg *float64
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FILTER (WHERE ii.source = 'in_app'),
+		        COUNT(*) FILTER (WHERE ii.source = 'form'),
+		        COUNT(*) FILTER (WHERE ii.status = $2),
+		        COUNT(*) FILTER (WHERE ii.status = $3),
+		        AVG(EXTRACT(EPOCH FROM (ii.updated_at - ii.created_at))) FILTER (WHERE ii.status IN ($2, $3, $4))
+		   FROM intake_issues ii
+		   JOIN intake it ON it.id = ii.intake_id
+		   JOIN projects p ON p.id = it.project_id
+		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL`,
+		wsID, IntakeAccepted, IntakeRejected, IntakeDuplicate).
+		Scan(&b.InAppVolume, &b.FormVolume, &b.TotalAccepted, &b.TotalRejected, &avg)
+	if err != nil {
+		return nil, err
+	}
+	// email_volume is ALWAYS 0: glance has no email ingestion.
+	b.EmailVolume = 0
+	if avg != nil {
+		b.AvgDecideSeconds = *avg
+	}
+	return &b, nil
+}
+
+// DashboardShare is one member's access grant on a dashboard: who can
+// see it and at which level. Only the dashboard owner manages shares;
+// shared members cannot re-share.
+type DashboardShare struct {
+	MemberID   string    `json:"member_id"`
+	MemberName string    `json:"member_name"`
+	Access     string    `json:"access"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// scanDashboardShare scans a share row (dashboardShareColumns order).
+const dashboardShareColumns = `s.member_id::text, COALESCE(NULLIF(u.name, ''), u.email), s.access, s.created_at`
+
+func scanDashboardShare(row pgx.Row) (DashboardShare, error) {
+	var sh DashboardShare
+	err := row.Scan(&sh.MemberID, &sh.MemberName, &sh.Access, &sh.CreatedAt)
+	return sh, err
+}
+
+// GetDashboardShares returns the dashboard's share rows, oldest first.
+// Owner-only: everyone else gets ErrForbidden; an invisible dashboard
+// is ErrNotFound.
+func GetDashboardShares(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardID, actorID string) ([]DashboardShare, error) {
+	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := loadDashboardOwner(ctx, pool, wsID, role, dashboardID, actorID); err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT `+dashboardShareColumns+`
+		   FROM dashboard_shares s
+		   JOIN users u ON u.id = s.member_id
+		  WHERE s.dashboard_id = $1::uuid
+		  ORDER BY s.created_at, s.member_id`,
+		dashboardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DashboardShare{}
+	for rows.Next() {
+		sh, err := scanDashboardShare(rows)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var g WidgetDataGroup
-			if err := rows.Scan(&g.Label, &g.Value); err != nil {
-				return nil, err
-			}
-			g.Key = g.Label
-			groups = append(groups, g)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		var unlabeled int
-		if err := pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM issues i
-			  WHERE `+where+`
-			    AND NOT EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id)`,
-			args...).Scan(&unlabeled); err != nil {
-			return nil, err
-		}
-		if unlabeled > 0 {
-			groups = append(groups, WidgetDataGroup{Key: "none", Label: "No label", Value: unlabeled})
-		}
-	default:
-		return nil, ErrInvalidWidgetConfig
+		out = append(out, sh)
 	}
-	return &WidgetData{Groups: groups}, nil
+	return out, rows.Err()
+}
+
+// ShareInput is one entry of the PUT shares body.
+type ShareInput struct {
+	MemberID string
+	Access   string
+}
+
+// validateShareEntries checks every entry of a PUT shares body: UUID
+// shape, view|edit access, no duplicates, not the dashboard creator,
+// and an ACTIVE workspace member (role >= member — guests are
+// rejected; non-members are rejected).
+func validateShareEntries(ctx context.Context, pool *pgxpool.Pool, wsID, creatorID string, in []ShareInput) error {
+	seen := map[string]bool{}
+	for _, sh := range in {
+		if !isUUIDFormat(sh.MemberID) {
+			return fmt.Errorf("%w: member_id %q is not a UUID", ErrInvalidDashboardShare, sh.MemberID)
+		}
+		if sh.Access != DashboardShareView && sh.Access != DashboardShareEdit {
+			return fmt.Errorf("%w: access must be one of view|edit", ErrInvalidDashboardShare)
+		}
+		if seen[sh.MemberID] {
+			return fmt.Errorf("%w: duplicate member_id %q", ErrInvalidDashboardShare, sh.MemberID)
+		}
+		seen[sh.MemberID] = true
+		if sh.MemberID == creatorID {
+			return fmt.Errorf("%w: the dashboard creator already owns the dashboard", ErrInvalidDashboardShare)
+		}
+		var role int
+		err := pool.QueryRow(ctx,
+			`SELECT m.role FROM workspace_members m
+			  WHERE m.workspace_id = $1::uuid AND m.user_id = $2::uuid`,
+			wsID, sh.MemberID).Scan(&role)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: member %q is not a workspace member", ErrInvalidDashboardShare, sh.MemberID)
+			}
+			return err
+		}
+		if role < RoleMember {
+			return fmt.Errorf("%w: guests cannot be added to dashboard shares", ErrInvalidDashboardShare)
+		}
+	}
+	return nil
+}
+
+// ReplaceDashboardShares replaces the dashboard's whole share list in
+// one transaction (Plane's one-batch model): entries present in the
+// body are added/updated, entries absent are removed. An empty list
+// clears every share. Owner-only.
+func ReplaceDashboardShares(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardID, actorID string, in []ShareInput) ([]DashboardShare, error) {
+	wsID, role, err := resolveDashboardWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	dr, err := loadDashboardOwner(ctx, pool, wsID, role, dashboardID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateShareEntries(ctx, pool, wsID, dr.Dashboard.CreatedBy, in); err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM dashboard_shares WHERE dashboard_id = $1::uuid`, dashboardID); err != nil {
+		return nil, err
+	}
+	for _, sh := range in {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO dashboard_shares (dashboard_id, member_id, access)
+			 VALUES ($1::uuid, $2::uuid, $3)`,
+			dashboardID, sh.MemberID, sh.Access); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return GetDashboardShares(ctx, pool, wsSlug, dashboardID, actorID)
+}
+
+// csvExportCap is the maximum data rows a widget CSV carries; past it
+// the payload is truncated and the response carries
+// X-Result-Truncated: true.
+const csvExportCap = 10000
+
+// slugify renders a dashboard/widget name filename-safe: lowercase,
+// runs of non-alphanumerics collapse to one dash, no leading/trailing
+// dashes. Empty input becomes "untitled".
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	dash := true // true = last char was a dash (suppress leading)
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "untitled"
+	}
+	return out
+}
+
+// ExportWidgetCSV renders the widget's FULL live dataset as CSV — the
+// same recompute as GetWidgetData, but unpaginated (every group, not
+// just the current page), capped at csvExportCap rows. Columns per
+// type: key,label,value (charts, smart_counter, table_2d);
+// key,label,completed,total,percentage (smart_gauge);
+// metric,value (intake_breakdown); value (number). Proper CSV quoting
+// via encoding/csv. Read authZ = the widget read rule (a shared-view
+// member may export). The filename is
+// "<dashboard-slug>-<widget-slug>.csv", sanitized.
+func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (filename string, data []byte, truncated bool, err error) {
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	full, err := computeWidgetData(ctx, pool, wc, 1, false)
+	if err != nil {
+		return "", nil, false, err
+	}
+	var rows [][]string
+	switch wc.widget.WidgetType {
+	case WidgetTypeSmartGauge:
+		rows = append(rows, []string{"key", "label", "completed", "total", "percentage"})
+		for _, g := range full.Groups {
+			completed, pct := 0, 0.0
+			if g.Completed != nil {
+				completed = *g.Completed
+			}
+			if g.Percentage != nil {
+				pct = *g.Percentage
+			}
+			rows = append(rows, []string{g.Key, g.Label,
+				strconv.Itoa(completed), strconv.Itoa(g.Value),
+				strconv.FormatFloat(pct, 'f', 2, 64)})
+		}
+	case WidgetTypeIntake:
+		rows = append(rows, []string{"metric", "value"})
+		bd := full.Intake
+		rows = append(rows,
+			[]string{"in_app_volume", strconv.Itoa(bd.InAppVolume)},
+			[]string{"email_volume", strconv.Itoa(bd.EmailVolume)},
+			[]string{"form_volume", strconv.Itoa(bd.FormVolume)},
+			[]string{"total_accepted", strconv.Itoa(bd.TotalAccepted)},
+			[]string{"total_rejected", strconv.Itoa(bd.TotalRejected)},
+			[]string{"avg_decide_seconds", strconv.FormatFloat(bd.AvgDecideSeconds, 'f', 2, 64)},
+		)
+	case WidgetTypeNumber:
+		rows = append(rows, []string{"value"})
+		v := 0
+		if full.Value != nil {
+			v = *full.Value
+		}
+		rows = append(rows, []string{strconv.Itoa(v)})
+	default:
+		rows = append(rows, []string{"key", "label", "value"})
+		for _, g := range full.Groups {
+			rows = append(rows, []string{g.Key, g.Label, strconv.Itoa(g.Value)})
+		}
+	}
+	if len(rows)-1 > csvExportCap {
+		rows = rows[:csvExportCap+1]
+		truncated = true
+	}
+	var buf strings.Builder
+	w := csv.NewWriter(&buf)
+	for _, r := range rows {
+		if err := w.Write(r); err != nil {
+			return "", nil, false, err
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return "", nil, false, err
+	}
+	filename = slugify(wc.dr.Dashboard.Name) + "-" + slugify(wc.widget.Title) + ".csv"
+	return filename, []byte(buf.String()), truncated, nil
 }
