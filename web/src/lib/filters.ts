@@ -32,6 +32,12 @@ import { useSearchParams } from "react-router-dom";
  *   updated_before  YYYY-MM-DD, inclusive of the whole day
  *   due_after       YYYY-MM-DD, inclusive (matches target_date)
  *   due_before      YYYY-MM-DD, inclusive of the whole day
+ *   due_date_empty  "1" = only issues with no due date (target_date IS NULL).
+ *                   C80T1: mutually exclusive with due_after/due_before —
+ *                   the filter panel clears the range when the chip is on
+ *                   and clears the chip when a range is picked, so the
+ *                   list API's 400 (range + empty combined) is unreachable
+ *                   from the UI.
  *   subscribed      "1" = only issues the current user subscribed to
  *   archived        "1" = include archived issues (default: hidden)
  *
@@ -63,6 +69,9 @@ export interface IssueFilters {
   updatedBefore: string;
   dueAfter: string;
   dueBefore: string;
+  /** "No due date" chip (C80T1): target_date IS NULL. Mutually exclusive
+   *  with dueAfter/dueBefore — see the URL schema comment above. */
+  dueDateEmpty: boolean;
   subscribed: boolean;
   /** Include archived issues; default false hides them. */
   archived: boolean;
@@ -83,6 +92,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   updatedBefore: "",
   dueAfter: "",
   dueBefore: "",
+  dueDateEmpty: false,
   subscribed: false,
   archived: false,
 };
@@ -157,6 +167,10 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     updatedBefore: validDate(search.get("updated_before")),
     dueAfter: validDate(search.get("due_after")),
     dueBefore: validDate(search.get("due_before")),
+    // The backend accepts "1"/"true"; we always write "1".
+    dueDateEmpty:
+      search.get("due_date_empty") === "1" ||
+      search.get("due_date_empty") === "true",
     subscribed: search.get("subscribed") === "1",
     archived: search.get("archived") === "1",
   };
@@ -180,6 +194,7 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.updatedBefore) p.set("updated_before", f.updatedBefore);
   if (f.dueAfter) p.set("due_after", f.dueAfter);
   if (f.dueBefore) p.set("due_before", f.dueBefore);
+  if (f.dueDateEmpty) p.set("due_date_empty", "1");
   if (f.subscribed) p.set("subscribed", "1");
   if (f.archived) p.set("archived", "1");
   return p;
@@ -231,7 +246,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.epics.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
-  if (f.dueAfter || f.dueBefore) n++;
+  if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
   if (f.subscribed) n++;
   if (f.archived) n++;
   return n;
@@ -289,6 +304,7 @@ const FILTER_PARAM_NAMES = new Set([
   "updated_before",
   "due_after",
   "due_before",
+  "due_date_empty",
   "subscribed",
   "archived",
 ]);

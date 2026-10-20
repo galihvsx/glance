@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import type { Workspace, WorkspaceMember } from "../lib/types";
-import { roleLabel, WORKSPACE_ROLES } from "../lib/types";
+import { roleLabel } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import { Button } from "../components/ui/button";
 import {
@@ -14,7 +14,6 @@ import {
 } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import {
@@ -26,6 +25,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import AuditLogSection from "../components/settings/AuditLogSection";
+import MemberListItem from "../components/settings/MemberListItem";
 import WebhooksSection from "../components/settings/WebhooksSection";
 import SlackSection from "../components/settings/SlackSection";
 import GitHubSection from "../components/settings/GitHubSection";
@@ -63,6 +63,8 @@ export default function WorkspaceSettings() {
   const [members, setMembers] = useState<WorkspaceMember[] | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
   const [actingId, setActingId] = useState<string | null>(null);
+  // C80T1: which member's activity panel is expanded (one at a time).
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
 
   // Danger zone state
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -332,52 +334,23 @@ export default function WorkspaceSettings() {
           ) : (
             <ul className="divide-y divide-border-hairline">
               {members.map((m) => (
-                <li
+                <MemberListItem
                   key={m.id}
-                  className="flex items-center justify-between gap-3 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">
-                      {m.name ?? m.email}
-                    </p>
-                    {m.name && (
-                      <p className="truncate text-xs text-muted-foreground">
-                        {m.email}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isAdmin ? (
-                      <>
-                        <select
-                          aria-label={`Role for ${m.name ?? m.email}`}
-                          value={m.role}
-                          disabled={actingId === m.id}
-                          onChange={(e) =>
-                            onRoleChange(m, Number(e.target.value))
-                          }
-                          className="rounded-md border border-border bg-[#111113] px-2 py-1"
-                        >
-                          {WORKSPACE_ROLES.map((r) => (
-                            <option key={r.value} value={r.value}>
-                              {r.label}
-                            </option>
-                          ))}
-                        </select>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={actingId === m.id}
-                          onClick={() => onRemove(m)}
-                        >
-                          {actingId === m.id ? "…" : "Remove"}
-                        </Button>
-                      </>
-                    ) : (
-                      <Badge variant="secondary">{roleLabel(m.role)}</Badge>
-                    )}
-                  </div>
-                </li>
+                  slug={slug ?? ""}
+                  member={m}
+                  isAdmin={isAdmin}
+                  // The workspace activity feed 403s below role 15; hide
+                  // the per-member Activity affordance there (guests and
+                  // viewers never see it).
+                  viewerCanViewActivity={(ws?.role ?? 0) >= 15}
+                  actingId={actingId}
+                  activityOpen={expandedMemberId === m.id}
+                  onToggleActivity={() =>
+                    setExpandedMemberId((id) => (id === m.id ? null : m.id))
+                  }
+                  onRoleChange={onRoleChange}
+                  onRemove={onRemove}
+                />
               ))}
             </ul>
           )}
