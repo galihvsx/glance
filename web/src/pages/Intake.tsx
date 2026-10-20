@@ -9,6 +9,7 @@ import type {
   IntakeInbox,
   IntakeItem,
   Member,
+  Workspace,
 } from "../lib/types";
 import type { IssueListResult } from "../lib/types";
 import { Inbox } from "lucide-react";
@@ -32,6 +33,8 @@ import { Badge } from "../components/ui/badge";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { cn } from "../lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import FormsList from "../components/intake/FormsList";
 import {
   OrgEmpty,
   OrgSectionHead,
@@ -218,6 +221,15 @@ export default function Intake() {
     queryKey: inboxKey,
     queryFn: () => api.get<IntakeInbox>(`${base}/intake`),
   });
+
+  // C82T1: the Forms tab is a settings surface (backend manage authZ =
+  // workspace admin role 20) — non-admins see triage only.
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", slug],
+    queryFn: () =>
+      api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
+  });
+  const isAdmin = (workspaceQuery.data?.role ?? 0) >= 20;
 
   const data = inboxQuery.data;
   const pendingItems = (data?.items ?? []).filter(effectivePending);
@@ -483,11 +495,10 @@ export default function Intake() {
 
   const nowLocal = toLocalInputValue(new Date(Date.now() + 60_000));
 
-  return (
-    <div className="w-full">
-      {/* C19T4: shared page header replaces the per-page h1. */}
-      <PageHeader viewName="Intake" count={pendingItems.length} />
-      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
+  // C82T1: the triage queue content (first tab for admins, the only view
+  // for everyone else).
+  const triageContent = (
+    <>
         {inboxQuery.isError && (
           <Alert variant="destructive" className="mb-4">
             <AlertDescription>
@@ -577,6 +588,30 @@ export default function Intake() {
             )}
           </>
         ) : null}
+    </>
+  );
+
+  return (
+    <div className="w-full">
+      {/* C19T4: shared page header replaces the per-page h1. */}
+      <PageHeader viewName="Intake" count={pendingItems.length} />
+      <div className="mx-auto w-full max-w-[1060px] px-7 py-6">
+        {isAdmin ? (
+          <Tabs defaultValue="triage">
+            <TabsList>
+              <TabsTrigger value="triage">Triage</TabsTrigger>
+              <TabsTrigger value="forms">Forms</TabsTrigger>
+            </TabsList>
+            <TabsContent value="triage" className="mt-4">
+              {triageContent}
+            </TabsContent>
+            <TabsContent value="forms" className="mt-4">
+              <FormsList slug={slug} identifier={identifier} />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          triageContent
+        )}
 
         {/* Snooze dialog */}
         <Dialog
