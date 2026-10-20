@@ -5,6 +5,22 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Dashboards (cycle 81)**
+
+- Plane parity: workspace dashboards with widgets. Backend: dashboards CRUD +
+  widget CRUD (migration 000072), six widget types (bar/line/area/donut/pie/
+  number) with per-widget grouping/filters/project scope, live widget-data
+  endpoint recomputed from issue data, Plane's exact visibility authZ (public
+  default; private invisible to non-creators), layout-only PATCH endpoint for
+  drag/resize commits.
+- Frontend: dashboards list with Public/Private badges, dashboard detail with
+  inline rename, visibility toggle, delete confirm and Add widget; WidgetDialog
+  with SVG type previews and pickers (group-by hidden for number widgets);
+  recharts WidgetCard with per-widget loading/empty/error states; 12-column
+  dnd-kit canvas with drag+resize committing via PATCH on drop only (optimistic
+  with rollback); read-only mode for non-editors; routes
+  `/w/:slug/dashboards` + `/:id` and a sidebar nav entry.
+
 **Is-empty date filters + per-member activity (cycle 80)**
 
 - Plane changelog 2026-01-07 ("is-empty" filters) / v3.0.0 (per-member activity
