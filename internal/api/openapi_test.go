@@ -88,6 +88,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterAnalyticsRoutes(e, issueHandler)
 	RegisterTimeSummaryRoutes(e, issueHandler)
 	RegisterActivityRoutes(e, issueHandler)
+	// C81T0: keep in lockstep with cmd/glance/main.go.
+	RegisterDashboardRoutes(e, &DashboardHandler{})
 	RegisterOverviewRoutes(e, issueHandler)
 	// C29T0: keep in lockstep with cmd/glance/main.go.
 	RegisterWorkloadRoutes(e, &WorkloadHandler{})
@@ -4104,5 +4106,162 @@ func TestOpenAPIDocAutomationSendWebhookAction(t *testing.T) {
 	}
 	if !strings.Contains(action.Description, "send_webhook") {
 		t.Fatal("AutomationAction description does not mention send_webhook")
+	}
+}
+
+// TestOpenAPIDocShapesDashboard pins the C81T0 dashboards API contract
+// in docs/openapi.yaml: every new path + method, the path params, the
+// 400/403/404 response semantics, and the schema enums (visibility,
+// widget_type, group_by). If the implementation drifts from the pinned
+// contract, this test fails first.
+func TestOpenAPIDocShapesDashboard(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+
+	// Every new route is documented with the expected methods.
+	wantOps := map[string][]string{
+		"/api/v1/workspaces/{slug}/dashboards":              {"get", "post"},
+		"/api/v1/workspaces/{slug}/dashboards/{id}":         {"get", "patch", "delete"},
+		"/api/v1/workspaces/{slug}/dashboards/{id}/widgets": {"get", "post"},
+		"/api/v1/widgets/{widget_id}":                       {"patch", "delete"},
+		"/api/v1/widgets/{widget_id}/layout":                {"patch"},
+		"/api/v1/widgets/{widget_id}/data":                  {"get"},
+	}
+	for path, methods := range wantOps {
+		ops, ok := spec.Paths[path]
+		if !ok {
+			t.Fatalf("spec missing dashboard path %s", path)
+		}
+		for _, m := range methods {
+			raw, ok := ops[m]
+			if !ok {
+				t.Fatalf("spec path %s missing %s operation", path, m)
+			}
+			var op struct {
+				Summary    string `json:"summary"`
+				Parameters []struct {
+					Name string `json:"name"`
+					In   string `json:"in"`
+				} `json:"parameters"`
+				Responses map[string]json.RawMessage `json:"responses"`
+			}
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("decode %s %s: %v", m, path, err)
+			}
+			if op.Summary == "" {
+				t.Fatalf("%s %s: missing summary", m, path)
+			}
+			// 400/403/404 are pinned on every dashboard operation:
+			// 400 = malformed UUID / bad config, 403 = guest or
+			// edit-rule denial, 404 = bad slug / private-dashboard
+			// invisibility. DELETE answers 204 instead of 200.
+			// (GET list has no 400 path: nothing on it validates.)
+			need400 := !(m == "get" && path == "/api/v1/workspaces/{slug}/dashboards")
+			for _, code := range []string{"403", "404"} {
+				if _, ok := op.Responses[code]; !ok {
+					t.Fatalf("%s %s: missing %s response", m, path, code)
+				}
+			}
+			if need400 {
+				if _, ok := op.Responses["400"]; !ok {
+					t.Fatalf("%s %s: missing 400 response", m, path)
+				}
+			}
+			if m == "delete" {
+				if _, ok := op.Responses["204"]; !ok {
+					t.Fatalf("%s %s: missing 204 response", m, path)
+				}
+			} else if _, ok := op.Responses["200"]; !ok {
+				if _, ok := op.Responses["201"]; !ok {
+					t.Fatalf("%s %s: missing 200/201 response", m, path)
+				}
+			}
+		}
+	}
+
+	// The widget item routes carry widget_id (not id) as the path param.
+	var widgetParamNames []string
+	raw := spec.Paths["/api/v1/widgets/{widget_id}"]["patch"]
+	var widgetOp struct {
+		Parameters []struct {
+			Name string `json:"name"`
+			In   string `json:"in"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &widgetOp); err != nil {
+		t.Fatalf("decode widget patch: %v", err)
+	}
+	for _, p := range widgetOp.Parameters {
+		if p.In == "path" {
+			widgetParamNames = append(widgetParamNames, p.Name)
+		}
+	}
+	if len(widgetParamNames) != 1 || widgetParamNames[0] != "widget_id" {
+		t.Fatalf("widget path params = %v, want [widget_id]", widgetParamNames)
+	}
+
+	// Schema enums pin the write-time validation contract.
+	var dashboard struct {
+		Props map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	decode := func(name string, v any) {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		if err := json.Unmarshal(raw, v); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+	}
+	decode("Dashboard", &dashboard)
+	if vis := dashboard.Props["visibility"].Enum; len(vis) != 2 || vis[0] != "public" || vis[1] != "private" {
+		t.Fatalf("Dashboard.visibility enum = %v, want [public private]", vis)
+	}
+
+	var widget struct {
+		Props map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	decode("DashboardWidget", &widget)
+	wantTypes := []string{"bar", "line", "area", "donut", "pie", "number"}
+	if got := widget.Props["widget_type"].Enum; !reflect.DeepEqual(got, wantTypes) {
+		t.Fatalf("DashboardWidget.widget_type enum = %v, want %v", got, wantTypes)
+	}
+
+	var config struct {
+		Props map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	decode("WidgetConfig", &config)
+	wantGroupBy := []string{"state", "priority", "assignee", "label"}
+	if got := config.Props["group_by"].Enum; !reflect.DeepEqual(got, wantGroupBy) {
+		t.Fatalf("WidgetConfig.group_by enum = %v, want %v", got, wantGroupBy)
+	}
+	if got := config.Props["metric"].Enum; !reflect.DeepEqual(got, []string{"count"}) {
+		t.Fatalf("WidgetConfig.metric enum = %v, want [count]", got)
+	}
+
+	// WidgetData carries groups (chart) and value (number).
+	var data struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("WidgetData", &data)
+	if _, ok := data.Props["groups"]; !ok {
+		t.Fatal("WidgetData missing groups property")
+	}
+	if _, ok := data.Props["value"]; !ok {
+		t.Fatal("WidgetData missing value property")
 	}
 }

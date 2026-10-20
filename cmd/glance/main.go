@@ -331,6 +331,8 @@ func main() {
 	api.RegisterAnalyticsRoutes(e, issueHandler)
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
 	api.RegisterActivityRoutes(e, issueHandler)
+	// C81T0: customizable dashboards + widgets.
+	api.RegisterDashboardRoutes(e, &api.DashboardHandler{Pool: pool})
 	api.RegisterOverviewRoutes(e, issueHandler) // C8T5: project overview page
 	// C29T0: workload & capacity report + member capacity writes.
 	api.RegisterWorkloadRoutes(e, &api.WorkloadHandler{Pool: pool})
