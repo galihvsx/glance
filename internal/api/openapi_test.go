@@ -2505,7 +2505,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 		"state", "priority", "label", "assignee", "estimate", "cycle",
 		"parent", "epic",
 		"q", "fields", "draft", "sequence_id",
-		"undated", "subscribed", "archived", "deleted",
+		"undated", "due_date_empty", "subscribed", "archived", "deleted",
 		"include_links", "include_project_structure",
 		"created_after", "created_before",
 		"updated_after", "updated_before",

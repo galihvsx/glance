@@ -45,6 +45,11 @@ var ErrInvalidActivityLimit = errors.New("service: invalid activity limit")
 // bad_request.
 var ErrInvalidActivityCursor = errors.New("service: invalid activity cursor")
 
+// ErrInvalidActivityActor is returned when the workspace activity feed
+// `actor` filter is present but not a UUID. The handler maps it to 400
+// bad_request.
+var ErrInvalidActivityActor = errors.New("service: invalid activity actor: not a UUID")
+
 // ActivityMaxLimit caps the feed page size; ActivityDefaultLimit is the
 // page size when the caller passes no limit.
 const (
@@ -136,6 +141,8 @@ func GetProjectActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 //   - Type filter: `types` is a list of issue_activities.field values
 //     (e.g. "state_id", "priority", "_created"); empty/blank entries are
 //     ignored, the rest are deduplicated.
+//   - Actor filter (C80T0): `actorFilter` is a member's user UUID,
+//     matching issue_activities.actor_id; "" disables the filter.
 
 // WorkspaceActivityEntry is one row of the workspace activity feed: a
 // project activity row plus the owning project (identifier for links,
@@ -201,11 +208,19 @@ func cleanActivityTypes(types []string) []string {
 // GetWorkspaceActivity returns the newest-first activity feed across all
 // projects of the workspace the caller is a member (15)+ of. `before` is
 // an opaque cursor for the next page ("" for the first); `types`
-// optionally filters to issue_activities.field values. At most limit
-// entries are returned; NextCursor is "" when the feed is exhausted.
-func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, limit int, before string, types []string) (WorkspaceActivityPage, error) {
+// optionally filters to issue_activities.field values; `actorFilter`
+// optionally filters to rows written by one member (their user UUID —
+// "" disables the filter). At most limit entries are returned;
+// NextCursor is "" when the feed is exhausted. A well-formed actorFilter
+// that matches no member of the workspace is ErrMemberNotFound (404);
+// a malformed one is ErrInvalidActivityActor (400).
+func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, limit int, before string, types []string, actorFilter string) (WorkspaceActivityPage, error) {
 	if limit < 1 || limit > ActivityMaxLimit {
 		return WorkspaceActivityPage{}, ErrInvalidActivityLimit
+	}
+	// C80T0: reject a malformed actor filter before any DB touch.
+	if actorFilter != "" && !isUUIDFormat(actorFilter) {
+		return WorkspaceActivityPage{}, ErrInvalidActivityActor
 	}
 	var beforeAt time.Time
 	var beforeID string
@@ -230,6 +245,23 @@ func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	if role < RoleMember {
 		return WorkspaceActivityPage{}, ErrForbidden
 	}
+	// C80T0: resolve the actor filter to a real member of THIS workspace.
+	// The caller's own role is checked above, so guests still get 403 and
+	// outsiders 404 — the filter never widens the feed's authZ. A UUID
+	// that matches no member (or a member of another workspace) is 404
+	// via ErrMemberNotFound, the same sentinel the members endpoints use.
+	if actorFilter != "" {
+		var isMember bool
+		if err := pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM workspace_members
+			          WHERE workspace_id = $1::uuid AND user_id = $2::uuid)`,
+			wsID, actorFilter).Scan(&isMember); err != nil {
+			return WorkspaceActivityPage{}, err
+		}
+		if !isMember {
+			return WorkspaceActivityPage{}, ErrMemberNotFound
+		}
+	}
 
 	var sb strings.Builder
 	args := []any{wsID}
@@ -247,6 +279,10 @@ func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	if len(cleanTypes) > 0 {
 		args = append(args, cleanTypes)
 		fmt.Fprintf(&sb, " AND a.field = ANY($%d::text[])", len(args))
+	}
+	if actorFilter != "" {
+		args = append(args, actorFilter)
+		fmt.Fprintf(&sb, " AND a.actor_id = $%d::uuid", len(args))
 	}
 	if before != "" {
 		args = append(args, beforeAt, beforeID)
