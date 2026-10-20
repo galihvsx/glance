@@ -707,18 +707,33 @@ func DuplicateIntakeIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident
 	return ii, nil
 }
 
+// Intake source values (also a CHECK on intake_issues.source): which
+// channel created the intake row. 'email' is reserved — glance has no
+// email ingestion; the intake-breakdown widget reports email_volume as
+// 0 with an honest API note.
+const (
+	IntakeSourceInApp = "in_app"
+	IntakeSourceForm  = "form"
+	IntakeSourceEmail = "email"
+)
+
 // addIntakeIssueTx writes the pending intake_issues row for a newly
 // created issue. Called from CreateIssue inside its tx when
-// CreateIssueInput.Intake is set.
-func addIntakeIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID string) error {
+// CreateIssueInput.Intake is set. source is the intake channel
+// (in_app|form); "" normalizes to in_app (every non-form creation
+// path).
+func addIntakeIssueTx(ctx context.Context, tx pgx.Tx, projectID, issueID, source string) error {
+	if source == "" {
+		source = IntakeSourceInApp
+	}
 	intakeID, err := defaultIntakeIDTx(ctx, tx, projectID)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO intake_issues (intake_id, issue_id, status)
-		 VALUES ($1::uuid, $2::uuid, $3)`,
-		intakeID, issueID, IntakePending)
+		`INSERT INTO intake_issues (intake_id, issue_id, status, source)
+		 VALUES ($1::uuid, $2::uuid, $3, $4)`,
+		intakeID, issueID, IntakePending, source)
 	return err
 }
 
