@@ -112,13 +112,64 @@ describe("layoutPatchBody", () => {
 });
 
 describe("isChartType / WIDGET_TYPES", () => {
-  it("lists all six Plane widget types", () => {
-    expect(WIDGET_TYPES).toEqual(["bar", "line", "area", "donut", "pie", "number"]);
+  it("lists all ten widget types", () => {
+    expect(WIDGET_TYPES).toEqual([
+      "bar",
+      "line",
+      "area",
+      "donut",
+      "pie",
+      "number",
+      "smart_counter",
+      "smart_gauge",
+      "table_2d",
+      "intake_breakdown",
+    ]);
   });
 
-  it("treats every type except number as a chart", () => {
+  it("treats exactly the five recharts types as charts", () => {
     for (const t of WIDGET_TYPES) {
-      expect(isChartType(t)).toBe(t !== "number");
+      expect(isChartType(t)).toBe(
+        ["bar", "line", "area", "donut", "pie"].includes(t),
+      );
+    }
+  });
+
+  it("requires group_by for charts and the grouped phase-2 types", () => {
+    for (const t of [
+      "bar",
+      "line",
+      "area",
+      "donut",
+      "pie",
+      "smart_counter",
+      "smart_gauge",
+      "table_2d",
+    ] as const) {
+      expect(isGroupedType(t)).toBe(true);
+    }
+    expect(isGroupedType("number")).toBe(false);
+    expect(isGroupedType("intake_breakdown")).toBe(false);
+  });
+
+  it("paginates exactly the smart types and table_2d", () => {
+    for (const t of [
+      "smart_counter",
+      "smart_gauge",
+      "table_2d",
+    ] as const) {
+      expect(isPaginatedType(t)).toBe(true);
+    }
+    for (const t of [
+      "bar",
+      "line",
+      "area",
+      "donut",
+      "pie",
+      "number",
+      "intake_breakdown",
+    ] as const) {
+      expect(isPaginatedType(t)).toBe(false);
     }
   });
 });
