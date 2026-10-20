@@ -84,7 +84,7 @@ func TestGetWorkspaceActivityAggregates(t *testing.T) {
 	pool := newTestPool(t)
 	ws1, p1, p2, actor, a, b, _, _, _ := setupWorkspaceActivity(t, pool)
 
-	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil)
+	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil, "")
 	if err != nil {
 		t.Fatalf("GetWorkspaceActivity: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestGetWorkspaceActivityVisibility(t *testing.T) {
 
 	// The caller is not a member of ws2: 404, and ws2's rows never leak
 	// into the ws1 feed (asserted by the aggregate test's count of 4).
-	if _, err := GetWorkspaceActivity(ctx, pool, ws2, actor, ActivityDefaultLimit, "", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := GetWorkspaceActivity(ctx, pool, ws2, actor, ActivityDefaultLimit, "", nil, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("other workspace: err = %v, want ErrNotFound", err)
 	}
 
@@ -152,29 +152,29 @@ func TestGetWorkspaceActivityVisibility(t *testing.T) {
 		wsID, guest); err != nil {
 		t.Fatalf("add guest: %v", err)
 	}
-	if _, err := GetWorkspaceActivity(ctx, pool, ws1, guest, ActivityDefaultLimit, "", nil); !errors.Is(err, ErrForbidden) {
+	if _, err := GetWorkspaceActivity(ctx, pool, ws1, guest, ActivityDefaultLimit, "", nil, ""); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("guest: err = %v, want ErrForbidden", err)
 	}
 
 	// A plain non-member gets 404.
 	stranger := createTestUser(t, pool, uniqueTestEmail("wsactivity-stranger"))
-	if _, err := GetWorkspaceActivity(ctx, pool, ws1, stranger, ActivityDefaultLimit, "", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := GetWorkspaceActivity(ctx, pool, ws1, stranger, ActivityDefaultLimit, "", nil, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stranger: err = %v, want ErrNotFound", err)
 	}
 
 	// Bad slug is 404 too.
-	if _, err := GetWorkspaceActivity(ctx, pool, "no-such-ws", actor, ActivityDefaultLimit, "", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := GetWorkspaceActivity(ctx, pool, "no-such-ws", actor, ActivityDefaultLimit, "", nil, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bad slug: err = %v, want ErrNotFound", err)
 	}
 
 	// Bad limit and bad cursor are 400s.
 	for _, bad := range []int{0, -1, ActivityMaxLimit + 1} {
-		if _, err := GetWorkspaceActivity(ctx, pool, ws1, actor, bad, "", nil); !errors.Is(err, ErrInvalidActivityLimit) {
+		if _, err := GetWorkspaceActivity(ctx, pool, ws1, actor, bad, "", nil, ""); !errors.Is(err, ErrInvalidActivityLimit) {
 			t.Fatalf("limit %d: err = %v, want ErrInvalidActivityLimit", bad, err)
 		}
 	}
 	for _, bad := range []string{"not-a-cursor", "!!!!", encodeActivityCursor(time.Now(), "not-a-uuid")} {
-		if _, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, bad, nil); !errors.Is(err, ErrInvalidActivityCursor) {
+		if _, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, bad, nil, ""); !errors.Is(err, ErrInvalidActivityCursor) {
 			t.Fatalf("cursor %q: err = %v, want ErrInvalidActivityCursor", bad, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestGetWorkspaceActivityPagination(t *testing.T) {
 	ws1, _, _, actor, _, _, _, _, _ := setupWorkspaceActivity(t, pool)
 
 	// Full feed in one page for the reference order.
-	full, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil)
+	full, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil, "")
 	if err != nil {
 		t.Fatalf("full feed: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestGetWorkspaceActivityPagination(t *testing.T) {
 	var got []WorkspaceActivityEntry
 	cursor := ""
 	for i := 0; i < 10; i++ {
-		page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 2, cursor, nil)
+		page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 2, cursor, nil, "")
 		if err != nil {
 			t.Fatalf("page %d: %v", i, err)
 		}
@@ -222,7 +222,7 @@ func TestGetWorkspaceActivityPagination(t *testing.T) {
 	}
 	// The second page's cursor must actually decode to the last row of
 	// the first page (round-trip sanity on the opaque cursor).
-	p1, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 2, "", nil)
+	p1, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 2, "", nil, "")
 	if err != nil {
 		t.Fatalf("page 1: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 	pool := newTestPool(t)
 	ws1, _, _, actor, a, b, _, _, _ := setupWorkspaceActivity(t, pool)
 
-	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{"state_id", "priority"})
+	page, err := GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{"state_id", "priority"}, "")
 	if err != nil {
 		t.Fatalf("type filter: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 
 	// Blank entries, whitespace, and duplicates are cleaned before
 	// filtering.
-	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{" state_id ", "", "state_id"})
+	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{" state_id ", "", "state_id"}, "")
 	if err != nil {
 		t.Fatalf("dirty filter: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 	}
 
 	// Unknown types match nothing — empty, exhausted page.
-	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{"no_such_field"})
+	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", []string{"no_such_field"}, "")
 	if err != nil {
 		t.Fatalf("unknown type: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 	var fields []string
 	cursor := ""
 	for i := 0; i < 10; i++ {
-		p, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 1, cursor, []string{"_created"})
+		p, err := GetWorkspaceActivity(ctx, pool, ws1, actor, 1, cursor, []string{"_created"}, "")
 		if err != nil {
 			t.Fatalf("filtered page %d: %v", i, err)
 		}
@@ -303,7 +303,7 @@ func TestGetWorkspaceActivityTypeFilter(t *testing.T) {
 	if err := DeleteIssue(ctx, pool, ws1, issueIdent(t, pool, a.ID), a.ID, actor); err != nil {
 		t.Fatalf("delete issue: %v", err)
 	}
-	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil)
+	page, err = GetWorkspaceActivity(ctx, pool, ws1, actor, ActivityDefaultLimit, "", nil, "")
 	if err != nil {
 		t.Fatalf("after delete: %v", err)
 	}

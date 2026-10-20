@@ -2817,6 +2817,13 @@ type ListIssuesInput struct {
 	// Undated matches issues with neither a target nor a start date
 	// (C3T5: the calendar "unscheduled" strip).
 	Undated bool
+	// DueDateEmpty (C80T0, ?due_date_empty=1) matches issues whose target
+	// date (the due date) is NULL — the due-date field alone, without
+	// touching the start date. ANDed with every other filter. There is no
+	// start_date_empty param: no caller needs "no start date" alone
+	// (start dates feed the calendar/Gantt scheduling view, where
+	// undated-bracket semantics already cover the empty case).
+	DueDateEmpty bool
 	// Subscribed limits to issues the actor subscribed to.
 	Subscribed bool
 	// SequenceID looks up one issue by its per-project sequence number
@@ -3168,6 +3175,14 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 	}
 	if in.StartBefore != nil {
 		conds = append(conds, "i.start_date < "+arg(in.StartBefore)+"::date")
+	}
+	// C80T0: per-field is-empty due-date filter. target_date is the due
+	// date on issues; NULL target_date = "no due date". Contradictory
+	// combinations (due_date_empty + due_after/due_before) are rejected
+	// at the HTTP layer (parseIssueListInput), so the service treats them
+	// as plain ANDed conditions like everything else here.
+	if in.DueDateEmpty {
+		conds = append(conds, "i.target_date IS NULL")
 	}
 	if in.Undated {
 		conds = append(conds, "i.target_date IS NULL AND i.start_date IS NULL")

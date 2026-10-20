@@ -302,6 +302,8 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // filters (?state=&assignee=&label=&priority=&estimate=&cycle=&q=,
 // ?parent=&epic= (C75T0: comma-separated or repeatable; "none" = top-level / no epic),
 // ?created_after/before=&updated_after/before=&due_after/before=,
+// ?due_date_empty=1 (C80T0: target_date IS NULL — "no due date",
+// cannot be combined with ?due_after/before=),
 // ?start_after/before= (C3T5: bracket issues.start_date for the calendar),
 // ?undated=1 (C3T5: issues with neither target nor start date),
 // ?subscribed=true), ordering (?order_by=-updated_at), cursor pagination
@@ -430,6 +432,17 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		}
 		*tc.dst = tm
 	}
+	// C80T0: per-field is-empty due-date filter (?due_date_empty=1):
+	// target_date (the due date) IS NULL, ANDed with every other filter.
+	// Combining it with due_after=/due_before= on the same field is a 400:
+	// the two predicates contradict each other, and silently preferring
+	// one would hide a client bug (the same honest-error rule as the
+	// malformed-input 400s above). due_date_empty + undated is allowed —
+	// plain AND, just redundant.
+	dueDateEmpty := qp.Get("due_date_empty") == "true" || qp.Get("due_date_empty") == "1"
+	if dueDateEmpty && (dueAfter != nil || dueBefore != nil) {
+		return service.ListIssuesInput{}, errors.New("invalid due_date_empty: cannot be combined with due_after/due_before")
+	}
 	var fields []string
 	if s := qp.Get("fields"); s != "" {
 		fields = strings.Split(s, ",")
@@ -482,6 +495,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		StartAfter:     startAfter,
 		StartBefore:    startBefore,
 		Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
+		DueDateEmpty:   dueDateEmpty,
 		Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
 		Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
 		// C52T0: deleted-only (trash) list. Same lenient truthy parsing
