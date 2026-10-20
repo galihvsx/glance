@@ -73,7 +73,9 @@ function toggle<T>(list: T[], v: T): T[] {
   return list.includes(v) ? list.filter((x) => x !== v) : [...list, v];
 }
 
-function CheckRow({
+/** Reusable checkbox row (C81T1: exported for the dashboards widget
+ *  filter pickers — same picker language, no duplication). */
+export function CheckRow({
   checked,
   onChange,
   label,

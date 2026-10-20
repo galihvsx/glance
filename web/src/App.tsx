@@ -41,6 +41,8 @@ import Initiatives from "./pages/Initiatives";
 import InitiativeDetail from "./pages/InitiativeDetail";
 import Goals from "./pages/Goals";
 import GoalDetail from "./pages/GoalDetail";
+import Dashboards from "./pages/Dashboards";
+import DashboardDetail from "./pages/DashboardDetail";
 import Releases from "./pages/Releases";
 import Schedules from "./pages/Schedules";
 import Pages from "./pages/Pages";
@@ -101,6 +103,15 @@ export default function App() {
                   {/* C35T1: workspace-scoped OKR goals. */}
                   <Route path="/w/:slug/goals" element={<Goals />} />
                   <Route path="/w/:slug/goals/:id" element={<GoalDetail />} />
+                  {/* C81T1: workspace-scoped dashboards. */}
+                  <Route
+                    path="/w/:slug/dashboards"
+                    element={<Dashboards />}
+                  />
+                  <Route
+                    path="/w/:slug/dashboards/:id"
+                    element={<DashboardDetail />}
+                  />
                   {/* C29T1: workspace-level workload & capacity. */}
                   <Route path="/w/:slug/workload" element={<Workload />} />
                   {/* C30T3: workspace-level risk radar. */}
