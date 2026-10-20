@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Custom intake forms (cycle 82)**
+
+- Plane parity (docs.plane.so/intake/intake-forms, Plane v2.0 "Custom intake
+  forms that fit your workflow"): per-project shareable intake forms.
+- Backend (migration 000073): `intake_forms` table with crypto-random
+  `share_token` (regenerable, old token dies immediately), ordered field
+  descriptors with write-time validation (honest 400s; title always present
+  and required; `custom:<uuid>` keys scoped to the project); manage REST under
+  `.../intake/forms` (workspace-admin-only); public no-auth
+  `GET /api/v1/forms/:token` (sanitized envelope, unknown/disabled → 404) and
+  `POST /api/v1/forms/:token/submit` (validates required/types; creates the
+  issue through the same in-transaction creation path as in-app intake, so
+  `_created` activity, `issue.created` webhooks/Slack and created-rule
+  automations behave identically — attributed to a dedicated inactive
+  system user, never a real member). OpenAPI pinned.
+- Frontend: admin-only "Forms" tab in Intake (Triage stays first); forms list
+  with enabled/disabled badge, field count, Copy link, Regenerate (confirm,
+  old link dies), Edit, Delete; builder dialog with field picker (title
+  locked/required, description, priority, project custom fields with type
+  badges), drag-reorder via existing dnd-kit helpers, per-field required
+  toggles and editable labels, live preview through the shared FormRenderer;
+  public `/f/:token` page outside the auth shell with loading skeleton,
+  "This form is unavailable." 404 state and a submit-success reset.
+
 **Dashboards (cycle 81)**
 
 - Plane parity: workspace dashboards with widgets. Backend: dashboards CRUD +
