@@ -289,6 +289,7 @@ describe("existing dimensions", () => {
       updatedBefore: "",
       dueAfter: "",
       dueBefore: "",
+      dueDateEmpty: false,
     });
   });
 
@@ -298,5 +299,89 @@ describe("existing dimensions", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /clear all/i }));
     expect(onClear).toHaveBeenCalled();
+  });
+});
+
+describe("No due date is-empty chip (C80T1)", () => {
+  it("renders the chip in the Dates section", () => {
+    renderPanel({});
+    expect(screen.getByText("No due date")).toBeInTheDocument();
+  });
+
+  it("toggling the chip on sets dueDateEmpty and clears the due range", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, dueAfter: "2026-10-05", dueBefore: "2026-10-09" },
+    });
+    fireEvent.click(screen.getByText("No due date"));
+    expect(onChange).toHaveBeenCalledWith({
+      dueDateEmpty: true,
+      dueAfter: "",
+      dueBefore: "",
+    });
+  });
+
+  it("toggling the chip off only unsets dueDateEmpty", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, dueDateEmpty: true },
+    });
+    fireEvent.click(screen.getByText("No due date"));
+    expect(onChange).toHaveBeenCalledWith({ dueDateEmpty: false });
+  });
+
+  it("shows the chip checked and the Dates section active while on", () => {
+    renderPanel({ filters: { ...EMPTY_FILTERS, dueDateEmpty: true } });
+    expect(isChecked("No due date")).toBe(true);
+    // Active-filter display: per-section Clear appears for Dates.
+    expect(
+      screen.getByRole("button", { name: "Clear Dates filter" }),
+    ).toBeInTheDocument();
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({ filters: { ...EMPTY_FILTERS, dueDateEmpty: true } });
+    // The trigger badge counts active dimensions — one for due+chip.
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent("1");
+  });
+
+  it("picking a due range date clears the chip (mutual exclusion)", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, dueDateEmpty: true },
+    });
+    fireEvent.change(screen.getByLabelText("Due after"), {
+      target: { value: "2026-10-05" },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      dueAfter: "2026-10-05",
+      dueDateEmpty: false,
+    });
+  });
+
+  it("picking a due-before date also clears the chip", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, dueDateEmpty: true },
+    });
+    fireEvent.change(screen.getByLabelText("Due before"), {
+      target: { value: "2026-10-09" },
+    });
+    expect(onChange).toHaveBeenCalledWith({
+      dueBefore: "2026-10-09",
+      dueDateEmpty: false,
+    });
+  });
+
+  it("per-section Clear Dates resets the chip", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, dueDateEmpty: true },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Clear Dates filter" }));
+    expect(onChange).toHaveBeenCalledWith({
+      createdAfter: "",
+      createdBefore: "",
+      updatedAfter: "",
+      updatedBefore: "",
+      dueAfter: "",
+      dueBefore: "",
+      dueDateEmpty: false,
+    });
   });
 });

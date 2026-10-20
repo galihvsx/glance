@@ -143,7 +143,9 @@ function DateRange({
  *  no Apply button. Dimensions: state, priority (multi), labels (multi),
  *  assignees (multi + unassigned), estimate (multi + none), parent
  *  (multi + top-level, C75T1), epic (multi + none, C75T1), date ranges
- *  (created / updated / due), subscribed-by-me. */
+ *  (created / updated / due) plus a "No due date" is-empty chip for the
+ *  due range (C80T1, mutually exclusive with the due range), and
+ *  subscribed-by-me. */
 export default function FilterPanel({
   slug,
   identifier,
@@ -569,7 +571,8 @@ export default function FilterPanel({
             filters.updatedAfter ||
             filters.updatedBefore ||
             filters.dueAfter ||
-            filters.dueBefore
+            filters.dueBefore ||
+            filters.dueDateEmpty
           )}
           onClear={() =>
             onChange({
@@ -579,6 +582,7 @@ export default function FilterPanel({
               updatedBefore: "",
               dueAfter: "",
               dueBefore: "",
+              dueDateEmpty: false,
             })
           }
         />
@@ -601,8 +605,29 @@ export default function FilterPanel({
             label="Due"
             after={filters.dueAfter}
             before={filters.dueBefore}
-            onAfter={(v) => onChange({ dueAfter: v })}
-            onBefore={(v) => onChange({ dueBefore: v })}
+            // C80T1 conflict behavior: the chip and the range are mutually
+            // exclusive in state. Picking a range date clears the chip (and
+            // enabling the chip below clears the range), so the filter
+            // state can never carry both — the backend's 400 for
+            // range+empty combined is unreachable from this panel.
+            onAfter={(v) => onChange({ dueAfter: v, dueDateEmpty: false })}
+            onBefore={(v) => onChange({ dueBefore: v, dueDateEmpty: false })}
+          />
+          {/* C80T1: the "No due date" is-empty chip, same sentinel-row
+              pattern as Unassigned / No estimate / No parent / No epic.
+              Toggles ?due_date_empty=1 in the filter state. */}
+          <CheckRow
+            checked={filters.dueDateEmpty}
+            onChange={() =>
+              filters.dueDateEmpty
+                ? onChange({ dueDateEmpty: false })
+                : onChange({
+                    dueDateEmpty: true,
+                    dueAfter: "",
+                    dueBefore: "",
+                  })
+            }
+            label="No due date"
           />
         </div>
 

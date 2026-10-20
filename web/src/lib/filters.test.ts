@@ -24,6 +24,7 @@ const FULL: IssueFilters = {
   updatedBefore: "",
   dueAfter: "2026-10-05",
   dueBefore: "",
+  dueDateEmpty: false,
   subscribed: true,
   archived: true,
 };
@@ -104,6 +105,52 @@ describe("activeFilterCount", () => {
     // q, state, priority, label, assignee, estimate, parent, epic,
     // created pair, due pair, subscribed, archived = 12 dimensions
     expect(activeFilterCount(FULL)).toBe(12);
+  });
+});
+
+describe("due_date_empty is-empty chip (C80T1)", () => {
+  it("serializes the chip to ?due_date_empty=1", () => {
+    const p = serializeFilters({ ...EMPTY_FILTERS, dueDateEmpty: true });
+    expect(p.get("due_date_empty")).toBe("1");
+  });
+
+  it("parses '1' and 'true'; absent or other values are off", () => {
+    expect(parseFilters(new URLSearchParams("due_date_empty=1")).dueDateEmpty).toBe(true);
+    expect(parseFilters(new URLSearchParams("due_date_empty=true")).dueDateEmpty).toBe(true);
+    expect(parseFilters(new URLSearchParams("due_date_empty=0")).dueDateEmpty).toBe(false);
+    expect(parseFilters(new URLSearchParams("")).dueDateEmpty).toBe(false);
+  });
+
+  it("round-trips the chip through the URL", () => {
+    const back = parseFilters(serializeFilters({ ...EMPTY_FILTERS, dueDateEmpty: true }));
+    expect(back.dueDateEmpty).toBe(true);
+    expect(back.dueAfter).toBe("");
+    expect(back.dueBefore).toBe("");
+  });
+
+  it("passes due_date_empty through toApiParams unchanged (no date conversion)", () => {
+    const p = toApiParams({ ...EMPTY_FILTERS, dueDateEmpty: true });
+    expect(p.get("due_date_empty")).toBe("1");
+    expect(p.get("due_after")).toBeNull();
+    expect(p.get("due_before")).toBeNull();
+  });
+
+  it("omits due_date_empty when the chip is off", () => {
+    expect(serializeFilters(EMPTY_FILTERS).get("due_date_empty")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("due_date_empty")).toBeNull();
+  });
+
+  it("counts the chip in the due dimension (badge display)", () => {
+    expect(activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true })).toBe(1);
+    // Chip or range both live in the same "due" dimension — one badge slot.
+    expect(
+      activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true, dueAfter: "2026-10-01" }),
+    ).toBe(1);
+    expect(activeFilterCount(FULL)).toBe(12);
+  });
+
+  it("recognizes due_date_empty as a filter param so clear-all drops it", () => {
+    expect(isFilterParam("due_date_empty")).toBe(true);
   });
 });
 
