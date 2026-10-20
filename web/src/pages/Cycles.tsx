@@ -13,12 +13,22 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
+  Workspace,
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import BurndownChart from "../components/cycle/BurndownChart";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -59,14 +69,96 @@ function dateOnly(iso: string): string {
   return iso.slice(0, 10);
 }
 
+// C78T1 inline-error pattern: surface ApiError.message, fall back to a
+// generic message for anything else.
+function errMsg(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+/**
+ * C79T1: manual start/end actions for cycle cards. Upcoming cycles get
+ * "Start now", current cycles get "End now" (behind a confirm dialog owned
+ * by the page). Members (15)+ only — guests never see these. Completed
+ * cycles get neither.
+ *
+ * The card is an OrgCard (role=button): action clicks/keydowns are stopped
+ * so they never also activate the card.
+ */
+function CycleManualActions({
+  cycle,
+  canEdit,
+  startPending,
+  onStart,
+  onEndRequest,
+  header = false,
+}: {
+  cycle: Cycle;
+  canEdit: boolean;
+  startPending: boolean;
+  onStart: () => void;
+  onEndRequest: () => void;
+  header?: boolean;
+}) {
+  if (!canEdit || (cycle.status !== "upcoming" && cycle.status !== "current")) {
+    return null;
+  }
+  const upcoming = cycle.status === "upcoming";
+  const button = header ? (
+    upcoming ? (
+      <OrgHeaderButton onClick={onStart} disabled={startPending}>
+        {startPending ? "Starting…" : "Start now"}
+      </OrgHeaderButton>
+    ) : (
+      <OrgHeaderButton onClick={onEndRequest} destructive>
+        End now
+      </OrgHeaderButton>
+    )
+  ) : upcoming ? (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      disabled={startPending}
+      onClick={onStart}
+    >
+      {startPending ? "Starting…" : "Start now"}
+    </Button>
+  ) : (
+    <Button type="button" variant="destructive" size="xs" onClick={onEndRequest}>
+      End now
+    </Button>
+  );
+  return header ? (
+    button
+  ) : (
+    <div
+      className="mt-2.5"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      {button}
+    </div>
+  );
+}
+
 function CycleCard({
   cycle,
   states,
   onSelect,
+  canEdit,
+  startPending,
+  actionError,
+  onStart,
+  onEndRequest,
 }: {
   cycle: Cycle;
   states: IssueState[];
   onSelect: () => void;
+  canEdit: boolean;
+  startPending: boolean;
+  actionError: string | null;
+  onStart: () => void;
+  onEndRequest: () => void;
 }) {
   const issueCount = Object.values(cycle.progress_snapshot ?? {}).reduce(
     (n, c) => n + c,
@@ -97,6 +189,18 @@ function CycleCard({
           emptyLabel="No issues in this cycle yet."
         />
       </div>
+      <CycleManualActions
+        cycle={cycle}
+        canEdit={canEdit}
+        startPending={startPending}
+        onStart={onStart}
+        onEndRequest={onEndRequest}
+      />
+      {actionError && (
+        <Alert variant="destructive" className="mt-2">
+          <AlertDescription>{actionError}</AlertDescription>
+        </Alert>
+      )}
     </OrgCard>
   );
 }
@@ -115,9 +219,26 @@ export default function Cycles() {
   const [endDate, setEndDate] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // C79T1: inline per-cycle action error (start/end), keyed by cycle id —
+  // the card/dialog stays actionable on failure (C78T1 pattern).
+  const [actionError, setActionError] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
+  // C79T1: the cycle awaiting "End now" confirmation.
+  const [endTarget, setEndTarget] = useState<Cycle | null>(null);
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const cyclesKey = ["cycles", slug, identifier] as const;
+
+  // C79T1: manual start/end is member (15)+ only — guests are read-only and
+  // never see the actions (same role gate as Board.tsx).
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", slug],
+    queryFn: () =>
+      api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
+  });
+  const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
 
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
@@ -209,6 +330,47 @@ export default function Cycles() {
     },
     onError: (e) => {
       setFormError(e instanceof ApiError ? e.message : "Failed to add issues");
+    },
+  });
+
+  // C79T1: manual start — upcoming becomes current. Refresh via the
+  // existing cycles query invalidation; a 409 names the conflicting
+  // cycle and surfaces inline without closing anything.
+  const startMutation = useMutation({
+    mutationFn: (id: string) => api.post<Cycle>(`${base}/cycles/${id}/start`),
+    onMutate: () => {
+      setActionError(null);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: cyclesKey });
+    },
+    onError: (e, id) => {
+      setActionError({ id, message: errMsg(e, "Failed to start cycle") });
+    },
+  });
+
+  // C79T1: manual end — completes the cycle early through the exact
+  // ticker path (frozen snapshot + rollover per close_in_days). The
+  // confirm dialog closes only on success; errors surface inline and
+  // stay actionable.
+  const endMutation = useMutation({
+    mutationFn: (id: string) => api.post<Cycle>(`${base}/cycles/${id}/end`),
+    onMutate: () => {
+      setActionError(null);
+    },
+    onSuccess: (_cycle, id) => {
+      setEndTarget(null);
+      setActionError(null);
+      void queryClient.invalidateQueries({ queryKey: cyclesKey });
+      void queryClient.invalidateQueries({
+        queryKey: ["cycle-issues", slug, identifier, id],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["cycle-burndown", slug, identifier, id],
+      });
+    },
+    onError: (e, id) => {
+      setActionError({ id, message: errMsg(e, "Failed to end cycle") });
     },
   });
 
@@ -336,6 +498,22 @@ export default function Cycles() {
               }}
               slug={slug}
               identifier={identifier}
+              canEdit={canEdit}
+              startPending={
+                startMutation.isPending &&
+                startMutation.variables === selected.id
+              }
+              inlineError={
+                actionError?.id === selected.id &&
+                endTarget?.id !== selected.id
+                  ? actionError.message
+                  : null
+              }
+              onStart={() => startMutation.mutate(selected.id)}
+              onEndRequest={() => {
+                setActionError(null);
+                setEndTarget(selected);
+              }}
             />
           ) : cycles.length === 0 ? (
             <OrgEmpty title="No cycles yet">
@@ -349,6 +527,20 @@ export default function Cycles() {
                   cycle={c}
                   states={states}
                   onSelect={() => setSelectedId(c.id)}
+                  canEdit={canEdit}
+                  startPending={
+                    startMutation.isPending && startMutation.variables === c.id
+                  }
+                  actionError={
+                    actionError?.id === c.id && endTarget?.id !== c.id
+                      ? actionError.message
+                      : null
+                  }
+                  onStart={() => startMutation.mutate(c.id)}
+                  onEndRequest={() => {
+                    setActionError(null);
+                    setEndTarget(c);
+                  }}
                 />
               ))}
             </div>
@@ -418,6 +610,45 @@ export default function Cycles() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* C79T1: End-now confirm. A plain Button (not AlertDialogAction) so
+            the dialog only closes on success — errors surface inline and the
+            user can retry or cancel. */}
+        <AlertDialog
+          open={endTarget !== null}
+          onOpenChange={(o) => {
+            if (!o) setEndTarget(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>End {endTarget?.name} now?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Completing this cycle early freezes the cycle&apos;s report
+                and rolls over incomplete issues per the project&apos;s
+                close_in_days rule. This can&apos;t be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {endTarget && actionError?.id === endTarget.id && (
+              <Alert variant="destructive">
+                <AlertDescription>{actionError.message}</AlertDescription>
+              </Alert>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={endMutation.isPending}
+                onClick={() => {
+                  if (endTarget) endMutation.mutate(endTarget.id);
+                }}
+              >
+                {endMutation.isPending ? "Ending…" : "End cycle"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
@@ -432,6 +663,11 @@ function CycleDetail({
   onAdd,
   slug,
   identifier,
+  canEdit,
+  startPending,
+  inlineError,
+  onStart,
+  onEndRequest,
 }: {
   cycle: Cycle;
   states: IssueState[];
@@ -441,6 +677,11 @@ function CycleDetail({
   onAdd: () => void;
   slug: string;
   identifier: string;
+  canEdit: boolean;
+  startPending: boolean;
+  inlineError: string | null;
+  onStart: () => void;
+  onEndRequest: () => void;
 }) {
   const burndownQuery = useQuery({
     queryKey: ["cycle-burndown", slug, identifier, cycle.id],
@@ -470,12 +711,29 @@ function CycleDetail({
         }
         meta={`${dateOnly(cycle.start_date)} → ${dateOnly(cycle.end_date)}`}
         actions={
-          <OrgHeaderButton onClick={onAdd}>
-            <Plus className="h-3 w-3" aria-hidden />
-            Add issues
-          </OrgHeaderButton>
+          <>
+            {/* C79T1: manual start/end in the detail header (member 15+). */}
+            <CycleManualActions
+              cycle={cycle}
+              header
+              canEdit={canEdit}
+              startPending={startPending}
+              onStart={onStart}
+              onEndRequest={onEndRequest}
+            />
+            <OrgHeaderButton onClick={onAdd}>
+              <Plus className="h-3 w-3" aria-hidden />
+              Add issues
+            </OrgHeaderButton>
+          </>
         }
       />
+
+      {inlineError && (
+        <Alert variant="destructive" className="mt-4">
+          <AlertDescription>{inlineError}</AlertDescription>
+        </Alert>
+      )}
 
       <div className="mt-4">
         <OrgStatBand
