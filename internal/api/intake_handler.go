@@ -22,6 +22,15 @@ func RegisterIntakeRoutes(e *echo.Echo, h *IssueHandler) {
 	g.POST("/issues/:uuid/reject", h.rejectIntakeIssue)
 	g.POST("/issues/:uuid/snooze", h.snoozeIntakeIssue)
 	g.POST("/issues/:uuid/duplicate", h.duplicateIntakeIssue)
+
+	// C82T0: intake forms — per-project shareable submission forms. A
+	// settings surface: the service requires the workspace admin role.
+	g.GET("/forms", h.listIntakeForms)
+	g.POST("/forms", h.createIntakeForm)
+	g.GET("/forms/:id", h.getIntakeForm)
+	g.PATCH("/forms/:id", h.updateIntakeForm)
+	g.DELETE("/forms/:id", h.deleteIntakeForm)
+	g.POST("/forms/:id/regenerate", h.regenerateIntakeFormToken)
 }
 
 // intakeError maps the intake service sentinels to HTTP statuses. It is

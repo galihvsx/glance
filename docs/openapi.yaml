@@ -2148,6 +2148,75 @@
         "responses": { "200": { "description": "Per-item triage results", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeBulkTriageResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/forms": {
+      "get": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List intake forms",
+        "description": "The project's intake forms, oldest first. Forms are a settings surface: workspace admin (20) only — non-admin members get 403, non-members 404.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Forms", "content": { "application/json": { "schema": { "type": "object", "properties": { "forms": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeForm" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create intake form",
+        "description": "Creates a form on the project's default intake. Workspace admin (20) only. Honest 400s: name required; fields must contain \"title\" exactly once and title must be required; unknown or duplicate field keys; custom:<uuid> not one of the project's custom fields.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "fields"], "properties": { "name": { "type": "string" }, "description": { "type": "string", "nullable": true }, "is_enabled": { "type": "boolean", "default": true }, "fields": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeFormField" } } } } } } },
+        "responses": { "201": { "description": "Created form", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeForm" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/forms/{id}": {
+      "get": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get intake form",
+        "description": "One intake form, including its share_token (copy it for the /f/<token> link). Workspace admin (20) only. A malformed id is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Form", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeForm" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update intake form",
+        "description": "Partial update of name, description, is_enabled, fields (re-validated like create when present). Workspace admin (20) only. A malformed id is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string", "nullable": true }, "is_enabled": { "type": "boolean" }, "fields": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeFormField" } } } } } } },
+        "responses": { "200": { "description": "Updated form", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeForm" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete intake form",
+        "description": "Deletes the form; its share token dies with it. Workspace admin (20) only. A malformed id is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/intake/forms/{id}/regenerate": {
+      "post": {
+        "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Regenerate form share token",
+        "description": "Rotates the form's share token and returns the new one; the old token is immediately invalid (404 from then on). Workspace admin (20) only. A malformed id is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Form with the new share_token", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeForm" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/forms/{token}": {
+      "get": {
+        "tags": ["intake"], "security": [],
+        "summary": "Open a public intake form",
+        "description": "No auth — the token is the capability. Unknown or disabled tokens answer 404 (never 403, existence does not leak). The payload carries no internal ids, no created_by, no other forms.",
+        "parameters": [ { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "Public form", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PublicIntakeForm" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/forms/{token}/submit": {
+      "post": {
+        "tags": ["intake"], "security": [],
+        "summary": "Submit a public intake form",
+        "description": "No auth — the token is the capability. Body {values: {[key]: value}}. Validates: title present and non-blank; required fields present (400 naming the missing label); value types (number must parse, date must be YYYY-MM-DD, select value must be one of the field's options, checkbox must be boolean, priority must be 0-4). On success the issue is created through the same service path as in-app creation (issue.created activity + webhook fan-out), lands in the project's intake inbox as pending, is attributed to the dedicated system user, and custom values are written to issue_custom_values. 201 {issue_id}. Unknown or disabled tokens answer 404.",
+        "parameters": [ { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["values"], "properties": { "values": { "type": "object", "description": "Field key → value, matching the form's field keys" } } } } } },
+        "responses": { "201": { "description": "Submission accepted", "content": { "application/json": { "schema": { "type": "object", "required": ["issue_id"], "properties": { "issue_id": { "type": "string", "format": "uuid" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/intake/issues/{uuid}/accept": {
       "post": {
         "tags": ["intake"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
@@ -3805,6 +3874,42 @@
           "rejected": { "type": "array", "items": { "type": "string", "format": "uuid" } },
           "skipped": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Rows already in the target state (no change)" },
           "errors": { "type": "array", "items": { "type": "object", "required": ["intake_id", "error"], "properties": { "intake_id": { "type": "string", "format": "uuid" }, "error": { "type": "string" } } } }
+        }
+      },
+      "IntakeFormField": {
+        "type": "object",
+        "required": ["key", "label", "required"],
+        "properties": {
+          "key": { "type": "string", "description": "title | description | priority | custom:<custom_field_uuid>" },
+          "label": { "type": "string", "description": "Free-text display label; blank defaults to the field's canonical name" },
+          "required": { "type": "boolean" }
+        }
+      },
+      "IntakeForm": {
+        "type": "object",
+        "description": "A per-project shareable intake form (management view — never served publicly). fields is the ordered array of {key, label, required} descriptors; title is always present exactly once and always required. share_token is the public capability (copy it for the /f/<token> link).",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "project_id": { "type": "string", "format": "uuid" },
+          "intake_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "is_enabled": { "type": "boolean" },
+          "share_token": { "type": "string" },
+          "fields": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeFormField" } },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PublicIntakeForm": {
+        "type": "object",
+        "description": "Sanitized form definition for anonymous submitters: no internal ids, no created_by, no other forms. fields carry the resolved type (title | description | priority | text | number | date | select | checkbox); options is the select options array, empty otherwise.",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "project_name": { "type": "string" },
+          "fields": { "type": "array", "items": { "type": "object", "required": ["key", "label", "required", "type", "options"], "properties": { "key": { "type": "string" }, "label": { "type": "string" }, "required": { "type": "boolean" }, "type": { "type": "string" }, "options": { "type": "array", "items": { "type": "object" } } } } }
         }
       },
       "ActivityEntry": {
