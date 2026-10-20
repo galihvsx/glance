@@ -5,6 +5,36 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Manual cycle start/end — override the scheduled dates (cycle 79)**
+
+- Plane's Cycles docs, "Override scheduled cycles" (Enterprise Grid): users
+  can manually start or end a cycle, overriding its scheduled dates. glance's
+  cycle lifecycle was fully schedule-driven — an `upcoming` cycle became
+  `current` only via the ticker, and a cycle could only complete at its
+  `end_date`. This cycle adds the manual override.
+- Backend (no migration — pure status transitions): `POST
+  /api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/start`
+  flips `upcoming` → `current` ahead of schedule (race-safe `status =
+  'upcoming'` predicate against the ticker's activate pass; 400 on already
+  `current`/`completed`; 409 naming the conflicting cycle when the dates
+  overlap another live cycle while parallel cycles are off; member 15+, guests
+  read-only; rides the existing `cycle.updated` announce fan-out). `POST
+  .../cycles/{cycleID}/end` completes a cycle early through the EXACT ticker
+  path (`service.CompleteCycle` — frozen progress snapshot + rollover per
+  `close_in_days` + announce), never a divergent implementation; 400 on
+  already completed; `end_date` is not rewritten. Ticker rulings documented in
+  the cycle.go contract: the ticker never reverts a manually-started cycle,
+  and a manually-started cycle still auto-completes at `end_date`.
+- Frontend: the Cycles page cards give `upcoming` cycles a "Start now" action
+  and `current` cycles an "End now" action (same actions in the cycle detail
+  header); member 15+ only — guests see neither; completed cycles show
+  neither. "End now" sits behind a confirm dialog (freeze-the-report /
+  rollover copy) that only closes on success. C78T1's inline-error pattern:
+  a 409 names the conflicting cycle, 400 stays actionable, pending states on
+  both buttons, refresh via the existing cycles query invalidation (no new
+  polling loop).
+- 31 new tests (17 backend service/ticker/API/doc, 14 frontend vitest).
+
 **Parallel cycles — run multiple cycles at once with overlapping dates (cycle 78)**
 
 - Plane's Cycles docs, "Parallel cycles" (Enterprise Grid): by default only
