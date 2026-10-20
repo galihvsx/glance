@@ -2698,6 +2698,100 @@
         "parameters": [ { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } } ],
         "responses": { "200": { "description": "Shared resource", "content": { "application/json": { "schema": { "type": "object" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
+    },
+    "/api/v1/workspaces/{slug}/dashboards": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List dashboards",
+        "description": "Workspace dashboards visible to the caller: public dashboards plus the caller's own private ones, newest updated first. Widgets are NOT included (use the detail read). Member (15)+; guests get 403; a bad slug or non-member caller gets 404.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Visible dashboards", "content": { "application/json": { "schema": { "type": "object", "properties": { "dashboards": { "type": "array", "items": { "$ref": "#/components/schemas/Dashboard" } } } } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create dashboard",
+        "description": "Member (15)+. visibility defaults to public; anything else is 400. name is required.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string", "maxLength": 200 }, "description": { "type": "string", "nullable": true }, "visibility": { "type": "string", "enum": ["public", "private"], "default": "public" } } } } } },
+        "responses": { "201": { "description": "Created dashboard", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Dashboard" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/dashboards/{id}": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get dashboard with widgets",
+        "description": "The dashboard plus its widgets (config only — fetch data per widget via GET /api/v1/widgets/{widget_id}/data). A private dashboard of another creator is 404, never 403 (no existence leak). A malformed id is 400.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Dashboard with widgets", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Dashboard" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update dashboard",
+        "description": "Partial update under Plane's edit rule: the creator, or a workspace admin (20) on PUBLIC dashboards; on private dashboards only the creator (everyone else sees 404). Non-creator non-admin on a public dashboard gets 403. visibility flips are allowed for editors.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string", "maxLength": 200 }, "description": { "type": "string", "nullable": true }, "visibility": { "type": "string", "enum": ["public", "private"] } } } } } },
+        "responses": { "200": { "description": "Updated dashboard", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Dashboard" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete dashboard",
+        "description": "Same edit rule as PATCH. Widgets cascade.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/dashboards/{id}/widgets": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List dashboard widgets",
+        "description": "The dashboard's widgets, oldest first (the frontend positions by grid_x/grid_y). Same read authZ as the dashboard detail.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Widgets", "content": { "application/json": { "schema": { "type": "object", "properties": { "widgets": { "type": "array", "items": { "$ref": "#/components/schemas/DashboardWidget" } } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create widget",
+        "description": "Adds a widget under the dashboard's edit rule. title and a valid widget_type are required; config is validated strictly (group_by required for chart types and must be state|priority|assignee|label; metric is reserved to \"count\"; filter/project_ids values must be UUIDs / priorities 0-4; unknown keys are 400). Grid units default to (0,0,6,4) and are clamped: w/h to 1..12, x/y to non-negative.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title", "widget_type"], "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" }, "grid_x": { "type": "integer" }, "grid_y": { "type": "integer" }, "grid_w": { "type": "integer" }, "grid_h": { "type": "integer" } } } } } },
+        "responses": { "201": { "description": "Created widget", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardWidget" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/widgets/{widget_id}": {
+      "patch": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update widget",
+        "description": "Partial update under the dashboard's edit rule. config, when present, replaces wholesale and revalidates against the (possibly new) widget_type, so a stale group_by can never survive a type flip. A malformed widget_id is 400; a widget on a private dashboard of another creator is 404.",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" } } } } } },
+        "responses": { "200": { "description": "Updated widget", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardWidget" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete widget",
+        "description": "Same edit rule as the widget PATCH.",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "204": { "description": "Deleted" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/widgets/{widget_id}/layout": {
+      "patch": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Update widget layout",
+        "description": "Drag/resize commit: grid_x/grid_y/grid_w/grid_h ONLY, without resending config. Any other key is 400; values are clamped (w/h 1..12, x/y non-negative), never rejected. AuthZ runs before body validation, so a 400 can never leak a private widget's existence.",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "grid_x": { "type": "integer" }, "grid_y": { "type": "integer" }, "grid_w": { "type": "integer" }, "grid_h": { "type": "integer" } } } } } },
+        "responses": { "200": { "description": "Updated widget", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardWidget" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/widgets/{widget_id}/data": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Get live widget data",
+        "description": "Recomputes the widget live from the issues table: live issues (deleted_at/archived_at IS NULL) in the dashboard's workspace, narrowed to the widget's project_ids (empty = every non-archived workspace project) ANDed with config.filters, grouped by config.group_by. Chart types return {groups:[{key,label,value}]} where the key IS the human label the frontend renders (state name, priority label None/Low/Medium/High/Urgent, assignee display name, label name); assignee grouping adds an \"Unassigned\" bucket and label grouping a \"No label\" bucket so groups partition every counted issue. number widgets return {value}. Read authZ = the dashboard's viewer rule (member 15+; private dashboard of another creator is 404).",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Live widget data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WidgetData" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
     }
   },
   "components": {
@@ -2741,6 +2835,75 @@
         }
       },
       "Ok": { "type": "object", "properties": { "ok": { "type": "boolean", "example": true } } },
+      "Dashboard": {
+        "type": "object",
+        "description": "A workspace-scoped widget canvas (C81T0). visibility public (default) is visible to all workspace members; private is visible only to the creator.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string", "nullable": true },
+          "visibility": { "type": "string", "enum": ["public", "private"] },
+          "created_by": { "type": "string", "format": "uuid" },
+          "created_by_name": { "type": "string", "description": "Creator display name (name, else email)" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "widgets": { "type": "array", "items": { "$ref": "#/components/schemas/DashboardWidget" }, "description": "Present on the detail read only (config only - fetch data per widget); always an array, never null" }
+        }
+      },
+      "DashboardWidget": {
+        "type": "object",
+        "description": "One configured visualization on a dashboard canvas.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "dashboard_id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number"] },
+          "config": { "$ref": "#/components/schemas/WidgetConfig" },
+          "grid_x": { "type": "integer", "description": "12-column grid units; clamped to non-negative" },
+          "grid_y": { "type": "integer", "description": "12-column grid units; clamped to non-negative" },
+          "grid_w": { "type": "integer", "description": "12-column grid units; clamped to 1..12" },
+          "grid_h": { "type": "integer", "description": "12-column grid units; clamped to 1..12" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "WidgetConfig": {
+        "type": "object",
+        "description": "Widget configuration, validated strictly at write time: group_by is required for chart types; metric is reserved to \"count\" in phase 1; unknown keys are rejected.",
+        "properties": {
+          "group_by": { "type": "string", "enum": ["state", "priority", "assignee", "label"], "description": "Required for the five chart types; ignored for number" },
+          "metric": { "type": "string", "enum": ["count"], "description": "Reserved: only count is supported in phase 1" },
+          "filters": {
+            "type": "object",
+            "description": "ANDed together; each list is an OR within its dimension",
+            "properties": {
+              "assignees": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+              "priorities": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 4 } },
+              "states": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+              "labels": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+            }
+          },
+          "project_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Scope to these projects; empty/absent = every non-archived project of the workspace" }
+        }
+      },
+      "WidgetDataGroup": {
+        "type": "object",
+        "description": "One bucket of a grouped widget. The key IS the human label the frontend renders.",
+        "properties": {
+          "key": { "type": "string", "description": "Human label: state name, priority label (None/Low/Medium/High/Urgent), assignee display name, label name, or the synthetic \"Unassigned\" / \"No label\" buckets" },
+          "label": { "type": "string", "description": "Same as key" },
+          "value": { "type": "integer" }
+        }
+      },
+      "WidgetData": {
+        "type": "object",
+        "description": "Live widget recompute: groups for the five chart types, value for number widgets.",
+        "properties": {
+          "groups": { "type": "array", "items": { "$ref": "#/components/schemas/WidgetDataGroup" }, "description": "Present for chart types; absent for number" },
+          "value": { "type": "integer", "description": "Present only for number widgets" }
+        }
+      },
       "RecurringSchedule": {
         "type": "object",
         "properties": {
