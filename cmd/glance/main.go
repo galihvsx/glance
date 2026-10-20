@@ -328,6 +328,10 @@ func main() {
 	api.RegisterTemplateRoutes(e, issueHandler)
 	api.RegisterCustomFieldRoutes(e, issueHandler)
 	api.RegisterPublicRoutes(e, issueHandler)
+	// C82T0: public intake-form endpoints (no auth — the share token is
+	// the capability). Keep in lockstep with registerAllAPIRoutes in
+	// internal/api/openapi_test.go.
+	api.RegisterIntakeFormPublicRoutes(e, issueHandler)
 	api.RegisterAnalyticsRoutes(e, issueHandler)
 	api.RegisterTimeSummaryRoutes(e, issueHandler)
 	api.RegisterActivityRoutes(e, issueHandler)

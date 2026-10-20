@@ -85,6 +85,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterTemplateRoutes(e, issueHandler)
 	RegisterCustomFieldRoutes(e, issueHandler)
 	RegisterPublicRoutes(e, issueHandler)
+	// C82T0: keep in lockstep with cmd/glance/main.go.
+	RegisterIntakeFormPublicRoutes(e, issueHandler)
 	RegisterAnalyticsRoutes(e, issueHandler)
 	RegisterTimeSummaryRoutes(e, issueHandler)
 	RegisterActivityRoutes(e, issueHandler)

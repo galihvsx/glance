@@ -317,7 +317,10 @@ func checkParentIssue(ctx context.Context, q queryRower, projectID, parentID str
 // missing counter row self-heals instead of failing), then the issue
 // row and its _created activity row commit together. The caller must be a
 // workspace member (15) or admin (20); guests get ErrForbidden, non-members
-// ErrNotFound.
+// ErrNotFound. The anonymous intake-form path (service.SubmitIntakeForm)
+// shares the same in-transaction creation via createIssueTx — same
+// _created activity, same issue.created outbox/webhook fan-out, same
+// created-rule automations — with the share token as its capability.
 func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string, in CreateIssueInput) (*Issue, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
@@ -338,13 +341,9 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, ErrInvalidDateRange
 	}
 
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	wsID, projectID, role, err := resolveIssueProject(ctx, tx, wsSlug, ident, actorID)
+	// The membership resolution is a pure read — it runs outside the
+	// mutation tx.
+	wsID, projectID, role, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -352,16 +351,56 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		return nil, ErrForbidden
 	}
 
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	iss, notified, err := createIssueTx(ctx, tx, wsID, projectID, ident, actorID, in)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return finishIssueCreate(ctx, pool, wsSlug, ident, projectID, iss, notified)
+}
+
+// createIssueTx runs the full in-transaction issue creation, shared by the
+// in-app path (CreateIssue above) and anonymous intake-form submissions
+// (service.SubmitIntakeForm): the state/parent/estimate checks, the atomic
+// sequence increment, the INSERT, the _created activity row, the intake
+// opt-in, the initial custom values, the issue.created webhook + Slack
+// outbox enqueues, the created-rule automations, and the v1 version
+// snapshot. The caller owns the tx (begin/commit) and performs all actor
+// gating — workspace membership for the in-app path, the share-token
+// capability for the public path. createIssueTx itself never checks WHO
+// may create.
+func createIssueTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, actorID string, in CreateIssueInput) (*Issue, []*Notification, error) {
+	var err error
+
+	name := strings.TrimSpace(in.Name)
+
+	priority := 0
+	if in.Priority != nil {
+		priority = *in.Priority
+		if priority < 0 || priority > 4 {
+			return nil, nil, ErrInvalidPriority
+		}
+	}
+
 	var stateID string
 	if in.StateID != nil {
 		stateID, err = checkStateInProject(ctx, tx, projectID, *in.StateID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		stateID, err = backlogState(ctx, tx, projectID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -369,10 +408,10 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	if in.ParentID != nil {
 		pid := strings.ToLower(strings.TrimSpace(*in.ParentID))
 		if pid == "" {
-			return nil, ErrInvalidParent
+			return nil, nil, ErrInvalidParent
 		}
 		if err := checkParentIssue(ctx, tx, projectID, pid); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		parentID = &pid
 	}
@@ -381,7 +420,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	if in.EstimatePointID != nil {
 		epid, err := checkEstimatePoint(ctx, tx, projectID, *in.EstimatePointID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		estimatePointID = &epid
 	}
@@ -401,7 +440,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		 ON CONFLICT (project_id) DO UPDATE SET last_value = issue_sequences.last_value + 1
 		 RETURNING last_value`,
 		projectID).Scan(&seq); err != nil {
-		return nil, fmt.Errorf("service: increment issue sequence: %w", err)
+		return nil, nil, fmt.Errorf("service: increment issue sequence: %w", err)
 	}
 
 	// JSONB params go through an explicit ::jsonb cast with the Go value
@@ -426,7 +465,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		projectID, seq, name, descParam, priority, stateID, parentID,
 		sortOrder, in.StartDate, in.TargetDate, estimatePointID, in.IsDraft, actorID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	newVal, _ := json.Marshal(map[string]any{"sequence_id": seq, "name": name})
@@ -434,7 +473,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		`INSERT INTO issue_activities (issue_id, actor_id, field, new_value)
 		 VALUES ($1::uuid, $2::uuid, '_created', $3::jsonb)`,
 		iss.ID, actorID, string(newVal)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// DisplayID is derived here so the webhook/Slack payloads below
@@ -447,7 +486,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	// atomically with the issue itself.
 	if in.Intake {
 		if err := addIntakeIssueTx(ctx, tx, projectID, iss.ID); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -459,15 +498,15 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	if !in.IsDraft {
 		required, err := requiredCustomFields(ctx, tx, projectID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if missing := checkRequiredCustomValues(required, in.CustomValues, nil, true); len(missing) > 0 {
-			return nil, &CustomFieldRequiredError{FieldNames: missing}
+			return nil, nil, &CustomFieldRequiredError{FieldNames: missing}
 		}
 	}
 	if len(in.CustomValues) > 0 {
 		if err := writeCustomValuesTx(ctx, tx, projectID, iss.ID, in.CustomValues); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -480,7 +519,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		"name":       name,
 		"actor_id":   actorID,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Slack (C9T3): one compact message per created issue, enqueued
@@ -488,7 +527,7 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 	// mutation.
 	if err := enqueueSlackDeliveryTx(ctx, tx, wsID,
 		slackIssueCreatedText(iss.DisplayID, name, actorDisplayName(ctx, tx, actorID))); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// C12T2: issue.created workflow automations. Matching rules run
@@ -515,16 +554,21 @@ func CreateIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, ac
 		 FOR UPDATE`,
 		iss.ID, projectID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	freshInTx.DisplayID = ident + "-" + strconv.Itoa(freshInTx.SequenceID)
 	if err := snapshotVersionTx(ctx, tx, iss.ID, actorID, freshInTx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	return iss, notified, nil
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
+// finishIssueCreate performs the post-commit tail of issue creation: a
+// fresh re-read of the row (the in-tx iss is stale whenever a created-rule
+// automation mutated it) and the realtime + notification broadcasts.
+// Shared by CreateIssue and SubmitIntakeForm so public form submissions
+// announce identically to in-app creates.
+func finishIssueCreate(ctx context.Context, pool *pgxpool.Pool, wsSlug, ident, projectID string, iss *Issue, notified []*Notification) (*Issue, error) {
 	// C48T1: post-created-rules fresh snapshot. The created-rules above
 	// run in the same tx as the INSERT, so the INSERT-time iss is stale
 	// whenever a rule mutated the row (set_state, set_priority, ...).
