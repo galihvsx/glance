@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Is-empty date filters + per-member activity (cycle 80)**
+
+- Plane changelog 2026-01-07 ("is-empty" filters) / v3.0.0 (per-member activity
+  enhancements): glance's FilterPanel had date *ranges* only — no "no due
+  date" chip — and WorkspaceSettings' Members section had no activity surface.
+  This cycle adds both.
+- Backend: `?due_date_empty=1` (`"1"`/`"true"`, AND-composable with every other
+  filter, wired through the shared `issueListConds` so the export path stays in
+  sync) ⇔ `target_date IS NULL`; honest 400 when combined with
+  `due_after=`/`due_before=` on the same field. Workspace activity feed
+  `GET /api/v1/workspaces/{slug}/activity` gains `?actor=` (member UUID; 400 on
+  malformed UUID, 403 for guests/viewers, 404 for unknown members via the same
+  `ErrMemberNotFound` sentinel as the members endpoints — no cross-workspace
+  leak), with the feed's cursor pagination unchanged. OpenAPI pins both params.
+- Frontend: FilterPanel "No due date" chip next to the Due range (same
+  sentinel-row pattern as Unassigned / No estimate / No parent / No epic);
+  chip and range are mutually exclusive in filter state — enabling the chip
+  clears the range, picking a range date clears the chip (the backend's
+  range+empty 400 is unreachable from the panel; created/updated ranges
+  untouched). Chip shows in the active-filter display, per-section Dates
+  clear, clear-all, and the filter badge count; serializes to
+  `?due_date_empty=1` in the URL. Members list rows (MemberListItem) get an
+  expandable "Activity" affordance opening a per-member panel (MemberActivityPanel)
+  paged via `?actor=` with "Load more" cursor pagination, rendered with the
+  shared `WorkspaceActivityRow` renderer extracted from RecentActivitySection
+  (no duplication); loading / "No activity yet." / 403 ("isn't available at
+  your role") / generic error states; hidden entirely below role 15.
+- 47 new tests (18 backend service+API, 29 frontend vitest). Full QA green.
+
 **Manual cycle start/end — override the scheduled dates (cycle 79)**
 
 - Plane's Cycles docs, "Override scheduled cycles" (Enterprise Grid): users
