@@ -48,6 +48,7 @@ import Schedules from "./pages/Schedules";
 import Pages from "./pages/Pages";
 import Spreadsheet from "./pages/Spreadsheet";
 import PublicShare from "./pages/PublicShare";
+import PublicIntakeForm from "./pages/PublicIntakeForm";
 import ShortcutsHost from "./components/ShortcutsHost";
 import AppShell from "./components/shell/AppShell";
 import { Toaster } from "./components/ui/toast";
@@ -60,6 +61,8 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/s/:token" element={<PublicShare />} />
+            {/* C82T1: public intake-form submission page (no auth). */}
+            <Route path="/f/:token" element={<PublicIntakeForm />} />
             <Route element={<ProtectedRoute />}>
               {/* C44T0: GlobalScope owns the user:{id} subscription +
                   the single ConnectionDot for every authenticated
