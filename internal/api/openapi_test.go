@@ -4236,7 +4236,8 @@ func TestOpenAPIDocShapesDashboard(t *testing.T) {
 		} `json:"properties"`
 	}
 	decode("DashboardWidget", &widget)
-	wantTypes := []string{"bar", "line", "area", "donut", "pie", "number"}
+	wantTypes := []string{"bar", "line", "area", "donut", "pie", "number",
+		"smart_counter", "smart_gauge", "table_2d", "intake_breakdown"}
 	if got := widget.Props["widget_type"].Enum; !reflect.DeepEqual(got, wantTypes) {
 		t.Fatalf("DashboardWidget.widget_type enum = %v, want %v", got, wantTypes)
 	}
@@ -4247,23 +4248,244 @@ func TestOpenAPIDocShapesDashboard(t *testing.T) {
 		} `json:"properties"`
 	}
 	decode("WidgetConfig", &config)
-	wantGroupBy := []string{"state", "priority", "assignee", "label"}
+	wantGroupBy := []string{"state", "priority", "assignee", "label", "state_group", "project", "created_by"}
 	if got := config.Props["group_by"].Enum; !reflect.DeepEqual(got, wantGroupBy) {
 		t.Fatalf("WidgetConfig.group_by enum = %v, want %v", got, wantGroupBy)
 	}
-	if got := config.Props["metric"].Enum; !reflect.DeepEqual(got, []string{"count"}) {
-		t.Fatalf("WidgetConfig.metric enum = %v, want [count]", got)
+	if got := config.Props["metric"].Enum; !reflect.DeepEqual(got, []string{"count", "estimate_points"}) {
+		t.Fatalf("WidgetConfig.metric enum = %v, want [count estimate_points]", got)
 	}
 
-	// WidgetData carries groups (chart) and value (number).
+	// WidgetData carries groups (chart) and value (number), plus the
+	// phase-2 pagination envelope and the intake summary.
 	var data struct {
 		Props map[string]json.RawMessage `json:"properties"`
 	}
 	decode("WidgetData", &data)
-	if _, ok := data.Props["groups"]; !ok {
-		t.Fatal("WidgetData missing groups property")
+	for _, prop := range []string{"groups", "value", "page", "max_rows", "total_groups", "intake"} {
+		if _, ok := data.Props[prop]; !ok {
+			t.Fatalf("WidgetData missing %s property", prop)
+		}
 	}
-	if _, ok := data.Props["value"]; !ok {
-		t.Fatal("WidgetData missing value property")
+	// WidgetDataGroup carries the gauge completion fields.
+	var group struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("WidgetDataGroup", &group)
+	for _, prop := range []string{"key", "label", "value", "completed", "percentage"} {
+		if _, ok := group.Props[prop]; !ok {
+			t.Fatalf("WidgetDataGroup missing %s property", prop)
+		}
+	}
+	// Dashboard carries the caller's sharing standing.
+	var dash2 struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("Dashboard", &dash2)
+	for _, prop := range []string{"shared_with_me", "my_access", "shared"} {
+		if _, ok := dash2.Props[prop]; !ok {
+			t.Fatalf("Dashboard missing %s property", prop)
+		}
+	}
+}
+
+// TestOpenAPIDocShapesDashboardPhase2 pins the C83T0 dashboards phase-2
+// API contract in docs/openapi.yaml: the shares endpoints, the
+// template catalog, create-from-template, the CSV export, the widened
+// enums, and the new schemas. If the implementation drifts from the
+// pinned contract, this test fails first.
+func TestOpenAPIDocShapesDashboardPhase2(t *testing.T) {
+	var spec struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(docs.OpenAPI, &spec); err != nil {
+		t.Fatalf("embedded openapi spec is not valid JSON: %v", err)
+	}
+	decode := func(name string, v any) {
+		t.Helper()
+		raw, ok := spec.Components.Schemas[name]
+		if !ok {
+			t.Fatalf("spec has no %s schema", name)
+		}
+		if err := json.Unmarshal(raw, v); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+	}
+
+	// Every new route is documented with the expected methods.
+	wantOps := map[string][]string{
+		"/api/v1/workspaces/{slug}/dashboard-templates":    {"get"},
+		"/api/v1/workspaces/{slug}/dashboards/{id}/shares": {"get", "put"},
+		"/api/v1/widgets/{widget_id}/export.csv":           {"get"},
+	}
+	for path, methods := range wantOps {
+		ops, ok := spec.Paths[path]
+		if !ok {
+			t.Fatalf("spec missing dashboard path %s", path)
+		}
+		for _, m := range methods {
+			raw, ok := ops[m]
+			if !ok {
+				t.Fatalf("spec path %s missing %s operation", path, m)
+			}
+			var op struct {
+				Summary    string `json:"summary"`
+				Parameters []struct {
+					Name string `json:"name"`
+					In   string `json:"in"`
+				} `json:"parameters"`
+				Responses map[string]json.RawMessage `json:"responses"`
+			}
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("decode %s %s: %v", m, path, err)
+			}
+			if op.Summary == "" {
+				t.Fatalf("%s %s: missing summary", m, path)
+			}
+			for _, code := range []string{"403", "404"} {
+				if _, ok := op.Responses[code]; !ok {
+					t.Fatalf("%s %s: missing %s response", m, path, code)
+				}
+			}
+			// 400: shares ops (bad member/access/UUID), export.csv
+			// (malformed widget_id). The templates GET has no 400
+			// path: nothing on it validates.
+			need400 := !(m == "get" && path == "/api/v1/workspaces/{slug}/dashboard-templates")
+			if need400 {
+				if _, ok := op.Responses["400"]; !ok {
+					t.Fatalf("%s %s: missing 400 response", m, path)
+				}
+			}
+			if _, ok := op.Responses["200"]; !ok {
+				t.Fatalf("%s %s: missing 200 response", m, path)
+			}
+		}
+	}
+
+	// The export endpoint answers text/csv, not application/json.
+	var exportOp struct {
+		Responses map[string]struct {
+			Content map[string]json.RawMessage `json:"content"`
+		} `json:"responses"`
+	}
+	raw := spec.Paths["/api/v1/widgets/{widget_id}/export.csv"]["get"]
+	if err := json.Unmarshal(raw, &exportOp); err != nil {
+		t.Fatalf("decode export op: %v", err)
+	}
+	if _, ok := exportOp.Responses["200"].Content["text/csv"]; !ok {
+		t.Fatal("export.csv 200 response missing text/csv content")
+	}
+
+	// The data endpoint carries the page query param.
+	var dataOp struct {
+		Parameters []struct {
+			Name     string `json:"name"`
+			In       string `json:"in"`
+			Required bool   `json:"required"`
+		} `json:"parameters"`
+	}
+	raw = spec.Paths["/api/v1/widgets/{widget_id}/data"]["get"]
+	if err := json.Unmarshal(raw, &dataOp); err != nil {
+		t.Fatalf("decode data op: %v", err)
+	}
+	foundPage := false
+	for _, p := range dataOp.Parameters {
+		if p.Name == "page" && p.In == "query" && !p.Required {
+			foundPage = true
+		}
+	}
+	if !foundPage {
+		t.Fatal("widget data endpoint missing optional page query param")
+	}
+
+	// PUT shares pins the one-batch body: shares[{member_id, access}].
+	var putOp struct {
+		RequestBody struct {
+			Content map[string]struct {
+				Schema struct {
+					Properties map[string]struct {
+						Items struct {
+							Required   []string `json:"required"`
+							Properties map[string]struct {
+								Enum []string `json:"enum"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"properties"`
+				} `json:"schema"`
+			} `json:"content"`
+		} `json:"requestBody"`
+	}
+	raw = spec.Paths["/api/v1/workspaces/{slug}/dashboards/{id}/shares"]["put"]
+	if err := json.Unmarshal(raw, &putOp); err != nil {
+		t.Fatalf("decode shares put: %v", err)
+	}
+	item := putOp.RequestBody.Content["application/json"].Schema.Properties["shares"].Items
+	if len(item.Required) != 2 || item.Required[0] != "member_id" || item.Required[1] != "access" {
+		t.Fatalf("shares items required = %v, want [member_id access]", item.Required)
+	}
+	if got := item.Properties["access"].Enum; !reflect.DeepEqual(got, []string{"view", "edit"}) {
+		t.Fatalf("shares access enum = %v, want [view edit]", got)
+	}
+
+	// Dashboard.my_access pins the effective-access vocabulary.
+	var dashboard struct {
+		Props map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	decode("Dashboard", &dashboard)
+	if got := dashboard.Props["my_access"].Enum; !reflect.DeepEqual(got, []string{"owner", "view", "edit"}) {
+		t.Fatalf("Dashboard.my_access enum = %v, want [owner view edit]", got)
+	}
+
+	// New schemas exist with their key properties.
+	var share struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("DashboardShare", &share)
+	for _, prop := range []string{"member_id", "member_name", "access", "created_at"} {
+		if _, ok := share.Props[prop]; !ok {
+			t.Fatalf("DashboardShare missing %s property", prop)
+		}
+	}
+	var tpl struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("DashboardTemplate", &tpl)
+	for _, prop := range []string{"id", "name", "description", "widgets"} {
+		if _, ok := tpl.Props[prop]; !ok {
+			t.Fatalf("DashboardTemplate missing %s property", prop)
+		}
+	}
+	var intake struct {
+		Props map[string]json.RawMessage `json:"properties"`
+	}
+	decode("IntakeBreakdown", &intake)
+	for _, prop := range []string{"in_app_volume", "email_volume", "form_volume", "total_accepted", "total_rejected", "avg_decide_seconds"} {
+		if _, ok := intake.Props[prop]; !ok {
+			t.Fatalf("IntakeBreakdown missing %s property", prop)
+		}
+	}
+
+	// POST /dashboards pins the template mode.
+	var createOp struct {
+		RequestBody struct {
+			Content map[string]struct {
+				Schema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"schema"`
+			} `json:"content"`
+		} `json:"requestBody"`
+	}
+	raw = spec.Paths["/api/v1/workspaces/{slug}/dashboards"]["post"]
+	if err := json.Unmarshal(raw, &createOp); err != nil {
+		t.Fatalf("decode dashboards post: %v", err)
+	}
+	props := createOp.RequestBody.Content["application/json"].Schema.Properties
+	if _, ok := props["template"]; !ok {
+		t.Fatal("POST /dashboards body missing template property")
 	}
 }
