@@ -858,6 +858,7 @@ func SubmitIntakeForm(ctx context.Context, pool *pgxpool.Pool, token string, val
 		Description:  desc,
 		Priority:     priority,
 		Intake:       true,
+		IntakeSource: IntakeSourceForm,
 		CustomValues: customValues,
 	})
 	if err != nil {

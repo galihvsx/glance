@@ -145,6 +145,12 @@ type CreateIssueInput struct {
 	// a pending intake_issues row is written in the same tx. Default false
 	// preserves the direct-to-backlog behavior.
 	Intake bool
+	// IntakeSource is the intake channel recorded on the intake_issues
+	// row when Intake is set: IntakeSourceInApp ("in_app", the default)
+	// or IntakeSourceForm ("form", used by the public intake-form
+	// submit path). IntakeSourceEmail is reserved — glance has no email
+	// ingestion.
+	IntakeSource string
 	// CustomValues carries optional initial custom-field values
 	// (field_id → raw JSON, same shape as the custom-values PUT body),
 	// written in the same tx as the issue (C18T1). On non-draft creates
@@ -483,9 +489,11 @@ func createIssueTx(ctx context.Context, tx pgx.Tx, wsID, projectID, ident, actor
 	iss.DisplayID = ident + "-" + strconv.Itoa(iss.SequenceID)
 
 	// Intake opt-in (Task 20): land the new issue in the inbox as pending,
-	// atomically with the issue itself.
+	// atomically with the issue itself. The public intake-form submit
+	// path sets IntakeSource to "form"; every other creation path
+	// records "in_app" (the addIntakeIssueTx default).
 	if in.Intake {
-		if err := addIntakeIssueTx(ctx, tx, projectID, iss.ID); err != nil {
+		if err := addIntakeIssueTx(ctx, tx, projectID, iss.ID, in.IntakeSource); err != nil {
 			return nil, nil, err
 		}
 	}

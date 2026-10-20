@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,6 +37,15 @@ func RegisterDashboardRoutes(e *echo.Echo, h *DashboardHandler) {
 	g.DELETE("/:id", h.deleteDashboard)
 	g.GET("/:id/widgets", h.listWidgets)
 	g.POST("/:id/widgets", h.createWidget)
+	// C83T0: Plane's one-batch share model — PUT replaces the whole
+	// share list. Owner-only.
+	g.GET("/:id/shares", h.getDashboardShares)
+	g.PUT("/:id/shares", h.replaceDashboardShares)
+
+	// C83T0: the static template catalog (a sibling of /dashboards, not
+	// nested under it).
+	t := e.Group("/api/v1/workspaces/:slug/dashboard-templates", RequireAuth(h.Pool))
+	t.GET("", h.listDashboardTemplates)
 
 	wg := e.Group("/api/v1/widgets", RequireAuth(h.Pool))
 	wg.PATCH("/:widget_id", h.updateWidget)
@@ -44,13 +54,16 @@ func RegisterDashboardRoutes(e *echo.Echo, h *DashboardHandler) {
 	// grid_x/grid_y/grid_w/grid_h without resending config.
 	wg.PATCH("/:widget_id/layout", h.updateWidgetLayout)
 	wg.GET("/:widget_id/data", h.getWidgetData)
+	// C83T0: per-widget CSV export of the full live dataset.
+	wg.GET("/:widget_id/export.csv", h.exportWidgetCSV)
 }
 
 // dashboardError maps dashboard/widget sentinel errors to HTTP statuses,
 // delegating the shared sentinels (ErrNotFound, ErrForbidden,
 // ErrNameRequired, ErrNothingToUpdate) to issueError. ErrInvalidWidgetConfig
-// carries a wrapped detail ("service: invalid widget config: <detail>");
-// the prefix is stripped so the message stays client-shaped.
+// and ErrInvalidDashboardShare carry a wrapped detail ("service:
+// invalid …: <detail>"); the prefix is stripped so the message stays
+// client-shaped.
 func dashboardError(c *echo.Context, err error) error {
 	switch {
 	case errors.Is(err, service.ErrDashboardNotFound):
@@ -60,12 +73,29 @@ func dashboardError(c *echo.Context, err error) error {
 	case errors.Is(err, service.ErrInvalidVisibility):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, `invalid visibility: want "public" or "private"`, nil)
 	case errors.Is(err, service.ErrInvalidWidgetType):
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number", nil)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number|smart_counter|smart_gauge|table_2d|intake_breakdown", nil)
 	case errors.Is(err, service.ErrInvalidWidgetConfig):
 		msg := strings.TrimPrefix(err.Error(), "service: invalid widget config: ")
 		msg = strings.TrimPrefix(msg, "service: invalid widget config")
 		if msg == "" {
 			msg = "invalid widget config"
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
+	case errors.Is(err, service.ErrInvalidWidgetPage):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid page: want an integer >= 1", nil)
+	case errors.Is(err, service.ErrInvalidDashboardShare):
+		msg := strings.TrimPrefix(err.Error(), "service: invalid dashboard share: ")
+		msg = strings.TrimPrefix(msg, "service: invalid dashboard share")
+		if msg == "" {
+			msg = "invalid dashboard share"
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
+	case errors.Is(err, service.ErrUnknownDashboardTemplate):
+		msg := strings.TrimPrefix(err.Error(), "service: unknown dashboard template: ")
+		if msg == "" || msg == err.Error() {
+			msg = "unknown dashboard template"
+		} else {
+			msg = "unknown dashboard template: " + msg
 		}
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
 	default:
@@ -77,6 +107,12 @@ type createDashboardBody struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Visibility  string  `json:"visibility"`
+	// Template, when non-nil, selects create-from-template mode: the
+	// dashboard and all template widgets are created in one
+	// transaction (visibility public, name defaulting to the template
+	// name). It is mutually exclusive with description/visibility —
+	// combining them is 400.
+	Template *string `json:"template"`
 }
 
 type updateDashboardBody struct {
@@ -86,8 +122,11 @@ type updateDashboardBody struct {
 }
 
 // listDashboards implements GET /api/v1/workspaces/{slug}/dashboards:
-// public dashboards plus the caller's own private ones, newest updated
-// first. Member (15)+; guests 403; bad slug / non-member 404.
+// public dashboards, the caller's own private ones, and private ones
+// shared with the caller (view or edit), newest updated first. Each
+// row carries shared_with_me, my_access (owner|view|edit), and the
+// shared indicator (owned AND shared out — feeds the Shared tab).
+// Member (15)+; guests 403; bad slug / non-member 404.
 func (h *DashboardHandler) listDashboards(c *echo.Context) error {
 	dashboards, err := service.ListDashboards(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID)
 	if err != nil {
@@ -97,11 +136,26 @@ func (h *DashboardHandler) listDashboards(c *echo.Context) error {
 }
 
 // createDashboard implements POST /api/v1/workspaces/{slug}/dashboards.
-// visibility defaults to public; anything else is 400.
+// Two modes: the hand-rolled body ({name, description?, visibility?},
+// visibility defaulting to public) or create-from-template
+// ({"template": "<id>", "name"?} — name defaults to the template
+// name). The two shapes are mutually exclusive: template combined
+// with description or visibility is 400. Unknown template ids are 400.
 func (h *DashboardHandler) createDashboard(c *echo.Context) error {
 	var body createDashboardBody
 	if err := c.Bind(&body); err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	if body.Template != nil {
+		if body.Description != nil || body.Visibility != "" {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "template cannot be combined with description or visibility", nil)
+		}
+		d, err := service.CreateDashboardFromTemplate(c.Request().Context(), h.Pool,
+			c.Param("slug"), CurrentUser(c).ID, *body.Template, body.Name)
+		if err != nil {
+			return dashboardError(c, err)
+		}
+		return c.JSON(http.StatusCreated, d)
 	}
 	d, err := service.CreateDashboard(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID,
 		body.Name, body.Description, body.Visibility)
@@ -127,9 +181,11 @@ func (h *DashboardHandler) getDashboard(c *echo.Context) error {
 }
 
 // updateDashboard implements PATCH
-// /api/v1/workspaces/{slug}/dashboards/{id} under Plane's edit rule:
-// creator, or admin on public dashboards; private dashboards creator
-// only (everyone else sees 404).
+// /api/v1/workspaces/{slug}/dashboards/{id}. Name/description need the
+// edit level (owner, edit-share, or admin on public dashboards); a
+// visibility change is owner-only (403 for everyone else, even admins
+// and edit-shared members). A private dashboard invisible to the
+// caller is 404.
 func (h *DashboardHandler) updateDashboard(c *echo.Context) error {
 	id, ok := requireUUIDParam(c, "id", "dashboard id")
 	if !ok {
@@ -300,17 +356,135 @@ func (h *DashboardHandler) deleteWidget(c *echo.Context) error {
 }
 
 // getWidgetData implements GET /api/v1/widgets/{widget_id}/data: the
-// live recompute — {groups:[{key,label,value}]} for the five chart
-// types, {value} for number widgets. Read authZ = the dashboard's
-// viewer rule (member 15+; private dashboard of another creator → 404).
+// live recompute.
+//
+// Response shapes (the frontend builds to this contract):
+//   - bar|line|area|donut|pie: {groups:[{key,label,value}]}
+//   - number: {value}
+//   - smart_counter|table_2d: {groups:[{key,label,value}], page, max_rows, total_groups}
+//     (groups holds only the requested page — absent when the page is
+//     empty; smart_counter honors the config's visualization grid|table
+//     at render time)
+//   - smart_gauge: {groups:[{key,label,value,completed,percentage}], page, max_rows, total_groups}
+//     (value = the group's total — issue count, or summed estimate
+//     points when metric=estimate_points; completed = the completed
+//     share — issues in a 'completed'-group state or their points;
+//     percentage = 100*completed/value, 0 when value is 0)
+//   - intake_breakdown: {intake:{in_app_volume,email_volume,form_volume,
+//     total_accepted,total_rejected,avg_decide_seconds}}
+//     (email_volume is always 0 — glance has no email ingestion)
+//
+// The paginated types take ?page= (default 1, must be >= 1).
+// Read authZ = the dashboard's viewer rule (member 15+; a private
+// dashboard of another creator without a share is 404).
 func (h *DashboardHandler) getWidgetData(c *echo.Context) error {
 	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
 	if !ok {
 		return nil
 	}
-	data, err := service.GetWidgetData(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID)
+	page := 1
+	if raw := c.QueryParam("page"); raw != "" {
+		p, err := strconv.Atoi(raw)
+		if err != nil || p < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid page: want an integer >= 1", nil)
+		}
+		page = p
+	}
+	data, err := service.GetWidgetData(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, page)
 	if err != nil {
 		return dashboardError(c, err)
 	}
 	return c.JSON(http.StatusOK, data)
+}
+
+// exportWidgetCSV implements GET /api/v1/widgets/{widget_id}/export.csv:
+// the widget's FULL live dataset as CSV (same recompute as the data
+// endpoint, but unpaginated — every group, not just the current page),
+// capped at 10,000 data rows (past the cap the response carries
+// X-Result-Truncated: true). Columns per type: key,label,value
+// (charts, smart_counter, table_2d); key,label,completed,total,
+// percentage (smart_gauge); metric,value (intake_breakdown); value
+// (number). Content-Disposition: attachment;
+// filename="<dashboard-slug>-<widget-slug>.csv" (sanitized). Read authZ
+// = the widget read rule (a shared-view member may export).
+func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
+	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
+	if !ok {
+		return nil
+	}
+	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	c.Response().Header().Set("Content-Type", "text/csv")
+	c.Response().Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	if truncated {
+		c.Response().Header().Set("X-Result-Truncated", "true")
+	}
+	return c.Blob(http.StatusOK, "text/csv", data)
+}
+
+// getDashboardShares implements GET
+// /api/v1/workspaces/{slug}/dashboards/{id}/shares: the dashboard's
+// share rows with member display names, oldest first. Owner-only —
+// shared members cannot even read the share list (no re-share), and a
+// private dashboard invisible to the caller is 404.
+func (h *DashboardHandler) getDashboardShares(c *echo.Context) error {
+	id, ok := requireUUIDParam(c, "id", "dashboard id")
+	if !ok {
+		return nil
+	}
+	shares, err := service.GetDashboardShares(c.Request().Context(), h.Pool, c.Param("slug"), id, CurrentUser(c).ID)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"shares": shares})
+}
+
+type dashboardShareBody struct {
+	MemberID string `json:"member_id"`
+	Access   string `json:"access"`
+}
+
+type replaceDashboardSharesBody struct {
+	Shares []dashboardShareBody `json:"shares"`
+}
+
+// replaceDashboardShares implements PUT
+// /api/v1/workspaces/{slug}/dashboards/{id}/shares — Plane's one-batch
+// model: the body carries the WHOLE desired share list
+// [{member_id, access}], replaced in one transaction (add/change/
+// remove); an empty/absent list clears every share. access ∈
+// view|edit. Only the dashboard creator may manage shares; the creator
+// themselves and guests can never be added (400).
+func (h *DashboardHandler) replaceDashboardShares(c *echo.Context) error {
+	id, ok := requireUUIDParam(c, "id", "dashboard id")
+	if !ok {
+		return nil
+	}
+	var body replaceDashboardSharesBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	in := make([]service.ShareInput, 0, len(body.Shares))
+	for _, s := range body.Shares {
+		in = append(in, service.ShareInput{MemberID: s.MemberID, Access: s.Access})
+	}
+	shares, err := service.ReplaceDashboardShares(c.Request().Context(), h.Pool, c.Param("slug"), id, CurrentUser(c).ID, in)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"shares": shares})
+}
+
+// listDashboardTemplates implements GET
+// /api/v1/workspaces/{slug}/dashboard-templates: the static template
+// catalog [{id, name, description, widgets:[{title, widget_type,
+// config, grid_x, grid_y, grid_w, grid_h}]}]. Member (15)+; guests 403.
+func (h *DashboardHandler) listDashboardTemplates(c *echo.Context) error {
+	templates, err := service.ListDashboardTemplates(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"templates": templates})
 }
