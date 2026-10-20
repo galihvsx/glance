@@ -25,6 +25,7 @@ import {
   Home,
   Inbox,
   Layers,
+  LayoutDashboard,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
@@ -365,6 +366,11 @@ function WorkspaceSection() {
   // C30T3: risk radar is workspace-scoped, so its entry lives here next
   // to Workload.
   const riskHref = slug ? `/w/${encodeURIComponent(slug)}/risk` : "/";
+  // C81T1: dashboards are workspace-scoped, so their entry lives here
+  // next to Risk.
+  const dashboardsHref = slug
+    ? `/w/${encodeURIComponent(slug)}/dashboards`
+    : "/";
 
   return (
     <section aria-label="Workspace">
@@ -418,6 +424,15 @@ function WorkspaceSection() {
             to={riskHref}
             active={
               pathname === riskHref || pathname.startsWith(`${riskHref}/`)
+            }
+          />
+          <NavRow
+            icon={LayoutDashboard}
+            label="Dashboards"
+            to={dashboardsHref}
+            active={
+              pathname === dashboardsHref ||
+              pathname.startsWith(`${dashboardsHref}/`)
             }
           />
         </div>
