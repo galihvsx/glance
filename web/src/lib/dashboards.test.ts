@@ -8,6 +8,8 @@ import {
   chartSeries,
   filterSummary,
   isChartType,
+  isGroupedType,
+  isPaginatedType,
   layoutPatchBody,
   normalizeWidgetConfig,
   numberValue,

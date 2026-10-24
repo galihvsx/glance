@@ -100,7 +100,9 @@ describe("WidgetDialog phase-2 config panels", () => {
     renderDialog();
     selectType(/Smart gauge/);
     expect(screen.getByLabelText("Gauge color")).toBeInTheDocument();
-    expect(screen.getByLabelText("Show percentage label")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Show percentage label" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("radiogroup", {
         name: "Smart counter visualization",
@@ -141,7 +143,9 @@ describe("WidgetDialog phase-2 config panels", () => {
     fireEvent.change(screen.getByLabelText(/Gauge color hex/), {
       target: { value: "#ef4444" },
     });
-    fireEvent.click(screen.getByLabelText(/Show percentage label/));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Show percentage label" }),
+    );
     const v = await submit(onSubmit);
     expect(v.widget_type).toBe("smart_gauge");
     expect(v.config).toEqual({
@@ -215,6 +219,8 @@ describe("WidgetDialog phase-2 config panels", () => {
     expect(screen.getByLabelText(/Metric/)).toHaveValue("estimate_points");
     expect(screen.getByLabelText(/Max groups per page/)).toHaveValue(20);
     expect(screen.getByLabelText(/Gauge color hex/)).toHaveValue("#10b981");
-    expect(screen.getByLabelText(/Show percentage label/)).not.toBeChecked();
+    expect(
+      screen.getByRole("switch", { name: "Show percentage label" }),
+    ).not.toBeChecked();
   });
 });

@@ -1,19 +1,24 @@
 // DashboardDetail (C81T1): a dashboard's canvas page. Header with
-// inline-rename (canEdit), visibility toggle (creator/admin), delete
-// with confirm (creator/admin), and "Add widget" (canEdit); below it
-// the DashboardCanvas. Non-editors see the read-only canvas: no drag
-// handles, no add/edit/delete affordances. A private dashboard of
-// another creator 404s server-side and renders NotFound here.
+// inline-rename, visibility toggle, delete with confirm, and "Add
+// widget"; below it the DashboardCanvas. C83T1: affordances are gated
+// by my_access — owner sees everything (incl. the Share button),
+// edit access renames + edits widgets only, view access is fully
+// read-only (no drag handles, no add/edit/delete affordances). A
+// private dashboard of another creator 404s server-side and renders
+// NotFound here.
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, Pencil, Plus, Share2, Trash2 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import type { Workspace } from "../lib/types";
 import {
-  canEditDashboard,
+  ACCESS_LABELS,
+  canEditWidgets,
+  canShareDashboard,
   createWidget,
+  dashboardAccess,
   dashboardKey,
   dashboardsKey,
   deleteDashboard,
@@ -46,6 +51,7 @@ import WidgetDialog, {
 import DashboardDialog, {
   type DashboardFormValue,
 } from "../components/dashboards/DashboardDialog";
+import ShareDialog from "../components/dashboards/ShareDialog";
 import { VisibilityBadge } from "./Dashboards";
 
 /** Small confirm dialog for destructive dashboard/widget actions. */
@@ -112,6 +118,7 @@ export default function DashboardDetail() {
   const [deletingWidget, setDeletingWidget] = useState<DashboardWidget | null>(null);
   const [deletingDashboard, setDeletingDashboard] = useState(false);
   const [editingDashboard, setEditingDashboard] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   const dashboardQuery = useQuery({
     queryKey: dashboardKey(slug, id),
@@ -126,8 +133,14 @@ export default function DashboardDetail() {
 
   const dashboard = dashboardQuery.data;
   const role = workspaceQuery.data?.role ?? 0;
-  const canEdit =
-    !!dashboard && canEditDashboard(dashboard, user?.id, role);
+  // C83T1: my_access drives every affordance (the server enforces).
+  // owner = everything; edit = rename + widget editing, but no Share,
+  // delete, or visibility change; view = fully read-only.
+  const access = dashboard
+    ? dashboardAccess(dashboard, user?.id, role)
+    : "view";
+  const canEdit = !!dashboard && canEditWidgets(access);
+  const isOwner = !!dashboard && canShareDashboard(access);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: dashboardKey(slug, id) });
@@ -314,7 +327,12 @@ export default function DashboardDetail() {
                   </>
                 )}
                 <VisibilityBadge visibility={dashboard.visibility} />
-                {canEdit && (
+                {!isOwner && (
+                  <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                    {ACCESS_LABELS[access]} access
+                  </span>
+                )}
+                {isOwner && (
                   <NativeSelect
                     aria-label="Dashboard visibility"
                     value={dashboard.visibility}
@@ -330,39 +348,56 @@ export default function DashboardDetail() {
                     <option value="private">Private</option>
                   </NativeSelect>
                 )}
-                {canEdit && (
+                {(canEdit || isOwner) && (
                   <div className="ml-auto flex items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setWidgetDialog({ mode: "create", widget: null })
-                      }
-                    >
-                      <Plus className="size-4" aria-hidden="true" />
-                      Add widget
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Dashboard settings"
-                      onClick={() => setEditingDashboard(true)}
-                    >
-                      <Pencil className="size-4" aria-hidden="true" />
-                      Edit
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      aria-label="Delete dashboard"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => setDeletingDashboard(true)}
-                    >
-                      <Trash2 className="size-4" aria-hidden="true" />
-                    </Button>
+                    {isOwner && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSharing(true)}
+                      >
+                        <Share2 className="size-4" aria-hidden="true" />
+                        Share
+                      </Button>
+                    )}
+                    {canEdit && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setWidgetDialog({ mode: "create", widget: null })
+                        }
+                      >
+                        <Plus className="size-4" aria-hidden="true" />
+                        Add widget
+                      </Button>
+                    )}
+                    {isOwner && (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label="Dashboard settings"
+                          onClick={() => setEditingDashboard(true)}
+                        >
+                          <Pencil className="size-4" aria-hidden="true" />
+                          Edit
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label="Delete dashboard"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setDeletingDashboard(true)}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </Button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -442,6 +477,17 @@ export default function DashboardDetail() {
         pending={deleteMutation.isPending}
         onConfirm={() => deleteMutation.mutate()}
       />
+
+      {dashboard && (
+        <ShareDialog
+          open={sharing}
+          onOpenChange={setSharing}
+          slug={slug}
+          dashboardId={id}
+          dashboardName={dashboard.name}
+          ownerId={dashboard.created_by}
+        />
+      )}
 
       <DashboardDialog
         open={editingDashboard}

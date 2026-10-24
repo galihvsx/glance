@@ -1,6 +1,12 @@
 // C81T1: create/edit dashboard dialog — name (required), description,
 // visibility radio defaulting to public (Plane's default).
+// C83T1: create mode gains the "Start from template" picker — template
+// cards fetched from the static catalog; choosing one creates the
+// dashboard (with all template widgets) via the parent's
+// create-from-template mutation. The name field, when filled, is
+// passed as the optional name override.
 import { useEffect, useState } from "react";
+import { LayoutTemplate } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -15,7 +21,13 @@ import { Label } from "../ui/label";
 import { RadioGroup, RadioGroupItem } from "../ui/radio-group";
 import { Textarea } from "../ui/textarea";
 import { Alert, AlertDescription } from "../ui/alert";
-import type { DashboardVisibility } from "../../lib/dashboards";
+import {
+  fetchDashboardTemplates,
+  WIDGET_TYPE_LABELS,
+  type DashboardTemplate,
+  type DashboardVisibility,
+  type WidgetType,
+} from "../../lib/dashboards";
 
 export interface DashboardFormValue {
   name: string;
@@ -31,6 +43,9 @@ export default function DashboardDialog({
   pending,
   serverError,
   onSubmit,
+  slug,
+  onCreateTemplate,
+  templatePending,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -43,6 +58,12 @@ export default function DashboardDialog({
   pending?: boolean;
   serverError?: string | null;
   onSubmit: (v: DashboardFormValue) => void;
+  /** Workspace slug enabling the template picker (create mode only). */
+  slug?: string;
+  /** Choosing a template card creates from it immediately; the name
+   *  override is the trimmed name field, or undefined. */
+  onCreateTemplate?: (templateId: string, name?: string) => void;
+  templatePending?: boolean;
 }) {
   // Plane's default: new dashboards are public. Reset the form every
   // time the dialog opens so a previous edit never leaks into create.
@@ -57,6 +78,28 @@ export default function DashboardDialog({
       setVisibility(initial?.visibility ?? "public");
     }
   }, [open, initial?.name, initial?.description, initial?.visibility]);
+
+  const [templates, setTemplates] = useState<DashboardTemplate[] | null>(
+    null,
+  );
+
+  const templatesEnabled = mode === "create" && !!slug && !!onCreateTemplate;
+  useEffect(() => {
+    if (!open || !templatesEnabled) return;
+    let cancelled = false;
+    fetchDashboardTemplates(slug!)
+      .then((t) => {
+        if (!cancelled) setTemplates(t);
+      })
+      .catch(() => {
+        // The picker is additive — a failed catalog fetch just hides
+        // it; the blank-create path below stays fully usable.
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, templatesEnabled, slug]);
 
   const trimmed = name.trim();
   const canSave = trimmed.length > 0 && !pending;
@@ -134,6 +177,52 @@ export default function DashboardDialog({
               </Label>
             </RadioGroup>
           </fieldset>
+
+          {templatesEnabled && templates && templates.length > 0 && (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="text-sm font-medium">
+                Start from template
+              </legend>
+              <div className="flex flex-col gap-2">
+                {templates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled={templatePending}
+                    onClick={() =>
+                      onCreateTemplate!(t.id, trimmed || undefined)
+                    }
+                    className="flex items-start gap-2.5 rounded-md border p-3 text-left transition-colors hover:border-primary/50 hover:bg-accent/50 disabled:opacity-60"
+                  >
+                    <LayoutTemplate
+                      className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium">
+                        {t.name}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {t.description}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        {t.widgets
+                          .map(
+                            (w) =>
+                              `${w.title} (${WIDGET_TYPE_LABELS[w.widget_type as WidgetType] ?? w.widget_type})`,
+                          )
+                          .join(" · ")}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Choosing a template creates the dashboard with its widgets
+                right away; the name above overrides the template name.
+              </p>
+            </fieldset>
+          )}
 
           {serverError && (
             <Alert variant="destructive">

@@ -68,7 +68,7 @@ describe("WidgetDialog", () => {
       "Number",
       "Smart counter",
       "Smart gauge",
-      "Table (2D)",
+      "Table \\(2D\\)",
       "Intake breakdown",
     ]) {
       expect(
