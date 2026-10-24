@@ -2848,7 +2848,7 @@
         "summary": "Create widget",
         "description": "Adds a widget under the dashboard's edit rule. title and a valid widget_type are required; config is validated strictly (group_by required for chart types and must be state|priority|assignee|label; metric is reserved to \"count\"; filter/project_ids values must be UUIDs / priorities 0-4; unknown keys are 400). Grid units default to (0,0,6,4) and are clamped: w/h to 1..12, x/y to non-negative.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title", "widget_type"], "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" }, "grid_x": { "type": "integer" }, "grid_y": { "type": "integer" }, "grid_w": { "type": "integer" }, "grid_h": { "type": "integer" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["title", "widget_type"], "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown", "work_items_table", "assigned_to_me"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" }, "grid_x": { "type": "integer" }, "grid_y": { "type": "integer" }, "grid_w": { "type": "integer" }, "grid_h": { "type": "integer" } } } } } },
         "responses": { "201": { "description": "Created widget", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardWidget" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
@@ -2858,7 +2858,7 @@
         "summary": "Update widget",
         "description": "Partial update under the dashboard's edit rule. config, when present, replaces wholesale and revalidates against the (possibly new) widget_type, so a stale group_by can never survive a type flip. A malformed widget_id is 400; a widget on a private dashboard of another creator is 404.",
         "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "title": { "type": "string", "maxLength": 200 }, "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown", "work_items_table", "assigned_to_me"] }, "config": { "$ref": "#/components/schemas/WidgetConfig" } } } } } },
         "responses": { "200": { "description": "Updated widget", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardWidget" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -2883,16 +2883,25 @@
       "get": {
         "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Get live widget data",
-        "description": "Recomputes the widget live from the issues table: live issues (deleted_at/archived_at IS NULL) in the dashboard's workspace, narrowed to the widget's project_ids (empty = every non-archived workspace project) ANDed with config.filters, grouped by config.group_by. bar|line|area|donut|pie return {groups:[{key,label,value}]} where the key IS the human label the frontend renders (state name, priority label None/Low/Medium/High/Urgent, assignee display name, label name, state-group display name, project name, creator display name); assignee grouping adds an \\\"Unassigned\\\" bucket and label grouping a \\\"No label\\\" bucket so groups partition every counted issue. number returns {value}. smart_counter|table_2d return {groups:[{key,label,value}], page, max_rows, total_groups} (groups holds only the requested page). smart_gauge returns {groups:[{key,label,value,completed,percentage}], page, max_rows, total_groups} (value = issue count, or summed estimate points when metric=estimate_points; completed = the completed share; percentage = 100*completed/value, 0 when value is 0). intake_breakdown returns {intake:{in_app_volume,email_volume,form_volume,total_accepted,total_rejected,avg_decide_seconds}} (email_volume is always 0: no email ingestion; widget-level filters and project_ids are ignored - the dashboard's project scope only). The paginated types take ?page= (default 1, must be >= 1, else 400). Read authZ = the dashboard's viewer rule (member 15+; a private dashboard of another creator without a share is 404).",
-        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 }, "description": "Paginated widget types only (smart_counter|smart_gauge|table_2d): the page to return" } ],
+        "description": "Recomputes the widget live from the issues table: live issues (deleted_at/archived_at IS NULL) in the dashboard's workspace, narrowed to the widget's project_ids (empty = every non-archived workspace project) ANDed with config.filters, grouped by config.group_by. bar|line|area|donut|pie return {groups:[{key,label,value}]} where the key IS the human label the frontend renders (state name, priority label None/Low/Medium/High/Urgent, assignee display name, label name, state-group display name, project name, creator display name); assignee grouping adds an \\\"Unassigned\\\" bucket and label grouping a \\\"No label\\\" bucket so groups partition every counted issue. number returns {value}. smart_counter|table_2d return {groups:[{key,label,value}], page, max_rows, total_groups} (groups holds only the requested page). smart_gauge returns {groups:[{key,label,value,completed,percentage}], page, max_rows, total_groups} (value = issue count, or summed estimate points when metric=estimate_points; completed = the completed share; percentage = 100*completed/value, 0 when value is 0). intake_breakdown returns {intake:{in_app_volume,email_volume,form_volume,total_accepted,total_rejected,avg_decide_seconds}} (email_volume is always 0: no email ingestion; widget-level filters and project_ids are ignored - the dashboard's project scope only). work_items_table|assigned_to_me return {rows:[{id,title,state,state_group,priority,assignee:{id,name}|null,labels:[{id,name,color}],project:{id,name}}], page, max_rows, total} (rows holds only the requested page in the config sort order; the full row is always returned - the configured columns only decide what the frontend renders and what the CSV carries; assigned_to_me forces assignee = the caller at compute time, overriding any filters.assignees entry). The paginated types take ?page= (default 1, must be >= 1, else 400). Read authZ = the dashboard's viewer rule (member 15+; a private dashboard of another creator without a share is 404).",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 }, "description": "Paginated widget types only (smart_counter|smart_gauge|table_2d|work_items_table|assigned_to_me): the page to return" } ],
         "responses": { "200": { "description": "Live widget data", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WidgetData" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/widgets/{widget_id}/drilldown": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Drill into one chart segment",
+        "description": "The items behind one chart segment: the widget's own human-label group key (the Key or the Label getWidgetData returns for the segment) is mapped back to the dimension's filter value with the SAME resolution the data compute uses; an unresolvable key is 400 (never a guess). group is required (400 when missing). Types without groups (number, intake_breakdown, work_items_table, assigned_to_me) are 400 - drill-down is not available for them. The item set is the widget's base filters (dashboard project scope + widget project_ids + widget filters) ANDed with the segment's group filter; for smart_counter|smart_gauge the metric changes the displayed group value, NOT the item set. Response: {items:[WidgetRowItem], page, per_page (the widget's max_rows), total, group_label, group_by}; items are most-recently-updated first. Read authZ = the widget read rule (a shared-view member may drill; a private dashboard of another creator without a share is 404).",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "group", "in": "query", "required": true, "schema": { "type": "string" }, "description": "The widget's human-label group key for the segment to drill into" }, { "name": "page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 }, "description": "The page of the segment's items to return" } ],
+        "responses": { "200": { "description": "The segment's items", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WidgetDrilldown" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/widgets/{widget_id}/export.csv": {
       "get": {
         "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Export widget data as CSV",
-        "description": "The widget's FULL live dataset as CSV: the same recompute as the data endpoint, but unpaginated (every group, not just the current page), capped at 10,000 data rows (past the cap the response carries X-Result-Truncated: true). Columns per type: key,label,value (charts, smart_counter, table_2d); key,label,completed,total,percentage (smart_gauge); metric,value (intake_breakdown: the six headline numbers); value (number). Content-Disposition: attachment; filename=\\\"<dashboard-slug>-<widget-slug>.csv\\\" (sanitized). Read authZ = the widget read rule (a shared-view member may export).",
+        "description": "The widget's FULL live dataset as CSV: the same recompute as the data endpoint, but unpaginated (every group, not just the current page), capped at 10,000 data rows (past the cap the response carries X-Result-Truncated: true). Columns per type: key,label,value (charts, smart_counter, table_2d); key,label,completed,total,percentage (smart_gauge); metric,value (intake_breakdown: the six headline numbers); value (number); the configured columns in order (work_items_table, assigned_to_me - the full dataset rows, capped at 10,000). Content-Disposition: attachment; filename=\\\"<dashboard-slug>-<widget-slug>.csv\\\" (sanitized). Read authZ = the widget read rule (a shared-view member may export).",
         "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "200": { "description": "CSV export", "content": { "text/csv": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
@@ -2965,7 +2974,7 @@
           "id": { "type": "string", "format": "uuid" },
           "dashboard_id": { "type": "string", "format": "uuid" },
           "title": { "type": "string" },
-          "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown"] },
+          "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown", "work_items_table", "assigned_to_me"] },
           "config": { "$ref": "#/components/schemas/WidgetConfig" },
           "grid_x": { "type": "integer", "description": "12-column grid units; clamped to non-negative" },
           "grid_y": { "type": "integer", "description": "12-column grid units; clamped to non-negative" },
@@ -2977,10 +2986,10 @@
       },
       "WidgetConfig": {
         "type": "object",
-        "description": "Widget configuration, validated strictly at write time per widget type: group_by is required for chart and phase-2 grouped types; keys meaningless for the type (e.g. max_rows on bar) are 400; unknown keys are rejected.",
+        "description": "Widget configuration, validated strictly at write time per widget type: group_by is required for chart and phase-2 grouped types; keys meaningless for the type (e.g. max_rows on bar, columns on donut) are 400; unknown keys are rejected.",
         "properties": {
-          "group_by": { "type": "string", "enum": ["state", "priority", "assignee", "label", "state_group", "project", "created_by"], "description": "Required for chart and phase-2 grouped types; ignored for number and intake_breakdown" },
-          "metric": { "type": "string", "enum": ["count", "estimate_points"], "description": "count|estimate_points for smart_counter|smart_gauge (default count); reserved to count for phase-1 charts and number; accepted-but-ignored for table_2d (fixed to count) and intake_breakdown" },
+          "group_by": { "type": "string", "enum": ["state", "priority", "assignee", "label", "state_group", "project", "created_by"], "description": "Required for chart and phase-2 grouped types; ignored for number, intake_breakdown, and the phase-3 row-list types" },
+          "metric": { "type": "string", "enum": ["count", "estimate_points"], "description": "count|estimate_points for smart_counter|smart_gauge (default count); reserved to count for phase-1 charts and number; accepted-but-ignored for table_2d (fixed to count), intake_breakdown, and the phase-3 row-list types (fixed to item rows)" },
           "filters": {
             "type": "object",
             "description": "ANDed together; each list is an OR within its dimension",
@@ -2992,7 +3001,10 @@
             }
           },
           "project_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "description": "Scope to these projects; empty/absent = every non-archived project of the workspace; ignored for intake_breakdown" },
-          "max_rows": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "smart_counter|smart_gauge|table_2d only: groups per page; rejected on other types" },
+          "max_rows": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10, "description": "smart_counter|smart_gauge|table_2d|work_items_table|assigned_to_me only: groups/rows per page; rejected on other types" },
+          "columns": { "type": "array", "items": { "type": "string", "enum": ["id", "title", "state", "priority", "assignee", "labels", "project"] }, "description": "work_items_table|assigned_to_me only: the rendered columns in order (default: all seven; unknown columns are 400; the row payload always carries the full row)" },
+          "sort_by": { "type": "string", "enum": ["id", "title", "state", "priority", "assignee", "labels", "project"], "default": "state", "description": "work_items_table|assigned_to_me only: must be one of the configured columns (default state)" },
+          "sort_dir": { "type": "string", "enum": ["asc", "desc"], "default": "desc", "description": "work_items_table|assigned_to_me only: sort direction (default desc)" },
           "visualization": { "type": "string", "enum": ["grid", "table"], "default": "grid", "description": "smart_counter only: tile grid or table render" },
           "gauge_color": { "type": "string", "default": "#3b82f6", "description": "smart_gauge only: #rrggbb arc color" },
           "show_percentage": { "type": "boolean", "default": true, "description": "smart_gauge only: render the % label" },
@@ -3012,14 +3024,42 @@
       },
       "WidgetData": {
         "type": "object",
-        "description": "Live widget recompute: groups for chart and phase-2 grouped types, value for number widgets, intake for intake_breakdown widgets.",
+        "description": "Live widget recompute: groups for chart and phase-2 grouped types, value for number widgets, intake for intake_breakdown widgets, rows for the phase-3 row-list types (work_items_table, assigned_to_me).",
         "properties": {
           "groups": { "type": "array", "items": { "$ref": "#/components/schemas/WidgetDataGroup" }, "description": "Present for chart and phase-2 grouped types (absent when a paginated page is empty); absent for number and intake_breakdown" },
           "value": { "type": "integer", "description": "Present only for number widgets" },
-          "page": { "type": "integer", "description": "smart_counter|smart_gauge|table_2d only: the returned page (?page=, default 1)" },
-          "max_rows": { "type": "integer", "description": "smart_counter|smart_gauge|table_2d only: groups per page (config, 1-100, default 10)" },
+          "page": { "type": "integer", "description": "smart_counter|smart_gauge|table_2d|work_items_table|assigned_to_me only: the returned page (?page=, default 1)" },
+          "max_rows": { "type": "integer", "description": "smart_counter|smart_gauge|table_2d|work_items_table|assigned_to_me only: groups/rows per page (config, 1-100, default 10)" },
           "total_groups": { "type": "integer", "description": "smart_counter|smart_gauge|table_2d only: total groups before pagination" },
+          "rows": { "type": "array", "items": { "$ref": "#/components/schemas/WidgetRowItem" }, "description": "Present only for work_items_table|assigned_to_me: the canonical work-item rows of the requested page, in the config sort order (the full row is always returned; the configured columns only decide what the frontend renders)" },
+          "total": { "type": "integer", "description": "Present only for work_items_table|assigned_to_me: total rows before pagination" },
           "intake": { "$ref": "#/components/schemas/IntakeBreakdown", "description": "Present only for intake_breakdown widgets" }
+        }
+      },
+      "WidgetRowItem": {
+        "type": "object",
+        "description": "One canonical work-item row of the phase-3 row-list widgets, the drill-down endpoint, and the row CSV export. title = issues.name; state = the state NAME (the human label); state_group = the state-group SLUG; assignee = the single display assignee {id, name} (null when unassigned); labels = the canonical [{id, name, color}]; project = {id, name}.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid", "description": "The work-item id" },
+          "title": { "type": "string", "description": "The work-item name (issues.name)" },
+          "state": { "type": "string", "description": "The state NAME (the human label, same string as the state group key)" },
+          "state_group": { "type": "string", "enum": ["triage", "backlog", "unstarted", "started", "completed", "cancelled"], "description": "The state-group slug" },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4, "description": "issues.priority: 0 None, 1 Low, 2 Medium, 3 High, 4 Urgent" },
+          "assignee": { "type": "object", "nullable": true, "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" } }, "description": "The single display assignee {id, name} (first by display-name order); null when unassigned" },
+          "labels": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" }, "color": { "type": "string" } } }, "description": "The canonical [{id, name, color}] label shape; [] when unlabeled" },
+          "project": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" } }, "description": "The {id, name} project ref" }
+        }
+      },
+      "WidgetDrilldown": {
+        "type": "object",
+        "description": "The items behind one chart segment: the widget's base filters ANDed with the segment's group filter. For smart_counter|smart_gauge the metric (count vs estimate-points) changes the displayed group value, NOT the item set - the same items are listed for both metrics.",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/WidgetRowItem" }, "description": "The segment's items on the requested page, most-recently-updated first" },
+          "page": { "type": "integer", "description": "The returned page (?page=, default 1)" },
+          "per_page": { "type": "integer", "description": "Rows per page (the widget's max_rows, 1-100, default 10)" },
+          "total": { "type": "integer", "description": "The segment's item count before pagination" },
+          "group_label": { "type": "string", "description": "The human group key the caller drilled into" },
+          "group_by": { "type": "string", "enum": ["state", "priority", "assignee", "label", "state_group", "project", "created_by"], "description": "The widget's grouping dimension" }
         }
       },
       "IntakeBreakdown": {
@@ -3049,7 +3089,7 @@
         "description": "One widget of a dashboard template (same shape as a create-widget body).",
         "properties": {
           "title": { "type": "string" },
-          "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown"] },
+          "widget_type": { "type": "string", "enum": ["bar", "line", "area", "donut", "pie", "number", "smart_counter", "smart_gauge", "table_2d", "intake_breakdown", "work_items_table", "assigned_to_me"] },
           "config": { "$ref": "#/components/schemas/WidgetConfig" },
           "grid_x": { "type": "integer" },
           "grid_y": { "type": "integer" },

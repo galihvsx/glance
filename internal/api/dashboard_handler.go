@@ -56,6 +56,9 @@ func RegisterDashboardRoutes(e *echo.Echo, h *DashboardHandler) {
 	wg.GET("/:widget_id/data", h.getWidgetData)
 	// C83T0: per-widget CSV export of the full live dataset.
 	wg.GET("/:widget_id/export.csv", h.exportWidgetCSV)
+	// C84T0: drill-down into one chart segment — the items behind the
+	// group (GET /api/v1/widgets/:id/drilldown?group=<group-key>).
+	wg.GET("/:widget_id/drilldown", h.getWidgetDrilldown)
 }
 
 // dashboardError maps dashboard/widget sentinel errors to HTTP statuses,
@@ -73,7 +76,16 @@ func dashboardError(c *echo.Context, err error) error {
 	case errors.Is(err, service.ErrInvalidVisibility):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, `invalid visibility: want "public" or "private"`, nil)
 	case errors.Is(err, service.ErrInvalidWidgetType):
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number|smart_counter|smart_gauge|table_2d|intake_breakdown", nil)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number|smart_counter|smart_gauge|table_2d|intake_breakdown|work_items_table|assigned_to_me", nil)
+	case errors.Is(err, service.ErrInvalidDrilldownGroup):
+		msg := strings.TrimPrefix(err.Error(), "service: invalid drill-down group: ")
+		msg = strings.TrimPrefix(msg, "service: invalid drill-down group")
+		if msg == "" {
+			msg = "invalid drill-down group"
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
+	case errors.Is(err, service.ErrDrilldownUnavailable):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "drill-down is not available for this widget type", nil)
 	case errors.Is(err, service.ErrInvalidWidgetConfig):
 		msg := strings.TrimPrefix(err.Error(), "service: invalid widget config: ")
 		msg = strings.TrimPrefix(msg, "service: invalid widget config")
@@ -373,6 +385,13 @@ func (h *DashboardHandler) deleteWidget(c *echo.Context) error {
 //   - intake_breakdown: {intake:{in_app_volume,email_volume,form_volume,
 //     total_accepted,total_rejected,avg_decide_seconds}}
 //     (email_volume is always 0 — glance has no email ingestion)
+//   - work_items_table|assigned_to_me: {rows:[{id,title,state,
+//     state_group,priority,assignee:{id,name}|null,labels:[{id,name,
+//     color}],project:{id,name}}], page, max_rows, total} (rows holds
+//     only the requested page, in the config's sort order; the full row
+//     is always returned — the configured columns only decide what the
+//     frontend renders; assigned_to_me forces assignee = the caller at
+//     compute time)
 //
 // The paginated types take ?page= (default 1, must be >= 1).
 // Read authZ = the dashboard's viewer rule (member 15+; a private
@@ -397,16 +416,63 @@ func (h *DashboardHandler) getWidgetData(c *echo.Context) error {
 	return c.JSON(http.StatusOK, data)
 }
 
+// getWidgetDrilldown implements GET
+// /api/v1/widgets/{widget_id}/drilldown?group=<group-key>&page=...:
+// the items behind one chart segment.
+//
+// The group key is the widget's own human-label group key — the Key or
+// the Label getWidgetData returns for the segment (state name, priority
+// label, assignee display name / "Unassigned", label name / "No label",
+// state-group display name, project name, creator display name). The
+// backend maps it back to the dimension's filter value with the SAME
+// resolution the data compute uses (never a guess): an unresolvable
+// key is 400. group is required (400 when missing). Types without
+// groups (number, intake_breakdown, work_items_table, assigned_to_me)
+// are 400 — drill-down is not available for them.
+//
+// The item set is the widget's base filters (dashboard project scope +
+// widget project_ids + widget filters) ANDed with the segment's group
+// filter. For smart_counter|smart_gauge the metric (count vs
+// estimate-points) changes the displayed group value, NOT the item
+// set — the drill-down lists the same items for both metrics.
+//
+// Response: {items:[{id,title,state,state_group,priority,
+// assignee:{id,name}|null,labels:[{id,name,color}],project:{id,name}}],
+// page, per_page (the widget's max_rows), total, group_label, group_by}.
+// Items are most-recently-updated first. Read authZ = the widget read
+// rule (a shared-view member may drill; a private dashboard of another
+// creator without a share is 404).
+func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
+	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
+	if !ok {
+		return nil
+	}
+	page := 1
+	if raw := c.QueryParam("page"); raw != "" {
+		p, err := strconv.Atoi(raw)
+		if err != nil || p < 1 {
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid page: want an integer >= 1", nil)
+		}
+		page = p
+	}
+	data, err := service.GetWidgetDrilldown(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("group"), page)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	return c.JSON(http.StatusOK, data)
+}
+
 // exportWidgetCSV implements GET /api/v1/widgets/{widget_id}/export.csv:
 // the widget's FULL live dataset as CSV (same recompute as the data
-// endpoint, but unpaginated — every group, not just the current page),
-// capped at 10,000 data rows (past the cap the response carries
-// X-Result-Truncated: true). Columns per type: key,label,value
-// (charts, smart_counter, table_2d); key,label,completed,total,
-// percentage (smart_gauge); metric,value (intake_breakdown); value
-// (number). Content-Disposition: attachment;
-// filename="<dashboard-slug>-<widget-slug>.csv" (sanitized). Read authZ
-// = the widget read rule (a shared-view member may export).
+// endpoint, but unpaginated — every group / every row, not just the
+// current page), capped at 10,000 data rows (past the cap the response
+// carries X-Result-Truncated: true). Columns per type:
+// key,label,value (charts, smart_counter, table_2d);
+// key,label,completed,total,percentage (smart_gauge);
+// metric,value (intake_breakdown); value (number); the configured
+// columns in order (work_items_table, assigned_to_me). Content-Disposition:
+// attachment; filename="<dashboard-slug>-<widget-slug>.csv" (sanitized).
+// Read authZ = the widget read rule (a shared-view member may export).
 func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
 	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
 	if !ok {

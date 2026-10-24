@@ -1,9 +1,9 @@
 package service
 
-// Customizable dashboards, phases 1+2 (C81T0, C83T0): workspace-scoped
-// data canvases à la Plane Dashboards — a 12-column grid of widgets,
-// each independently configured (chart type, grouping, filters,
-// project scope) and recomputed live from work-item data.
+// Customizable dashboards, phases 1+2+3 (C81T0, C83T0, C84T0):
+// workspace-scoped data canvases à la Plane Dashboards — a 12-column
+// grid of widgets, each independently configured (chart type, grouping,
+// filters, project scope) and recomputed live from work-item data.
 //
 // Phase 2 adds Plane's newer widget types (smart_counter, smart_gauge,
 // table_2d, intake_breakdown), intake source tracking (in_app|form|
@@ -11,9 +11,17 @@ package service
 // View/Edit access), a static template catalog with create-from-
 // template, and per-widget CSV export.
 //
+// Phase 3 adds the row-list widgets (work_items_table: a configurable,
+// sortable, paginated work-item row list; assigned_to_me: the same row
+// list pre-filtered to assignee = the caller at compute time) and the
+// drill-down endpoint (GET /api/v1/widgets/:id/drilldown): clicking a
+// chart segment opens the filtered item list behind it — the industry
+// drill-down contract (Wrike, Acumatica, Sunbird DCIM).
+//
 // AuthZ:
-//   - Reads (list/get/widget data/export.csv): workspace member (15)+;
-//     guests (5) get ErrForbidden, bad slug / non-member ErrNotFound.
+//   - Reads (list/get/widget data/export.csv/drilldown): workspace
+//     member (15)+; guests (5) get ErrForbidden, bad slug / non-member
+//     ErrNotFound.
 //   - Visibility: public dashboards are visible to all members; a
 //     private dashboard is visible only to its creator and to members
 //     holding a share row — any other caller gets ErrNotFound (never
@@ -34,11 +42,12 @@ package service
 //
 // Config validation (honest 400s at write time):
 //   - widget_type ∈ bar|line|area|donut|pie|number|smart_counter|
-//     smart_gauge|table_2d|intake_breakdown (also a DB CHECK).
+//     smart_gauge|table_2d|intake_breakdown|work_items_table|
+//     assigned_to_me (also a DB CHECK).
 //   - group_by ∈ state|priority|assignee|label|state_group|project|
 //     created_by — required for the chart and phase-2 grouped types,
 //     optional and ignored for number; ignored (not required) for
-//     intake_breakdown.
+//     intake_breakdown and the phase-3 row-list types.
 //   - metric ∈ count|estimate_points (default count) for
 //     smart_counter|smart_gauge; reserved to "count" for the phase-1
 //     chart types and number; accepted-but-ignored for table_2d (its
@@ -51,6 +60,18 @@ package service
 //   - intake_breakdown: view ∈ grid|table (default grid). Widget-level
 //     filters AND project_ids are ignored — it honors the dashboard's
 //     project scope (every non-archived project of the workspace) only.
+//   - work_items_table | assigned_to_me: columns ⊆
+//     id|title|state|priority|assignee|labels|project (default: all
+//     seven — the full row shape is always returned; the frontend
+//     renders only the configured columns); sort_by ∈ columns (default
+//     state); sort_dir ∈ asc|desc (default desc); max_rows 1..100
+//     (default 10); filters reuse the widget-level filter shape.
+//     group_by is accepted-but-ignored (meaningless for a row list,
+//     like number's); metric is accepted-but-ignored (the metric is
+//     fixed to item rows, like table_2d's). For assigned_to_me the
+//     assignee filter is FORCED to the caller at compute time — a
+//     filters.assignees entry is silently overridden (documented, not
+//     a lie: the type's contract is "assigned to you").
 //   - filters.{assignees,states,labels} are UUID arrays;
 //     filters.priorities are ints 0..4; unknown keys are rejected.
 //   - project_ids is a UUID array; unknown keys are rejected. Keys that
@@ -113,6 +134,12 @@ const (
 	WidgetTypeSmartGauge   = "smart_gauge"
 	WidgetTypeTable2D      = "table_2d"
 	WidgetTypeIntake       = "intake_breakdown"
+	// Phase 3 (C84T0): row-list widgets. work_items_table is a
+	// configurable, sortable, paginated work-item row list;
+	// assigned_to_me is the same row list pre-filtered to
+	// assignee = the caller at compute time.
+	WidgetTypeWorkItemsTable = "work_items_table"
+	WidgetTypeAssignedToMe   = "assigned_to_me"
 )
 
 // Widget group-by dimensions.
@@ -160,8 +187,17 @@ var (
 	// private dashboard the caller may not see.
 	ErrWidgetNotFound = errors.New("service: widget not found")
 	// ErrInvalidWidgetType is returned when widget_type is not one of
-	// the ten chart types. The handler maps it to 400 bad_request.
+	// the twelve widget types. The handler maps it to 400 bad_request.
 	ErrInvalidWidgetType = errors.New("service: invalid widget_type")
+	// ErrInvalidDrilldownGroup is returned when the drill-down group's
+	// key is missing or does not resolve to a group of the widget (400
+	// — never a guess). The handler maps it to 400 bad_request.
+	ErrInvalidDrilldownGroup = errors.New("service: invalid drill-down group")
+	// ErrDrilldownUnavailable is returned when the widget's type has
+	// no groups to drill into (number, intake_breakdown,
+	// work_items_table, assigned_to_me). The handler maps it to 400
+	// bad_request with an honest message.
+	ErrDrilldownUnavailable = errors.New("service: drill-down is not available for this widget type")
 	// ErrInvalidWidgetConfig is returned when the widget config JSON
 	// fails validation (bad group_by, bad metric, bad max_rows,
 	// malformed filter/project_ids values, unknown keys, keys that are
@@ -258,11 +294,94 @@ type IntakeBreakdown struct {
 	AvgDecideSeconds float64 `json:"avg_decide_seconds"`
 }
 
+// Widget row-list column vocabulary (phase 3). The canonical row
+// shape carries every field; only the configured columns are
+// rendered by the frontend (and exported to CSV, in order).
+const (
+	widgetRowColumnID       = "id"
+	widgetRowColumnTitle    = "title"
+	widgetRowColumnState    = "state"
+	widgetRowColumnPriority = "priority"
+	widgetRowColumnAssignee = "assignee"
+	widgetRowColumnLabels   = "labels"
+	widgetRowColumnProject  = "project"
+)
+
+// widgetRowColumns is the default column set: all seven, in the
+// documented display order.
+var widgetRowColumns = []string{
+	widgetRowColumnID, widgetRowColumnTitle, widgetRowColumnState,
+	widgetRowColumnPriority, widgetRowColumnAssignee,
+	widgetRowColumnLabels, widgetRowColumnProject,
+}
+
+// validWidgetRowColumn reports whether c is a known row-list column.
+func validWidgetRowColumn(c string) bool {
+	switch c {
+	case widgetRowColumnID, widgetRowColumnTitle, widgetRowColumnState,
+		widgetRowColumnPriority, widgetRowColumnAssignee,
+		widgetRowColumnLabels, widgetRowColumnProject:
+		return true
+	}
+	return false
+}
+
+// WidgetRowProject is the {id, name} project ref on a widget row.
+type WidgetRowProject struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// WidgetRowItem is the canonical work-item row behind the phase-3
+// row-list widgets, the drill-down endpoint, and the row CSV export.
+// The field set reuses the existing work-item list payload's names
+// where they exist: id (issues.id), title (issues.name — the canonical
+// issue-name field), priority (issues.priority 0-4), assignee (the
+// canonical {id, name} IssueAssignee shape, contracted to the single
+// display assignee — first by display-name order — and null when
+// unassigned), labels (the canonical {id, name, color} IssueLabel
+// shape), project (the {id, name} ref the plan prescribes). state is
+// the state NAME (the human label — the same string the state group
+// key carries); state_group is the state-group SLUG
+// (triage|backlog|unstarted|started|completed|cancelled), the stable
+// machine value. The payload ALWAYS carries the full row — the
+// configured columns only decide what the frontend renders and what
+// the CSV carries.
+type WidgetRowItem struct {
+	ID         string           `json:"id"`
+	Title      string           `json:"title"`
+	State      string           `json:"state"`
+	StateGroup string           `json:"state_group,omitempty"`
+	Priority   int              `json:"priority"`
+	Assignee   *IssueAssignee   `json:"assignee"`
+	Labels     []IssueLabel     `json:"labels"`
+	Project    WidgetRowProject `json:"project"`
+}
+
+// WidgetDrilldown is the item list behind one chart segment:
+// GET /api/v1/widgets/:id/drilldown?group=<group-key>&page=... Items
+// are the canonical WidgetRowItem rows; per_page is the widget's
+// max_rows (the pagination contract of the data endpoint); total is
+// the segment's item count before pagination. group_label echoes the
+// human group key the caller passed; group_by is the widget's
+// dimension. For smart_counter|smart_gauge the metric (count vs
+// estimate-points) changes the DISPLAYED group value, never the item
+// set — the drill-down lists the same items for both metrics.
+type WidgetDrilldown struct {
+	Items      []WidgetRowItem `json:"items"`
+	Page       int             `json:"page"`
+	PerPage    int             `json:"per_page"`
+	Total      int             `json:"total"`
+	GroupLabel string          `json:"group_label"`
+	GroupBy    string          `json:"group_by"`
+}
+
 // WidgetData is the live recompute result: groups for the chart and
 // phase-2 grouped types, a scalar value for number widgets, the intake
-// summary for intake_breakdown widgets. Paginated types
-// (smart_counter, smart_gauge, table_2d) also carry page, max_rows, and
-// total_groups; groups holds only the requested page.
+// summary for intake_breakdown widgets, rows for the phase-3 row-list
+// types. Paginated types (smart_counter, smart_gauge, table_2d,
+// work_items_table, assigned_to_me) also carry page, max_rows, and
+// total_groups/total; rows/groups hold only the requested page.
 type WidgetData struct {
 	Groups      []WidgetDataGroup `json:"groups,omitempty"`
 	Value       *int              `json:"value,omitempty"`
@@ -270,6 +389,11 @@ type WidgetData struct {
 	MaxRows     *int              `json:"max_rows,omitempty"`
 	TotalGroups *int              `json:"total_groups,omitempty"`
 	Intake      *IntakeBreakdown  `json:"intake,omitempty"`
+	// Rows carries the requested page for the phase-3 row-list types
+	// (absent when the page is empty, like the phase-2 groups
+	// convention).
+	Rows  []WidgetRowItem `json:"rows,omitempty"`
+	Total *int            `json:"total,omitempty"`
 }
 
 // dashboardRow is the internal dashboard row plus the creator check.
@@ -279,13 +403,14 @@ type dashboardRow struct {
 	role      int
 }
 
-// validWidgetType reports whether t is one of the ten widget types.
+// validWidgetType reports whether t is one of the twelve widget types.
 func validWidgetType(t string) bool {
 	switch t {
 	case WidgetTypeBar, WidgetTypeLine, WidgetTypeArea,
 		WidgetTypeDonut, WidgetTypePie, WidgetTypeNumber,
 		WidgetTypeSmartCounter, WidgetTypeSmartGauge,
-		WidgetTypeTable2D, WidgetTypeIntake:
+		WidgetTypeTable2D, WidgetTypeIntake,
+		WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
 		return true
 	}
 	return false
@@ -326,7 +451,9 @@ var stateGroupOrder = []string{"triage", "backlog", "unstarted", "started", "com
 // JSON. Filters are ANDed; an empty projectIDs means "every
 // non-archived project of the workspace". Phase-2 fields carry their
 // defaults when absent: maxRows 10, visualization "grid",
-// gaugeColor "#3b82f6", showPercentage true, view "grid".
+// gaugeColor "#3b82f6", showPercentage true, view "grid". Phase-3
+// row-list fields: columns (default: all seven row columns),
+// sortBy "state", sortDir "desc".
 type widgetConfig struct {
 	groupBy        string
 	metric         string
@@ -340,6 +467,10 @@ type widgetConfig struct {
 	gaugeColor     string
 	showPercentage bool
 	view           string
+	// Phase-3 row-list fields (work_items_table | assigned_to_me).
+	columns []string
+	sortBy  string
+	sortDir string
 }
 
 // hexColor reports whether s is a #rrggbb hex color.
@@ -372,7 +503,8 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 	for k := range top {
 		switch k {
 		case "group_by", "metric", "filters", "project_ids",
-			"max_rows", "visualization", "gauge_color", "show_percentage", "view":
+			"max_rows", "visualization", "gauge_color", "show_percentage", "view",
+			"columns", "sort_by", "sort_dir":
 		default:
 			return nil, fmt.Errorf("%w: unknown config key %q", ErrInvalidWidgetConfig, k)
 		}
@@ -384,6 +516,9 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		gaugeColor:     "#3b82f6",
 		showPercentage: true,
 		view:           "grid",
+		columns:        append([]string{}, widgetRowColumns...),
+		sortBy:         widgetRowColumnState,
+		sortDir:        "desc",
 	}
 
 	// Each widget type documents its own key set; a key that exists but
@@ -399,23 +534,31 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 	charts := []string{WidgetTypeBar, WidgetTypeLine, WidgetTypeArea, WidgetTypeDonut, WidgetTypePie}
 	grouped := append(append([]string{}, charts...),
 		WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D)
+	rowList := []string{WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe}
 	// metric is a known key on every type: charts/number/counter/gauge
-	// validate its value; table_2d and intake_breakdown accept and
-	// ignore it (their metric is fixed/meaningless — Plane parity).
-	metricTypes := append(append([]string{}, charts...),
+	// validate its value; table_2d, intake_breakdown, and the phase-3
+	// row-list types accept and ignore it (their metric is fixed/
+	// meaningless — Plane parity).
+	metricTypes := append(append(append([]string{}, charts...),
 		WidgetTypeNumber, WidgetTypeSmartCounter, WidgetTypeSmartGauge,
-		WidgetTypeTable2D, WidgetTypeIntake)
+		WidgetTypeTable2D, WidgetTypeIntake),
+		rowList...)
 	for k := range top {
 		switch k {
 		case "group_by", "filters", "project_ids":
 			// Accepted on every type; group_by is ignored (not
-			// required) for number and intake_breakdown.
+			// required) for number, intake_breakdown, and the
+			// phase-3 row-list types (a row list has no grouping).
 		case "metric":
 			if err := allow(k, metricTypes...); err != nil {
 				return nil, err
 			}
 		case "max_rows":
-			if err := allow(k, WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D); err != nil {
+			if err := allow(k, append([]string{WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D}, rowList...)...); err != nil {
+				return nil, err
+			}
+		case "columns", "sort_by", "sort_dir":
+			if err := allow(k, rowList...); err != nil {
 				return nil, err
 			}
 		case "visualization":
@@ -451,8 +594,10 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 				return nil, fmt.Errorf("%w: metric must be one of count|estimate_points", ErrInvalidWidgetConfig)
 			}
 			cfg.metric = m
-		case WidgetTypeTable2D, WidgetTypeIntake:
-			// Fixed to count (table_2d) / meaningless (intake):
+		case WidgetTypeTable2D, WidgetTypeIntake,
+			WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+			// Fixed to count (table_2d) / meaningless (intake) /
+			// fixed to item rows (the phase-3 row-list types):
 			// accepted and ignored with a note, like phase 1's
 			// number widget ignored group_by. Any string is
 			// tolerated; non-strings were rejected above.
@@ -533,6 +678,41 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		}
 		cfg.maxRows = int(n)
 	}
+	if rawCols, ok := top["columns"]; ok {
+		var cols []string
+		if err := json.Unmarshal(rawCols, &cols); err != nil {
+			return nil, fmt.Errorf("%w: columns must be an array of column names", ErrInvalidWidgetConfig)
+		}
+		if len(cols) == 0 {
+			return nil, fmt.Errorf("%w: columns must not be empty", ErrInvalidWidgetConfig)
+		}
+		seen := map[string]bool{}
+		out := make([]string, 0, len(cols))
+		for _, c := range cols {
+			if !validWidgetRowColumn(c) {
+				return nil, fmt.Errorf("%w: unknown column %q: want one of id|title|state|priority|assignee|labels|project", ErrInvalidWidgetConfig, c)
+			}
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+		cfg.columns = out
+	}
+	if rawSB, ok := top["sort_by"]; ok {
+		var sb string
+		if err := json.Unmarshal(rawSB, &sb); err != nil || !validWidgetRowColumn(sb) {
+			return nil, fmt.Errorf("%w: sort_by must be one of id|title|state|priority|assignee|labels|project", ErrInvalidWidgetConfig)
+		}
+		cfg.sortBy = sb
+	}
+	if rawSD, ok := top["sort_dir"]; ok {
+		var sd string
+		if err := json.Unmarshal(rawSD, &sd); err != nil || (sd != "asc" && sd != "desc") {
+			return nil, fmt.Errorf("%w: sort_dir must be one of asc|desc", ErrInvalidWidgetConfig)
+		}
+		cfg.sortDir = sd
+	}
 	if rawV, ok := top["visualization"]; ok {
 		var v string
 		if err := json.Unmarshal(rawV, &v); err != nil || (v != "grid" && v != "table") {
@@ -567,6 +747,23 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		// group_by is meaningless for a scalar; ignore it rather than
 		// rejecting a stale config when the type flips to number.
 		cfg.groupBy = ""
+	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+		// A row list has no grouping: group_by is accepted-but-ignored
+		// (a stale config survives a type flip without a 400), and the
+		// metric is fixed to item rows (accepted-but-ignored, like
+		// table_2d). sort_by must sit inside the configured columns —
+		// sorting a column the table does not render is a 400.
+		cfg.groupBy = ""
+		inCols := false
+		for _, c := range cfg.columns {
+			if c == cfg.sortBy {
+				inCols = true
+				break
+			}
+		}
+		if !inCols {
+			return nil, fmt.Errorf("%w: sort_by %q is not one of the configured columns", ErrInvalidWidgetConfig, cfg.sortBy)
+		}
 	case WidgetTypeIntake:
 		// No group_by, no metric: the six headline numbers are
 		// computed over the dashboard's project scope only.
@@ -1403,9 +1600,13 @@ func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, act
 // return {value}; the paginated types (smart_counter, smart_gauge,
 // table_2d) return {groups, page, max_rows, total_groups} with groups
 // holding only the requested page (page >= 1, default 1 — anything else
-// is ErrInvalidWidgetPage); intake_breakdown widgets return {intake:{…}}.
-// Viewer role: any member (15)+ may read; a private dashboard of
-// another creator without a share reads as a missing widget.
+// is ErrInvalidWidgetPage); intake_breakdown widgets return {intake:{…}};
+// the phase-3 row-list widgets (work_items_table, assigned_to_me)
+// return {rows, page, max_rows, total} with rows holding the canonical
+// WidgetRowItem rows in the config's sort order (assigned_to_me forces
+// assignee = the caller at compute time). Viewer role: any member
+// (15)+ may read; a private dashboard of another creator without a
+// share reads as a missing widget.
 func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string, page int) (*WidgetData, error) {
 	if page < 1 {
 		return nil, ErrInvalidWidgetPage
@@ -1414,13 +1615,14 @@ func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID st
 	if err != nil {
 		return nil, err
 	}
-	return computeWidgetData(ctx, pool, wc, page, true)
+	return computeWidgetData(ctx, pool, wc, actorID, page, true)
 }
 
 // computeWidgetData runs the widget's live recompute. When paginate is
 // true the paginated types return only the requested page; when false
 // they return every group (the CSV export path — full dataset).
-func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, page int, paginate bool) (*WidgetData, error) {
+// actorID feeds the assigned_to_me assignee forcing at compute time.
+func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
 	cfg := wc.cfg
 	var args []any
 	where := widgetIssueFilter(cfg, wc.projectIDs, &args)
@@ -1439,6 +1641,8 @@ func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetComput
 			return nil, err
 		}
 		return &WidgetData{Intake: bd}, nil
+	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+		return computeRowItems(ctx, pool, wc, actorID, page, paginate)
 	}
 
 	groups, err := computeGrouped(ctx, pool, cfg, where, args)
@@ -1474,6 +1678,334 @@ func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetComput
 	}
 	out.Groups = groups
 	return out, nil
+}
+
+// firstAssigneeJSON is the display assignee of an issue as a JSONB
+// object {id, name}, or NULL when the issue is unassigned. The outer
+// query must alias issues as i. Order matches the canonical assignees
+// list (display-name order) so the contracted singular assignee is the
+// first entry of the plural list.
+const firstAssigneeJSON = `(SELECT jsonb_build_object(
+		'id', u.id::text,
+		'name', COALESCE(NULLIF(u.name, ''), u.email))
+	   FROM issue_assignees ia JOIN users u ON u.id = ia.user_id
+	  WHERE ia.issue_id = i.id
+	  ORDER BY COALESCE(NULLIF(u.name, ''), u.email) LIMIT 1)`
+
+// firstLabelName is the first label name of an issue (labels are
+// name-ordered in the canonical labels list), or NULL when unlabeled.
+// The outer query must alias issues as i.
+const firstLabelName = `(SELECT l.name
+	   FROM issue_labels il JOIN labels l ON l.id = il.label_id
+	  WHERE il.issue_id = i.id
+	  ORDER BY l.name LIMIT 1)`
+
+// firstAssigneeName is the scalar display-name form of
+// firstAssigneeJSON, for ORDER BY on the assignee column.
+const firstAssigneeName = `(SELECT COALESCE(NULLIF(u.name, ''), u.email)
+	   FROM issue_assignees ia JOIN users u ON u.id = ia.user_id
+	  WHERE ia.issue_id = i.id
+	  ORDER BY COALESCE(NULLIF(u.name, ''), u.email) LIMIT 1)`
+
+// rowItemsFrom is the shared FROM of every row-list query: the states
+// join carries the row's state name + group, the projects join the
+// {id, name} project ref. Both joins are 1:1, so COUNT(*) over the
+// same FROM matches the row count exactly.
+const rowItemsFrom = `FROM issues i
+	  JOIN states s ON s.id = i.state_id
+	  JOIN projects p ON p.id = i.project_id`
+
+// rowItemsSelect is the shared SELECT list of the row-list queries
+// (rowItemsFrom order): id, title, state, state_group, priority,
+// assignee JSONB (nullable), labels JSONB, project id, project name.
+const rowItemsSelect = `SELECT i.id::text, i.name, s.name, s."group", i.priority,
+	       ` + firstAssigneeJSON + `, ` + labelsAgg + `,
+	       i.project_id::text, p.name`
+
+// rowSortExpr maps a row-list sort column to its ORDER BY expression.
+// The second return is true when the expression is nullable (the
+// sort pushes NULLs last in both directions).
+func rowSortExpr(col string) (string, bool) {
+	switch col {
+	case widgetRowColumnID:
+		return "i.id::text", false
+	case widgetRowColumnTitle:
+		return "i.name", false
+	case widgetRowColumnState:
+		return "s.sequence", false
+	case widgetRowColumnPriority:
+		return "i.priority", false
+	case widgetRowColumnAssignee:
+		return firstAssigneeName, true
+	case widgetRowColumnLabels:
+		return firstLabelName, true
+	case widgetRowColumnProject:
+		return "p.name", false
+	}
+	return "s.sequence", false
+}
+
+// rowListConfig resolves the effective row-list config: for
+// assigned_to_me the assignee filter is FORCED to the caller at
+// compute time — a filters.assignees entry in the stored config is
+// silently overridden (the type's contract is "assigned to you", and
+// the honest note lives in the API docs, not in a rejection).
+func rowListConfig(wc *widgetCompute, actorID string) *widgetConfig {
+	if wc.widget.WidgetType != WidgetTypeAssignedToMe {
+		return wc.cfg
+	}
+	cp := *wc.cfg
+	cp.assignees = []string{actorID}
+	return &cp
+}
+
+// queryRowItems runs the row-list SELECT: the shared base filters plus
+// optional extra conditions, ordered by the config sort with a stable
+// id tiebreak. limit < 0 means no pagination (the CSV path).
+func queryRowItems(ctx context.Context, pool *pgxpool.Pool, where string, args []any, cfg *widgetConfig, extraConds []string, orderBy string, limit, offset int) ([]WidgetRowItem, error) {
+	if len(extraConds) > 0 {
+		where = where + " AND " + strings.Join(extraConds, " AND ")
+	}
+	q := rowItemsSelect + "\n\t  " + rowItemsFrom + "\n\t WHERE " + where + "\n\t ORDER BY " + orderBy
+	if limit >= 0 {
+		q += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
+	}
+	rows, err := pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []WidgetRowItem{}
+	for rows.Next() {
+		var item WidgetRowItem
+		var assigneeJSON []byte
+		var labelsJSON []byte
+		var projectID, projectName string
+		if err := rows.Scan(&item.ID, &item.Title, &item.State, &item.StateGroup,
+			&item.Priority, &assigneeJSON, &labelsJSON, &projectID, &projectName); err != nil {
+			return nil, err
+		}
+		if len(assigneeJSON) > 0 {
+			var a IssueAssignee
+			if err := json.Unmarshal(assigneeJSON, &a); err != nil {
+				return nil, err
+			}
+			item.Assignee = &a
+		}
+		if len(labelsJSON) > 0 {
+			var ls []IssueLabel
+			if err := json.Unmarshal(labelsJSON, &ls); err != nil {
+				return nil, err
+			}
+			item.Labels = ls
+		} else {
+			item.Labels = []IssueLabel{}
+		}
+		item.Project = WidgetRowProject{ID: projectID, Name: projectName}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// rowListOrderBy renders the config's sort as an ORDER BY fragment with
+// a stable id tiebreak in the same direction.
+func rowListOrderBy(cfg *widgetConfig) string {
+	expr, nullable := rowSortExpr(cfg.sortBy)
+	dir := "ASC"
+	if cfg.sortDir == "desc" {
+		dir = "DESC"
+	}
+	ob := expr + " " + dir
+	if nullable {
+		ob += " NULLS LAST"
+	}
+	return ob + ", i.id " + dir
+}
+
+// computeRowItems runs the row-list recompute shared by the data
+// endpoint (paginate=true: one page) and the CSV export (paginate=
+// false: the full dataset). Filters ANDed: dashboard project scope +
+// widget project_ids + widget-level filters (+ assignee = caller for
+// assigned_to_me, forced at compute time).
+func computeRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
+	cfg := rowListConfig(wc, actorID)
+	var args []any
+	where := widgetIssueFilter(cfg, wc.projectIDs, &args)
+	var total int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) `+rowItemsFrom+` WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	maxRows := cfg.maxRows
+	if maxRows < 1 {
+		maxRows = 10
+	}
+	limit, offset := -1, 0
+	if paginate {
+		limit = maxRows
+		offset = (page - 1) * maxRows
+	}
+	items, err := queryRowItems(ctx, pool, where, args, cfg, nil, rowListOrderBy(cfg), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+}
+
+// drilldownDimFilter maps a matched group's raw key back to the
+// dimension's filter value — the EXACT inverse of the data-compute
+// resolution (groupDimFor + labelGroup + the synthetic buckets). It is
+// deliberately not a parallel mapping: the group is found among the
+// widget's own computed groups first, and only its raw Key feeds this
+// filter. Merge semantics mirror the groups: same-named states across
+// projects, same display-named assignees/creators, and same-named
+// labels all collapse into one group — and one filter.
+func drilldownDimFilter(dim, rawKey string, args *[]any) (string, error) {
+	arg := func(v any) string {
+		*args = append(*args, v)
+		return fmt.Sprintf("$%d", len(*args))
+	}
+	switch dim {
+	case WidgetGroupByState:
+		return `s.name = ` + arg(rawKey), nil
+	case WidgetGroupByPriority:
+		n, err := strconv.Atoi(rawKey)
+		if err != nil {
+			// The group key IS the human label for priority
+			// (labelGroup rewrites key AND label): map the label
+			// back to its index via the same priorityLabels
+			// table the compute uses.
+			n = -1
+			for i, l := range priorityLabels {
+				if l == rawKey {
+					n = i
+					break
+				}
+			}
+			if n < 0 {
+				return "", fmt.Errorf("%w: %q is not a priority label", ErrInvalidDrilldownGroup, rawKey)
+			}
+		}
+		if n < 0 || n >= len(priorityLabels) {
+			return "", fmt.Errorf("%w: %q is not a priority", ErrInvalidDrilldownGroup, rawKey)
+		}
+		return `i.priority = ` + arg(n), nil
+	case WidgetGroupByAssignee:
+		if rawKey == "unassigned" {
+			return `NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)`, nil
+		}
+		return `EXISTS (SELECT 1 FROM issue_assignees ia
+				JOIN users u ON u.id = ia.user_id
+			       WHERE ia.issue_id = i.id
+			         AND COALESCE(NULLIF(u.name, ''), u.email) = ` + arg(rawKey) + `)`, nil
+	case WidgetGroupByLabel:
+		if rawKey == "none" {
+			return `NOT EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id)`, nil
+		}
+		return `EXISTS (SELECT 1 FROM issue_labels il
+				JOIN labels l ON l.id = il.label_id
+			       WHERE il.issue_id = i.id
+			         AND l.name = ` + arg(rawKey) + `)`, nil
+	case WidgetGroupByStateGroup:
+		return `s."group" = ` + arg(rawKey), nil
+	case WidgetGroupByProject:
+		return `p.name = ` + arg(rawKey), nil
+	case WidgetGroupByCreatedBy:
+		return `EXISTS (SELECT 1 FROM users u
+			       WHERE u.id = i.created_by
+			         AND COALESCE(NULLIF(u.name, ''), u.email) = ` + arg(rawKey) + `)`, nil
+	}
+	return "", ErrInvalidWidgetConfig
+}
+
+// drilldownOrderBy is the drill-down item order: most recently updated
+// first (the issue list's default), id as the stable tiebreak. The
+// grouped widget types carry no row sort config, so the endpoint does
+// not pretend to honor one.
+const drilldownOrderBy = `i.updated_at DESC, i.id DESC`
+
+// GetWidgetDrilldown lists the items behind one chart segment:
+// GET /api/v1/widgets/:id/drilldown?group=<group-key>&page=... The
+// group key is the widget's own human-label group key (the Key or the
+// Label getWidgetData returns — "Group keys are the human labels").
+// The item set is the widget's base filters (project scope + dashboard
+// filters + widget filters) ANDed with the segment's group filter.
+// Types without groups (number, intake_breakdown, work_items_table,
+// assigned_to_me) are ErrDrilldownUnavailable; a missing or
+// unresolvable group key is ErrInvalidDrilldownGroup — never a guess.
+// For smart_counter|smart_gauge the metric changes the displayed group
+// value, NOT the item set: the drill-down lists the same items for
+// count and estimate_points. Read authZ = the widget read rule (a
+// shared-view member may drill; a private unshared dashboard reads as
+// a missing widget).
+func GetWidgetDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, groupKey string, page int) (*WidgetDrilldown, error) {
+	if page < 1 {
+		return nil, ErrInvalidWidgetPage
+	}
+	if strings.TrimSpace(groupKey) == "" {
+		return nil, fmt.Errorf("%w: group is required", ErrInvalidDrilldownGroup)
+	}
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	switch wc.widget.WidgetType {
+	case WidgetTypeBar, WidgetTypeLine, WidgetTypeArea, WidgetTypeDonut,
+		WidgetTypePie, WidgetTypeSmartCounter, WidgetTypeSmartGauge,
+		WidgetTypeTable2D:
+		// Group-based: drillable.
+	default:
+		return nil, ErrDrilldownUnavailable
+	}
+	var args []any
+	where := widgetIssueFilter(wc.cfg, wc.projectIDs, &args)
+	// Resolve the group key against the widget's OWN computed groups —
+	// the same resolution the data endpoint uses. Matching the Key or
+	// the Label covers the human-label forms (state_group's Key is the
+	// slug while its Label is the display name; priority rewrites both
+	// to the label; the synthetic buckets expose "unassigned"/"none"
+	// keys with "Unassigned"/"No label" labels).
+	groups, err := computeGrouped(ctx, pool, wc.cfg, where, args)
+	if err != nil {
+		return nil, err
+	}
+	var matched *WidgetDataGroup
+	for i := range groups {
+		if groups[i].Key == groupKey || groups[i].Label == groupKey {
+			matched = &groups[i]
+			break
+		}
+	}
+	if matched == nil {
+		return nil, fmt.Errorf("%w: %q does not match any group of this widget", ErrInvalidDrilldownGroup, groupKey)
+	}
+	dimFilter, err := drilldownDimFilter(wc.cfg.groupBy, matched.Key, &args)
+	if err != nil {
+		return nil, err
+	}
+	segmentWhere := where + " AND " + dimFilter
+	var total int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) `+rowItemsFrom+` WHERE `+segmentWhere, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	perPage := wc.cfg.maxRows
+	if perPage < 1 {
+		perPage = 10
+	}
+	items, err := queryRowItems(ctx, pool, segmentWhere, args, wc.cfg,
+		nil, drilldownOrderBy, perPage, (page-1)*perPage)
+	if err != nil {
+		return nil, err
+	}
+	return &WidgetDrilldown{
+		Items:      items,
+		Page:       page,
+		PerPage:    perPage,
+		Total:      total,
+		GroupLabel: matched.Label,
+		GroupBy:    wc.cfg.groupBy,
+	}, nil
 }
 
 // metricAggregates returns the (total, completed) aggregate expressions
@@ -1868,26 +2400,70 @@ func slugify(s string) string {
 	return out
 }
 
+// rowItemCSVRecord renders one widget row as a CSV record in the
+// widget's configured column order. Multi-valued cells join with "; "
+// (labels) or fall back to the empty string (unassigned assignee).
+// Priority renders as its integer (the canonical issues.priority
+// value); the frontend maps it to the label via PRIORITY_LABELS.
+func rowItemCSVRecord(columns []string, item WidgetRowItem) []string {
+	rec := make([]string, 0, len(columns))
+	for _, c := range columns {
+		switch c {
+		case widgetRowColumnID:
+			rec = append(rec, item.ID)
+		case widgetRowColumnTitle:
+			rec = append(rec, item.Title)
+		case widgetRowColumnState:
+			rec = append(rec, item.State)
+		case widgetRowColumnPriority:
+			rec = append(rec, strconv.Itoa(item.Priority))
+		case widgetRowColumnAssignee:
+			name := ""
+			if item.Assignee != nil {
+				name = item.Assignee.Name
+			}
+			rec = append(rec, name)
+		case widgetRowColumnLabels:
+			names := make([]string, 0, len(item.Labels))
+			for _, l := range item.Labels {
+				names = append(names, l.Name)
+			}
+			rec = append(rec, strings.Join(names, "; "))
+		case widgetRowColumnProject:
+			rec = append(rec, item.Project.Name)
+		default:
+			rec = append(rec, "")
+		}
+	}
+	return rec
+}
+
 // ExportWidgetCSV renders the widget's FULL live dataset as CSV — the
-// same recompute as GetWidgetData, but unpaginated (every group, not
-// just the current page), capped at csvExportCap rows. Columns per
-// type: key,label,value (charts, smart_counter, table_2d);
+// same recompute as GetWidgetData, but unpaginated (every group /
+// every row, not just the current page), capped at csvExportCap rows.
+// Columns per type: key,label,value (charts, smart_counter, table_2d);
 // key,label,completed,total,percentage (smart_gauge);
-// metric,value (intake_breakdown); value (number). Proper CSV quoting
-// via encoding/csv. Read authZ = the widget read rule (a shared-view
-// member may export). The filename is
+// metric,value (intake_breakdown); value (number); the configured
+// columns in order (work_items_table, assigned_to_me). Proper CSV
+// quoting via encoding/csv. Read authZ = the widget read rule (a
+// shared-view member may export). The filename is
 // "<dashboard-slug>-<widget-slug>.csv", sanitized.
 func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (filename string, data []byte, truncated bool, err error) {
 	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
 	if err != nil {
 		return "", nil, false, err
 	}
-	full, err := computeWidgetData(ctx, pool, wc, 1, false)
+	full, err := computeWidgetData(ctx, pool, wc, actorID, 1, false)
 	if err != nil {
 		return "", nil, false, err
 	}
 	var rows [][]string
 	switch wc.widget.WidgetType {
+	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+		rows = append(rows, append([]string{}, wc.cfg.columns...))
+		for _, item := range full.Rows {
+			rows = append(rows, rowItemCSVRecord(wc.cfg.columns, item))
+		}
 	case WidgetTypeSmartGauge:
 		rows = append(rows, []string{"key", "label", "completed", "total", "percentage"})
 		for _, g := range full.Groups {

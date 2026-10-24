@@ -4237,7 +4237,8 @@ func TestOpenAPIDocShapesDashboard(t *testing.T) {
 	}
 	decode("DashboardWidget", &widget)
 	wantTypes := []string{"bar", "line", "area", "donut", "pie", "number",
-		"smart_counter", "smart_gauge", "table_2d", "intake_breakdown"}
+		"smart_counter", "smart_gauge", "table_2d", "intake_breakdown",
+		"work_items_table", "assigned_to_me"}
 	if got := widget.Props["widget_type"].Enum; !reflect.DeepEqual(got, wantTypes) {
 		t.Fatalf("DashboardWidget.widget_type enum = %v, want %v", got, wantTypes)
 	}
@@ -4257,12 +4258,13 @@ func TestOpenAPIDocShapesDashboard(t *testing.T) {
 	}
 
 	// WidgetData carries groups (chart) and value (number), plus the
-	// phase-2 pagination envelope and the intake summary.
+	// phase-2 pagination envelope, the intake summary, and the phase-3
+	// row-list fields.
 	var data struct {
 		Props map[string]json.RawMessage `json:"properties"`
 	}
 	decode("WidgetData", &data)
-	for _, prop := range []string{"groups", "value", "page", "max_rows", "total_groups", "intake"} {
+	for _, prop := range []string{"groups", "value", "page", "max_rows", "total_groups", "intake", "rows", "total"} {
 		if _, ok := data.Props[prop]; !ok {
 			t.Fatalf("WidgetData missing %s property", prop)
 		}
