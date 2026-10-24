@@ -8,12 +8,14 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Globe, Lock } from "lucide-react";
+import { Globe, Lock, Share2 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { relativeTime } from "../lib/relativeTime";
 import type { Workspace } from "../lib/types";
 import {
+  ACCESS_LABELS,
   createDashboard,
+  createDashboardFromTemplate,
   dashboardsKey,
   type Dashboard,
   type DashboardVisibility,
@@ -42,6 +44,31 @@ export function VisibilityBadge({ visibility }: { visibility: DashboardVisibilit
   );
 }
 
+/** Badge for the Shared tab: "Shared with you · Edit" for inbound
+ *  shares, "Shared" for dashboards the caller owns and shared out. */
+export function ShareBadge({ dashboard }: { dashboard: Dashboard }) {
+  if (dashboard.shared_with_me) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
+        <Share2 className="size-3" aria-hidden="true" />
+        Shared with you
+        {dashboard.my_access
+          ? ` · ${ACCESS_LABELS[dashboard.my_access]}`
+          : ""}
+      </span>
+    );
+  }
+  if (dashboard.shared) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
+        <Share2 className="size-3" aria-hidden="true" />
+        Shared
+      </span>
+    );
+  }
+  return null;
+}
+
 function DashboardRow({
   dashboard,
   onOpen,
@@ -61,6 +88,7 @@ function DashboardRow({
             {dashboard.name}
           </span>
           <VisibilityBadge visibility={dashboard.visibility} />
+          <ShareBadge dashboard={dashboard} />
         </div>
         {dashboard.description && (
           <p className="mt-0.5 truncate text-[13px] text-ink-muted">
@@ -82,6 +110,7 @@ export default function Dashboards() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"all" | "shared">("all");
 
   const dashboardsQuery = useQuery({
     queryKey: dashboardsKey(slug),
@@ -121,7 +150,29 @@ export default function Dashboards() {
     },
   });
 
+  const templateMutation = useMutation({
+    mutationFn: (v: { template: string; name?: string }) =>
+      createDashboardFromTemplate(slug, v),
+    onSuccess: (d) => {
+      setServerError(null);
+      setCreateOpen(false);
+      void queryClient.invalidateQueries({ queryKey: dashboardsKey(slug) });
+      navigate(`/w/${encodeURIComponent(slug)}/dashboards/${encodeURIComponent(d.id)}`);
+    },
+    onError: (e) => {
+      setServerError(
+        e instanceof ApiError ? e.message : "Failed to create dashboard",
+      );
+    },
+  });
+
   const dashboards = dashboardsQuery.data ?? [];
+  // Shared tab (Plane parity): dashboards shared WITH me, plus my own
+  // dashboards that I have shared out.
+  const sharedDashboards = dashboards.filter(
+    (d) => d.shared_with_me || d.shared,
+  );
+  const visibleDashboards = tab === "shared" ? sharedDashboards : dashboards;
 
   return (
     <>
@@ -172,19 +223,61 @@ export default function Dashboards() {
             )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
-            {dashboards.map((d) => (
-              <DashboardRow
-                key={d.id}
-                dashboard={d}
-                onOpen={() =>
-                  navigate(
-                    `/w/${encodeURIComponent(slug)}/dashboards/${encodeURIComponent(d.id)}`,
-                  )
-                }
-              />
-            ))}
-          </div>
+          <>
+            <div
+              role="tablist"
+              aria-label="Dashboard lists"
+              className="mb-4 flex items-center gap-1"
+            >
+              {(
+                [
+                  { key: "all", label: "All dashboards" },
+                  { key: "shared", label: "Shared" },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t.key}
+                  onClick={() => setTab(t.key)}
+                  className={
+                    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors " +
+                    (tab === t.key
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground")
+                  }
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {visibleDashboards.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-surface/50 px-6 py-12 text-center">
+                <p className="text-sm font-semibold text-ink">
+                  Nothing shared yet
+                </p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Dashboards shared with you — and dashboards you share
+                  with teammates — show up here.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {visibleDashboards.map((d) => (
+                  <DashboardRow
+                    key={d.id}
+                    dashboard={d}
+                    onOpen={() =>
+                      navigate(
+                        `/w/${encodeURIComponent(slug)}/dashboards/${encodeURIComponent(d.id)}`,
+                      )
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -198,6 +291,11 @@ export default function Dashboards() {
         pending={createMutation.isPending}
         serverError={serverError}
         onSubmit={(v) => createMutation.mutate(v)}
+        slug={slug}
+        templatePending={templateMutation.isPending}
+        onCreateTemplate={(template, name) =>
+          templateMutation.mutate({ template, name })
+        }
       />
     </>
   );

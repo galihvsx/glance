@@ -1,12 +1,15 @@
-// C81T1: create/edit widget dialog — the six widget types with live
+// C83T1: create/edit widget dialog — all ten widget types with live
 // preview icons, title, project multi-select (default: all visible
-// projects), group-by select (hidden for `number`, which shows a
-// filter summary instead), and assignee/priority/state/label filter
-// pickers reusing FilterPanel's CheckRow language via FilterPicker.
-// Config keys mirror the backend's validated schema (see
-// internal/service/dashboard.go parseWidgetConfig): group_by is
-// required for chart types and meaningless for number; filters carry
-// UUID arrays; project_ids [] = every live workspace project.
+// projects), group-by select (hidden for `number` and `intake_breakdown`),
+// and assignee/priority/state/label filter pickers reusing FilterPanel's
+// CheckRow language via FilterPicker. Phase-2 per-type config panels:
+// metric + max-rows + visualization toggle (smart_counter), metric +
+// max-rows + gauge color + show-percentage (smart_gauge), max-rows
+// (table_2d), view toggle (intake_breakdown). intake_breakdown hides the
+// projects/filters sections — the backend ignores widget-level filters
+// and project scope there. Config keys mirror the backend's per-type
+// allow-list (parseWidgetConfig): a key meaningless for the type is a
+// 400, so each type sends exactly its own key set.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -19,16 +22,20 @@ import type {
 import {
   EMPTY_WIDGET_FILTERS,
   GROUP_BY_OPTIONS,
+  METRIC_OPTIONS,
+  VISUALIZATION_OPTIONS,
   WIDGET_TYPE_LABELS,
   WIDGET_TYPES,
   filterSummary,
-  isChartType,
+  isGroupedType,
   normalizeWidgetConfig,
   type DashboardWidget,
   type WidgetConfig,
   type WidgetFilters,
   type WidgetGroupBy,
+  type WidgetMetric,
   type WidgetType,
+  type WidgetVisualization,
 } from "../../lib/dashboards";
 import { PRIORITY_LABELS } from "../../lib/types";
 import { Button } from "../ui/button";
@@ -43,6 +50,7 @@ import {
 import { Input } from "../ui/input";
 import { Label as UiLabel } from "../ui/label";
 import { NativeSelect } from "../ui/native-select";
+import { Switch } from "../ui/switch";
 import { Alert, AlertDescription } from "../ui/alert";
 import { cn } from "cn";
 import FilterPicker, { type FilterPickerOption } from "./FilterPicker";
@@ -118,6 +126,92 @@ function TypeGlyph({ type }: { type: WidgetType }) {
           <span className="text-2xl font-bold tabular-nums text-primary">42</span>
         </div>
       );
+    case "smart_counter":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          {[0, 1, 2, 3].map((i) => (
+            <g key={i}>
+              <rect
+                x={2 + (i % 2) * 24}
+                y={1 + Math.floor(i / 2) * 12}
+                width="22"
+                height="10"
+                rx="2"
+                className="fill-primary/15 stroke-primary/50"
+                strokeWidth="1"
+              />
+              <rect
+                x={6 + (i % 2) * 24}
+                y={5 + Math.floor(i / 2) * 12}
+                width={14 - i * 2}
+                height="3"
+                rx="1"
+                className="fill-primary/70"
+              />
+            </g>
+          ))}
+        </svg>
+      );
+    case "smart_gauge":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          <path
+            d="M 4 21 A 20 20 0 0 1 44 21"
+            fill="none"
+            strokeWidth="4.5"
+            strokeLinecap="round"
+            className="stroke-primary/20"
+          />
+          <path
+            d="M 4 21 A 20 20 0 0 1 32.3 9.5"
+            fill="none"
+            strokeWidth="4.5"
+            strokeLinecap="round"
+            className={fg}
+          />
+        </svg>
+      );
+    case "table_2d":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <g key={i}>
+              <rect
+                x="6"
+                y={3 + i * 7}
+                width="18"
+                height="4"
+                rx="1"
+                className="fill-primary/45"
+              />
+              <rect
+                x="28"
+                y={3 + i * 7}
+                width={10 - i * 2}
+                height="4"
+                rx="1"
+                className="fill-primary/70"
+              />
+            </g>
+          ))}
+        </svg>
+      );
+    case "intake_breakdown":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <rect
+              key={i}
+              x={2 + (i % 3) * 16}
+              y={1 + Math.floor(i / 3) * 12}
+              width="14"
+              height="10"
+              rx="2"
+              className="fill-primary/25"
+            />
+          ))}
+        </svg>
+      );
   }
 }
 
@@ -152,6 +246,13 @@ export default function WidgetDialog({
   const [title, setTitle] = useState("");
   const [widgetType, setWidgetType] = useState<WidgetType>("bar");
   const [groupBy, setGroupBy] = useState<WidgetGroupBy>("state");
+  const [metric, setMetric] = useState<WidgetMetric>("count");
+  const [maxRows, setMaxRows] = useState(10);
+  const [visualization, setVisualization] =
+    useState<WidgetVisualization>("grid");
+  const [gaugeColor, setGaugeColor] = useState("#3b82f6");
+  const [showPercentage, setShowPercentage] = useState(true);
+  const [intakeView, setIntakeView] = useState<WidgetVisualization>("grid");
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [filters, setFilters] = useState<WidgetFilters>(EMPTY_WIDGET_FILTERS);
 
@@ -161,6 +262,12 @@ export default function WidgetDialog({
       setTitle(initial?.title ?? "");
       setWidgetType(initial?.widget_type ?? "bar");
       setGroupBy(cfg.group_by ?? "state");
+      setMetric(cfg.metric);
+      setMaxRows(cfg.max_rows);
+      setVisualization(cfg.visualization);
+      setGaugeColor(cfg.gauge_color);
+      setShowPercentage(cfg.show_percentage);
+      setIntakeView(cfg.view);
       setProjectIds(initial?.config?.project_ids ?? []);
       setFilters(cfg.filters);
     }
@@ -315,13 +422,45 @@ export default function WidgetDialog({
   );
 
   const submit = () => {
-    const config: WidgetConfig = {
-      ...(isChartType(widgetType) ? { group_by: groupBy } : {}),
-      filters: prunedFilters,
-      project_ids: projectIds,
-    };
+    // Config keys mirror the backend's per-type allow-list
+    // (parseWidgetConfig): keys meaningless for the type are a 400, so
+    // each type sends exactly its own key set.
+    const config: WidgetConfig = {};
+    if (isGroupedType(widgetType)) {
+      config.group_by = groupBy;
+      config.filters = prunedFilters;
+      config.project_ids = projectIds;
+    } else if (widgetType === "number") {
+      config.filters = prunedFilters;
+      config.project_ids = projectIds;
+    }
+    if (widgetType === "smart_counter" || widgetType === "smart_gauge") {
+      config.metric = metric;
+    }
+    if (
+      widgetType === "smart_counter" ||
+      widgetType === "smart_gauge" ||
+      widgetType === "table_2d"
+    ) {
+      config.max_rows = maxRows;
+    }
+    if (widgetType === "smart_counter") {
+      config.visualization = visualization;
+    }
+    if (widgetType === "smart_gauge") {
+      config.gauge_color = gaugeColor;
+      config.show_percentage = showPercentage;
+    }
+    if (widgetType === "intake_breakdown") {
+      config.view = intakeView;
+    }
     onSubmit({ title: trimmed, widget_type: widgetType, config });
   };
+
+  const isIntake = widgetType === "intake_breakdown";
+  const isGauge = widgetType === "smart_gauge";
+  const isCounter = widgetType === "smart_counter";
+  const isTable2d = widgetType === "table_2d";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -338,13 +477,13 @@ export default function WidgetDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-5 py-2">
-          {/* Widget type picker: all six, with preview icons. */}
+          {/* Widget type picker: all ten, with preview icons. */}
           <fieldset>
             <legend className="mb-2 text-sm font-medium">Widget type</legend>
             <div
               role="radiogroup"
               aria-label="Widget type"
-              className="grid grid-cols-3 gap-2 sm:grid-cols-6"
+              className="grid grid-cols-2 gap-2 sm:grid-cols-5"
             >
               {WIDGET_TYPES.map((t) => (
                 <button
@@ -380,7 +519,10 @@ export default function WidgetDialog({
             />
           </div>
 
-          {/* Project scope: empty = all visible (live) projects. */}
+          {/* Project scope: empty = all visible (live) projects. Hidden
+              for intake_breakdown — the backend ignores project_ids
+              there (dashboard scope only). */}
+          {!isIntake && (
           <div className="flex flex-col gap-1.5">
             <UiLabel>Projects</UiLabel>
             <FilterPicker
@@ -404,8 +546,9 @@ export default function WidgetDialog({
               }
             />
           </div>
+          )}
 
-          {isChartType(widgetType) ? (
+          {isGroupedType(widgetType) ? (
             <div className="flex flex-col gap-1.5">
               <UiLabel htmlFor="widget-group-by">Group by</UiLabel>
               <NativeSelect
@@ -422,6 +565,16 @@ export default function WidgetDialog({
                 ))}
               </NativeSelect>
             </div>
+          ) : isIntake ? (
+            <div className="rounded-md border bg-muted/50 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Intake scope
+              </p>
+              <p className="mt-1 text-sm">
+                Intake metrics use the dashboard's project scope —
+                widget-level filters and project selection don't apply.
+              </p>
+            </div>
           ) : (
             <div className="rounded-md border bg-muted/50 p-3">
               <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -431,7 +584,146 @@ export default function WidgetDialog({
             </div>
           )}
 
-          {/* Filters. */}
+          {/* Phase-2 per-type config panels. */}
+          {(isCounter || isGauge) && (
+            <div className="flex flex-col gap-1.5">
+              <UiLabel htmlFor="widget-metric">Metric</UiLabel>
+              <NativeSelect
+                id="widget-metric"
+                value={metric}
+                onChange={(e) => setMetric(e.target.value as WidgetMetric)}
+              >
+                {METRIC_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </NativeSelect>
+            </div>
+          )}
+
+          {(isCounter || isGauge || isTable2d) && (
+            <div className="flex flex-col gap-1.5">
+              <UiLabel htmlFor="widget-max-rows">
+                Max groups per page
+              </UiLabel>
+              <Input
+                id="widget-max-rows"
+                type="number"
+                min={1}
+                max={100}
+                value={maxRows}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setMaxRows(
+                    Number.isInteger(n)
+                      ? Math.min(100, Math.max(1, n))
+                      : maxRows,
+                  );
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                1–100 groups per page.
+              </p>
+            </div>
+          )}
+
+          {isCounter && (
+            <div className="flex flex-col gap-1.5">
+              <UiLabel>Visualization</UiLabel>
+              <div
+                role="radiogroup"
+                aria-label="Smart counter visualization"
+                className="grid grid-cols-2 gap-2"
+              >
+                {VISUALIZATION_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={visualization === o.value}
+                    onClick={() => setVisualization(o.value)}
+                    className={cn(
+                      "rounded-lg border p-2 text-[13px] font-medium transition-colors hover:bg-accent",
+                      visualization === o.value
+                        ? "border-primary ring-1 ring-primary"
+                        : "border-border",
+                    )}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isGauge && (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <UiLabel htmlFor="widget-gauge-color">Gauge color</UiLabel>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="widget-gauge-color"
+                    type="color"
+                    value={gaugeColor}
+                    onChange={(e) => setGaugeColor(e.target.value)}
+                    className="size-9 cursor-pointer rounded border border-border bg-transparent p-0.5"
+                    aria-label="Gauge color"
+                  />
+                  <Input
+                    value={gaugeColor}
+                    onChange={(e) => setGaugeColor(e.target.value)}
+                    aria-label="Gauge color hex"
+                    className="w-28 font-mono"
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <UiLabel htmlFor="widget-show-percentage">
+                  Show percentage label
+                </UiLabel>
+                <Switch
+                  id="widget-show-percentage"
+                  checked={showPercentage}
+                  onCheckedChange={setShowPercentage}
+                />
+              </div>
+            </div>
+          )}
+
+          {isIntake && (
+            <div className="flex flex-col gap-1.5">
+              <UiLabel>View</UiLabel>
+              <div
+                role="radiogroup"
+                aria-label="Intake breakdown view"
+                className="grid grid-cols-2 gap-2"
+              >
+                {VISUALIZATION_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={intakeView === o.value}
+                    onClick={() => setIntakeView(o.value)}
+                    className={cn(
+                      "rounded-lg border p-2 text-[13px] font-medium transition-colors hover:bg-accent",
+                      intakeView === o.value
+                        ? "border-primary ring-1 ring-primary"
+                        : "border-border",
+                    )}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Filters — hidden for intake_breakdown (the backend ignores
+              widget-level filters there; showing them would be a lie). */}
+          {!isIntake && (
           <fieldset>
             <legend className="mb-2 text-sm font-medium">Filters</legend>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -499,6 +791,7 @@ export default function WidgetDialog({
               />
             </div>
           </fieldset>
+          )}
 
           {serverError && (
             <Alert variant="destructive">

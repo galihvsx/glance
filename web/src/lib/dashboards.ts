@@ -6,13 +6,23 @@
 // Plane's exactly (see internal/service/dashboard.go): creator, or a
 // workspace admin (20) on PUBLIC dashboards only.
 
-import { api } from "./api";
+import { ApiError, api } from "./api";
 
 /** Dashboard visibility: public (default) or private. */
 export type DashboardVisibility = "public" | "private";
 
-/** The six Plane widget types (phase 1). */
-export type WidgetType = "bar" | "line" | "area" | "donut" | "pie" | "number";
+/** The six Plane widget types (phase 1) plus the four phase-2 types (C83T0). */
+export type WidgetType =
+  | "bar"
+  | "line"
+  | "area"
+  | "donut"
+  | "pie"
+  | "number"
+  | "smart_counter"
+  | "smart_gauge"
+  | "table_2d"
+  | "intake_breakdown";
 
 export const WIDGET_TYPES: WidgetType[] = [
   "bar",
@@ -21,6 +31,10 @@ export const WIDGET_TYPES: WidgetType[] = [
   "donut",
   "pie",
   "number",
+  "smart_counter",
+  "smart_gauge",
+  "table_2d",
+  "intake_breakdown",
 ];
 
 /** Human label per widget type (dialog picker + canvas fallbacks). */
@@ -31,21 +45,80 @@ export const WIDGET_TYPE_LABELS: Record<WidgetType, string> = {
   donut: "Donut chart",
   pie: "Pie chart",
   number: "Number",
+  smart_counter: "Smart counter",
+  smart_gauge: "Smart gauge",
+  table_2d: "Table (2D)",
+  intake_breakdown: "Intake breakdown",
 };
 
 /** Chart types that need a group_by; number is the scalar. */
 export function isChartType(t: WidgetType): boolean {
-  return t !== "number";
+  return (
+    t === "bar" ||
+    t === "line" ||
+    t === "area" ||
+    t === "donut" ||
+    t === "pie"
+  );
 }
 
-/** Grouping dimension for chart widgets. */
-export type WidgetGroupBy = "state" | "priority" | "assignee" | "label";
+/** Types whose config requires group_by (charts + the grouped
+ *  phase-2 types); number and intake_breakdown take none. */
+export function isGroupedType(t: WidgetType): boolean {
+  return (
+    isChartType(t) ||
+    t === "smart_counter" ||
+    t === "smart_gauge" ||
+    t === "table_2d"
+  );
+}
+
+/** Phase-2 types with a paginated data envelope ({groups, page,
+ *  max_rows, total_groups}). */
+export function isPaginatedType(t: WidgetType): boolean {
+  return t === "smart_counter" || t === "smart_gauge" || t === "table_2d";
+}
+
+/** Grouping dimension for chart and grouped phase-2 widgets. The full
+ *  set the backend accepts (phase 2 adds state_group, project,
+ *  created_by). */
+export type WidgetGroupBy =
+  | "state"
+  | "priority"
+  | "assignee"
+  | "label"
+  | "state_group"
+  | "project"
+  | "created_by";
 
 export const GROUP_BY_OPTIONS: { value: WidgetGroupBy; label: string }[] = [
   { value: "state", label: "State" },
   { value: "priority", label: "Priority" },
   { value: "assignee", label: "Assignee" },
   { value: "label", label: "Label" },
+  { value: "state_group", label: "State group" },
+  { value: "project", label: "Project" },
+  { value: "created_by", label: "Created by" },
+];
+
+/** Metric for smart_counter/smart_gauge: issue count, or summed
+ *  estimate points. */
+export type WidgetMetric = "count" | "estimate_points";
+
+export const METRIC_OPTIONS: { value: WidgetMetric; label: string }[] = [
+  { value: "count", label: "Issue count" },
+  { value: "estimate_points", label: "Estimate points" },
+];
+
+/** smart_counter `visualization` / intake_breakdown `view`. */
+export type WidgetVisualization = "grid" | "table";
+
+export const VISUALIZATION_OPTIONS: {
+  value: WidgetVisualization;
+  label: string;
+}[] = [
+  { value: "grid", label: "Grid" },
+  { value: "table", label: "Table" },
 ];
 
 export interface WidgetFilters {
@@ -64,9 +137,19 @@ export const EMPTY_WIDGET_FILTERS: WidgetFilters = {
 
 export interface WidgetConfig {
   group_by?: WidgetGroupBy;
-  metric?: "count";
+  metric?: WidgetMetric;
   filters?: Partial<WidgetFilters>;
   project_ids?: string[];
+  /** smart_counter|smart_gauge|table_2d only: groups per page (1–100). */
+  max_rows?: number;
+  /** smart_counter only: tile grid or table render. */
+  visualization?: WidgetVisualization;
+  /** smart_gauge only: #rrggbb arc color. */
+  gauge_color?: string;
+  /** smart_gauge only: render the % label. */
+  show_percentage?: boolean;
+  /** intake_breakdown only: tile grid or table render. */
+  view?: WidgetVisualization;
 }
 
 export interface DashboardWidget {
@@ -95,17 +178,49 @@ export interface Dashboard {
   updated_at: string;
   /** Present on the detail read only (config only — fetch data per widget). */
   widgets?: DashboardWidget[];
+  /** True when the caller holds a share row on someone else's dashboard. */
+  shared_with_me?: boolean;
+  /** The caller's effective access: drives frontend affordance gating. */
+  my_access?: DashboardAccess;
+  /** True on dashboards the caller owns that have at least one share. */
+  shared?: boolean;
 }
+
+/** The caller's effective access on a dashboard (C83T0 contract). */
+export type DashboardAccess = "owner" | "view" | "edit";
 
 export interface WidgetDataGroup {
   key: string;
   label: string;
   value: number;
+  /** smart_gauge only: the completed share of the group. */
+  completed?: number;
+  /** smart_gauge only: 100*completed/value (0 when value is 0). */
+  percentage?: number;
+}
+
+/** The six headline numbers of an intake_breakdown widget. email_volume
+ *  is always 0 — glance has no email ingestion. */
+export interface IntakeBreakdown {
+  in_app_volume: number;
+  email_volume: number;
+  form_volume: number;
+  total_accepted: number;
+  total_rejected: number;
+  avg_decide_seconds: number;
 }
 
 export interface WidgetData {
   groups?: WidgetDataGroup[];
   value?: number;
+  /** smart_counter|smart_gauge|table_2d only: the returned page. */
+  page?: number;
+  /** smart_counter|smart_gauge|table_2d only: groups per page. */
+  max_rows?: number;
+  /** smart_counter|smart_gauge|table_2d only: total groups before pagination. */
+  total_groups?: number;
+  /** Present only for intake_breakdown widgets. */
+  intake?: IntakeBreakdown;
 }
 
 /* ------------------------------------------------------------------ */
@@ -115,8 +230,10 @@ export interface WidgetData {
 export const dashboardsKey = (slug: string) => ["dashboards", slug] as const;
 export const dashboardKey = (slug: string, id: string) =>
   ["dashboard", slug, id] as const;
-export const widgetDataKey = (widgetId: string) =>
-  ["widget-data", widgetId] as const;
+/** Paginated widget types cache per page (the paginated envelope is
+ *  page-specific). */
+export const widgetDataKey = (widgetId: string, page = 1) =>
+  ["widget-data", widgetId, page] as const;
 
 /* ------------------------------------------------------------------ */
 /* API.                                                                */
@@ -231,10 +348,165 @@ export function deleteWidget(widgetId: string): Promise<void> {
   return api.del<void>(`/api/v1/widgets/${encodeURIComponent(widgetId)}`);
 }
 
-export function fetchWidgetData(widgetId: string): Promise<WidgetData> {
+export function fetchWidgetData(
+  widgetId: string,
+  page = 1,
+): Promise<WidgetData> {
   return api.get<WidgetData>(
-    `/api/v1/widgets/${encodeURIComponent(widgetId)}/data`,
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/data?page=${page}`,
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Shares (C83T1): owner-only batch management.                        */
+/* ------------------------------------------------------------------ */
+
+/** Access level on a dashboard share: view or edit. */
+export type ShareAccess = "view" | "edit";
+
+/** One member's share grant on a dashboard (GET shares contract:
+ *  member_id, member_name, access, created_at; oldest first). */
+export interface DashboardShare {
+  member_id: string;
+  member_name: string;
+  access: ShareAccess;
+  created_at: string;
+}
+
+/** The whole desired share list for the one-batch PUT (empty/absent
+ *  clears every share). */
+export interface ShareInput {
+  member_id: string;
+  access: ShareAccess;
+}
+
+function sharesBase(slug: string, dashboardId: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/dashboards/${encodeURIComponent(dashboardId)}/shares`;
+}
+
+export function fetchDashboardShares(
+  slug: string,
+  dashboardId: string,
+): Promise<DashboardShare[]> {
+  return api
+    .get<{ shares: DashboardShare[] }>(sharesBase(slug, dashboardId))
+    .then((d) => d.shares ?? []);
+}
+
+export function replaceDashboardShares(
+  slug: string,
+  dashboardId: string,
+  shares: ShareInput[],
+): Promise<DashboardShare[]> {
+  return api
+    .put<{ shares: DashboardShare[] }>(sharesBase(slug, dashboardId), {
+      shares,
+    })
+    .then((d) => d.shares ?? []);
+}
+
+/* ------------------------------------------------------------------ */
+/* Templates (C83T1): static create-from-template catalog.             */
+/* ------------------------------------------------------------------ */
+
+export interface DashboardTemplateWidget {
+  title: string;
+  widget_type: string;
+  config: Record<string, unknown>;
+  grid_x: number;
+  grid_y: number;
+  grid_w: number;
+  grid_h: number;
+}
+
+export interface DashboardTemplate {
+  id: string;
+  name: string;
+  description: string;
+  widgets: DashboardTemplateWidget[];
+}
+
+export function fetchDashboardTemplates(
+  slug: string,
+): Promise<DashboardTemplate[]> {
+  return api
+    .get<{ templates: DashboardTemplate[] }>(
+      `/api/v1/workspaces/${encodeURIComponent(slug)}/dashboard-templates`,
+    )
+    .then((d) => d.templates ?? []);
+}
+
+export function createDashboardFromTemplate(
+  slug: string,
+  v: { template: string; name?: string },
+): Promise<Dashboard> {
+  return api.post<Dashboard>(dashBase(slug), {
+    template: v.template,
+    ...(v.name ? { name: v.name } : {}),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* CSV export (C83T1): full live dataset download.                     */
+/* ------------------------------------------------------------------ */
+
+/** Parse the filename out of a Content-Disposition attachment header. */
+export function exportFilename(
+  contentDisposition: string | null,
+  fallback: string,
+): string {
+  if (contentDisposition) {
+    const m = /filename="([^"]+)"/.exec(contentDisposition);
+    if (m) return m[1];
+  }
+  return fallback;
+}
+
+export interface CsvDownload {
+  blob: Blob;
+  filename: string;
+  /** True when the server capped the response at 10,000 rows. */
+  truncated: boolean;
+}
+
+export async function fetchWidgetCsv(widgetId: string): Promise<CsvDownload> {
+  // Raw fetch (not api.get): we need the headers (filename,
+  // truncation flag) alongside the blob body.
+  const res = await fetch(
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/export.csv`,
+    { credentials: "include" },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  const blob = await res.blob();
+  return {
+    blob,
+    filename: exportFilename(
+      res.headers.get("Content-Disposition"),
+      `${widgetId}.csv`,
+    ),
+    truncated: res.headers.get("X-Result-Truncated") === "true",
+  };
+}
+
+/** Download the widget's CSV export via a blob URL (filename from the
+ *  server's Content-Disposition). Visible to anyone who can read the
+ *  widget — the caller has already gated the affordance. */
+export async function downloadWidgetCsv(widgetId: string): Promise<void> {
+  const { blob, filename } = await fetchWidgetCsv(widgetId);
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -259,14 +531,26 @@ export function canEditDashboard(
 /** Fill the config defaults the backend assumes (empty = unfiltered). */
 export function normalizeWidgetConfig(config: WidgetConfig): {
   group_by?: WidgetGroupBy;
-  metric: "count";
+  metric: WidgetMetric;
   filters: WidgetFilters;
   project_ids: string[];
+  max_rows: number;
+  visualization: WidgetVisualization;
+  gauge_color: string;
+  show_percentage: boolean;
+  view: WidgetVisualization;
 } {
   const f = config.filters ?? {};
+  const maxRows =
+    typeof config.max_rows === "number" &&
+    Number.isInteger(config.max_rows) &&
+    config.max_rows >= 1 &&
+    config.max_rows <= 100
+      ? config.max_rows
+      : 10;
   return {
     ...(config.group_by ? { group_by: config.group_by } : {}),
-    metric: "count",
+    metric: config.metric ?? "count",
     filters: {
       assignees: f.assignees ?? [],
       priorities: f.priorities ?? [],
@@ -274,6 +558,11 @@ export function normalizeWidgetConfig(config: WidgetConfig): {
       labels: f.labels ?? [],
     },
     project_ids: config.project_ids ?? [],
+    max_rows: maxRows,
+    visualization: config.visualization ?? "grid",
+    gauge_color: config.gauge_color ?? "#3b82f6",
+    show_percentage: config.show_percentage ?? true,
+    view: config.view ?? "grid",
   };
 }
 
@@ -344,3 +633,126 @@ export function filterSummary(
   }
   return parts.length > 0 ? parts.join(" · ") : "All issues, all projects";
 }
+
+/* ------------------------------------------------------------------ */
+/* Phase-2 pure helpers (unit-tested).                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The caller's effective access on a dashboard. The server's my_access
+ * is authoritative when present; otherwise it falls back to Plane's
+ * edit rule (creator → owner; workspace admin 20 on PUBLIC → edit).
+ */
+export function dashboardAccess(
+  dashboard: Pick<Dashboard, "created_by" | "visibility" | "my_access">,
+  userId: string | null | undefined,
+  workspaceRole: number,
+): DashboardAccess {
+  if (dashboard.my_access) return dashboard.my_access;
+  if (!userId) return "view";
+  if (dashboard.created_by === userId) return "owner";
+  return dashboard.visibility === "public" && workspaceRole >= 20
+    ? "edit"
+    : "view";
+}
+
+/** Only the dashboard owner manages shares, deletes, or changes
+ *  visibility (C83T0 owner-only share rule). */
+export function canShareDashboard(access: DashboardAccess): boolean {
+  return access === "owner";
+}
+
+/** Widget editing (add/configure/move/resize) is owner + edit access;
+ *  view access is strictly read-only. */
+export function canEditWidgets(access: DashboardAccess): boolean {
+  return access === "owner" || access === "edit";
+}
+
+/** Human label for an access level (list badges). */
+export const ACCESS_LABELS: Record<DashboardAccess, string> = {
+  owner: "Owner",
+  view: "View",
+  edit: "Edit",
+};
+
+/** Pages in a paginated widget envelope. */
+export function widgetPageCount(data: WidgetData | undefined): number {
+  if (
+    typeof data?.total_groups !== "number" ||
+    typeof data?.max_rows !== "number" ||
+    data.max_rows <= 0
+  ) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(data.total_groups / data.max_rows));
+}
+
+/**
+ * SVG path for a semi-circular gauge arc: a half-circle of the given
+ * radius (in a 2r×r viewBox, origin top-left) filled from the left by
+ * `percentage` (0–100, clamped). percentage=100 sweeps the full half.
+ */
+export function semiGaugeArc(
+  percentage: number,
+  radius: number,
+): { path: string; endX: number; endY: number } {
+  const p = Math.min(100, Math.max(0, percentage));
+  const theta = (Math.PI * p) / 100; // 0..π from the left point
+  const endX = radius - radius * Math.cos(theta);
+  const endY = radius - radius * Math.sin(theta);
+  const largeArc = p > 50 ? 1 : 0;
+  const path = `M 0 ${radius} A ${radius} ${radius} 0 ${largeArc} 1 ${endX} ${endY}`;
+  return { path, endX, endY };
+}
+
+/** One of the six intake_breakdown tiles. `duration` renders the value
+ *  through formatDuration; `honestEmpty` gets the no-ingestion
+ *  tooltip instead of a bare 0. */
+export interface IntakeTile {
+  key: keyof IntakeBreakdown;
+  label: string;
+  duration?: boolean;
+  honestEmpty?: boolean;
+}
+
+export const INTAKE_TILES: IntakeTile[] = [
+  { key: "in_app_volume", label: "In-app volume" },
+  {
+    key: "email_volume",
+    label: "Email volume",
+    honestEmpty: true,
+  },
+  { key: "form_volume", label: "Form volume" },
+  { key: "total_accepted", label: "Total accepted" },
+  { key: "total_rejected", label: "Total rejected" },
+  { key: "avg_decide_seconds", label: "Avg. time to decide", duration: true },
+];
+
+/** The honest tooltip on the email tile — glance has no email
+ *  ingestion, so the tile is always 0 and must never look live. */
+export const EMAIL_INGESTION_NOTE =
+  "glance has no email ingestion yet — this is always 0, not a live count.";
+
+/** Format a seconds duration compactly (90 → "1m 30s", 90000 → "1d 1h"). */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) {
+    const rem = s % 60;
+    return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+  }
+  const h = Math.floor(m / 60);
+  if (h < 24) {
+    const rem = m % 60;
+    return rem === 0 ? `${h}h` : `${h}h ${rem}m`;
+  }
+  const d = Math.floor(h / 24);
+  const rem = h % 24;
+  return rem === 0 ? `${d}d` : `${d}d ${rem}h`;
+}
+
+/** Gauge color fallback when the config has none (matches the backend
+ *  default). */
+export const DEFAULT_GAUGE_COLOR = "#3b82f6";

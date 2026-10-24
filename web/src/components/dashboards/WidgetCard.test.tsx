@@ -114,9 +114,12 @@ describe("WidgetCard", () => {
     expect(
       screen.queryByLabelText(/Drag .* to reposition/),
     ).not.toBeInTheDocument();
+    // The options menu itself stays (it carries Export CSV, readable
+    // by anyone who can read the widget — covered in the phase-2
+    // tests); only the edit/delete items are editor-only.
     expect(
-      screen.queryByLabelText(/Widget options for/),
-    ).not.toBeInTheDocument();
+      screen.getByLabelText(/Widget options for/),
+    ).toBeInTheDocument();
   });
 
   it("shows drag handle and options menu for editors", async () => {
