@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Customizable dashboards, phase 2 (cycle 83)**
+
+- Plane parity (docs.plane.so/dashboards): four new widget types — smart
+  counter (group-by, count or estimate-points, max rows 1–100, Grid tiles or
+  Table view, pagination), smart gauge (semi-circular per-group completion
+  share, gauge color, show-percentage toggle), two-dimensional table (rows =
+  x-axis groups, count column, paginated), intake breakdown (six headline
+  numbers: in-app, email, form volume, total accepted/rejected, avg. time to
+  decide; Grid or Table view; widget-level filters ignored by design; email
+  volume honestly 0 — glance has no email ingestion).
+- Backend (migration 000074): widened `dashboard_widgets.widget_type` CHECK;
+  `intake_issues.source` (`in_app`/`form`/`email`, default `in_app`; public
+  form submissions thread `form`); `dashboard_shares` with one-batch PUT
+  replace semantics, owner-only share management (shared members cannot
+  re-share, guests rejected); dashboards list gains `shared_with_me` /
+  `my_access` / `shared` indicators; static template catalog (Sprint health,
+  Triage performance, Project overview) with atomic create-from-template;
+  per-widget `export.csv` (full dataset, 10,000-row cap with
+  `X-Result-Truncated`, `Content-Disposition` filename). OpenAPI pinned.
+- Frontend: four new type cards + per-type config panels in WidgetDialog;
+  WidgetCard renders for all four types with pagination and a reader-visible
+  Export CSV menu item; owner-only Share button + Share modal (member
+  search excluding owner/guests, batch Save); Shared tab on the dashboards
+  list; access gating via `my_access` (view = read-only, edit = no
+  Share/delete/visibility change); "Start from template" picker in the
+  create-dashboard dialog. 52 new phase-2 tests (31 in the wave-1 WIP, 21
+  in wave 2). Prototype approved by galih 2026-10-24 before wave-2
+  implementation (UI-first rule).
+
 **Custom intake forms (cycle 82)**
 
 - Plane parity (docs.plane.so/intake/intake-forms, Plane v2.0 "Custom intake
