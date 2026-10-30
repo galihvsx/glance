@@ -5,6 +5,36 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Dashboards phase 3: row-list widgets + drill-down (cycle 84)**
+
+- Plane parity (docs.plane.so/dashboards): two new widget types —
+  work-items table (configurable columns, sortable headers, pagination)
+  and assigned-to-me (same row list pre-filtered to the caller, assignee
+  filter forced at compute time even against a conflicting widget filter).
+  Every group-based widget (bar, donut, pie, smart counter/gauge,
+  two-dimensional table, line/area time buckets) becomes clickable and
+  opens a drill-down modal listing the exact items behind the segment;
+  `number` and intake-breakdown tiles have no drill-down affordance.
+- Backend (migration 000075): widened `dashboard_widgets.widget_type`
+  CHECK with the two new types; `GET /api/v1/widgets/:widget_id/drilldown`
+  (group key required, unresolvable key → honest 400, types without
+  groups → 400, shared-view access allowed, private unshared → 404);
+  `export.csv` extended to the new types (configured column order,
+  same 10,000-row cap + `X-Result-Truncated`). OpenAPI pinned. 25 Go
+  tests.
+- Frontend: two new type cards + config panels in WidgetDialog
+  (column chips, sort-by limited to kept columns, sort direction,
+  max-rows clamped 1–100, forced-assignee note); WidgetCard renders the
+  row tables with config-stored sort and pagination, an "Assigned to
+  you" badge, and a drill-down modal (fixed columns, pagination,
+  widget-scoped CSV export — no segment-scoped export endpoint exists);
+  row click navigates to the issue detail. 29 new frontend tests
+  (plan required ≥16); full suite 1707 passed at close. Wave 2
+  implemented from the prototype as spec after the 2026-10-30 approval
+  timeout rule (15 minutes, then best recommendation); deviations from
+  the prototype documented in the cycle ledger (all columns sortable,
+  view-only sort headers as plain text, no chart hover lift in recharts).
+
 **Customizable dashboards, phase 2 (cycle 83)**
 
 - Plane parity (docs.plane.so/dashboards): four new widget types — smart
