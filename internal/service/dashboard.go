@@ -193,10 +193,21 @@ var (
 	// key is missing or does not resolve to a group of the widget (400
 	// — never a guess). The handler maps it to 400 bad_request.
 	ErrInvalidDrilldownGroup = errors.New("service: invalid drill-down group")
+	// ErrInvalidDrilldownMetric is returned when an intake_breakdown
+	// drill-down's metric is missing, is avg_decide (an aggregate, not
+	// a row set), or is not one of the eight row-set metrics (400 —
+	// never a guess). The handler maps it to 400 bad_request.
+	ErrInvalidDrilldownMetric = errors.New("service: invalid drill-down metric")
+	// ErrInvalidDrilldownPerPage is returned when an intake_breakdown
+	// drill-down's per_page is outside 1-100. The handler maps it to
+	// 400 bad_request.
+	ErrInvalidDrilldownPerPage = errors.New("service: invalid drill-down per_page")
 	// ErrDrilldownUnavailable is returned when the widget's type has
-	// no groups to drill into (number, intake_breakdown,
-	// work_items_table, assigned_to_me). The handler maps it to 400
-	// bad_request with an honest message.
+	// no drill-down at all (number, work_items_table, assigned_to_me).
+	// intake_breakdown drills via a metric instead of a group (see
+	// GetIntakeDrilldown); calling GetWidgetDrilldown on it returns
+	// ErrInvalidDrilldownMetric, not this sentinel. The handler maps
+	// both to 400 bad_request with an honest message.
 	ErrDrilldownUnavailable = errors.New("service: drill-down is not available for this widget type")
 	// ErrInvalidWidgetConfig is returned when the widget config JSON
 	// fails validation (bad group_by, bad metric, bad max_rows,
@@ -278,13 +289,20 @@ type WidgetDataGroup struct {
 	Percentage *float64 `json:"percentage,omitempty"`
 }
 
-// IntakeBreakdown is the six-number intake health summary of the
+// IntakeBreakdown is the intake health summary of the
 // intake_breakdown widget: in-app vs form vs email intake volume,
 // terminal triage outcomes, and the mean time from intake-row creation
-// to a terminal decision (rejected/accepted/duplicate), in seconds.
-// EmailVolume is ALWAYS 0: glance has no email ingestion, and the
-// frontend renders the tile with an honest "no email ingestion yet"
-// tooltip rather than a fake number.
+// to a terminal decision (rejected/accepted/duplicate), in seconds,
+// plus the C85 funnel counts (duplicate, pending, snoozed). The six
+// original fields are byte-identical in meaning; the three funnel
+// fields are additive only. EmailVolume is ALWAYS 0: glance has no
+// email ingestion, and the frontend renders the tile with an honest
+// "no email ingestion yet" tooltip rather than a fake number. Pending
+// uses the inbox EffectiveStatus rule (status pending, plus snoozed
+// rows whose snoozed_till has passed); Snoozed is still-snoozed only
+// (snoozed_till in the future, or NULL — a snoozed row with no till
+// has not resurfaced under EffectiveStatus, so it still counts as
+// snoozed).
 type IntakeBreakdown struct {
 	InAppVolume      int     `json:"in_app_volume"`
 	EmailVolume      int     `json:"email_volume"`
@@ -292,6 +310,51 @@ type IntakeBreakdown struct {
 	TotalAccepted    int     `json:"total_accepted"`
 	TotalRejected    int     `json:"total_rejected"`
 	AvgDecideSeconds float64 `json:"avg_decide_seconds"`
+	// C85 funnel counts (new fields only).
+	TotalDuplicate int `json:"total_duplicate"`
+	Pending        int `json:"pending"`
+	Snoozed        int `json:"snoozed"`
+}
+
+// IntakeDrilldownItem is one intake row behind an intake_breakdown
+// tile (C85). The field names reuse the existing intake-list payload
+// where they exist: id (the intake_issues row id), issue_id, status
+// (the int16 code) and status_name (the IntakeStatusName vocabulary),
+// snoozed_till, duplicate_to_id, created_at — all from IntakeIssue.
+// title and project reuse the WidgetRowItem names (the issue's name
+// and its {id, name} project ref) so the modal renders without a
+// nested issue object; source is the intake_issues.source channel
+// (in_app|form|email). Status and StatusName carry the EFFECTIVE
+// status (the inbox EffectiveStatus rule): a resurfaced snoozed row
+// reads pending, not snoozed.
+type IntakeDrilldownItem struct {
+	ID            string           `json:"id"`
+	IssueID       string           `json:"issue_id"`
+	Title         string           `json:"title"`
+	Project       WidgetRowProject `json:"project"`
+	Status        int16            `json:"status"`
+	StatusName    string           `json:"status_name"`
+	Source        string           `json:"source"`
+	SnoozedTill   *time.Time       `json:"snoozed_till,omitempty"`
+	DuplicateToID *string          `json:"duplicate_to_id,omitempty"`
+	CreatedAt     time.Time        `json:"created_at"`
+}
+
+// IntakeDrilldown is the row list behind one intake_breakdown tile:
+// GET /api/v1/widgets/:id/drilldown?metric=<metric>&page=...&per_page=...
+// Items are the metric's rows on the requested page; per_page is the
+// ?per_page= value (1-100, default 10 — intake_breakdown widgets
+// reject a max_rows config, so unlike the C84 drill-down there is no
+// widget max_rows to fall back to; see GetIntakeDrilldown); total is
+// the metric's row count before pagination; metric echoes the
+// requested metric.
+// Items are most-recently-updated first, like the C84 drill-down.
+type IntakeDrilldown struct {
+	Items   []IntakeDrilldownItem `json:"items"`
+	Page    int                   `json:"page"`
+	PerPage int                   `json:"per_page"`
+	Total   int                   `json:"total"`
+	Metric  string                `json:"metric"`
 }
 
 // Widget row-list column vocabulary (phase 3). The canonical row
@@ -1930,14 +1993,16 @@ const drilldownOrderBy = `i.updated_at DESC, i.id DESC`
 // Label getWidgetData returns — "Group keys are the human labels").
 // The item set is the widget's base filters (project scope + dashboard
 // filters + widget filters) ANDed with the segment's group filter.
-// Types without groups (number, intake_breakdown, work_items_table,
-// assigned_to_me) are ErrDrilldownUnavailable; a missing or
-// unresolvable group key is ErrInvalidDrilldownGroup — never a guess.
-// For smart_counter|smart_gauge the metric changes the displayed group
-// value, NOT the item set: the drill-down lists the same items for
-// count and estimate_points. Read authZ = the widget read rule (a
-// shared-view member may drill; a private unshared dashboard reads as
-// a missing widget).
+// Types without groups (number, work_items_table, assigned_to_me)
+// are ErrDrilldownUnavailable; intake_breakdown drills by metric, not
+// group (see GetIntakeDrilldown — calling this function on it is an
+// ErrInvalidDrilldownMetric, and the handler never does); a missing
+// or unresolvable group key is ErrInvalidDrilldownGroup — never a
+// guess. For smart_counter|smart_gauge the metric changes the
+// displayed group value, NOT the item set: the drill-down lists the
+// same items for count and estimate_points. Read authZ = the widget
+// read rule (a shared-view member may drill; a private unshared
+// dashboard reads as a missing widget).
 func GetWidgetDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, groupKey string, page int) (*WidgetDrilldown, error) {
 	if page < 1 {
 		return nil, ErrInvalidWidgetPage
@@ -1954,6 +2019,8 @@ func GetWidgetDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actor
 		WidgetTypePie, WidgetTypeSmartCounter, WidgetTypeSmartGauge,
 		WidgetTypeTable2D:
 		// Group-based: drillable.
+	case WidgetTypeIntake:
+		return nil, fmt.Errorf("%w: intake_breakdown drill-down requires metric, not group", ErrInvalidDrilldownMetric)
 	default:
 		return nil, ErrDrilldownUnavailable
 	}
@@ -2005,6 +2072,202 @@ func GetWidgetDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actor
 		Total:      total,
 		GroupLabel: matched.Label,
 		GroupBy:    wc.cfg.groupBy,
+	}, nil
+}
+
+// intakeDrilldownMetrics is the row-set metric vocabulary of the
+// intake_breakdown drill-down, in tile order. avg_decide is
+// deliberately absent: it is an aggregate, not a row set.
+var intakeDrilldownMetrics = []string{
+	"in_app", "form", "email", "accepted", "rejected", "duplicate",
+	"pending", "snoozed",
+}
+
+// validIntakeDrilldownMetric reports whether m is a row-set metric.
+func validIntakeDrilldownMetric(m string) bool {
+	for _, v := range intakeDrilldownMetrics {
+		if v == m {
+			return true
+		}
+	}
+	return false
+}
+
+// validateIntakeDrilldownMetric rejects a missing, aggregate, or
+// unknown metric with an honest message — never a guess, never a
+// silent fallback to another row set.
+func validateIntakeDrilldownMetric(metric string) error {
+	switch {
+	case strings.TrimSpace(metric) == "":
+		return fmt.Errorf("%w: metric is required for intake_breakdown drill-down", ErrInvalidDrilldownMetric)
+	case metric == "avg_decide":
+		return fmt.Errorf("%w: average time to decide has no underlying row list", ErrInvalidDrilldownMetric)
+	case !validIntakeDrilldownMetric(metric):
+		return fmt.Errorf("%w: unknown metric %q: want one of %s", ErrInvalidDrilldownMetric, metric, strings.Join(intakeDrilldownMetrics, "|"))
+	}
+	return nil
+}
+
+// intakeMetricFilter renders the metric's row predicate, allocating
+// a $n placeholder per status code through arg (pgx rejects
+// arguments no placeholder references, so each query binds exactly
+// the codes its predicate uses — $1 is always the workspace id,
+// bound by the caller before arg is used). Source metrics count
+// every status (volume = all rows in the channel, matching
+// computeIntakeBreakdown); status metrics count every source. email
+// is a real predicate, not a hard-coded empty list: it returns empty
+// today because glance has no email ingestion (the CHECK on
+// intake_issues.source reserves the value), and it would honestly
+// surface rows if ingestion ever lands.
+func intakeMetricFilter(metric string, arg func(any) string) string {
+	switch metric {
+	case "in_app":
+		return `ii.source = 'in_app'`
+	case "form":
+		return `ii.source = 'form'`
+	case "email":
+		return `ii.source = 'email'`
+	case "accepted":
+		return `ii.status = ` + arg(IntakeAccepted)
+	case "rejected":
+		return `ii.status = ` + arg(IntakeRejected)
+	case "duplicate":
+		return `ii.status = ` + arg(IntakeDuplicate)
+	case "pending":
+		return `(` + `ii.status = ` + arg(IntakePending) + ` OR (ii.status = ` + arg(IntakeSnoozed) + ` AND ii.snoozed_till IS NOT NULL AND ii.snoozed_till <= now()))`
+	case "snoozed":
+		return `(ii.status = ` + arg(IntakeSnoozed) + ` AND (ii.snoozed_till IS NULL OR ii.snoozed_till > now()))`
+	}
+	return `FALSE`
+}
+
+// intakeDrilldownFrom is the shared FROM of the intake drill-down and
+// its CSV export: the intake join carries the project scope, the
+// issues join the row's title, the projects join its {id, name} ref.
+// No issue-liveness filter: the breakdown counts terminal rows whose
+// issues are soft-deleted (rejected/duplicate), so the drill-down
+// must list them too — filtering deleted_at would break the
+// reconciliation between funnel counts and row totals.
+const intakeDrilldownFrom = `FROM intake_issues ii
+	  JOIN intake it ON it.id = ii.intake_id
+	  JOIN projects p ON p.id = it.project_id
+	  JOIN issues i ON i.id = ii.issue_id`
+
+// queryIntakeDrilldown runs the metric's row query: the total first
+// (for the envelope and the CSV cap decision), then the requested
+// page. limit < 0 means no pagination (the CSV path). Rows carry the
+// EFFECTIVE status: the SELECT computes it with the same rule as
+// EffectiveStatus (snoozed + till passed → pending), so a resurfaced
+// snoozed row scans back as pending with status_name "pending".
+// Scope = every non-archived project of the workspace (the
+// computeIntakeBreakdown scope — widget-level filters and project_ids
+// stay ignored, documented). The COUNT binds only the where-clause
+// args (a snapshot taken before the SELECT's CASE allocates its
+// own placeholders); the SELECT binds the full set.
+func queryIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, wsID, metric string, limit, offset int) ([]IntakeDrilldownItem, int, error) {
+	args := []any{wsID}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	where := `p.workspace_id = $1::uuid AND p.archived_at IS NULL AND ` + intakeMetricFilter(metric, arg)
+	countArgs := append([]any(nil), args...)
+	var total int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) `+intakeDrilldownFrom+` WHERE `+where, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	effCase := `CASE WHEN ii.status = ` + arg(IntakeSnoozed) + ` AND ii.snoozed_till IS NOT NULL AND ii.snoozed_till <= now() THEN ` + arg(IntakePending) + ` ELSE ii.status END`
+	q := `SELECT ii.id::text, ii.issue_id::text, i.name,
+		       p.id::text, p.name,
+		       ` + effCase + `,
+		       ii.source, ii.snoozed_till, ii.duplicate_to_id::text, ii.created_at
+		  ` + intakeDrilldownFrom + `
+		 WHERE ` + where + `
+		 ORDER BY i.updated_at DESC, i.id DESC`
+	if limit >= 0 {
+		q += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
+	}
+	rows, err := pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []IntakeDrilldownItem{}
+	for rows.Next() {
+		var item IntakeDrilldownItem
+		if err := rows.Scan(&item.ID, &item.IssueID, &item.Title,
+			&item.Project.ID, &item.Project.Name, &item.Status,
+			&item.Source, &item.SnoozedTill, &item.DuplicateToID,
+			&item.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		item.StatusName = IntakeStatusName(item.Status)
+		out = append(out, item)
+	}
+	return out, total, rows.Err()
+}
+
+// GetWidgetType resolves a widget's type under the widget read rule
+// (a private dashboard of another creator without a share reads as a
+// missing widget). The drill-down handler dispatches on it: grouped
+// types take ?group=, intake_breakdown takes ?metric=.
+func GetWidgetType(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (string, error) {
+	_, wd, err := loadWidgetDashboard(ctx, pool, widgetID, actorID, false)
+	if err != nil {
+		return "", err
+	}
+	return wd.WidgetType, nil
+}
+
+// GetIntakeDrilldown lists the rows behind one intake_breakdown tile:
+// GET /api/v1/widgets/:id/drilldown?metric=<metric>&page=...&per_page=...
+// The metric is required (missing → 400); avg_decide is 400 (an
+// aggregate, not a row set); unknown metrics are 400. A ?group=
+// param is meaningless for intake tiles and is ignored by the
+// handler (documented, same pattern as C84's group_by/metric
+// ignores). Scope = every non-archived project of the workspace —
+// the computeIntakeBreakdown scope; widget-level filters and
+// project_ids stay ignored. per_page <= 0 (absent) means 10:
+// intake_breakdown configs reject max_rows, so the C84
+// max_rows-fallback convention cannot apply here — that audit
+// finding is documented, and data and CSV stay consistent (the CSV
+// path is unpaginated by design, same predicate and order).
+// per_page > 100 is ErrInvalidDrilldownPerPage.
+// email returns an empty list:
+// glance has no email ingestion, and rows are never faked. Read
+// authZ = the widget read rule (a shared-view member may drill; a
+// private unshared dashboard reads as a missing widget).
+func GetIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric string, page, perPage int) (*IntakeDrilldown, error) {
+	if page < 1 {
+		return nil, ErrInvalidWidgetPage
+	}
+	if perPage > 100 {
+		return nil, ErrInvalidDrilldownPerPage
+	}
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if wc.widget.WidgetType != WidgetTypeIntake {
+		return nil, ErrDrilldownUnavailable
+	}
+	if err := validateIntakeDrilldownMetric(metric); err != nil {
+		return nil, err
+	}
+	if perPage <= 0 {
+		perPage = 10
+	}
+	items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, perPage, (page-1)*perPage)
+	if err != nil {
+		return nil, err
+	}
+	return &IntakeDrilldown{
+		Items:   items,
+		Page:    page,
+		PerPage: perPage,
+		Total:   total,
+		Metric:  metric,
 	}, nil
 }
 
@@ -2205,28 +2468,48 @@ func labelGroup(dim, key string, total, completed int) WidgetDataGroup {
 	return g
 }
 
-// computeIntakeBreakdown computes the six headline numbers of the
+// intakeEffectivePendingSQL and intakeStillSnoozedSQL are the SQL
+// spellings of the inbox EffectiveStatus rule (IntakeIssue.
+// EffectiveStatus in intake.go): a snoozed row whose snoozed_till has
+// passed reads as pending; a snoozed row still counts as snoozed only
+// while its till is in the future (a NULL till has not resurfaced, so
+// it stays snoozed). The placeholders $2/$3 are the pending/snoozed
+// status codes, bound by the caller — this is the same rule evaluated
+// at DB time, not a second hand-rolled rule. now() is the DB clock;
+// the ticker rewrites stored statuses between passes, so the boundary
+// row (till == now) reads pending on both sides of the rule
+// (!After(now) in Go, <= now() in SQL).
+const intakeEffectivePendingSQL = `(ii.status = $2 OR (ii.status = $3 AND ii.snoozed_till IS NOT NULL AND ii.snoozed_till <= now()))`
+const intakeStillSnoozedSQL = `(ii.status = $3 AND (ii.snoozed_till IS NULL OR ii.snoozed_till > now()))`
+
+// computeIntakeBreakdown computes the headline numbers of the
 // intake_breakdown widget over the dashboard's project scope (every
 // non-archived project of the workspace). Widget-level filters and
 // project_ids are deliberately ignored (Plane parity). Decided rows
 // are the terminal triage states (rejected/accepted/duplicate); the
 // average time to decide is the mean of updated_at − created_at over
-// those rows, in seconds (0 when nothing is decided yet).
+// those rows, in seconds (0 when nothing is decided yet). The funnel
+// counts (duplicate, pending, snoozed) use the same row set, so the
+// drill-down totals reconcile with the widget numbers exactly.
 func computeIntakeBreakdown(ctx context.Context, pool *pgxpool.Pool, wsID string) (*IntakeBreakdown, error) {
 	var b IntakeBreakdown
 	var avg *float64
 	err := pool.QueryRow(ctx,
 		`SELECT COUNT(*) FILTER (WHERE ii.source = 'in_app'),
 		        COUNT(*) FILTER (WHERE ii.source = 'form'),
-		        COUNT(*) FILTER (WHERE ii.status = $2),
-		        COUNT(*) FILTER (WHERE ii.status = $3),
-		        AVG(EXTRACT(EPOCH FROM (ii.updated_at - ii.created_at))) FILTER (WHERE ii.status IN ($2, $3, $4))
+		        COUNT(*) FILTER (WHERE ii.status = $4),
+		        COUNT(*) FILTER (WHERE ii.status = $5),
+		        AVG(EXTRACT(EPOCH FROM (ii.updated_at - ii.created_at))) FILTER (WHERE ii.status IN ($4, $5, $6)),
+		        COUNT(*) FILTER (WHERE ii.status = $6),
+		        COUNT(*) FILTER (WHERE `+intakeEffectivePendingSQL+`),
+		        COUNT(*) FILTER (WHERE `+intakeStillSnoozedSQL+`)
 		   FROM intake_issues ii
 		   JOIN intake it ON it.id = ii.intake_id
 		   JOIN projects p ON p.id = it.project_id
 		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL`,
-		wsID, IntakeAccepted, IntakeRejected, IntakeDuplicate).
-		Scan(&b.InAppVolume, &b.FormVolume, &b.TotalAccepted, &b.TotalRejected, &avg)
+		wsID, IntakePending, IntakeSnoozed, IntakeAccepted, IntakeRejected, IntakeDuplicate).
+		Scan(&b.InAppVolume, &b.FormVolume, &b.TotalAccepted, &b.TotalRejected, &avg,
+			&b.TotalDuplicate, &b.Pending, &b.Snoozed)
 	if err != nil {
 		return nil, err
 	}
@@ -2438,20 +2721,77 @@ func rowItemCSVRecord(columns []string, item WidgetRowItem) []string {
 	return rec
 }
 
+// intakeDrilldownCSVRecord renders one intake drill-down row as a
+// CSV record in the intake-row field order: status is the effective
+// status code (the IntakeIssue vocabulary), status_name its name;
+// snoozed_till/duplicate_to_id are empty when absent; timestamps are
+// RFC3339.
+func intakeDrilldownCSVRecord(item IntakeDrilldownItem) []string {
+	snoozed := ""
+	if item.SnoozedTill != nil {
+		snoozed = item.SnoozedTill.UTC().Format(time.RFC3339)
+	}
+	dup := ""
+	if item.DuplicateToID != nil {
+		dup = *item.DuplicateToID
+	}
+	return []string{item.ID, item.IssueID, item.Title, item.Project.Name,
+		strconv.Itoa(int(item.Status)), item.StatusName, item.Source,
+		snoozed, dup, item.CreatedAt.UTC().Format(time.RFC3339)}
+}
+
 // ExportWidgetCSV renders the widget's FULL live dataset as CSV — the
 // same recompute as GetWidgetData, but unpaginated (every group /
 // every row, not just the current page), capped at csvExportCap rows.
 // Columns per type: key,label,value (charts, smart_counter, table_2d);
 // key,label,completed,total,percentage (smart_gauge);
-// metric,value (intake_breakdown); value (number); the configured
-// columns in order (work_items_table, assigned_to_me). Proper CSV
-// quoting via encoding/csv. Read authZ = the widget read rule (a
-// shared-view member may export). The filename is
+// metric,value (intake_breakdown aggregate — unchanged when metric is
+// empty); the intake-row field set (intake_breakdown with a metric:
+// id,issue_id,title,project,status,status_name,source,snoozed_till,
+// duplicate_to_id,created_at — the drill-down row set, same order and
+// predicate, capped at csvExportCap with X-Result-Truncated);
+// value (number); the configured columns in order
+// (work_items_table, assigned_to_me). A metric on a non-intake widget
+// is ignored; for intake widgets an avg_decide or unknown metric is
+// 400 (the same validation as the drill-down). Proper CSV quoting
+// via encoding/csv. Read authZ = the widget read rule (a shared-view
+// member may export). The filename is
 // "<dashboard-slug>-<widget-slug>.csv", sanitized.
-func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string) (filename string, data []byte, truncated bool, err error) {
+func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric string) (filename string, data []byte, truncated bool, err error) {
 	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
 	if err != nil {
 		return "", nil, false, err
+	}
+	// Intake + metric short-circuits the aggregate recompute: the
+	// export is the drill-down row set, not the six numbers.
+	if wc.widget.WidgetType == WidgetTypeIntake && metric != "" {
+		if err := validateIntakeDrilldownMetric(metric); err != nil {
+			return "", nil, false, err
+		}
+		items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, csvExportCap, 0)
+		if err != nil {
+			return "", nil, false, err
+		}
+		rows := [][]string{{"id", "issue_id", "title", "project", "status", "status_name", "source", "snoozed_till", "duplicate_to_id", "created_at"}}
+		for _, item := range items {
+			rows = append(rows, intakeDrilldownCSVRecord(item))
+		}
+		if total > csvExportCap {
+			truncated = true
+		}
+		var buf strings.Builder
+		w := csv.NewWriter(&buf)
+		for _, r := range rows {
+			if err := w.Write(r); err != nil {
+				return "", nil, false, err
+			}
+		}
+		w.Flush()
+		if err := w.Error(); err != nil {
+			return "", nil, false, err
+		}
+		filename = slugify(wc.dr.Dashboard.Name) + "-" + slugify(wc.widget.Title) + ".csv"
+		return filename, []byte(buf.String()), truncated, nil
 	}
 	full, err := computeWidgetData(ctx, pool, wc, actorID, 1, false)
 	if err != nil {
