@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Intake analytics, phase 1: intake-breakdown drill-down + funnel counts (cycle 85)**
+
+- Plane parity (docs.plane.so/dashboards): the intake_breakdown widget —
+  the one widget family cycle 84 left non-clickable — gains a drill-down:
+  every tile number (in-app, form, email, accepted, rejected, duplicate,
+  pending, snoozed) opens a modal listing the exact intake rows behind
+  it; avg-time-to-decide stays plain text (an aggregate, not a row list).
+  Email tile shows the honest empty state (glance has no email ingestion).
+- Backend: `GET /api/v1/widgets/:widget_id/drilldown` accepts `metric`
+  for intake_breakdown widgets (missing/unknown metric → honest 400,
+  avg_decide → 400, email → empty list); pending reuses the inbox
+  EffectiveStatus rule (resurfaced snoozed included, still-snoozed
+  excluded); `IntakeBreakdown` gains backward-compatible funnel fields
+  `total_duplicate`, `pending`, `snoozed`; `export.csv` accepts
+  `?metric=` (same 10,000-row cap + `X-Result-Truncated`). OpenAPI
+  pinned. 26 new Go tests.
+- Frontend: WidgetCard intake tiles clickable (C84 modal + click
+  patterns reused), drill-down modal with pagination, metric-scoped CSV
+  export, row click to issue detail; table view gains the funnel row.
+  21 new frontend tests (plan required ≥16); full suite 1727 passed at
+  close. Wave 2 merged after the 2026-10-30 approval timeout rule (15
+  minutes, then best recommendation); deviations from the prototype
+  documented in the cycle ledger.
+
 **Dashboards phase 3: row-list widgets + drill-down (cycle 84)**
 
 - Plane parity (docs.plane.so/dashboards): two new widget types —
