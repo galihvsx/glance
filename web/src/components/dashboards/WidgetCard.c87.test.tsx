@@ -381,7 +381,11 @@ describe("WidgetCard intake bucket drill-down (C87T1)", () => {
     expect(screen.getByText("in_app")).toBeInTheDocument();
   });
 
-  it("bucket modal sends no metric (all rows in the bucket) and has no Export CSV", async () => {
+  it("bucket modal sends no metric (all rows in the bucket); C88 adds its Export CSV", async () => {
+    // C88T1 supersedes the C87 "no Export CSV" half of this test:
+    // the bucket modal now HAS the button (covered in detail by
+    // WidgetCard.c88.test.tsx). What stays true from C87 is the
+    // fetch side — the bucket drill-down still sends no metric.
     mockFetchWidgetData.mockResolvedValue({ intake });
     mockFetchIntakeTrend.mockResolvedValue(trend("week", weekBuckets));
     mockFetchIntakeDrilldownBucket.mockResolvedValue(
@@ -392,8 +396,8 @@ describe("WidgetCard intake bucket drill-down (C87T1)", () => {
     await screen.findByText("Intake — week of 2026-10-12");
     expect(mockFetchIntakeDrilldown).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("button", { name: "Export CSV" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Export CSV" }),
+    ).toBeInTheDocument();
   });
 
   it("click with no active payload opens nothing", async () => {
