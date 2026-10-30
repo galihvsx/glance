@@ -209,6 +209,20 @@ var (
 	// ErrInvalidDrilldownMetric, not this sentinel. The handler maps
 	// both to 400 bad_request with an honest message.
 	ErrDrilldownUnavailable = errors.New("service: drill-down is not available for this widget type")
+	// ErrInvalidTrendGranularity is returned when an intake trend's
+	// granularity is not one of day|week|month. The handler maps it
+	// to 400 bad_request.
+	ErrInvalidTrendGranularity = errors.New("service: invalid trend granularity: want day|week|month")
+	// ErrInvalidTrendBuckets is returned when an intake trend's
+	// bucket count is outside 1-52. The handler maps it to 400
+	// bad_request.
+	ErrInvalidTrendBuckets = errors.New("service: invalid trend buckets: want 1-52")
+	// ErrTrendUnavailable is returned when the trend endpoint (or the
+	// trend CSV export) is called on a non-intake_breakdown widget:
+	// trend is an intake concept and is not generalized to other
+	// widget types in this cycle. The handler maps it to 400
+	// bad_request with an honest message.
+	ErrTrendUnavailable = errors.New("service: trend is only available for intake_breakdown widgets")
 	// ErrInvalidWidgetConfig is returned when the widget config JSON
 	// fails validation (bad group_by, bad metric, bad max_rows,
 	// malformed filter/project_ids values, unknown keys, keys that are
@@ -355,6 +369,39 @@ type IntakeDrilldown struct {
 	PerPage int                   `json:"per_page"`
 	Total   int                   `json:"total"`
 	Metric  string                `json:"metric"`
+}
+
+// IntakeTrendBucket is one period of the intake trend series (C86):
+// the intake volume created in the bucket, by source channel, plus the
+// terminal triage outcomes. The field names reuse the IntakeBreakdown
+// vocabulary (in_app, form, email, accepted, rejected, duplicate) —
+// no synonyms. Email is always 0: glance has no email ingestion, and
+// the series is present as all-zeros so the chart legend stays
+// honest, never faked. Pending/snoozed are deliberately NOT per-bucket
+// series: they are point-in-time states, not creation-time facts, and
+// bucketing them by created_at would mislead.
+// BucketStart is the ISO date (YYYY-MM-DD, UTC) of the bucket's first
+// day: the calendar day for day buckets, the Monday for week buckets,
+// the 1st for month buckets.
+type IntakeTrendBucket struct {
+	BucketStart string `json:"bucket_start"`
+	InApp       int    `json:"in_app"`
+	Form        int    `json:"form"`
+	Email       int    `json:"email"`
+	Accepted    int    `json:"accepted"`
+	Rejected    int    `json:"rejected"`
+	Duplicate   int    `json:"duplicate"`
+}
+
+// IntakeTrend is the time-bucketed intake series behind
+// GET /api/v1/widgets/:id/trend: consecutive periods ending at the
+// current period (the bucket containing now), so the series always
+// ends "now". Empty buckets render as zeros — no gaps, so the
+// frontend draws a continuous line.
+type IntakeTrend struct {
+	Granularity  string              `json:"granularity"`
+	Buckets      []IntakeTrendBucket `json:"buckets"`
+	TotalBuckets int                 `json:"total_buckets"`
 }
 
 // Widget row-list column vocabulary (phase 3). The canonical row
@@ -2269,6 +2316,205 @@ func GetIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actor
 		Total:   total,
 		Metric:  metric,
 	}, nil
+}
+
+// Intake trend granularities (C86) and their date_trunc units.
+// date_trunc('week', ...) starts Monday (ISO week) in Postgres.
+const (
+	IntakeTrendDay   = "day"
+	IntakeTrendWeek  = "week"
+	IntakeTrendMonth = "month"
+)
+
+// parseIntakeTrendParams applies the granularity default (week) and
+// validates: granularity must be day|week|month, buckets 1-52. The
+// bucket default (12) lives in the handler, where "absent" and
+// "explicitly 0" are distinguishable: an explicit 0 is out of range
+// and an honest 400, never silently clamped to the default.
+func parseIntakeTrendParams(granularity string, buckets int) (string, int, error) {
+	if granularity == "" {
+		granularity = IntakeTrendWeek
+	}
+	switch granularity {
+	case IntakeTrendDay, IntakeTrendWeek, IntakeTrendMonth:
+	default:
+		return "", 0, ErrInvalidTrendGranularity
+	}
+	if buckets < 1 || buckets > 52 {
+		return "", 0, ErrInvalidTrendBuckets
+	}
+	return granularity, buckets, nil
+}
+
+// trendBucketStarts returns the first-day timestamps (UTC midnight)
+// of n consecutive periods ending at the current period: the last
+// start is the current day / Monday / 1st of month, and earlier
+// starts step back one period each. Buckets are calendar periods in
+// UTC — the repo's schedule/time convention.
+func trendBucketStarts(granularity string, n int, now time.Time) []time.Time {
+	now = now.UTC()
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var current time.Time
+	switch granularity {
+	case IntakeTrendDay:
+		current = day
+	case IntakeTrendWeek:
+		// Monday = (Weekday+6)%7 days back (Sunday=0 in Go).
+		current = day.AddDate(0, 0, -int((now.Weekday()+6)%7))
+	case IntakeTrendMonth:
+		current = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	}
+	starts := make([]time.Time, n)
+	for i := range starts {
+		back := n - 1 - i
+		switch granularity {
+		case IntakeTrendDay:
+			starts[i] = current.AddDate(0, 0, -back)
+		case IntakeTrendWeek:
+			starts[i] = current.AddDate(0, 0, -7*back)
+		case IntakeTrendMonth:
+			starts[i] = current.AddDate(0, -back, 0)
+		}
+	}
+	return starts
+}
+
+// computeIntakeTrend buckets intake rows by their CREATION time, not
+// decision time: a row decided this week but created last month counts
+// in last month's bucket. That keeps "created volume vs decided
+// volume" comparable within a bucket — triage lag shows up honestly
+// as decided < created in recent buckets. Scope = the
+// computeIntakeBreakdown scope (workspace, non-archived projects;
+// widget-level filters and project_ids ignored, documented). Bucketing
+// runs in UTC regardless of the database session's TimeZone: the
+// created_at timestamptz is converted to a UTC wall clock before
+// date_trunc, so day/week/month boundaries are UTC calendar
+// boundaries. Rows older than the window (or created in a future
+// period) fall outside the returned buckets.
+func computeIntakeTrend(ctx context.Context, pool *pgxpool.Pool, wsID, granularity string, buckets int) (*IntakeTrend, error) {
+	granularity, buckets, err := parseIntakeTrendParams(granularity, buckets)
+	if err != nil {
+		return nil, err
+	}
+	starts := trendBucketStarts(granularity, buckets, time.Now())
+	// The granularity value is whitelist-validated above, so
+	// interpolating it as the date_trunc unit is safe (units cannot
+	// be bound as a query parameter).
+	rows, err := pool.Query(ctx,
+		`SELECT date_trunc('`+granularity+`', ii.created_at AT TIME ZONE 'UTC'),
+		        COUNT(*) FILTER (WHERE ii.source = 'in_app'),
+		        COUNT(*) FILTER (WHERE ii.source = 'form'),
+		        COUNT(*) FILTER (WHERE ii.status = $2),
+		        COUNT(*) FILTER (WHERE ii.status = $3),
+		        COUNT(*) FILTER (WHERE ii.status = $4)
+		   FROM intake_issues ii
+		   JOIN intake it ON it.id = ii.intake_id
+		   JOIN projects p ON p.id = it.project_id
+		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL
+		    AND ii.created_at >= $5
+		  GROUP BY date_trunc('`+granularity+`', ii.created_at AT TIME ZONE 'UTC')`,
+		wsID, IntakeAccepted, IntakeRejected, IntakeDuplicate, starts[0])
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byDay := map[string]*IntakeTrendBucket{}
+	for rows.Next() {
+		var b time.Time
+		var bucket IntakeTrendBucket
+		if err := rows.Scan(&b, &bucket.InApp, &bucket.Form,
+			&bucket.Accepted, &bucket.Rejected, &bucket.Duplicate); err != nil {
+			return nil, err
+		}
+		// date_trunc on a UTC wall clock yields a UTC timestamp;
+		// its calendar date is the bucket's first day.
+		bucket.BucketStart = b.UTC().Format("2006-01-02")
+		// Email is always 0: glance has no email ingestion.
+		bucket.Email = 0
+		byDay[bucket.BucketStart] = &bucket
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := &IntakeTrend{Granularity: granularity, TotalBuckets: buckets}
+	out.Buckets = make([]IntakeTrendBucket, 0, buckets)
+	for _, s := range starts {
+		key := s.Format("2006-01-02")
+		if b, ok := byDay[key]; ok {
+			out.Buckets = append(out.Buckets, *b)
+		} else {
+			// Empty buckets render as zeros — no gaps.
+			out.Buckets = append(out.Buckets, IntakeTrendBucket{BucketStart: key})
+		}
+	}
+	return out, nil
+}
+
+// GetIntakeTrend returns the time-bucketed intake series for one
+// intake_breakdown widget: GET /api/v1/widgets/:id/trend
+// ?granularity=day|week|month&buckets=1-52 (defaults week/12).
+// AuthZ = the widget read rule (a shared-view member may fetch; a
+// private unshared dashboard reads as a missing widget) — the resolve
+// runs before any param validation so a 404 never leaks existence
+// through a 400. A non-intake_breakdown widget is an honest 400:
+// trend is an intake concept and is not generalized in this cycle.
+// Scope = every non-archived project of the workspace (widget-level
+// filters ignored, like the headline numbers).
+func GetIntakeTrend(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, granularity string, buckets int) (*IntakeTrend, error) {
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if wc.widget.WidgetType != WidgetTypeIntake {
+		return nil, ErrTrendUnavailable
+	}
+	return computeIntakeTrend(ctx, pool, wc.dr.Dashboard.WorkspaceID, granularity, buckets)
+}
+
+// intakeTrendCSVRecord renders one trend bucket as a CSV row, in the
+// documented column order.
+func intakeTrendCSVRecord(b IntakeTrendBucket) []string {
+	return []string{b.BucketStart, strconv.Itoa(b.InApp), strconv.Itoa(b.Form),
+		strconv.Itoa(b.Email), strconv.Itoa(b.Accepted),
+		strconv.Itoa(b.Rejected), strconv.Itoa(b.Duplicate)}
+}
+
+// ExportWidgetTrendCSV renders the intake trend series as CSV for
+// GET /api/v1/widgets/:id/export.csv?trend=1 (+ granularity +
+// buckets, same validation as the trend endpoint). Columns =
+// bucket_start,in_app,form,email,accepted,rejected,duplicate. The
+// series is at most 52 rows, so the 10,000-row cap never binds — the
+// X-Result-Truncated header is never set here (documented, not an
+// omission). AuthZ and the non-intake 400 match GetIntakeTrend.
+func ExportWidgetTrendCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, granularity string, buckets int) (filename string, data []byte, err error) {
+	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
+	if err != nil {
+		return "", nil, err
+	}
+	if wc.widget.WidgetType != WidgetTypeIntake {
+		return "", nil, ErrTrendUnavailable
+	}
+	trend, err := computeIntakeTrend(ctx, pool, wc.dr.Dashboard.WorkspaceID, granularity, buckets)
+	if err != nil {
+		return "", nil, err
+	}
+	rows := [][]string{{"bucket_start", "in_app", "form", "email", "accepted", "rejected", "duplicate"}}
+	for _, b := range trend.Buckets {
+		rows = append(rows, intakeTrendCSVRecord(b))
+	}
+	var buf strings.Builder
+	w := csv.NewWriter(&buf)
+	for _, r := range rows {
+		if err := w.Write(r); err != nil {
+			return "", nil, err
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return "", nil, err
+	}
+	filename = slugify(wc.dr.Dashboard.Name) + "-" + slugify(wc.widget.Title) + ".csv"
+	return filename, []byte(buf.String()), nil
 }
 
 // metricAggregates returns the (total, completed) aggregate expressions

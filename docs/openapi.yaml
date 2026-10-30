@@ -2897,12 +2897,21 @@
         "responses": { "200": { "description": "The segment's items", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WidgetDrilldown" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/widgets/{widget_id}/trend": {
+      "get": {
+        "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Intake volume trend over time",
+        "description": "The time-bucketed intake series for an intake_breakdown widget: consecutive periods ending at the current period (the bucket containing now), so the series always ends 'now'. ?granularity=day|week|month (default week; unknown is 400) and ?buckets=1-52 (default 12; out of range is 400). Week buckets start Monday (ISO week); month buckets are calendar months; day buckets are calendar days (UTC). Per bucket: bucket_start (ISO date of the bucket's first day), in_app, form, email (always 0: glance has no email ingestion), accepted, rejected, duplicate — all counted by the row's created_at falling in the bucket. Decided counts are by CREATION bucket, not decision time: a row decided this week but created last month counts in last month's bucket, keeping created volume vs decided volume comparable within a bucket (triage lag reads as decided < created in recent buckets). Pending/snoozed are not per-bucket series: they are point-in-time states, not creation-time facts. Scope is every non-archived project of the workspace (widget-level filters and project_ids ignored, like the headline numbers). Empty buckets render as zeros (no gaps). Response: {granularity, buckets:[IntakeTrendBucket], total_buckets}. A non-intake_breakdown widget is 400 (trend is an intake concept, not generalized). Read authZ = the widget read rule (a shared-view member may fetch; a private dashboard of another creator without a share is 404).",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "granularity", "in": "query", "required": false, "schema": { "type": "string", "enum": ["day", "week", "month"], "default": "week" }, "description": "Bucket size (default week)" }, { "name": "buckets", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 52, "default": 12 }, "description": "Number of consecutive periods ending at the current period (default 12)" } ],
+        "responses": { "200": { "description": "The intake trend series", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntakeTrend" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/widgets/{widget_id}/export.csv": {
       "get": {
         "tags": ["dashboards"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Export widget data as CSV",
-        "description": "The widget's FULL live dataset as CSV: the same recompute as the data endpoint, but unpaginated (every group, not just the current page), capped at 10,000 data rows (past the cap the response carries X-Result-Truncated: true). Columns per type: key,label,value (charts, smart_counter, table_2d); key,label,completed,total,percentage (smart_gauge); metric,value (intake_breakdown aggregate: the six headline numbers); with ?metric=<metric> on intake_breakdown widgets the drill-down row set instead (id,issue_id,title,project,status,status_name,source,snoozed_till,duplicate_to_id,created_at - same predicate and order as the drill-down, same 10,000-row cap + X-Result-Truncated; without metric the aggregate export is unchanged; avg_decide/unknown metrics are 400; a metric on a non-intake widget is ignored); value (number); the configured columns in order (work_items_table, assigned_to_me - the full dataset rows, capped at 10,000). Content-Disposition: attachment; filename=\\\"<dashboard-slug>-<widget-slug>.csv\\\" (sanitized). Read authZ = the widget read rule (a shared-view member may export).",
-        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "metric", "in": "query", "required": false, "schema": { "type": "string", "enum": ["in_app", "form", "email", "accepted", "rejected", "duplicate", "pending", "snoozed"] }, "description": "intake_breakdown only: dump the drill-down row set for this metric instead of the aggregate export" } ],
+        "description": "The widget's FULL live dataset as CSV: the same recompute as the data endpoint, but unpaginated (every group, not just the current page), capped at 10,000 data rows (past the cap the response carries X-Result-Truncated: true). Columns per type: key,label,value (charts, smart_counter, table_2d); key,label,completed,total,percentage (smart_gauge); metric,value (intake_breakdown aggregate: the six headline numbers); with ?metric=<metric> on intake_breakdown widgets the drill-down row set instead (id,issue_id,title,project,status,status_name,source,snoozed_till,duplicate_to_id,created_at - same predicate and order as the drill-down, same 10,000-row cap + X-Result-Truncated; without metric the aggregate export is unchanged; avg_decide/unknown metrics are 400; a metric on a non-intake widget is ignored); value (number); the configured columns in order (work_items_table, assigned_to_me - the full dataset rows, capped at 10,000). With ?trend=1 on intake_breakdown widgets the export is the trend series instead (columns bucket_start,in_app,form,email,accepted,rejected,duplicate; + ?granularity=day|week|month and ?buckets=1-52, same validation as the trend endpoint; the 10,000-row cap never binds on a ≤52-row series, so X-Result-Truncated is never set; ?trend=1 on a non-intake widget is 400; without trend the aggregate/metric exports are unchanged). Content-Disposition: attachment; filename=\\\"<dashboard-slug>-<widget-slug>.csv\\\" (sanitized). Read authZ = the widget read rule (a shared-view member may export).",
+        "parameters": [ { "name": "widget_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "metric", "in": "query", "required": false, "schema": { "type": "string", "enum": ["in_app", "form", "email", "accepted", "rejected", "duplicate", "pending", "snoozed"] }, "description": "intake_breakdown only: dump the drill-down row set for this metric instead of the aggregate export" }, { "name": "trend", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] }, "description": "intake_breakdown only: dump the trend series instead of the aggregate/metric export (same granularity + buckets params and validation as the trend endpoint)" }, { "name": "granularity", "in": "query", "required": false, "schema": { "type": "string", "enum": ["day", "week", "month"], "default": "week" }, "description": "trend=1 only: bucket size (default week)" }, { "name": "buckets", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 52, "default": 12 }, "description": "trend=1 only: number of consecutive periods ending at the current period (default 12)" } ],
         "responses": { "200": { "description": "CSV export", "content": { "text/csv": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     }
@@ -3102,6 +3111,28 @@
           "total_duplicate": { "type": "integer", "description": "Intake rows triaged to duplicate" },
           "pending": { "type": "integer", "description": "Open intake rows: status pending plus resurfaced snoozed (the inbox EffectiveStatus rule)" },
           "snoozed": { "type": "integer", "description": "Still-snoozed intake rows only (snoozed_till in the future)" }
+        }
+      },
+      "IntakeTrendBucket": {
+        "type": "object",
+        "description": "One period of the intake trend series: intake volume created in the bucket, by source channel, plus terminal triage outcomes — all counted by the row's created_at falling in the bucket (decided counts by creation bucket, not decision time). email is always 0: glance has no email ingestion. bucket_start is the ISO date (YYYY-MM-DD, UTC) of the bucket's first day: the calendar day, the Monday, or the 1st of the month.",
+        "properties": {
+          "bucket_start": { "type": "string", "format": "date", "description": "ISO date of the bucket's first day" },
+          "in_app": { "type": "integer", "description": "Intake rows created in-app in this bucket" },
+          "form": { "type": "integer", "description": "Intake rows created via public intake forms in this bucket" },
+          "email": { "type": "integer", "description": "Always 0: glance has no email ingestion" },
+          "accepted": { "type": "integer", "description": "Intake rows created in this bucket and triaged to accepted" },
+          "rejected": { "type": "integer", "description": "Intake rows created in this bucket and triaged to rejected" },
+          "duplicate": { "type": "integer", "description": "Intake rows created in this bucket and triaged to duplicate" }
+        }
+      },
+      "IntakeTrend": {
+        "type": "object",
+        "description": "The time-bucketed intake series: consecutive periods ending at the current period, so the series always ends 'now'. Empty buckets render as zeros (no gaps).",
+        "properties": {
+          "granularity": { "type": "string", "enum": ["day", "week", "month"], "description": "Bucket size (?granularity=, default week)" },
+          "buckets": { "type": "array", "items": { "$ref": "#/components/schemas/IntakeTrendBucket" }, "description": "The buckets, oldest first, ending at the current period" },
+          "total_buckets": { "type": "integer", "description": "Number of buckets (?buckets= 1-52, default 12)" }
         }
       },
       "DashboardShare": {
