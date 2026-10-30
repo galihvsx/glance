@@ -59,6 +59,9 @@ func RegisterDashboardRoutes(e *echo.Echo, h *DashboardHandler) {
 	// C84T0: drill-down into one chart segment — the items behind the
 	// group (GET /api/v1/widgets/:id/drilldown?group=<group-key>).
 	wg.GET("/:widget_id/drilldown", h.getWidgetDrilldown)
+	// C86T0: intake trend series (GET /api/v1/widgets/:id/trend
+	// ?granularity=day|week|month&buckets=1-52).
+	wg.GET("/:widget_id/trend", h.getWidgetTrend)
 }
 
 // dashboardError maps dashboard/widget sentinel errors to HTTP statuses,
@@ -95,6 +98,12 @@ func dashboardError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
 	case errors.Is(err, service.ErrDrilldownUnavailable):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "drill-down is not available for this widget type", nil)
+	case errors.Is(err, service.ErrInvalidTrendGranularity):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid granularity: want day|week|month", nil)
+	case errors.Is(err, service.ErrInvalidTrendBuckets):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid buckets: want 1-52", nil)
+	case errors.Is(err, service.ErrTrendUnavailable):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "trend is only available for intake_breakdown widgets", nil)
 	case errors.Is(err, service.ErrInvalidWidgetConfig):
 		msg := strings.TrimPrefix(err.Error(), "service: invalid widget config: ")
 		msg = strings.TrimPrefix(msg, "service: invalid widget config")
@@ -511,6 +520,68 @@ func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 	return c.JSON(http.StatusOK, data)
 }
 
+// parseTrendParams parses the shared trend query params
+// (?granularity= + ?buckets=) for the trend endpoint and the trend
+// CSV export. Absent params carry the defaults (week, 12) — the
+// handler can tell "absent" from "explicitly 0", so an explicit
+// buckets=0 reaches the service and fails as out of range instead
+// of silently becoming the default. A non-integer buckets value is
+// a 400 here (syntax); range validation (1-52) and granularity
+// validation live in the service, after authZ, so a private
+// unshared widget still reads 404 for a semantically invalid but
+// syntactically well-formed request.
+func parseTrendParams(c *echo.Context) (string, int, bool) {
+	buckets := 12
+	if raw := c.QueryParam("buckets"); raw != "" {
+		b, err := strconv.Atoi(raw)
+		if err != nil {
+			WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid buckets: want 1-52", nil)
+			return "", 0, false
+		}
+		buckets = b
+	}
+	return c.QueryParam("granularity"), buckets, true
+}
+
+// getWidgetTrend implements GET /api/v1/widgets/{widget_id}/trend —
+// the time-bucketed intake series for an intake_breakdown widget:
+// ?granularity=day|week|month (default week; unknown → 400) and
+// ?buckets=1-52 (default 12; out of range → 400). Buckets are
+// consecutive periods ending at the current period (the bucket
+// containing now), so the series always ends "now". Week buckets
+// start Monday (ISO week); month buckets are calendar months; day
+// buckets are calendar days (UTC). Per bucket: bucket_start (ISO
+// date of the bucket's first day), in_app, form, email (always 0 —
+// glance has no email ingestion), accepted, rejected, duplicate —
+// all counted by the row's created_at falling in the bucket. Decided
+// counts are by CREATION bucket, not decision time: a row decided
+// this week but created last month counts in last month's bucket,
+// keeping created volume vs decided volume comparable within a
+// bucket (triage lag reads as decided < created in recent buckets).
+// Scope = every non-archived project of the workspace (widget-level
+// filters and project_ids ignored, like the headline numbers).
+// Empty buckets render as zeros (no gaps). Response:
+// {granularity, buckets:[{bucket_start,in_app,form,email,accepted,
+// rejected,duplicate}...], total_buckets}. A non-intake_breakdown
+// widget is an honest 400. Read authZ = the widget read rule (a
+// shared-view member may fetch; a private dashboard of another
+// creator without a share is 404).
+func (h *DashboardHandler) getWidgetTrend(c *echo.Context) error {
+	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
+	if !ok {
+		return nil
+	}
+	granularity, buckets, ok := parseTrendParams(c)
+	if !ok {
+		return nil
+	}
+	data, err := service.GetIntakeTrend(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, granularity, buckets)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	return c.JSON(http.StatusOK, data)
+}
+
 // exportWidgetCSV implements GET /api/v1/widgets/{widget_id}/export.csv:
 // the widget's FULL live dataset as CSV (same recompute as the data
 // endpoint, but unpaginated — every group / every row, not just the
@@ -526,13 +597,37 @@ func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 // as the drill-down, same 10,000-row cap + X-Result-Truncated);
 // without metric the aggregate export is unchanged. A metric on a
 // non-intake widget is ignored; avg_decide/unknown metrics on intake
-// widgets are 400. Content-Disposition:
+// widgets are 400. With ?trend=1 on intake_breakdown widgets the
+// export is the trend series instead (columns bucket_start,in_app,
+// form,email,accepted,rejected,duplicate; + granularity + buckets
+// params, same validation as the trend endpoint; the 10,000-row cap
+// never binds on a ≤52-row series, so X-Result-Truncated is never
+// set); ?trend=1 on a non-intake widget is 400. Content-Disposition:
 // attachment; filename="<dashboard-slug>-<widget-slug>.csv" (sanitized).
 // Read authZ = the widget read rule (a shared-view member may export).
 func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
 	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
 	if !ok {
 		return nil
+	}
+	// C86T0: ?trend=1 dumps the trend series instead of the
+	// aggregate/metric export (same granularity + buckets params and
+	// validation as the trend endpoint). Any other trend value falls
+	// through to the existing export paths, unchanged.
+	if c.QueryParam("trend") == "1" {
+		granularity, buckets, ok := parseTrendParams(c)
+		if !ok {
+			return nil
+		}
+		filename, data, err := service.ExportWidgetTrendCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, granularity, buckets)
+		if err != nil {
+			return dashboardError(c, err)
+		}
+		c.Response().Header().Set("Content-Type", "text/csv")
+		c.Response().Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		// No X-Result-Truncated: the series is at most 52 rows, so
+		// the 10,000-row cap never binds.
+		return c.Blob(http.StatusOK, "text/csv", data)
 	}
 	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"))
 	if err != nil {
