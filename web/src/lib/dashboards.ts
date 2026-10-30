@@ -323,13 +323,18 @@ export interface IntakeDrilldownItem {
 }
 
 /** The intake drill-down envelope (C85T0): per_page defaults to 10,
- *  capped at 100 — the drill-down per_page convention. */
+ *  capped at 100 — the drill-down per_page convention. C87T0 echoes
+ *  `granularity` + `bucket_start` only when the bucket filter is
+ *  present; a bucket without a metric carries metric "" (all rows in
+ *  the bucket), not a missing-metric error. */
 export interface IntakeDrilldown {
   items: IntakeDrilldownItem[];
   page: number;
   per_page: number;
   total: number;
   metric: string;
+  granularity?: string;
+  bucket_start?: string;
 }
 
 /** Map an intake drill-down row onto the C84 row-click shape: the
@@ -651,6 +656,80 @@ export function fetchIntakeDrilldown(
   return api.get<IntakeDrilldown>(
     `/api/v1/widgets/${encodeURIComponent(widgetId)}/drilldown?metric=${encodeURIComponent(metric)}&page=${page}`,
   );
+}
+
+/** Intake bucket drill-down cache per widget + granularity +
+ *  bucket_start + page. The granularity is part of the key: the
+ *  same bucket_start under a different granularity is a different
+ *  window, never a cache hit. */
+export const widgetIntakeDrilldownBucketKey = (
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+  bucket_start: string,
+  page = 1,
+) =>
+  [
+    "widget-intake-drilldown-bucket",
+    widgetId,
+    granularity,
+    bucket_start,
+    page,
+  ] as const;
+
+/** The intake rows created in one trend bucket (C87T0/T1): no
+ *  `metric` param — the server reads that as "all rows in the
+ *  bucket" (any source/status), and owns the window math from
+ *  granularity + bucket_start alone. The client NEVER recomputes
+ *  the bucket window: bucket_start comes verbatim from the trend
+ *  payload's clicked point. Pagination matches the metric modal
+ *  (page/per_page, per_page defaults to the widget's max_rows). */
+export function fetchIntakeDrilldownBucket(
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+  bucket_start: string,
+  page = 1,
+): Promise<IntakeDrilldown> {
+  return api.get<IntakeDrilldown>(
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/drilldown?granularity=${encodeURIComponent(granularity)}&bucket_start=${encodeURIComponent(bucket_start)}&page=${page}`,
+  );
+}
+
+const INTAKE_BUCKET_MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** The bucket drill-down modal title (C87T1, prototype-as-spec):
+ *  "Intake — week of <Monday date>" / "day of <date>" / "month of
+ *  <Month YYYY>". Day/week reuse the server's bucket_start verbatim
+ *  (an ISO date, never re-rendered through the local timezone);
+ *  month renders the YYYY-MM prefix as a month name + year. A
+ *  malformed month start falls back to the raw value rather than
+ *  inventing a date. */
+export function intakeBucketTitle(
+  granularity: IntakeTrendGranularity,
+  bucket_start: string,
+): string {
+  if (granularity === "month") {
+    const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(bucket_start);
+    if (m) {
+      const month = INTAKE_BUCKET_MONTH_NAMES[Number(m[2]) - 1];
+      if (month) return `Intake — month of ${month} ${m[1]}`;
+    }
+    return `Intake — month of ${bucket_start}`;
+  }
+  if (granularity === "day") return `Intake — day of ${bucket_start}`;
+  return `Intake — week of ${bucket_start}`;
 }
 
 /* ------------------------------------------------------------------ */
