@@ -123,6 +123,41 @@ describe("teamspace picker", () => {
     expect(screen.getByText("Currently ungrouped.")).toBeTruthy();
   });
 
+  // C90T1: the picker renders exactly the server-filtered teamspaces
+  // query — no separate picker endpoint, no client-side expansion. A
+  // member's query returns only their teamspaces; an admin's returns
+  // all of them. The component must not add options the server did
+  // not return, nor hide ones it did.
+  it("move picker lists only the visible teamspaces for a member", async () => {
+    get().mockImplementation((url: string) => {
+      if (url.includes("/teamspaces")) {
+        return Promise.resolve({ teamspaces: [teamspaces[0]] });
+      }
+      return Promise.resolve(project());
+    });
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <TeamspaceSection slug="acme" identifier="ENG" canEdit />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("option", { name: "Platform" });
+    expect(screen.queryByRole("option", { name: "Mobile" })).toBeNull();
+  });
+
+  it("move picker lists all teamspaces for an admin", async () => {
+    get().mockImplementation((url: string) => {
+      if (url.includes("/teamspaces")) return Promise.resolve({ teamspaces });
+      return Promise.resolve(project());
+    });
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <TeamspaceSection slug="acme" identifier="ENG" canEdit />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("option", { name: "Platform" });
+    expect(screen.getByRole("option", { name: "Mobile" })).toBeTruthy();
+  });
+
   it("moving back to Ungrouped sends an explicit null", async () => {
     projectTeamspace = "ts-platform";
     patch().mockImplementation((_url: string, body: { teamspace_id: string | null }) => {

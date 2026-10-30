@@ -24,8 +24,20 @@ export interface Teamspace {
   workspace_id: string;
   name: string;
   project_count: number;
+  /** Live member count (C90T0, same-query count). Optional: older
+   *  callers constructing a Teamspace literal may omit it. */
+  member_count?: number;
   created_at: string;
   updated_at: string;
+}
+
+/** A teamspace roster row (C90T0). Deliberately NOT the workspace
+ *  Member shape: there is no teamspace role — `role` on a workspace
+ *  member is the workspace role and would mislead here. */
+export interface TeamspaceMember {
+  id: string;
+  name?: string | null;
+  email: string;
 }
 
 export interface Project {

@@ -51,4 +51,36 @@ describe("groupProjects", () => {
     const groups = groupProjects([p("a", "ts-gone")], [ts("ts-a", "Alpha")]);
     expect(groups.find((g) => g.key === "ungrouped")!.projects.map((x) => x.id)).toEqual(["a"]);
   });
+
+  it("falls back to Ungrouped for an unknown id with excludeAbsent explicitly false", () => {
+    const groups = groupProjects([p("a", "ts-gone")], [ts("ts-a", "Alpha")], {
+      excludeAbsent: false,
+    });
+    expect(groups.find((g) => g.key === "ungrouped")!.projects.map((x) => x.id)).toEqual(["a"]);
+  });
+});
+
+describe("groupProjects visibility (C90T1)", () => {
+  it("excludes projects in teamspaces absent from the visible list, Ungrouped last", () => {
+    // ts-hidden is absent from the visible list (a teamspace the viewer
+    // cannot see): its project must NOT fall back to Ungrouped.
+    const groups = groupProjects(
+      [p("a", "ts-hidden"), p("b", null), p("c", "ts-a")],
+      [ts("ts-a", "Alpha")],
+      { excludeAbsent: true },
+    );
+    expect(groups.map((g) => g.key)).toEqual(["ts-a", "ungrouped"]);
+    expect(groups[0].projects.map((x) => x.id)).toEqual(["c"]);
+    expect(groups[1].projects.map((x) => x.id)).toEqual(["b"]);
+    expect(groups.flatMap((g) => g.projects).map((x) => x.id)).not.toContain("a");
+  });
+
+  it("still excludes archived projects when excluding absent teamspaces", () => {
+    const groups = groupProjects(
+      [p("a", "ts-a", true), p("b", "ts-hidden", true), p("c", "ts-a")],
+      [ts("ts-a", "Alpha")],
+      { excludeAbsent: true },
+    );
+    expect(groups.flatMap((g) => g.projects).map((x) => x.id)).toEqual(["c"]);
+  });
 });

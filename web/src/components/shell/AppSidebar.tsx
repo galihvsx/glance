@@ -37,6 +37,7 @@ import type { LucideIcon } from "lucide-react";
 import { api } from "../../lib/api";
 import { draftsKey, fetchDrafts } from "../../lib/drafts";
 import { useUnreadCount } from "../../lib/notifications";
+import { useWorkspaces } from "../../lib/useWorkspaces";
 import { emitShortcutAction } from "../../lib/shortcuts";
 import type { Initiative, Objective, Project, Teamspace } from "../../lib/types";
 import {
@@ -708,6 +709,17 @@ function ProjectsSection() {
     queryFn: () => fetchTeamspaces(slug as string),
     enabled: !!slug,
   });
+  // Visibility (C90T1): the server filters the teamspace list — Admins
+  // see every teamspace, other roles see only their own. Only
+  // non-admins exclude absent ids: for an Admin the list is complete,
+  // so an absent id is genuinely unknown/stale and keeps the C89
+  // Ungrouped fallback. The dialog's Members tab is admin-only on the
+  // same signal.
+  const { data: workspaces } = useWorkspaces();
+  const isAdmin =
+    (slug
+      ? workspaces?.find((w) => w.slug === slug)?.role
+      : undefined) === 20;
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     readCollapsed(PROJECTS_COLLAPSED_KEY),
   );
@@ -730,8 +742,11 @@ function ProjectsSection() {
 
   const list = useMemo(() => projects ?? [], [projects]);
   const groups = useMemo(
-    () => groupProjects(list, teamspacesQuery.data ?? []),
-    [list, teamspacesQuery.data],
+    () =>
+      groupProjects(list, teamspacesQuery.data ?? [], {
+        excludeAbsent: !isAdmin,
+      }),
+    [list, teamspacesQuery.data, isAdmin],
   );
 
   const isGroupCollapsed = (key: string): boolean =>
@@ -853,6 +868,7 @@ function ProjectsSection() {
         state={dialog}
         projects={list}
         onClose={() => setDialog(null)}
+        isAdmin={isAdmin}
       />
     </section>
   );
