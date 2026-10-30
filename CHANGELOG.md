@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Teamspaces: membership + visibility (cycle 90)**
+
+- Teamspace visibility is now membership-gated (Plane parity):
+  workspace Admins see every teamspace; any other workspace role
+  sees only the teamspaces they belong to, in the teamspaces list
+  API. Membership gates teamspace visibility only — it is not
+  project ACL: the Projects page stays the browse-all surface and
+  direct project links keep working.
+- Backend: migration `000077_teamspace_members` adds a
+  `teamspace_members` table (UUID id, teamspace/user FKs both
+  ON DELETE CASCADE, unique `(teamspace_id, user_id)`, index on
+  `user_id`) with a load-bearing backfill — one membership row per
+  (existing teamspace × current workspace member) — so every
+  existing workspace keeps exactly its current visibility until an
+  Admin removes someone. Creating a teamspace auto-adds the creator
+  as a member in the same transaction. `Teamspace` JSON gains
+  `member_count` (same-query count, not N+1); no `is_member` flag.
+- New routes `POST/GET /api/v1/workspaces/:slug/teamspaces/:id/members`
+  and `DELETE .../members/:user_id` (all under RequireAuth).
+  Add/remove are Admin (20) only; adding a target who is not a
+  workspace member is an honest 400 (the same error whether the user
+  id matches nobody or a non-member, so no existence oracle);
+  duplicate adds and removes of non-members are idempotent OK; the
+  roster is readable by teamspace members and Admins, and a
+  non-member non-admin gets 404 (never the roster). Deleting a
+  teamspace removes its memberships; projects are never touched.
+  No audit-log rows or broadcast events (the grouping-entity
+  precedent). OpenAPI pinned.
+
 **Teamspaces: group projects in the sidebar (cycle 89)**
 
 - The sidebar Projects section now groups projects under collapsible

@@ -1,14 +1,24 @@
 package service
 
-// Teamspaces (C89T0): workspace-scoped groups that organize projects
-// in the sidebar (Plane "teamspaces" parity).
+// Teamspaces (C89T0, membership + visibility C90T0): workspace-scoped
+// groups that organize projects in the sidebar (Plane "teamspaces"
+// parity).
 //
-// Teamspaces are grouping + navigation ONLY: no per-teamspace
-// membership/ACL — glance's role model is workspace-level, so every
-// workspace member sees every teamspace. They own no issues and no
-// projects: deleting a teamspace only ungroups its projects
-// (projects.teamspace_id ON DELETE SET NULL, migration 000076) —
-// deleting a teamspace must never delete projects.
+// Teamspaces own no issues and no projects: deleting a teamspace only
+// ungroups its projects (projects.teamspace_id ON DELETE SET NULL,
+// migration 000076) — deleting a teamspace must never delete projects.
+// Deleting a teamspace DOES remove its memberships (teamspace_members
+// teamspace_id FK ON DELETE CASCADE, migration 000077).
+//
+// Visibility (C90T0, Plane parity): workspace Admins see every
+// teamspace and bypass membership; any other workspace role sees only
+// the teamspaces they belong to. Migration 000077 backfills one
+// membership row per (existing teamspace x current workspace member),
+// so existing workspaces keep exactly their cycle-89 visibility until
+// an Admin removes someone. Membership gates teamspace visibility
+// ONLY — it is not project ACL (glance has no project-level
+// membership; the Projects page stays the browse-all surface and
+// direct project links keep working).
 //
 // Conventions (mirror initiatives, the closest workspace-scoped
 // grouping entity, and project_labels for name rules):
@@ -31,7 +41,27 @@ package service
 //   - ListTeamspaces is ordered by name; each entry carries its LIVE
 //     project count (archived projects excluded — the sidebar header
 //     shows "Teamspace · N" over the live rows the sidebar renders)
-//     from the same query, not N+1.
+//     and its member_count, both from the same query, not N+1. No
+//     is_member flag: the caller is either an Admin (sees all) or a
+//     member of every row returned, so the flag would be
+//     constant-true and carry no information.
+//   - Membership management is Admin (20) only — the workspace
+//     UpsertMember precedent (actorRole != RoleAdmin → ErrForbidden).
+//     Adding a target who is not a workspace member is
+//     ErrTeamspaceTargetNotMember (400): the same error whether the
+//     user id matches nobody or a non-member, so the caller never
+//     learns whether an arbitrary user id exists. Duplicate adds and
+//     removes of non-members are idempotent OK (the workspace
+//     RemoveMember precedent errors ErrMemberNotFound on a non-member
+//     — deliberately NOT followed here: DELETE is idempotent by
+//     nature and a stale roster row must not 404 the remove button).
+//     Removing the last member is allowed: an Admin can always see
+//     the teamspace and re-add.
+//   - ListTeamspaceMembers is readable by teamspace members and by
+//     workspace Admins; a non-member non-admin gets
+//     ErrTeamspaceNotFound — never the roster, never a leak of the
+//     teamspace's existence. Ordered by user name, the workspace
+//     listMembers precedent (ORDER BY COALESCE(u.name, u.email)).
 //   - DeleteTeamspace returns the count of projects ungrouped by the
 //     delete — ALL rows the FK SET NULL touches, including archived
 //     ones (an archived project keeps its grouping until its
@@ -70,7 +100,25 @@ var (
 	// (never a silent cross-workspace link, never a 404 that would
 	// leak which teamspaces exist in other workspaces).
 	ErrInvalidTeamspace = errors.New("service: invalid teamspace")
+	// ErrTeamspaceTargetNotMember is returned by AddTeamspaceMember
+	// when the target user_id is not a workspace member — including
+	// when it matches no user at all, and when it is malformed. One
+	// error for all three cases, so the caller never learns whether
+	// an arbitrary user id exists. The handler maps it to 400
+	// bad_request (the caller supplied an invalid target for this
+	// operation; the workspace and teamspace are both confirmed).
+	ErrTeamspaceTargetNotMember = errors.New("service: target user is not a workspace member")
 )
+
+// TeamspaceMember is one teamspace member with their user identity,
+// for the members roster. No workspace role is carried: the roster is
+// about teamspace belonging, and the workspace role is available from
+// the workspace members endpoint.
+type TeamspaceMember struct {
+	ID    string  `json:"id"`
+	Name  *string `json:"name,omitempty"`
+	Email string  `json:"email"`
+}
 
 // Teamspace is one workspace-scoped project group.
 type Teamspace struct {
@@ -78,6 +126,7 @@ type Teamspace struct {
 	WorkspaceID  string    `json:"workspace_id"`
 	Name         string    `json:"name"`
 	ProjectCount int64     `json:"project_count"`
+	MemberCount  int64     `json:"member_count"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -108,17 +157,19 @@ func resolveTeamspaceWorkspace(ctx context.Context, q queryRower, wsSlug, actorI
 	return wsID, role, nil
 }
 
-// teamspaceColumns is the shared SELECT list plus the live member
-// project count (archived projects excluded — see the package doc).
+// teamspaceColumns is the shared SELECT list; the counted variant adds
+// the live project count (archived projects excluded — see the package
+// doc) and the member count, both from the same query, never N+1.
 const teamspaceColumns = `id::text, workspace_id::text, name, created_at, updated_at`
 
 const teamspaceColumnsCounted = teamspaceColumns + `,
-	(SELECT COUNT(*) FROM projects p WHERE p.teamspace_id = teamspaces.id AND p.archived_at IS NULL)`
+	(SELECT COUNT(*) FROM projects p WHERE p.teamspace_id = teamspaces.id AND p.archived_at IS NULL),
+	(SELECT COUNT(*) FROM teamspace_members m WHERE m.teamspace_id = teamspaces.id)`
 
 func scanTeamspaceCounted(row pgx.Row) (Teamspace, error) {
 	var ts Teamspace
 	err := row.Scan(
-		&ts.ID, &ts.WorkspaceID, &ts.Name, &ts.CreatedAt, &ts.UpdatedAt, &ts.ProjectCount)
+		&ts.ID, &ts.WorkspaceID, &ts.Name, &ts.CreatedAt, &ts.UpdatedAt, &ts.ProjectCount, &ts.MemberCount)
 	if err != nil {
 		return Teamspace{}, err
 	}
@@ -145,6 +196,9 @@ func resolveTeamspace(ctx context.Context, q queryRower, wsID, teamspaceID strin
 }
 
 // CreateTeamspace creates a teamspace in the workspace. Member (15)+.
+// The creator is auto-added as a member in the same transaction:
+// without this, a Member who creates a teamspace would create
+// something invisible to themselves under the visibility filter.
 func CreateTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, name string) (*Teamspace, error) {
 	wsID, _, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, true)
 	if err != nil {
@@ -154,7 +208,12 @@ func CreateTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, n
 	if name == "" {
 		return nil, ErrNameRequired
 	}
-	ts, err := scanTeamspaceCounted(pool.QueryRow(ctx,
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	ts, err := scanTeamspaceCounted(tx.QueryRow(ctx,
 		`INSERT INTO teamspaces (workspace_id, name)
 		 VALUES ($1::uuid, $2)
 		 RETURNING `+teamspaceColumnsCounted,
@@ -165,21 +224,43 @@ func CreateTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, n
 		}
 		return nil, err
 	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO teamspace_members (teamspace_id, user_id)
+		 VALUES ($1::uuid, $2::uuid)`,
+		ts.ID, actorID); err != nil {
+		return nil, err
+	}
+	// Re-read inside the tx so the returned row carries the creator
+	// membership (the INSERT ... RETURNING above ran before it).
+	ts, err = resolveTeamspace(ctx, tx, wsID, ts.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &ts, nil
 }
 
 // ListTeamspaces returns the workspace's teamspaces ordered by name,
-// each with its live project count. Any role may read; the result is
-// never nil.
+// each with its live project count and member count. Any role may
+// read; the result is never nil. Visibility (C90T0): Admins see all
+// teamspaces; any other role sees only teamspaces where they hold a
+// membership row.
 func ListTeamspaces(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string) ([]Teamspace, error) {
-	wsID, _, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := pool.Query(ctx,
 		`SELECT `+teamspaceColumnsCounted+`
-		 FROM teamspaces WHERE workspace_id = $1::uuid ORDER BY name, id`,
-		wsID)
+		 FROM teamspaces
+		 WHERE workspace_id = $1::uuid
+		   AND ($3 OR EXISTS (
+		     SELECT 1 FROM teamspace_members tm
+		     WHERE tm.teamspace_id = teamspaces.id AND tm.user_id = $2::uuid))
+		 ORDER BY name, id`,
+		wsID, actorID, role == RoleAdmin)
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +272,146 @@ func ListTeamspaces(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 			return nil, err
 		}
 		out = append(out, ts)
+	}
+	return out, rows.Err()
+}
+
+// isTeamspaceMember reports whether userID holds a membership row for
+// the teamspace.
+func isTeamspaceMember(ctx context.Context, q queryRower, teamspaceID, userID string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM teamspace_members
+		 WHERE teamspace_id = $1::uuid AND user_id = $2::uuid)`,
+		teamspaceID, userID).Scan(&exists)
+	return exists, err
+}
+
+// resolveTeamspaceMemberWorkspace resolves (workspaceID, role) for an
+// Admin-only membership mutation: the tenancy boundary first
+// (bad slug / non-member → ErrNotFound), then the Admin gate.
+func resolveTeamspaceMemberWorkspace(ctx context.Context, q queryRower, wsSlug, actorID string) (string, error) {
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, q, wsSlug, actorID, false)
+	if err != nil {
+		return "", err
+	}
+	if role != RoleAdmin {
+		return "", ErrForbidden
+	}
+	return wsID, nil
+}
+
+// AddTeamspaceMember adds the target user to the teamspace. Admin (20)
+// only. The target must be a workspace member — otherwise
+// ErrTeamspaceTargetNotMember (400), the same error whether the user
+// id matches nobody, a non-member, or is malformed, so no existence
+// oracle. Duplicate adds are idempotent OK and return the existing
+// row (the workspace upsertMember precedent, not a 409). A
+// foreign-workspace teamspace id is ErrTeamspaceNotFound.
+func AddTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspaceID, actorID, targetUserID string) (*TeamspaceMember, error) {
+	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := resolveTeamspace(ctx, pool, wsID, teamspaceID); err != nil {
+		return nil, err
+	}
+	if !isUUIDFormat(targetUserID) {
+		return nil, ErrTeamspaceTargetNotMember
+	}
+	var isWSMember bool
+	err = pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM workspace_members
+		 WHERE workspace_id = $1::uuid AND user_id = $2::uuid)`,
+		wsID, targetUserID).Scan(&isWSMember)
+	if err != nil {
+		return nil, err
+	}
+	if !isWSMember {
+		return nil, ErrTeamspaceTargetNotMember
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO teamspace_members (teamspace_id, user_id)
+		 VALUES ($1::uuid, $2::uuid)
+		 ON CONFLICT (teamspace_id, user_id) DO NOTHING`,
+		teamspaceID, targetUserID); err != nil {
+		return nil, err
+	}
+	var member TeamspaceMember
+	err = pool.QueryRow(ctx,
+		`SELECT u.id::text, u.name, u.email
+		 FROM teamspace_members tm
+		 JOIN users u ON u.id = tm.user_id
+		 WHERE tm.teamspace_id = $1::uuid AND tm.user_id = $2::uuid`,
+		teamspaceID, targetUserID).Scan(&member.ID, &member.Name, &member.Email)
+	if err != nil {
+		return nil, err
+	}
+	return &member, nil
+}
+
+// RemoveTeamspaceMember removes the target user from the teamspace.
+// Admin (20) only. Removing a non-member is idempotent OK: a DELETE
+// that touches zero rows is still a success, so a stale roster row
+// never 404s the remove button.
+func RemoveTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspaceID, actorID, targetUserID string) error {
+	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return err
+	}
+	if _, err := resolveTeamspace(ctx, pool, wsID, teamspaceID); err != nil {
+		return err
+	}
+	if !isUUIDFormat(targetUserID) {
+		return ErrTeamspaceTargetNotMember
+	}
+	_, err = pool.Exec(ctx,
+		`DELETE FROM teamspace_members
+		 WHERE teamspace_id = $1::uuid AND user_id = $2::uuid`,
+		teamspaceID, targetUserID)
+	return err
+}
+
+// ListTeamspaceMembers returns the teamspace's roster ordered by user
+// name (the workspace listMembers precedent). Teamspace members and
+// workspace Admins may read; a non-member non-admin gets
+// ErrTeamspaceNotFound — never the roster, never a leak of the
+// teamspace's existence. The result is never nil.
+func ListTeamspaceMembers(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspaceID, actorID string) ([]TeamspaceMember, error) {
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := resolveTeamspace(ctx, pool, wsID, teamspaceID); err != nil {
+		return nil, err
+	}
+	if role != RoleAdmin {
+		member, err := isTeamspaceMember(ctx, pool, teamspaceID, actorID)
+		if err != nil {
+			return nil, err
+		}
+		if !member {
+			return nil, ErrTeamspaceNotFound
+		}
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT u.id::text, u.name, u.email
+		 FROM teamspace_members tm
+		 JOIN users u ON u.id = tm.user_id
+		 WHERE tm.teamspace_id = $1::uuid
+		 ORDER BY COALESCE(u.name, u.email)`,
+		teamspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TeamspaceMember{}
+	for rows.Next() {
+		var m TeamspaceMember
+		if err := rows.Scan(&m.ID, &m.Name, &m.Email); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

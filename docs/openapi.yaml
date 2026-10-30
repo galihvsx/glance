@@ -1572,14 +1572,14 @@
       "get": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "List teamspaces",
-        "description": "Ordered by name; each entry carries its live (non-archived) project count from the same query. Any workspace member may read. Teamspaces are grouping + navigation only — no per-teamspace membership/ACL.",
+        "description": "Ordered by name; each entry carries its live (non-archived) project count and member count from the same query. Visibility (C90T0): workspace Admins see all teamspaces; any other role sees only teamspaces they belong to. Membership gates teamspace visibility only — it is not project ACL.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
         "responses": { "200": { "description": "Teamspaces", "content": { "application/json": { "schema": { "type": "object", "properties": { "teamspaces": { "type": "array", "items": { "$ref": "#/components/schemas/Teamspace" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "post": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Create a teamspace",
-        "description": "Member (15)+. Name is trimmed; empty is 400; a duplicate name in the workspace is 409 (UNIQUE(workspace_id, name)).",
+        "description": "Member (15)+. Name is trimmed; empty is 400; a duplicate name in the workspace is 409 (UNIQUE(workspace_id, name)). The creator is automatically added as a member in the same transaction (C90T0).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } } } } },
         "responses": { "201": { "description": "Created teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
@@ -1600,6 +1600,32 @@
         "description": "Member (15)+. Deletes the teamspace row only — projects are never deleted: their teamspace_id is SET NULL by the FK. The response names exactly how many projects were ungrouped (including archived ones) so the UI can say 'N projects moved to Ungrouped' honestly.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "200": { "description": "Deleted teamspace with ungrouped-project count", "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "ungrouped_projects": { "type": "integer", "description": "Projects whose teamspace_id was SET NULL by the delete, including archived ones." } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/members": {
+      "get": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List teamspace members",
+        "description": "Roster ordered by user name. Teamspace members and workspace Admins may read; a non-member non-admin gets 404 — never the roster, never a leak of the teamspace's existence (C90T0).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Teamspace members", "content": { "application/json": { "schema": { "type": "object", "properties": { "members": { "type": "array", "items": { "$ref": "#/components/schemas/TeamspaceMember" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a teamspace member",
+        "description": "Admin (20) only. The target must be a workspace member — otherwise 400, the same error whether the user id matches nobody, a non-member, or is malformed, so no existence oracle. Duplicate adds are idempotent OK (200 with the existing row, not 409).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id"], "properties": { "user_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Added teamspace member", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamspaceMember" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/members/{user_id}": {
+      "delete": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a teamspace member",
+        "description": "Admin (20) only. Removing a non-member is idempotent OK (200) — a DELETE that touches zero rows is still a success. Removing the last member is allowed: an Admin can always see the teamspace and re-add.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/rollup": {
@@ -3559,8 +3585,18 @@
           "workspace_id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
           "project_count": { "type": "integer", "description": "Live (non-archived) projects assigned to this teamspace, from the same query — never N+1. Archived projects keep their assignment but are not counted here." },
+          "member_count": { "type": "integer", "description": "Teamspace members, from the same query — never N+1 (C90T0)." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "TeamspaceMember": {
+        "type": "object",
+        "description": "One teamspace member with their user identity (C90T0). No workspace role is carried: the roster is about teamspace belonging, and the workspace role is available from the workspace members endpoint.",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "email": { "type": "string" }
         }
       },
       "Project": {
