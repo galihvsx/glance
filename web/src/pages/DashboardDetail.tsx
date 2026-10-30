@@ -6,13 +6,13 @@
 // read-only (no drag handles, no add/edit/delete affordances). A
 // private dashboard of another creator 404s server-side and renders
 // NotFound here.
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, Pencil, Plus, Share2, Trash2 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import type { Workspace } from "../lib/types";
+import type { Project, Workspace } from "../lib/types";
 import {
   ACCESS_LABELS,
   canEditWidgets,
@@ -28,6 +28,7 @@ import {
   updateWidget,
   type DashboardVisibility,
   type DashboardWidget,
+  type WidgetRowItem,
 } from "../lib/dashboards";
 import { nextWidgetPosition } from "../lib/dashboardGrid";
 import PageHeader from "../components/shell/PageHeader";
@@ -130,6 +131,35 @@ export default function DashboardDetail() {
     queryFn: () =>
       api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
   });
+
+  // Row-click navigation needs the project IDENTIFIER (the issue
+  // route is /p/:identifier/i/:uuid) while a widget row carries only
+  // the project {id, name}. Same query key as WidgetDialog's project
+  // picker, so the list is fetched once and shared.
+  const projectsQuery = useQuery({
+    queryKey: ["dashboard-projects", slug],
+    queryFn: () =>
+      api
+        .get<{ projects: Project[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/projects`,
+        )
+        .then((d) => d.projects.filter((p) => !p.archived_at)),
+  });
+  const projectIdentifierById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projectsQuery.data ?? []) m.set(p.id, p.identifier);
+    return m;
+  }, [projectsQuery.data]);
+  const handleIssueClick = useCallback(
+    (row: WidgetRowItem) => {
+      const identifier = projectIdentifierById.get(row.project.id);
+      if (!identifier) return;
+      navigate(
+        `/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}/i/${encodeURIComponent(row.id)}`,
+      );
+    },
+    [navigate, projectIdentifierById, slug],
+  );
 
   const dashboard = dashboardQuery.data;
   const role = workspaceQuery.data?.role ?? 0;
@@ -425,6 +455,7 @@ export default function DashboardDetail() {
               onAddWidget={() =>
                 setWidgetDialog({ mode: "create", widget: null })
               }
+              onIssueClick={handleIssueClick}
             />
           </>
         )}
