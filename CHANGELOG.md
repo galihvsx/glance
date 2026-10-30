@@ -5,6 +5,36 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Intake analytics, phase 3: bucket-click drill-down (cycle 87)**
+
+- The intake_breakdown widget's trend chart is now clickable: clicking a
+  trend point opens the drill-down modal with exactly the rows created
+  in that bucket, closing the loop phase 2 left open (a spike in week X
+  can now be inspected row by row without leaving the widget). A hint
+  line under the chart reads "Click a point to see that period's rows";
+  clicks on empty chart margins do nothing.
+- Backend: `GET /api/v1/widgets/:widget_id/drilldown` for
+  intake_breakdown widgets accepts an optional `granularity`
+  day|week|month + `bucket_start` (YYYY-MM-DD) window — both or neither
+  (one without the other is a 400), unknown granularity, malformed date,
+  or misaligned start (not a Monday for week, not the 1st for month) is
+  an honest 400. Windows are half-open and UTC: day [start, +1d), week
+  [Monday, +7d), month [1st, next 1st). The window composes with
+  `metric`; without a metric it returns all rows created in the bucket.
+  Pending/snoozed keep their effective-status definitions inside the
+  bucket. The response echoes `granularity`/`bucket_start` only when
+  the filter is present; `total` counts the bucket-filtered rows.
+  Grouped-widget drill-down ignores the new params. OpenAPI pinned. 23
+  new Go tests.
+- Frontend: bucket modal reuses the phase-1 drill-down modal with titles
+  "Intake — week of <Monday date>" / "day of <date>" / "month of <Month
+  YYYY>", the same item columns and pagination, and the honest empty
+  state "No intake rows in this period" for empty buckets. Bucket clicks
+  send the granularity current at click time plus the bucket_start from
+  the trend payload — the server owns all window math. No Export CSV
+  button in bucket mode (bucket-rows CSV is deferred, not this cycle).
+  21 new frontend tests.
+
 **Intake analytics, phase 2: intake volume trend over time (cycle 86)**
 
 - The intake_breakdown widget gains a trend section answering the time
