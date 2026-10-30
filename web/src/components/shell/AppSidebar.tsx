@@ -38,7 +38,16 @@ import { api } from "../../lib/api";
 import { draftsKey, fetchDrafts } from "../../lib/drafts";
 import { useUnreadCount } from "../../lib/notifications";
 import { emitShortcutAction } from "../../lib/shortcuts";
-import type { Initiative, Objective, Project } from "../../lib/types";
+import type { Initiative, Objective, Project, Teamspace } from "../../lib/types";
+import {
+  fetchTeamspaces,
+  groupProjects,
+  teamspaceKeys,
+  type ProjectGroup,
+} from "../../lib/teamspaces";
+import TeamspaceManageDialog, {
+  type TeamspaceDialogState,
+} from "./TeamspaceManageDialog";
 import { useShell } from "./shell-context";
 import { toast } from "../ui/toast";
 import {
@@ -261,13 +270,35 @@ function SectionTitle({
   onToggle,
   addLabel,
   onAdd,
+  secondAddLabel,
+  secondOnAdd,
 }: {
   label: string;
   collapsed: boolean;
   onToggle: () => void;
   addLabel: string;
   onAdd: () => void;
+  /** Optional second "+" action (Projects: "New teamspace" next to
+   *  "New project", same affordance language). Rendered first so the
+   *  prototype's Teamspace-before-Project order holds. */
+  secondAddLabel?: string;
+  secondOnAdd?: () => void;
 }) {
+  const addButton = (label: string, onClick: () => void, first: boolean) => (
+    <button
+      key={label}
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "flex size-6 items-center justify-center rounded-[4px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink",
+        first && "ml-auto",
+      )}
+    >
+      <Plus className="size-[15px]" aria-hidden="true" />
+    </button>
+  );
   return (
     <div className="mt-[9px] flex h-7 items-center px-[7px]">
       <button
@@ -283,15 +314,8 @@ function SectionTitle({
         />
         {label}
       </button>
-      <button
-        type="button"
-        onClick={onAdd}
-        aria-label={addLabel}
-        title={addLabel}
-        className="ml-auto flex size-6 items-center justify-center rounded-[4px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
-      >
-        <Plus className="size-[15px]" aria-hidden="true" />
-      </button>
+      {secondAddLabel && secondOnAdd && addButton(secondAddLabel, secondOnAdd, true)}
+      {addButton(addLabel, onAdd, !secondAddLabel)}
     </div>
   );
 }
@@ -599,6 +623,77 @@ function ProjectRow({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Teamspace groups (C89T1): one collapsible 30px header per teamspace
+ * ("Name · N", same header language as the section title, count =
+ * live project-list count), then that teamspace's ProjectRows;
+ * "Ungrouped" always last, no rename/delete menu. Collapse persists
+ * per teamspace ID — never keyed by name (names change, ids don't).
+ * ------------------------------------------------------------------ */
+
+function teamspaceGroupCollapsedKey(groupKey: string): string {
+  return `glance:teamspace-group-collapsed:${groupKey}`;
+}
+
+function TeamspaceGroupHeader({
+  group,
+  collapsed,
+  onToggle,
+  onRename,
+  onDelete,
+}: {
+  group: ProjectGroup;
+  collapsed: boolean;
+  onToggle: () => void;
+  onRename?: (t: Teamspace) => void;
+  onDelete?: (t: Teamspace) => void;
+}) {
+  const name = group.teamspace ? group.teamspace.name : "Ungrouped";
+  return (
+    <div className="flex h-[30px] w-full items-center gap-1 rounded-[5px] transition-colors hover:bg-wash-hover">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? "Expand" : "Collapse"} ${name} group`}
+        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+      >
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 text-ink-muted transition-transform",
+            collapsed && "-rotate-90",
+          )}
+          aria-hidden="true"
+        />
+        <span className="truncate text-[12px] font-medium text-ink-secondary">
+          {name}
+        </span>
+        <span className="ml-auto shrink-0 text-[12px] text-ink-muted">
+          {group.projects.length}
+        </span>
+      </button>
+      {group.teamspace && onRename && onDelete && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={`${name} teamspace menu`}
+            className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-[4px] text-ink-muted transition-colors hover:bg-wash-hover hover:text-ink"
+          >
+            <MoreHorizontal className="size-[15px]" strokeWidth={1.6} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem onClick={() => onRename(group.teamspace!)}>
+              Rename teamspace
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onDelete(group.teamspace!)}>
+              Delete teamspace
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
+  );
+}
+
 function ProjectsSection() {
   const { slug: routeSlug, identifier: routeIdentifier } = useParams<{
     slug: string;
@@ -608,18 +703,43 @@ function ProjectsSection() {
   const navigate = useNavigate();
   const slug = routeSlug ?? lastWorkspaceSlug ?? null;
   const { data: projects, isLoading } = useWorkspaceProjects(slug ?? undefined);
+  const teamspacesQuery = useQuery({
+    queryKey: slug ? teamspaceKeys(slug).list : ["teamspaces", "none"],
+    queryFn: () => fetchTeamspaces(slug as string),
+    enabled: !!slug,
+  });
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     readCollapsed(PROJECTS_COLLAPSED_KEY),
   );
   const [expandedIds, setExpandedIds] = useState<string[]>(() =>
     routeIdentifier ? [routeIdentifier.toUpperCase()] : [],
   );
+  // Per-group collapse overrides; absent = the persisted localStorage
+  // value (default expanded). Keyed by teamspace id / UNGROUPED_KEY.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [dialog, setDialog] = useState<TeamspaceDialogState | null>(null);
 
   const toggle = () => {
     setCollapsed((c) => {
       writeCollapsed(PROJECTS_COLLAPSED_KEY, !c);
       return !c;
     });
+  };
+
+  const list = useMemo(() => projects ?? [], [projects]);
+  const groups = useMemo(
+    () => groupProjects(list, teamspacesQuery.data ?? []),
+    [list, teamspacesQuery.data],
+  );
+
+  const isGroupCollapsed = (key: string): boolean =>
+    collapsedGroups[key] ?? readCollapsed(teamspaceGroupCollapsedKey(key));
+
+  const setGroupCollapsed = (key: string, value: boolean) => {
+    setCollapsedGroups((prev) => ({ ...prev, [key]: value }));
+    writeCollapsed(teamspaceGroupCollapsedKey(key), value);
   };
 
   // Keep the project in the route expanded as the user navigates.
@@ -630,14 +750,41 @@ function ProjectsSection() {
     }
   }, [routeIdentifier]);
 
+  // A deep link must never land on a hidden row: the route project's
+  // group auto-expands (and persists expanded) when the route changes.
+  const routeGroupKey = useMemo(() => {
+    if (!routeIdentifier) return null;
+    const id = routeIdentifier.toUpperCase();
+    for (const g of groups) {
+      if (g.projects.some((p) => p.identifier.toUpperCase() === id)) {
+        return g.key;
+      }
+    }
+    return null;
+  }, [groups, routeIdentifier]);
+
+  useEffect(() => {
+    if (routeGroupKey && isGroupCollapsed(routeGroupKey)) {
+      setGroupCollapsed(routeGroupKey, false);
+    }
+    // Only the route's group matters here; isGroupCollapsed reads the
+    // current override map, which this effect itself updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeGroupKey]);
+
   const toggleProject = (identifier: string) => {
     const id = identifier.toUpperCase();
+    // Expanding a project inside a collapsed group expands the group.
+    const group = groups.find((g) =>
+      g.projects.some((p) => p.identifier.toUpperCase() === id),
+    );
+    if (group && isGroupCollapsed(group.key)) {
+      setGroupCollapsed(group.key, false);
+    }
     setExpandedIds((ids) =>
       ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
     );
   };
-
-  const list = useMemo(() => projects ?? [], [projects]);
 
   return (
     <section aria-label="Projects">
@@ -647,6 +794,8 @@ function ProjectsSection() {
         onToggle={toggle}
         addLabel="New project"
         onAdd={() => slug && navigate(`/w/${encodeURIComponent(slug)}`)}
+        secondAddLabel="New teamspace"
+        secondOnAdd={() => slug && setDialog({ mode: "create" })}
       />
       {!collapsed && (
         <div className="flex flex-col gap-px">
@@ -660,15 +809,35 @@ function ProjectsSection() {
             ))}
           {!isLoading &&
             slug &&
-            list.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                slug={slug}
-                expanded={expandedIds.includes(p.identifier.toUpperCase())}
-                onToggle={() => toggleProject(p.identifier)}
-              />
-            ))}
+            groups.map((group) => {
+              const groupCollapsed = isGroupCollapsed(group.key);
+              return (
+                <div key={group.key}>
+                  <TeamspaceGroupHeader
+                    group={group}
+                    collapsed={groupCollapsed}
+                    onToggle={() =>
+                      setGroupCollapsed(group.key, !groupCollapsed)
+                    }
+                    onRename={(t) => setDialog({ mode: "rename", teamspace: t })}
+                    onDelete={(t) => setDialog({ mode: "delete", teamspace: t })}
+                  />
+                  {!groupCollapsed &&
+                    group.projects.map((p) => (
+                      <div key={p.id} className="pl-3">
+                        <ProjectRow
+                          project={p}
+                          slug={slug}
+                          expanded={expandedIds.includes(
+                            p.identifier.toUpperCase(),
+                          )}
+                          onToggle={() => toggleProject(p.identifier)}
+                        />
+                      </div>
+                    ))}
+                </div>
+              );
+            })}
           {!isLoading && !slug && (
             <Link
               to="/w"
@@ -679,6 +848,12 @@ function ProjectsSection() {
           )}
         </div>
       )}
+      <TeamspaceManageDialog
+        slug={slug}
+        state={dialog}
+        projects={list}
+        onClose={() => setDialog(null)}
+      />
     </section>
   );
 }

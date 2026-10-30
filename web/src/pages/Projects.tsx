@@ -60,10 +60,14 @@ function ProjectRow({
   project,
   slug,
   dimmed,
+  teamspaceName,
 }: {
   project: Project;
   slug: string;
   dimmed?: boolean;
+  /** Read-only teamspace label (C89T1) — the move control lives on
+   *  Project settings, not on this card. */
+  teamspaceName?: string;
 }) {
   const navigate = useNavigate();
   return (
@@ -81,6 +85,11 @@ function ProjectRow({
           <span className="block truncate text-[13px] font-semibold text-ink">
             {project.name}
           </span>
+          {teamspaceName && (
+            <span className="block truncate text-[11px] text-ink-muted">
+              {teamspaceName}
+            </span>
+          )}
         </span>
         {/* C76T1: workspace project-label chips (truncated overflow +N). */}
         {(project.labels ?? []).length > 0 && (
@@ -182,6 +191,32 @@ export default function Projects() {
   }, [slug]);
 
   const canManageLabels = (role ?? 0) >= 15;
+  // C89T1: teamspace id → name for the read-only card labels (a failed
+  // fetch just hides the labels; the project list itself is unaffected).
+  const [teamspaceNames, setTeamspaceNames] = useState<Map<string, string>>(
+    new Map(),
+  );
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    api
+      .get<{ teamspaces: { id: string; name: string }[] }>(
+        `/api/v1/workspaces/${encodeURIComponent(slug)}/teamspaces`,
+      )
+      .then((d) => {
+        if (!cancelled) {
+          setTeamspaceNames(
+            new Map((d.teamspaces ?? []).map((t) => [t.id, t.name])),
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setTeamspaceNames(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
 
   // Label id → number of loaded projects carrying it (live + archived),
   // for the manage dialog's delete confirm.
@@ -433,7 +468,16 @@ export default function Projects() {
         ) : (
           <ul className="divide-y divide-border-hairline overflow-hidden rounded-md border border-border">
             {projects.map((p) => (
-              <ProjectRow key={p.id} project={p} slug={slug ?? ""} />
+              <ProjectRow
+                key={p.id}
+                project={p}
+                slug={slug ?? ""}
+                teamspaceName={
+                  p.teamspace_id
+                    ? teamspaceNames.get(p.teamspace_id)
+                    : undefined
+                }
+              />
             ))}
           </ul>
         )}
@@ -453,6 +497,11 @@ export default function Projects() {
                   project={p}
                   slug={slug ?? ""}
                   dimmed
+                  teamspaceName={
+                    p.teamspace_id
+                      ? teamspaceNames.get(p.teamspace_id)
+                      : undefined
+                  }
                 />
               ))}
             </ul>
