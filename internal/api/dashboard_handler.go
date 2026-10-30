@@ -632,6 +632,24 @@ func (h *DashboardHandler) getWidgetTrend(c *echo.Context) error {
 // never binds on a ≤52-row series, so X-Result-Truncated is never
 // set); ?trend=1 on a non-intake widget is 400. Content-Disposition:
 // attachment; filename="<dashboard-slug>-<widget-slug>.csv" (sanitized).
+// C88 bucket window (non-trend path only — the ?trend=1 path never
+// reads bucket_start): on intake_breakdown widgets,
+// ?granularity=day|week|month&bucket_start=YYYY-MM-DD exports the
+// bucket-filtered drill-down row set instead of the aggregate
+// (bucket + metric → that metric's rows created in the bucket;
+// bucket without metric → all rows created in the bucket; same
+// columns, same 10,000-row cap + X-Result-Truncated, same scope —
+// workspace, non-archived projects, widget filters ignored).
+// Both-or-neither, unknown granularity, malformed date, and
+// misaligned starts are 400 (validated in the service by
+// parseIntakeDrilldownBucket, after authZ, so a private unshared
+// widget is 404 first). Filename with a bucket:
+// "<dashboard-slug>-<widget-slug>-<granularity>-<bucket_start>.csv"
+// (e.g. "...-week-2026-10-26.csv") — no metric segment, because
+// existing metric exports carry none, so the bucket suffix alone
+// distinguishes a bucket file from a metric file and a full file.
+// On non-intake and grouped widgets the bucket params are ignored
+// entirely (never 400 on the ignored param, C87 convention).
 // Read authZ = the widget read rule (a shared-view member may export).
 func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
 	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
@@ -657,7 +675,10 @@ func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
 		// the 10,000-row cap never binds.
 		return c.Blob(http.StatusOK, "text/csv", data)
 	}
-	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"))
+	// C88T0: bucket params are read ONLY on the non-trend path —
+	// the ?trend=1 branch above never sees them. Validation lives
+	// in the service (after authZ; ignored on non-intake widgets).
+	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"), c.QueryParam("granularity"), c.QueryParam("bucket_start"))
 	if err != nil {
 		return dashboardError(c, err)
 	}
