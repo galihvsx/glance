@@ -99,10 +99,10 @@ function installApiMocks() {
   });
 }
 
-function renderSidebar(path: string, routePath: string) {
+function renderSidebar(path: string, routePath: string, ws: Workspace[] = workspaces) {
   const capture: { current: ShellContextValue | null } = { current: null };
   const qc = makeQueryClient([
-    [workspacesKey, workspaces],
+    [workspacesKey, ws],
     [NOTIFICATION_KEYS.unread, 0],
     [["projects", "acme"], db.projects],
     [["teamspaces", "acme"], db.teamspaces],
@@ -306,5 +306,53 @@ describe("teamspace manage dialog", () => {
       ).toBeTruthy();
     });
     expect(screen.queryByText("Mobile")).toBeNull();
+  });
+});
+
+describe("teamspace visibility (C90T1)", () => {
+  // A non-admin's server-filtered teamspace list omits teamspaces they
+  // do not belong to. Their projects must NOT leak into the sidebar
+  // under Ungrouped — they simply have no sidebar row. The Projects
+  // page and direct links are unaffected (not rendered here).
+  function memberWorkspaces(): Workspace[] {
+    return [{ ...workspaces[0], role: 15 }];
+  }
+
+  it("excludes hidden-teamspace projects for members, Ungrouped last", () => {
+    // Server list for this member: Platform only (Mobile hidden).
+    db.teamspaces = db.teamspaces.filter((t) => t.id === "ts-platform");
+    renderSidebar("/w/acme", "/w/:slug", memberWorkspaces());
+    expect(screen.getByText("Engine")).toBeTruthy();
+    expect(screen.queryByText("Android App")).toBeNull();
+    expect(screen.queryByText("Mobile")).toBeNull();
+    // Ungrouped still renders last with the ungrouped project only.
+    expect(
+      within(groupDivFor(groupHeaderButton("Ungrouped"))).getByText("Website"),
+    ).toBeTruthy();
+    const section = projectsSection();
+    const text = section.textContent ?? "";
+    expect(text.indexOf("Platform")).toBeLessThan(text.indexOf("Ungrouped"));
+  });
+
+  it("deep link into a hidden teamspace no-ops without crashing", () => {
+    db.teamspaces = db.teamspaces.filter((t) => t.id === "ts-platform");
+    renderSidebar("/w/acme/p/AND", "/w/:slug/p/:identifier", memberWorkspaces());
+    // No row for the hidden project, no crash, other rows intact.
+    expect(screen.queryByText("Android App")).toBeNull();
+    expect(screen.getByText("Engine")).toBeTruthy();
+    expect(screen.getByText("Website")).toBeTruthy();
+  });
+
+  it("admins keep the C89 fallback: unknown ids land in Ungrouped", () => {
+    // Admins see the complete server list, so an absent id is stale,
+    // not hidden — the C89 fallback stands for them.
+    db.projects = [
+      ...db.projects,
+      { id: "p-ghost", workspace_id: "w1", identifier: "GHO", labels: [], name: "Ghost", description: "", parallel_cycles: false, teamspace_id: "ts-gone", created_at: "", updated_at: "" },
+    ];
+    renderSidebar("/w/acme", "/w/:slug");
+    expect(
+      within(groupDivFor(groupHeaderButton("Ungrouped"))).getByText("Ghost"),
+    ).toBeTruthy();
   });
 });
