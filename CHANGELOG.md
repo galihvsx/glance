@@ -5,6 +5,34 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Intake analytics, phase 2: intake volume trend over time (cycle 86)**
+
+- The intake_breakdown widget gains a trend section answering the time
+  question phase 1 left open: is intake volume rising or falling, which
+  channel drives it, and is triage keeping up? A recharts area chart
+  (below the tiles in grid view, below the table in table view) plots
+  created volume by source (in-app + form) against a decided line
+  (accepted + rejected + duplicate) over the last 12 buckets.
+- Backend: `GET /api/v1/widgets/:widget_id/trend` with `granularity`
+  day|week|month (default week) and `buckets` 1–52 (default 12); buckets
+  are consecutive periods ending at the current period, week buckets
+  start Monday, all buckets UTC; counts are by creation bucket (a row
+  decided this week but created last month counts in last month's
+  bucket), so recent buckets honestly read decided < created when
+  triage lags. Email series is always zero (glance has no email
+  ingestion) and stays visible in the legend, never faked. Scope is the
+  headline-numbers scope (workspace, non-archived projects; widget
+  filters ignored); empty buckets render as zeros, no gaps. `export.csv`
+  accepts `?trend=1` with the same params. OpenAPI pinned. 27 new Go
+  tests.
+- Frontend: granularity toggle Day/Week/Month (default Week, fixed 12
+  buckets), honest empty state when no intake rows exist at all, "Trend
+  CSV" export menu item (trend=1 + current granularity, filename from
+  Content-Disposition), shared-view read-only cards still fetch trend.
+  20 new frontend tests; full suite 1747 passed at close. No
+  WidgetDialog config change; bucket-click drill-down and a bucket-count
+  control are future material, not this cycle.
+
 **Intake analytics, phase 1: intake-breakdown drill-down + funnel counts (cycle 85)**
 
 - Plane parity (docs.plane.so/dashboards): the intake_breakdown widget —
