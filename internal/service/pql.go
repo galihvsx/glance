@@ -1,0 +1,910 @@
+package service
+
+// PQL — Plane Query Language subset (C91T0).
+//
+// A deterministic text filter for the project issue list, exposed as
+// ?pql= on GET /api/v1/workspaces/:slug/projects/:identifier/issues.
+// Grammar:
+//
+//	expr       := orExpr
+//	orExpr     := andExpr (OR andExpr)*
+//	andExpr    := notExpr (AND notExpr)*
+//	notExpr    := NOT notExpr | primary
+//	primary    := '(' expr ')' | function | comparison
+//	function   := hasNoAssignee() | hasAssignee()
+//	comparison := field op value | field IN '(' value (',' value)* ')'
+//	op         := '=' | '!=' | '<>' (alias for !=) | '<' | '>' | '<=' | '>='
+//
+// Keywords (AND/OR/NOT/IN), field names, priority names, and function
+// names are case-insensitive. String literals are single- or
+// double-quoted ('' / "" escape the quote); bare values are unquoted
+// words (names, numbers, YYYY-MM-DD dates, RFC3339 datetimes).
+//
+// Field table (all map to existing issue-model columns; no new columns):
+//
+//	field            column            values
+//	state            i.state_id        state name (project-scoped)
+//	priority         i.priority        name (none/low/medium/high/urgent) or 0-4
+//	assignee         issue_assignees   member name, email, `me`, or `none`
+//	label            issue_labels      label name (workspace-scoped)
+//	due, due_date,   i.target_date     YYYY-MM-DD or RFC3339 (date part)
+//	  target_date
+//	start,           i.start_date      YYYY-MM-DD or RFC3339 (date part)
+//	  start_date
+//	created,         i.created_at      YYYY-MM-DD (whole day) or RFC3339
+//	  created_at
+//	updated,         i.updated_at      YYYY-MM-DD (whole day) or RFC3339
+//	  updated_at
+//
+// Operators: name fields accept =/!=/in; priority and dates accept all
+// operators plus in. A bare YYYY-MM-DD value against created/updated
+// (timestamptz) means the whole UTC day: = becomes a [day, day+1)
+// range, <= becomes < day+1, > becomes >= day+1, so date-only queries
+// match the day users mean instead of a single midnight instant.
+//
+// Name resolution is scoped (states to the project, labels and
+// assignees to the workspace). An unknown or ambiguous name is a
+// PQLQueryError (400), never a silent empty list. All values are
+// parameterized through the caller's arg() placeholder function —
+// user input is never interpolated into SQL; only the operator and
+// column (both from fixed whitelists) appear literally.
+//
+// OUT of scope this cycle (documented, not silently cut): ORDER BY /
+// LIMIT clauses (existing order_by + cursor pagination cover them),
+// AI text-to-PQL generation, and PQL on dashboards/cycles/modules
+// lists. hasChildren()-style functions are deferred: they need joins
+// beyond the existing list shapes.
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// PQLQueryError is a client error in a PQL query: a parse error, an
+// unknown field/operator/value, or a name that resolves to nothing (or
+// ambiguously). Pos is the 1-based byte column of the offending token,
+// or 0 when no single token is at fault. Handlers map it to 400 with
+// the message and, when Pos > 0, details {"position": Pos}; it must
+// never surface as a 500.
+type PQLQueryError struct {
+	Msg string
+	Pos int
+}
+
+func (e *PQLQueryError) Error() string {
+	if e.Pos > 0 {
+		return fmt.Sprintf("pql: %s (at column %d)", e.Msg, e.Pos)
+	}
+	return "pql: " + e.Msg
+}
+
+func pqlErr(pos int, format string, args ...any) *PQLQueryError {
+	return &PQLQueryError{Msg: fmt.Sprintf(format, args...), Pos: pos}
+}
+
+// ---------------------------------------------------------------------------
+// Lexer
+// ---------------------------------------------------------------------------
+
+type pqlTokKind int
+
+const (
+	pqlEOF pqlTokKind = iota
+	pqlWord
+	pqlString
+	pqlOp
+	pqlLParen
+	pqlRParen
+	pqlComma
+)
+
+type pqlToken struct {
+	kind   pqlTokKind
+	text   string // word text, unescaped string value, or operator
+	quoted bool   // true for string literals (quoted values)
+	pos    int    // 1-based byte column of the token start
+}
+
+func isPQLWordStart(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '@'
+}
+
+func isPQLWordChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) ||
+		r == '_' || r == '@' || r == '.' || r == '+' || r == '-' || r == ':'
+}
+
+// lexPQL tokenizes the whole query up front so the parser reports the
+// first lexical error (e.g. an unterminated string) before any parse
+// error, with a stable position.
+func lexPQL(src string) ([]pqlToken, *PQLQueryError) {
+	var toks []pqlToken
+	i := 0
+	for i < len(src) {
+		r := rune(src[i])
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			i++
+		case r == '(':
+			toks = append(toks, pqlToken{kind: pqlLParen, text: "(", pos: i + 1})
+			i++
+		case r == ')':
+			toks = append(toks, pqlToken{kind: pqlRParen, text: ")", pos: i + 1})
+			i++
+		case r == ',':
+			toks = append(toks, pqlToken{kind: pqlComma, text: ",", pos: i + 1})
+			i++
+		case r == '\'' || r == '"':
+			start := i
+			quote := src[i]
+			i++
+			var sb strings.Builder
+			closed := false
+			for i < len(src) {
+				if src[i] == quote {
+					// Doubled quote escapes to one literal quote.
+					if i+1 < len(src) && src[i+1] == quote {
+						sb.WriteByte(quote)
+						i += 2
+						continue
+					}
+					closed = true
+					i++
+					break
+				}
+				sb.WriteByte(src[i])
+				i++
+			}
+			if !closed {
+				return nil, pqlErr(start+1, "unterminated string literal")
+			}
+			toks = append(toks, pqlToken{kind: pqlString, text: sb.String(), quoted: true, pos: start + 1})
+		case r == '=' || r == '<' || r == '>':
+			start := i
+			op := string(r)
+			// Only <=, >=, and <> are two-character operators: a
+			// second = after = (i.e. ==) is two separate tokens, so
+			// `state == Todo` fails as a missing value, not a valid
+			// comparison.
+			if i+1 < len(src) && ((r == '<' || r == '>') && src[i+1] == '=' || (r == '<' && src[i+1] == '>')) {
+				op += string(src[i+1])
+				i += 2
+			} else {
+				i++
+			}
+			if op == "<>" {
+				op = "!="
+			}
+			toks = append(toks, pqlToken{kind: pqlOp, text: op, pos: start + 1})
+		case r == '!':
+			if i+1 < len(src) && src[i+1] == '=' {
+				toks = append(toks, pqlToken{kind: pqlOp, text: "!=", pos: i + 1})
+				i += 2
+			} else {
+				return nil, pqlErr(i+1, "unexpected character %q (want != for not-equal)", string(r))
+			}
+		case isPQLWordStart(r) || ((r == '-' || r == '+') && i+1 < len(src) && src[i+1] >= '0' && src[i+1] <= '9'):
+			// A leading sign on a number (priority = -1) lexes as one
+			// word so validation can reject it as an invalid priority
+			// rather than an unexpected character.
+			start := i
+			for i < len(src) && isPQLWordChar(rune(src[i])) {
+				i++
+			}
+			toks = append(toks, pqlToken{kind: pqlWord, text: src[start:i], pos: start + 1})
+		default:
+			return nil, pqlErr(i+1, "unexpected character %q", string(r))
+		}
+	}
+	toks = append(toks, pqlToken{kind: pqlEOF, pos: len(src) + 1})
+	return toks, nil
+}
+
+// ---------------------------------------------------------------------------
+// Parser (recursive descent; NOT binds tightest, then AND, then OR)
+// ---------------------------------------------------------------------------
+
+type pqlNodeKind int
+
+const (
+	pqlAnd pqlNodeKind = iota
+	pqlOr
+	pqlNot
+	pqlCmp
+	pqlFunc
+)
+
+type pqlValue struct {
+	Text   string
+	Quoted bool
+	Pos    int // 1-based column of the value token
+}
+
+type pqlNode struct {
+	Kind  pqlNodeKind
+	Left  *pqlNode // and/or: left; not: operand
+	Right *pqlNode // and/or: right
+	// Comparison nodes:
+	Field  string // lowercased field name
+	Op     string // "=", "!=", "in", "<", ">", "<=", ">="
+	Values []pqlValue
+	Pos    int // 1-based column of the field token
+	// Function nodes:
+	Func string // lowercased function name
+}
+
+type pqlParser struct {
+	toks []pqlToken
+	i    int
+}
+
+func (p *pqlParser) peek() pqlToken { return p.toks[p.i] }
+func (p *pqlParser) next() pqlToken { t := p.toks[p.i]; p.i++; return t }
+func (p *pqlParser) isKeyword(t pqlToken, kw string) bool {
+	return t.kind == pqlWord && strings.EqualFold(t.text, kw)
+}
+
+// ParsePQL parses a PQL query into a predicate tree. Syntax errors are
+// *PQLQueryError; semantic checks (field/operator/value shapes) live in
+// ValidatePQL, and name resolution in translatePQL. An empty query is
+// an error here — callers treat a blank ?pql= as "no PQL" before
+// calling, so an empty string reaching this function is a bug.
+func ParsePQL(q string) (*pqlNode, error) {
+	if strings.TrimSpace(q) == "" {
+		return nil, pqlErr(1, "empty query")
+	}
+	toks, lerr := lexPQL(q)
+	if lerr != nil {
+		return nil, lerr
+	}
+	p := &pqlParser{toks: toks}
+	node, err := p.parseOr()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek().kind != pqlEOF {
+		return nil, pqlErr(p.peek().pos, "unexpected %q after expression", p.peek().text)
+	}
+	return node, nil
+}
+
+func (p *pqlParser) parseOr() (*pqlNode, error) {
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
+	for p.isKeyword(p.peek(), "OR") {
+		p.next()
+		right, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		left = &pqlNode{Kind: pqlOr, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *pqlParser) parseAnd() (*pqlNode, error) {
+	left, err := p.parseNot()
+	if err != nil {
+		return nil, err
+	}
+	for p.isKeyword(p.peek(), "AND") {
+		p.next()
+		right, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		left = &pqlNode{Kind: pqlAnd, Left: left, Right: right}
+	}
+	return left, nil
+}
+
+func (p *pqlParser) parseNot() (*pqlNode, error) {
+	if p.isKeyword(p.peek(), "NOT") {
+		p.next()
+		operand, err := p.parseNot()
+		if err != nil {
+			return nil, err
+		}
+		return &pqlNode{Kind: pqlNot, Left: operand}, nil
+	}
+	return p.parsePrimary()
+}
+
+func (p *pqlParser) parsePrimary() (*pqlNode, error) {
+	t := p.peek()
+	switch t.kind {
+	case pqlLParen:
+		p.next()
+		node, err := p.parseOr()
+		if err != nil {
+			return nil, err
+		}
+		if p.peek().kind != pqlRParen {
+			return nil, pqlErr(p.peek().pos, "expected ) to close group opened earlier")
+		}
+		p.next()
+		return node, nil
+	case pqlWord:
+		// Keywords are never field or function names: a leading AND /
+		// OR / NOT / IN is a syntax error, not a comparison against a
+		// field called "and".
+		if p.isKeyword(t, "AND") || p.isKeyword(t, "OR") || p.isKeyword(t, "NOT") || p.isKeyword(t, "IN") {
+			return nil, pqlErr(t.pos, "unexpected keyword %q", t.text)
+		}
+		// Function call: word immediately followed by ().
+		if p.toks[p.i+1].kind == pqlLParen {
+			name := p.next()
+			p.next() // (
+			if p.peek().kind != pqlRParen {
+				return nil, pqlErr(p.peek().pos, "function %s() takes no arguments", name.text)
+			}
+			p.next() // )
+			return &pqlNode{Kind: pqlFunc, Func: strings.ToLower(name.text), Pos: name.pos}, nil
+		}
+		// Comparison: field op value | field IN (values).
+		field := p.next()
+		opTok := p.peek()
+		if opTok.kind == pqlOp {
+			p.next()
+			v, err := p.parseValue()
+			if err != nil {
+				return nil, err
+			}
+			return &pqlNode{Kind: pqlCmp, Field: strings.ToLower(field.text),
+				Op: opTok.text, Values: []pqlValue{v}, Pos: field.pos}, nil
+		}
+		if p.isKeyword(opTok, "IN") {
+			p.next()
+			if p.peek().kind != pqlLParen {
+				return nil, pqlErr(p.peek().pos, "expected ( after in")
+			}
+			p.next()
+			var values []pqlValue
+			v, err := p.parseValue()
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, v)
+			for p.peek().kind == pqlComma {
+				p.next()
+				v, err := p.parseValue()
+				if err != nil {
+					return nil, err
+				}
+				values = append(values, v)
+			}
+			if p.peek().kind != pqlRParen {
+				return nil, pqlErr(p.peek().pos, "expected ) to close in list")
+			}
+			p.next()
+			return &pqlNode{Kind: pqlCmp, Field: strings.ToLower(field.text),
+				Op: "in", Values: values, Pos: field.pos}, nil
+		}
+		return nil, pqlErr(opTok.pos, "expected an operator (=, !=, <, >, <=, >=, in) after field %q", field.text)
+	default:
+		return nil, pqlErr(t.pos, "unexpected %q, want a field, function, or (", t.text)
+	}
+}
+
+func (p *pqlParser) parseValue() (pqlValue, error) {
+	t := p.peek()
+	switch t.kind {
+	case pqlString:
+		p.next()
+		return pqlValue{Text: t.text, Quoted: true, Pos: t.pos}, nil
+	case pqlWord:
+		if p.isKeyword(t, "AND") || p.isKeyword(t, "OR") || p.isKeyword(t, "NOT") || p.isKeyword(t, "IN") {
+			return pqlValue{}, pqlErr(t.pos, "unexpected keyword %q as a value", t.text)
+		}
+		p.next()
+		return pqlValue{Text: t.text, Quoted: false, Pos: t.pos}, nil
+	default:
+		return pqlValue{}, pqlErr(t.pos, "expected a value")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Semantic validation (no DB): field names, operator support, value shapes
+// ---------------------------------------------------------------------------
+
+type pqlFieldKind int
+
+const (
+	pqlNameField pqlFieldKind = iota // state, assignee, label
+	pqlPriorityField
+	pqlDateField // target_date / start_date (date columns)
+	pqlTsField   // created_at / updated_at (timestamptz columns)
+)
+
+var pqlFieldKinds = map[string]pqlFieldKind{
+	"state":       pqlNameField,
+	"priority":    pqlPriorityField,
+	"assignee":    pqlNameField,
+	"label":       pqlNameField,
+	"due":         pqlDateField,
+	"due_date":    pqlDateField,
+	"target_date": pqlDateField,
+	"start":       pqlDateField,
+	"start_date":  pqlDateField,
+	"created":     pqlTsField,
+	"created_at":  pqlTsField,
+	"updated":     pqlTsField,
+	"updated_at":  pqlTsField,
+}
+
+const pqlKnownFields = "state, priority, assignee, label, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+
+// pqlPriorityNames mirrors the Plane vocabulary used by the importer
+// (0=none, 1=low, 2=medium, 3=high, 4=urgent).
+var pqlPriorityNames = map[string]int{
+	"none": 0, "low": 1, "medium": 2, "high": 3, "urgent": 4,
+}
+
+// parsePQLPriority maps a priority value token to its int: a number
+// 0-4, or a name (case-insensitive); a quoted number counts as a number.
+func parsePQLPriority(v pqlValue) (int, *PQLQueryError) {
+	if n, err := atoiStrict(v.Text); err == nil {
+		if n < 0 || n > 4 {
+			return 0, pqlErr(v.Pos, "invalid priority %q (want 0-4 or none/low/medium/high/urgent)", v.Text)
+		}
+		return n, nil
+	}
+	if n, ok := pqlPriorityNames[strings.ToLower(v.Text)]; ok {
+		return n, nil
+	}
+	return 0, pqlErr(v.Pos, "unknown priority %q (want 0-4 or none/low/medium/high/urgent)", v.Text)
+}
+
+// atoiStrict parses an all-digit (optionally sign-prefixed) integer.
+func atoiStrict(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	neg := false
+	rest := s
+	if rest[0] == '-' || rest[0] == '+' {
+		neg = rest[0] == '-'
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return 0, fmt.Errorf("sign only")
+	}
+	n := 0
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+		n = n*10 + int(rest[i]-'0')
+	}
+	if neg {
+		n = -n
+	}
+	return n, nil
+}
+
+type pqlDate struct {
+	t        time.Time // midnight UTC for date-only values
+	dateOnly bool
+}
+
+// parsePQLDate accepts YYYY-MM-DD or RFC3339.
+func parsePQLDate(s string) (pqlDate, *PQLQueryError) {
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return pqlDate{t: t, dateOnly: true}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return pqlDate{t: t.UTC(), dateOnly: false}, nil
+	}
+	return pqlDate{}, pqlErr(0, "invalid date %q (want YYYY-MM-DD or RFC3339)", s)
+}
+
+// ValidatePQL checks field names, per-field operator support, and value
+// shapes without touching the DB. TranslatePQL calls it first so a
+// malformed query never reaches name resolution.
+func ValidatePQL(n *pqlNode) *PQLQueryError {
+	switch n.Kind {
+	case pqlAnd, pqlOr:
+		if err := ValidatePQL(n.Left); err != nil {
+			return err
+		}
+		return ValidatePQL(n.Right)
+	case pqlNot:
+		return ValidatePQL(n.Left)
+	case pqlFunc:
+		if n.Func != "hasnoassignee" && n.Func != "hasassignee" {
+			return pqlErr(n.Pos, "unknown function %q() (want hasNoAssignee() or hasAssignee())", n.Func)
+		}
+		return nil
+	case pqlCmp:
+		kind, ok := pqlFieldKinds[n.Field]
+		if !ok {
+			return pqlErr(n.Pos, "unknown field %q (known fields: %s)", n.Field, pqlKnownFields)
+		}
+		switch kind {
+		case pqlNameField:
+			if n.Op != "=" && n.Op != "!=" && n.Op != "in" {
+				return pqlErr(n.Pos, "operator %s is not supported for field %q (want =, !=, in)", n.Op, n.Field)
+			}
+		case pqlPriorityField, pqlDateField, pqlTsField:
+			// All operators supported.
+		}
+		for _, v := range n.Values {
+			if v.Quoted && v.Text == "" {
+				return pqlErr(v.Pos, "empty value for field %q", n.Field)
+			}
+			switch kind {
+			case pqlPriorityField:
+				if _, err := parsePQLPriority(v); err != nil {
+					return err
+				}
+			case pqlDateField, pqlTsField:
+				if _, err := parsePQLDate(v.Text); err != nil {
+					err.Pos = v.Pos
+					return err
+				}
+			}
+		}
+		return nil
+	default:
+		return pqlErr(0, "invalid query node")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Translation to SQL (parameterized; reuses issueListConds shapes)
+// ---------------------------------------------------------------------------
+
+// withoutVisualFilters returns a copy of the input with every visual
+// filter zeroed. ListIssues applies it whenever PQL is present so the
+// "PQL wins, visual filters ignored" contract holds for direct service
+// callers too, not just the HTTP handler. Sort, pagination, fieldset,
+// and list-mode flags (archived, draft, sequence lookup) are kept.
+func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
+	in.State = ""
+	in.Cycle = ""
+	in.Q = ""
+	in.Priorities = nil
+	in.Labels = nil
+	in.Assignees = nil
+	in.EstimatePoints = nil
+	in.Parents = nil
+	in.Epics = nil
+	in.CreatedAfter = nil
+	in.CreatedBefore = nil
+	in.UpdatedAfter = nil
+	in.UpdatedBefore = nil
+	in.DueAfter = nil
+	in.DueBefore = nil
+	in.StartAfter = nil
+	in.StartBefore = nil
+	in.Undated = false
+	in.DueDateEmpty = false
+	in.Subscribed = false
+	return in
+}
+
+// translatePQL compiles a validated predicate tree to one parenthesized
+// SQL condition. arg is the caller's placeholder function (same one
+// issueListConds uses), so placeholders stay in sequence with the rest
+// of the list query. Name resolution runs one query per distinct name;
+// the query count is bounded by the query text, never by row count.
+func translatePQL(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	if err := ValidatePQL(n); err != nil {
+		return "", err
+	}
+	return translatePQLNode(ctx, pool, wsID, projectID, actorID, n, arg)
+}
+
+func translatePQLNode(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	switch n.Kind {
+	case pqlAnd:
+		l, err := translatePQLNode(ctx, pool, wsID, projectID, actorID, n.Left, arg)
+		if err != nil {
+			return "", err
+		}
+		r, err := translatePQLNode(ctx, pool, wsID, projectID, actorID, n.Right, arg)
+		if err != nil {
+			return "", err
+		}
+		return "(" + l + " AND " + r + ")", nil
+	case pqlOr:
+		l, err := translatePQLNode(ctx, pool, wsID, projectID, actorID, n.Left, arg)
+		if err != nil {
+			return "", err
+		}
+		r, err := translatePQLNode(ctx, pool, wsID, projectID, actorID, n.Right, arg)
+		if err != nil {
+			return "", err
+		}
+		return "(" + l + " OR " + r + ")", nil
+	case pqlNot:
+		c, err := translatePQLNode(ctx, pool, wsID, projectID, actorID, n.Left, arg)
+		if err != nil {
+			return "", err
+		}
+		return "(NOT " + c + ")", nil
+	case pqlFunc:
+		if n.Func == "hasnoassignee" {
+			return "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)", nil
+		}
+		return "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)", nil
+	case pqlCmp:
+		return translatePQLCmp(ctx, pool, wsID, projectID, actorID, n, arg)
+	default:
+		return "", pqlErr(0, "invalid query node")
+	}
+}
+
+func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	switch pqlFieldKinds[n.Field] {
+	case pqlNameField:
+		switch n.Field {
+		case "state":
+			return translatePQLState(ctx, pool, projectID, n, arg)
+		case "label":
+			return translatePQLLabel(ctx, pool, wsID, n, arg)
+		default: // assignee
+			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
+		}
+	case pqlPriorityField:
+		ints := make([]int, 0, len(n.Values))
+		for _, v := range n.Values {
+			p, err := parsePQLPriority(v)
+			if err != nil {
+				return "", err
+			}
+			ints = append(ints, p)
+		}
+		switch n.Op {
+		case "=":
+			return "i.priority = " + arg(ints[0]), nil
+		case "!=":
+			return "i.priority <> " + arg(ints[0]), nil
+		case "in":
+			return "i.priority = ANY(" + arg(ints) + ")", nil
+		default: // <, >, <=, >= — op comes from the parser whitelist, never raw input
+			return "i.priority " + n.Op + " " + arg(ints[0]), nil
+		}
+	case pqlDateField:
+		col := "i.target_date"
+		if n.Field == "start" || n.Field == "start_date" {
+			col = "i.start_date"
+		}
+		dates := make([]string, 0, len(n.Values))
+		for _, v := range n.Values {
+			d, err := parsePQLDate(v.Text)
+			if err != nil {
+				err.Pos = v.Pos
+				return "", err
+			}
+			dates = append(dates, d.t.Format("2006-01-02"))
+		}
+		switch n.Op {
+		case "=":
+			return col + " = " + arg(dates[0]) + "::date", nil
+		case "!=":
+			return col + " <> " + arg(dates[0]) + "::date", nil
+		case "in":
+			return col + " = ANY(" + arg(dates) + "::date[])", nil
+		default:
+			return col + " " + n.Op + " " + arg(dates[0]) + "::date", nil
+		}
+	case pqlTsField:
+		col := "i.created_at"
+		if n.Field == "updated" || n.Field == "updated_at" {
+			col = "i.updated_at"
+		}
+		dates := make([]pqlDate, 0, len(n.Values))
+		for _, v := range n.Values {
+			d, err := parsePQLDate(v.Text)
+			if err != nil {
+				err.Pos = v.Pos
+				return "", err
+			}
+			dates = append(dates, d)
+		}
+		// One condition per value for =/!=/in; a date-only value means
+		// the whole UTC day (see the package comment).
+		dayCond := func(d pqlDate, negate bool) string {
+			day := d.t.Format("2006-01-02")
+			next := d.t.Add(24 * time.Hour).Format("2006-01-02")
+			inner := col + " >= " + arg(day) + "::timestamptz AND " + col + " < " + arg(next) + "::timestamptz"
+			if negate {
+				return "(NOT (" + inner + "))"
+			}
+			return "(" + inner + ")"
+		}
+		switch n.Op {
+		case "=":
+			if dates[0].dateOnly {
+				return dayCond(dates[0], false), nil
+			}
+			return col + " = " + arg(dates[0].t) + "::timestamptz", nil
+		case "!=":
+			if dates[0].dateOnly {
+				return dayCond(dates[0], true), nil
+			}
+			return col + " <> " + arg(dates[0].t) + "::timestamptz", nil
+		case "in":
+			parts := make([]string, 0, len(dates))
+			for _, d := range dates {
+				if d.dateOnly {
+					parts = append(parts, dayCond(d, false))
+				} else {
+					parts = append(parts, col+" = "+arg(d.t)+"::timestamptz")
+				}
+			}
+			return "(" + strings.Join(parts, " OR ") + ")", nil
+		default:
+			// Date-only comparisons use the day boundary the operator
+			// implies: < day means before midnight; <= day means
+			// through the end of the day (< day+1); > day means from
+			// day+1 on; >= day means from midnight.
+			if dates[0].dateOnly {
+				switch n.Op {
+				case "<":
+					return col + " < " + arg(dates[0].t.Format("2006-01-02")) + "::timestamptz", nil
+				case "<=":
+					return col + " < " + arg(dates[0].t.Add(24*time.Hour).Format("2006-01-02")) + "::timestamptz", nil
+				case ">":
+					return col + " >= " + arg(dates[0].t.Add(24*time.Hour).Format("2006-01-02")) + "::timestamptz", nil
+				default: // >=
+					return col + " >= " + arg(dates[0].t.Format("2006-01-02")) + "::timestamptz", nil
+				}
+			}
+			return col + " " + n.Op + " " + arg(dates[0].t) + "::timestamptz", nil
+		}
+	default:
+		return "", pqlErr(n.Pos, "unknown field %q", n.Field)
+	}
+}
+
+// resolvePQLIDs runs a name lookup returning every matching id. Zero
+// matches is an unknown-name 400; more than one is an ambiguous-name
+// 400 — never a silent pick or an empty list.
+func resolvePQLIDs(ctx context.Context, pool *pgxpool.Pool, query string, scopeID, name string, pos int, kind, scope string) ([]string, error) {
+	rows, err := pool.Query(ctx, query, scopeID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	switch len(ids) {
+	case 0:
+		return nil, pqlErr(pos, "unknown %s %q in this %s", kind, name, scope)
+	case 1:
+		return ids, nil
+	default:
+		return nil, pqlErr(pos, "ambiguous %s %q: %d matches in this %s", kind, name, len(ids), scope)
+	}
+}
+
+func translatePQLState(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	ids := make([]string, 0, len(n.Values))
+	for _, v := range n.Values {
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM states WHERE project_id = $1::uuid AND lower(name) = lower($2)`,
+			projectID, v.Text, v.Pos, "state", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		return "i.state_id = " + arg(ids[0]) + "::uuid", nil
+	case "!=":
+		return "i.state_id <> " + arg(ids[0]) + "::uuid", nil
+	default: // in
+		return "i.state_id = ANY(" + arg(ids) + "::uuid[])", nil
+	}
+}
+
+func translatePQLLabel(ctx context.Context, pool *pgxpool.Pool, wsID string, n *pqlNode, arg func(any) string) (string, error) {
+	ids := make([]string, 0, len(n.Values))
+	for _, v := range n.Values {
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM labels WHERE workspace_id = $1::uuid AND lower(name) = lower($2)`,
+			wsID, v.Text, v.Pos, "label", "workspace")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	// Same EXISTS shape as issueListConds' label filter.
+	switch n.Op {
+	case "=":
+		return "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = " + arg(ids[0]) + "::uuid)", nil
+	case "!=":
+		return "NOT EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in
+		return "EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	}
+}
+
+// resolvePQLAssigneeValue maps one assignee value token: `me` to the
+// actor, `none` to the no-assignee marker, anything else to a workspace
+// member id resolved by name or email (case-insensitive).
+func resolvePQLAssigneeValue(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, v pqlValue) (id string, none bool, err error) {
+	lower := strings.ToLower(v.Text)
+	if lower == "me" {
+		return actorID, false, nil
+	}
+	if lower == "none" {
+		return "", true, nil
+	}
+	got, err := resolvePQLIDs(ctx, pool,
+		`SELECT u.id::text FROM users u JOIN workspace_members m ON m.user_id = u.id
+		 WHERE m.workspace_id = $1::uuid AND (lower(u.name) = lower($2) OR lower(u.email) = lower($2))`,
+		wsID, v.Text, v.Pos, "assignee", "workspace")
+	if err != nil {
+		return "", false, err
+	}
+	return got[0], false, nil
+}
+
+func translatePQLAssignee(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	// Same EXISTS shape as issueListConds' assignee filter.
+	existsFor := func(ids []string) string {
+		if len(ids) == 1 {
+			return "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = " + arg(ids[0]) + "::uuid)"
+		}
+		return "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		id, none, err := resolvePQLAssigneeValue(ctx, pool, wsID, actorID, v)
+		if err != nil {
+			return "", err
+		}
+		if none {
+			wantNone = true
+		} else {
+			ids = append(ids, id)
+		}
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a member, or none.
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		// Single value: not that member, or "has any assignee".
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in: member matches OR no-assignee, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
