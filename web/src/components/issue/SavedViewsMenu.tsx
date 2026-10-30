@@ -17,6 +17,7 @@ import { Separator } from "../ui/separator";
 import { toast } from "../ui/toast";
 import { cn } from "cn";
 import {
+  EMPTY_FILTERS,
   isFilterParam,
   serializeFilters,
   type IssueFilters,
@@ -35,6 +36,16 @@ interface SavedViewsMenuProps {
   onApplyDisplay: ((d: DisplaySettings) => void) | null;
   /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
   triggerClassName?: string;
+  /**
+   * C91T1 PQL wiring (Issues page only). pqlMode tells the menu the
+   * current save is a PQL view; pqlQuery is the applied query.
+   * onViewApplied lets the page settle its PQL mode when a view is
+   * applied (PQL view → PQL mode, visual view → visual mode).
+   * Pages that do not pass these keep the pre-C91 behavior exactly.
+   */
+  pqlMode?: boolean;
+  pqlQuery?: string;
+  onViewApplied?: (pqlQuery: string | null) => void;
 }
 
 /** Per-project saved views: named filter + display presets, persisted
@@ -48,6 +59,9 @@ export default function SavedViewsMenu({
   display,
   onApplyDisplay,
   triggerClassName,
+  pqlMode,
+  pqlQuery,
+  onViewApplied,
 }: SavedViewsMenuProps) {
   const {
     views,
@@ -75,7 +89,10 @@ export default function SavedViewsMenu({
   function applyView(view: SavedView) {
     const next = new URLSearchParams();
     // Preserve non-filter params (e.g. ?peek=); replace filter params with
-    // the view's stored filters.
+    // the view's stored filters. serializeFilters writes `pql` for PQL
+    // views and omits it for visual ones, so the URL mode follows the
+    // view; the page still needs the explicit mode signal below because
+    // PQL mode with an empty query is not visible in the URL.
     for (const [k, v] of searchParams) {
       if (!isFilterParam(k)) next.set(k, v);
     }
@@ -83,6 +100,7 @@ export default function SavedViewsMenu({
       next.set(k, v);
     }
     setSearchParams(next, { replace: true });
+    onViewApplied?.(view.filters.pql?.trim() ? view.filters.pql.trim() : null);
     if (view.display && onApplyDisplay) {
       onApplyDisplay(view.display);
     }
@@ -116,6 +134,7 @@ export default function SavedViewsMenu({
       next.set(k, v);
     }
     setSearchParams(next, { replace: true });
+    onViewApplied?.(def.filters.pql?.trim() ? def.filters.pql.trim() : null);
     if (def.display && onApplyDisplay) {
       onApplyDisplay(def.display);
     }
@@ -135,9 +154,20 @@ export default function SavedViewsMenu({
       return;
     }
     try {
+      // C91T1: in PQL mode the view carries ONLY the query — the parked
+      // visual selection is not saved (modes are exclusive). An empty
+      // query saves as a plain unfiltered view. Visual mode is
+      // unchanged. Old views without a pql key still load as before
+      // (sanitizeFilters merges over EMPTY_FILTERS).
+      const filtersToSave = pqlMode
+        ? {
+            ...EMPTY_FILTERS,
+            ...(pqlQuery?.trim() ? { pql: pqlQuery.trim() } : {}),
+          }
+        : filters;
       const created = await createView(
         saveName,
-        filters,
+        filtersToSave,
         display,
       );
       if (!created) {
@@ -475,7 +505,9 @@ export default function SavedViewsMenu({
               </Button>
             </div>
             <p className="px-1 pt-1 text-xs text-muted-foreground">
-              Saves the current filters
+              {pqlMode
+                ? "Saves the current PQL query"
+                : "Saves the current filters"}
               {display ? " and display settings" : ""}.
             </p>
           </div>
