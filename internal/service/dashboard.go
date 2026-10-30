@@ -108,6 +108,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -202,6 +203,17 @@ var (
 	// drill-down's per_page is outside 1-100. The handler maps it to
 	// 400 bad_request.
 	ErrInvalidDrilldownPerPage = errors.New("service: invalid drill-down per_page")
+	// ErrInvalidDrilldownBucket is returned when an intake_breakdown
+	// drill-down's bucket window is malformed: granularity without
+	// bucket_start or vice versa, an unknown granularity, a
+	// bucket_start that is not a YYYY-MM-DD date, or a bucket_start
+	// misaligned for its granularity (not a Monday for week, not
+	// the 1st for month). The handler maps it to 400 bad_request.
+	// The bucket params are validated in the service, after authZ,
+	// so a private unshared widget still reads 404 for a
+	// semantically invalid bucket request (same pattern as the
+	// trend params).
+	ErrInvalidDrilldownBucket = errors.New("service: invalid drill-down bucket")
 	// ErrDrilldownUnavailable is returned when the widget's type has
 	// no drill-down at all (number, work_items_table, assigned_to_me).
 	// intake_breakdown drills via a metric instead of a group (see
@@ -362,13 +374,23 @@ type IntakeDrilldownItem struct {
 // widget max_rows to fall back to; see GetIntakeDrilldown); total is
 // the metric's row count before pagination; metric echoes the
 // requested metric.
+// C87 adds the optional bucket window (?granularity= +
+// ?bucket_start=): when present, Granularity and BucketStart echo
+// the filter (absent otherwise, so existing callers' payloads stay
+// byte-identical in meaning) and total counts the bucket-filtered
+// rows. A bucket without a metric lists every row created in the
+// bucket (any source/status); then Metric is "" — the empty metric
+// is the "all rows in this bucket" reading, not a missing-metric
+// error (metric stays required when no bucket is given).
 // Items are most-recently-updated first, like the C84 drill-down.
 type IntakeDrilldown struct {
-	Items   []IntakeDrilldownItem `json:"items"`
-	Page    int                   `json:"page"`
-	PerPage int                   `json:"per_page"`
-	Total   int                   `json:"total"`
-	Metric  string                `json:"metric"`
+	Items       []IntakeDrilldownItem `json:"items"`
+	Page        int                   `json:"page"`
+	PerPage     int                   `json:"per_page"`
+	Total       int                   `json:"total"`
+	Metric      string                `json:"metric"`
+	Granularity *string               `json:"granularity,omitempty"`
+	BucketStart *string               `json:"bucket_start,omitempty"`
 }
 
 // IntakeTrendBucket is one period of the intake trend series (C86):
@@ -2155,6 +2177,74 @@ func validateIntakeDrilldownMetric(metric string) error {
 	return nil
 }
 
+// IntakeDrilldownBucket is one C87 bucket window on the intake
+// drill-down: the half-open creation interval [Start, End) in UTC,
+// identified by its granularity and its first day's ISO date. Day
+// windows are [start, start+1d); week windows are [Monday,
+// Monday+7d); month windows are [1st, next month 1st) — the same
+// calendar periods the C86 trend series uses, so a trend click
+// drills exactly the bucket the chart drew.
+type IntakeDrilldownBucket struct {
+	Granularity string
+	Start       time.Time
+	End         time.Time
+	StartDate   string
+}
+
+var intakeBucketDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// parseIntakeDrilldownBucket validates the optional C87 bucket
+// params. Both or neither: one without the other is an honest 400,
+// never a silent default. Unknown granularities, malformed dates,
+// and misaligned starts (not a Monday for week, not the 1st for
+// month) are 400s too — the frontend always sends aligned starts
+// from the trend payload, so a misaligned start is a caller bug,
+// never silently re-aligned. The returned Start/End are UTC
+// midnights; the comparison in queryIntakeDrilldown is on the
+// created_at instant, so the window is a UTC calendar window
+// regardless of the database session's TimeZone.
+func parseIntakeDrilldownBucket(granularity, bucketStart string) (IntakeDrilldownBucket, bool, error) {
+	if granularity == "" && bucketStart == "" {
+		return IntakeDrilldownBucket{}, false, nil
+	}
+	if granularity == "" || bucketStart == "" {
+		return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: granularity and bucket_start must be given together", ErrInvalidDrilldownBucket)
+	}
+	switch granularity {
+	case IntakeTrendDay, IntakeTrendWeek, IntakeTrendMonth:
+	default:
+		return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: unknown granularity %q: want day|week|month", ErrInvalidDrilldownBucket, granularity)
+	}
+	if !intakeBucketDateRe.MatchString(bucketStart) {
+		return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: malformed bucket_start %q: want YYYY-MM-DD", ErrInvalidDrilldownBucket, bucketStart)
+	}
+	start, err := time.Parse("2006-01-02", bucketStart)
+	if err != nil {
+		return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: malformed bucket_start %q: want YYYY-MM-DD", ErrInvalidDrilldownBucket, bucketStart)
+	}
+	start = start.UTC()
+	switch granularity {
+	case IntakeTrendWeek:
+		if start.Weekday() != time.Monday {
+			return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: week bucket_start %q is not a Monday", ErrInvalidDrilldownBucket, bucketStart)
+		}
+	case IntakeTrendMonth:
+		if start.Day() != 1 {
+			return IntakeDrilldownBucket{}, false, fmt.Errorf("%w: month bucket_start %q is not the 1st", ErrInvalidDrilldownBucket, bucketStart)
+		}
+	}
+	bucket := IntakeDrilldownBucket{Granularity: granularity, Start: start, StartDate: bucketStart}
+	switch granularity {
+	case IntakeTrendDay:
+		bucket.End = start.AddDate(0, 0, 1)
+	case IntakeTrendWeek:
+		bucket.End = start.AddDate(0, 0, 7)
+	case IntakeTrendMonth:
+		bucket.End = start.AddDate(0, 1, 0)
+	}
+	return bucket, true, nil
+}
+
 // intakeMetricFilter renders the metric's row predicate, allocating
 // a $n placeholder per status code through arg (pgx rejects
 // arguments no placeholder references, so each query binds exactly
@@ -2208,16 +2298,30 @@ const intakeDrilldownFrom = `FROM intake_issues ii
 // snoozed row scans back as pending with status_name "pending".
 // Scope = every non-archived project of the workspace (the
 // computeIntakeBreakdown scope — widget-level filters and project_ids
-// stay ignored, documented). The COUNT binds only the where-clause
+// stay ignored, documented). A non-nil bucket ANDs the creation
+// window (created_at in [Start, End)) onto the metric predicate, so
+// pending/snoozed keep their EFFECTIVE-status definitions AND the
+// creation-bucket filter: a row counts only if it is both
+// effectively in that metric and created in the bucket — the honest
+// reading, not a point-in-time snapshot. An empty metric with a
+// bucket means "all rows created in the bucket" (no metric filter
+// at all). The COUNT binds only the where-clause
 // args (a snapshot taken before the SELECT's CASE allocates its
 // own placeholders); the SELECT binds the full set.
-func queryIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, wsID, metric string, limit, offset int) ([]IntakeDrilldownItem, int, error) {
+func queryIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, wsID, metric string, bucket *IntakeDrilldownBucket, limit, offset int) ([]IntakeDrilldownItem, int, error) {
 	args := []any{wsID}
 	arg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
-	where := `p.workspace_id = $1::uuid AND p.archived_at IS NULL AND ` + intakeMetricFilter(metric, arg)
+	metricFilter := `TRUE`
+	if metric != "" {
+		metricFilter = intakeMetricFilter(metric, arg)
+	}
+	where := `p.workspace_id = $1::uuid AND p.archived_at IS NULL AND ` + metricFilter
+	if bucket != nil {
+		where += ` AND ii.created_at >= ` + arg(bucket.Start) + ` AND ii.created_at < ` + arg(bucket.End)
+	}
 	countArgs := append([]any(nil), args...)
 	var total int
 	if err := pool.QueryRow(ctx,
@@ -2285,7 +2389,19 @@ func GetWidgetType(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID st
 // glance has no email ingestion, and rows are never faked. Read
 // authZ = the widget read rule (a shared-view member may drill; a
 // private unshared dashboard reads as a missing widget).
-func GetIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric string, page, perPage int) (*IntakeDrilldown, error) {
+//
+// C87 bucket window: granularity + bucketStart (both or neither)
+// additionally filter by created_at in the bucket window (day
+// [start, start+1d); week [Monday, Monday+7d); month [1st, next
+// 1st), UTC). With a bucket present, metric is OPTIONAL: absent
+// means all rows created in the bucket (any source/status), and
+// the response carries Metric "" with Granularity/BucketStart
+// echoed; with a metric, the bucket ANDs onto the metric
+// predicate, so pending/snoozed keep their EFFECTIVE-status
+// definitions inside the bucket. Bucket validation runs after
+// authZ, so a private unshared widget reads 404 before any bucket
+// 400 can leak it.
+func GetIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric, granularity, bucketStart string, page, perPage int) (*IntakeDrilldown, error) {
 	if page < 1 {
 		return nil, ErrInvalidWidgetPage
 	}
@@ -2299,23 +2415,42 @@ func GetIntakeDrilldown(ctx context.Context, pool *pgxpool.Pool, widgetID, actor
 	if wc.widget.WidgetType != WidgetTypeIntake {
 		return nil, ErrDrilldownUnavailable
 	}
-	if err := validateIntakeDrilldownMetric(metric); err != nil {
+	bucket, bucketPresent, err := parseIntakeDrilldownBucket(granularity, bucketStart)
+	if err != nil {
+		return nil, err
+	}
+	if bucketPresent {
+		if metric != "" {
+			if err := validateIntakeDrilldownMetric(metric); err != nil {
+				return nil, err
+			}
+		}
+	} else if err := validateIntakeDrilldownMetric(metric); err != nil {
 		return nil, err
 	}
 	if perPage <= 0 {
 		perPage = 10
 	}
-	items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, perPage, (page-1)*perPage)
+	var bucketPtr *IntakeDrilldownBucket
+	if bucketPresent {
+		bucketPtr = &bucket
+	}
+	items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, bucketPtr, perPage, (page-1)*perPage)
 	if err != nil {
 		return nil, err
 	}
-	return &IntakeDrilldown{
+	out := &IntakeDrilldown{
 		Items:   items,
 		Page:    page,
 		PerPage: perPage,
 		Total:   total,
 		Metric:  metric,
-	}, nil
+	}
+	if bucketPresent {
+		out.Granularity = &bucket.Granularity
+		out.BucketStart = &bucket.StartDate
+	}
+	return out, nil
 }
 
 // Intake trend granularities (C86) and their date_trunc units.
@@ -3014,7 +3149,7 @@ func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID,
 		if err := validateIntakeDrilldownMetric(metric); err != nil {
 			return "", nil, false, err
 		}
-		items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, csvExportCap, 0)
+		items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, nil, csvExportCap, 0)
 		if err != nil {
 			return "", nil, false, err
 		}

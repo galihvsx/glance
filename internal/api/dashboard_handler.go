@@ -96,6 +96,13 @@ func dashboardError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
 	case errors.Is(err, service.ErrInvalidDrilldownPerPage):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
+	case errors.Is(err, service.ErrInvalidDrilldownBucket):
+		msg := strings.TrimPrefix(err.Error(), "service: invalid drill-down bucket: ")
+		msg = strings.TrimPrefix(msg, "service: invalid drill-down bucket")
+		if msg == "" {
+			msg = "invalid drill-down bucket"
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
 	case errors.Is(err, service.ErrDrilldownUnavailable):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "drill-down is not available for this widget type", nil)
 	case errors.Is(err, service.ErrInvalidTrendGranularity):
@@ -477,6 +484,27 @@ func (h *DashboardHandler) getWidgetData(c *echo.Context) error {
 //     page, per_page, total, metric} — status/status_name carry the
 //     EFFECTIVE status. Items are most-recently-updated first.
 //
+//   - C87 bucket window on intake_breakdown widgets:
+//     ?granularity=day|week|month&bucket_start=YYYY-MM-DD — the
+//     rows created in one trend bucket (the trend-chart click).
+//     Both params or neither: one without the other is 400;
+//     unknown granularity, malformed date, or a misaligned start
+//     (not a Monday for week, not the 1st for month) is 400.
+//     Windows are half-open UTC calendar periods: day
+//     [start, start+1d); week [Monday, Monday+7d); month [1st,
+//     next 1st). The bucket ANDs onto the metric predicate when
+//     metric is given; without metric it lists every row created
+//     in the bucket (any source/status) and the response carries
+//     metric "" — metric is optional only with a bucket. pending/
+//     snoozed keep their C85 EFFECTIVE-status definitions AND
+//     the creation-bucket filter (a row counts only if both
+//     hold — the honest reading, not a point-in-time snapshot).
+//     total counts the bucket-filtered rows; granularity and
+//     bucket_start are echoed only when the bucket filter is
+//     present (absent otherwise). Grouped-widget drill-down
+//     ignores granularity/bucket_start entirely (no 400 on the
+//     ignored params, matching the C85 group/metric ignores).
+//
 // Types without any drill-down (number, work_items_table,
 // assigned_to_me) are 400 — drill-down is not available for them.
 // Read authZ = the widget read rule (a shared-view member may drill;
@@ -507,7 +535,7 @@ func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 			}
 			perPage = p
 		}
-		data, err := service.GetIntakeDrilldown(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"), page, perPage)
+		data, err := service.GetIntakeDrilldown(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"), c.QueryParam("granularity"), c.QueryParam("bucket_start"), page, perPage)
 		if err != nil {
 			return dashboardError(c, err)
 		}
