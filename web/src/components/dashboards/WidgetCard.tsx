@@ -44,6 +44,7 @@ import {
   downloadWidgetTrendCsv,
   EMAIL_INGESTION_NOTE,
   fetchIntakeDrilldown,
+  fetchIntakeDrilldownBucket,
   fetchIntakeTrend,
   fetchWidgetData,
   fetchWidgetDrilldown,
@@ -51,6 +52,7 @@ import {
   INTAKE_TILES,
   INTAKE_TREND_BUCKETS,
   INTAKE_TREND_GRANULARITIES,
+  intakeBucketTitle,
   intakeDrilldownRowToWidgetRow,
   isDrillableType,
   isPaginatedType,
@@ -65,6 +67,7 @@ import {
   updateWidget,
   widgetDataKey,
   widgetDrilldownKey,
+  widgetIntakeDrilldownBucketKey,
   widgetIntakeDrilldownKey,
   widgetIntakeTrendKey,
   widgetPageCount,
@@ -610,6 +613,38 @@ function TrendTooltipContent({
   );
 }
 
+/** Extract the clicked trend bucket's bucket_start from a recharts
+ *  area-chart click event (C87T1). Recharts hands the chart event
+ *  with activePayload: the clicked point's datum, whose
+ *  `bucket_start` the trend section stamps onto every chart point
+ *  (verbatim from the trend payload — the server owns window math,
+ *  the client never recomputes it). Falls back to the datum's `name`
+ *  (which is also bucket_start) and to activeLabel. Returns null
+ *  when there is no active payload — a click on empty chart margins
+ *  — and the caller must open nothing in that case, never an empty
+ *  modal. Exported for the mocked chart-click-event tests. */
+export function bucketStartFromTrendClick(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const o = e as Record<string, unknown>;
+  const activePayload = o.activePayload as
+    | { payload?: Record<string, unknown>; name?: unknown }[]
+    | undefined;
+  const first = activePayload?.[0];
+  if (first) {
+    const payload = first.payload;
+    if (payload && typeof payload.bucket_start === "string" && payload.bucket_start) {
+      return payload.bucket_start;
+    }
+    if (typeof first.name === "string" && first.name) return first.name;
+    if (payload && typeof payload.name === "string" && payload.name) {
+      return payload.name;
+    }
+  }
+  const activeLabel = o.activeLabel;
+  if (typeof activeLabel === "string" && activeLabel) return activeLabel;
+  return null;
+}
+
 /** The intake trend section (C86T1, prototype-as-spec): a recharts
  *  area chart BELOW the tiles (below the table in Table view — the
  *  card renders this section after IntakeBody in both views), with
@@ -622,12 +657,19 @@ function TrendTooltipContent({
  *  the chart — never a flat zero line pretending to be data. Partial
  *  data renders the continuous zero-filled line, per the backend
  *  contract. Read affordance: view-only readers fetch the trend too
- *  (the server enforces read). */
+ *  (the server enforces read).
+ *  C87T1: the chart is clickable — a chart click with an active
+ *  payload calls onBucketClick with that point's bucket_start,
+ *  opening the bucket drill-down modal; clicks with no active
+ *  payload (empty chart margins) do nothing. The pointer cursor
+ *  and the hint line under the chart advertise the affordance
+ *  (prototype-as-spec). */
 function IntakeTrendSection({
   widgetId,
   granularity,
   onGranularity,
   hasIntake,
+  onBucketClick,
 }: {
   widgetId: string;
   granularity: IntakeTrendGranularity;
@@ -637,6 +679,8 @@ function IntakeTrendSection({
    *  trigger the empty state: old rows outside the window still
    *  count as intake, and render as a zero line). */
   hasIntake: boolean;
+  /** Absent = chart not clickable (never for intake widgets). */
+  onBucketClick?: (bucket_start: string) => void;
 }) {
   const { data, isPending, isError, refetch } = useQuery({
     queryKey: widgetIntakeTrendKey(widgetId, granularity),
@@ -650,6 +694,7 @@ function IntakeTrendSection({
       ?.period ?? "weeks";
   const chartData = (data?.buckets ?? []).map((b: IntakeTrendBucket) => ({
     name: b.bucket_start,
+    bucket_start: b.bucket_start,
     volume: trendVolume(b),
     decided: trendDecided(b),
   }));
@@ -703,6 +748,13 @@ function IntakeTrendSection({
               <AreaChart
                 data={chartData}
                 margin={{ top: 8, right: 8, bottom: 0, left: -12 }}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                onClick={(e: any) => {
+                  if (!onBucketClick) return;
+                  const bucket_start = bucketStartFromTrendClick(e);
+                  if (bucket_start) onBucketClick(bucket_start);
+                }}
+                style={onBucketClick ? { cursor: "pointer" } : undefined}
               >
                 <defs>
                   <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -719,6 +771,11 @@ function IntakeTrendSection({
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          {onBucketClick && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Click a point to see that period&apos;s rows
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span>
               <span className="mr-1.5 inline-block size-2.5 rounded-full bg-[#3b82f6]" aria-hidden="true" />
@@ -751,24 +808,54 @@ function IntakeTrendSection({
  *  row-click pattern (issue_id + project id). Email shows the honest
  *  empty state, never a spinner or an error; honest server 400s are
  *  surfaced verbatim in-modal. Read affordance: view-only users
- *  drill and export too (the server enforces read). */
+ *  drill and export too (the server enforces read).
+ *  C87T1 bucket mode: exactly one of `metric` / `bucket` is set. A
+ *  bucket click passes `bucket` (current granularity + the trend
+ *  payload's bucket_start) and NO metric — the C85 modal carries no
+ *  metric filter UI, so "All" is the fetch itself, not a control
+ *  default. Title is the bucket title ("Intake — week of …" etc.),
+ *  the empty state is the honest "No intake rows in this period.",
+ *  and there is no Export CSV button in bucket mode — bucket-rows
+ *  CSV was explicitly deferred out of this cycle (plan's rejected
+ *  list), so the modal must not export an unfiltered file under a
+ *  bucket title. */
 function IntakeDrilldownModal({
   widget,
   metric,
   metricLabel,
+  bucket,
   onClose,
   onIssueClick,
 }: {
   widget: DashboardWidget;
-  metric: IntakeMetric;
+  metric?: IntakeMetric;
   metricLabel: string;
+  bucket?: {
+    granularity: IntakeTrendGranularity;
+    bucket_start: string;
+  };
   onClose: () => void;
   onIssueClick?: (row: WidgetRowItem) => void;
 }) {
   const [page, setPage] = useState(1);
   const { data, isPending, isError, error, refetch } = useQuery({
-    queryKey: widgetIntakeDrilldownKey(widget.id, metric, page),
-    queryFn: () => fetchIntakeDrilldown(widget.id, metric, page),
+    queryKey: bucket
+      ? widgetIntakeDrilldownBucketKey(
+          widget.id,
+          bucket.granularity,
+          bucket.bucket_start,
+          page,
+        )
+      : widgetIntakeDrilldownKey(widget.id, metric!, page),
+    queryFn: () =>
+      bucket
+        ? fetchIntakeDrilldownBucket(
+            widget.id,
+            bucket.granularity,
+            bucket.bucket_start,
+            page,
+          )
+        : fetchIntakeDrilldown(widget.id, metric!, page),
     retry: false,
     staleTime: 60_000,
   });
@@ -789,12 +876,16 @@ function IntakeDrilldownModal({
       >
         <DialogHeader>
           <DialogTitle>
-            {widget.title} — {metricLabel}
+            {bucket
+              ? intakeBucketTitle(bucket.granularity, bucket.bucket_start)
+              : `${widget.title} — ${metricLabel}`}
           </DialogTitle>
           <DialogDescription>
             {data
               ? `${data.total} intake rows`
-              : "Loading the intake rows behind this tile…"}
+              : bucket
+                ? "Loading the intake rows for this period…"
+                : "Loading the intake rows behind this tile…"}
           </DialogDescription>
         </DialogHeader>
         {isPending ? (
@@ -816,9 +907,11 @@ function IntakeDrilldownModal({
           </div>
         ) : data.items.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            {metric === "email"
-              ? "No email intake — glance has no email ingestion yet"
-              : "No intake rows for this metric."}
+            {bucket
+              ? "No intake rows in this period."
+              : metric === "email"
+                ? "No email intake — glance has no email ingestion yet"
+                : "No intake rows for this metric."}
           </p>
         ) : (
           <div className="overflow-auto">
@@ -885,18 +978,20 @@ function IntakeDrilldownModal({
           <Button type="button" variant="outline" onClick={onClose}>
             Close
           </Button>
-          <Button
-            type="button"
-            onClick={() => {
-              void downloadWidgetCsv(widget.id, metric).catch(() => {
-                // Read-gated server-side; a failed export leaves the
-                // modal untouched (no partial download).
-              });
-            }}
-          >
-            <Download className="size-3.5" aria-hidden="true" />
-            Export CSV
-          </Button>
+          {!bucket && metric && (
+            <Button
+              type="button"
+              onClick={() => {
+                void downloadWidgetCsv(widget.id, metric).catch(() => {
+                  // Read-gated server-side; a failed export leaves the
+                  // modal untouched (no partial download).
+                });
+              }}
+            >
+              <Download className="size-3.5" aria-hidden="true" />
+              Export CSV
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1225,11 +1320,20 @@ export default function WidgetCard({
   // Drill-down modal state (C84T1): the clicked segment's group key
   // (backend matches key OR label) + display label. Modal state only
   // — opening it never changes the route. C85T1: intake tiles set
-  // `metric` instead, opening the intake drill-down modal.
+  // `metric` instead, opening the intake drill-down modal. C87T1:
+  // trend-bucket clicks set `bucket` (the CURRENT granularity at
+  // click time + the trend payload's bucket_start), opening the
+  // same intake modal in bucket mode — no metric, all rows in the
+  // bucket. Clicking is a read affordance: view-only readers drill
+  // buckets too (no canEdit gate anywhere on this state).
   const [drill, setDrill] = useState<{
     key: string;
     label: string;
     metric?: IntakeMetric;
+    bucket?: {
+      granularity: IntakeTrendGranularity;
+      bucket_start: string;
+    };
   } | null>(null);
   // C86T1: the trend granularity toggle lives in the trend section,
   // but the Trend CSV menu item (header) needs the current value —
@@ -1381,6 +1485,16 @@ export default function WidgetCard({
           granularity={trendGranularity}
           onGranularity={setTrendGranularity}
           hasIntake={hasIntake}
+          onBucketClick={(bucket_start) =>
+            setDrill({
+              key: `bucket:${trendGranularity}:${bucket_start}`,
+              label: intakeBucketTitle(trendGranularity, bucket_start),
+              bucket: {
+                granularity: trendGranularity,
+                bucket_start,
+              },
+            })
+          }
         />
       </div>
     );
@@ -1505,7 +1619,15 @@ export default function WidgetCard({
         />
       )}
     </div>
-    {drill && drill.metric ? (
+    {drill && drill.bucket ? (
+      <IntakeDrilldownModal
+        widget={widget}
+        metricLabel={drill.label}
+        bucket={drill.bucket}
+        onClose={() => setDrill(null)}
+        onIssueClick={onIssueClick}
+      />
+    ) : drill && drill.metric ? (
       <IntakeDrilldownModal
         widget={widget}
         metric={drill.metric}
