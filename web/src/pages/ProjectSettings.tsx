@@ -10,6 +10,7 @@ import type { Workspace } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import EstimatesSection from "../components/settings/EstimatesSection";
 import GeneralSection from "../components/settings/GeneralSection";
+import TeamspaceSection from "../components/settings/TeamspaceSection";
 import CyclesSection from "../components/settings/CyclesSection";
 import LabelsSection from "../components/settings/LabelsSection";
 import ProjectLabelAssignment from "../components/project/ProjectLabelAssignment";
@@ -85,7 +86,13 @@ export default function ProjectSettings() {
               )}
             </TabsList>
             <TabsContent value="general" className="mt-4">
-              <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
+              <div className="space-y-4">
+                <GeneralSection slug={slug} identifier={identifier} canEdit={canEdit} />
+                {/* C89T1: the teamspace move control lives here on
+                    Project settings, not on the sidebar row or the
+                    Projects card. */}
+                <TeamspaceSection slug={slug} identifier={identifier} canEdit={canEdit} />
+              </div>
             </TabsContent>
             <TabsContent value="cycles" className="mt-4">
               <CyclesSection slug={slug} identifier={identifier} canEdit={canEdit} />

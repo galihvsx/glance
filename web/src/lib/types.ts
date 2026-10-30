@@ -16,12 +16,26 @@ export interface Workspace {
   updated_at: string;
 }
 
+/** Workspace-scoped project group (C89T0): grouping + navigation only,
+ *  no per-teamspace membership/ACL. project_count is the LIVE
+ *  (non-archived) project count from the same list query. */
+export interface Teamspace {
+  id: string;
+  workspace_id: string;
+  name: string;
+  project_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Project {
   id: string;
   workspace_id: string;
   identifier: string;
   name: string;
   description: string;
+  /** Teamspace assignment (C89T0); null/undefined = ungrouped. */
+  teamspace_id?: string | null;
   /** Project emoji icon (C18T4); null/undefined = unset. */
   icon?: string | null;
   /** Project archive timestamp (C18T3); null/undefined = live. */
