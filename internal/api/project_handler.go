@@ -55,6 +55,8 @@ func projectError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid identifier: 1-12 letters and digits", nil)
 	case errors.Is(err, service.ErrConfirmMismatch):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "confirm must match the project identifier", nil)
+	case errors.Is(err, service.ErrInvalidTeamspace):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid teamspace_id: teamspace does not exist or belongs to another workspace", nil)
 	default:
 		// ErrProjectDeleteBlocked carries the live-issue count in the
 		// 409 details so the client can name the blocker.
@@ -162,6 +164,11 @@ type updateProjectBody struct {
 	// in internal/service/broadcast.go), and no new domain events are
 	// added this cycle.
 	ParallelCycles *bool `json:"parallel_cycles"`
+	// TeamspaceID is the teamspace assignment (C89T0): tri-state via
+	// PatchField — absent = unchanged, explicit null = ungroup,
+	// UUID = move. Unknown, malformed, or foreign-workspace ids are
+	// 400 (never a silent cross-workspace link).
+	TeamspaceID service.PatchField[string] `json:"teamspace_id"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -173,7 +180,7 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
 		service.ProjectPatch{Name: body.Name, Description: body.Description, Icon: body.Icon, CloseInDays: body.CloseInDays,
-			AutomationRunRetentionDays: body.AutomationRunRetentionDays, ParallelCycles: body.ParallelCycles})
+			AutomationRunRetentionDays: body.AutomationRunRetentionDays, ParallelCycles: body.ParallelCycles, TeamspaceID: body.TeamspaceID})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)

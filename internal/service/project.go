@@ -102,6 +102,11 @@ type Project struct {
 	Labels         []ProjectLabel `json:"labels"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
+	// TeamspaceID is the project's teamspace (C89T0, migration
+	// 000076): NULL = ungrouped. Always present in JSON (null, never
+	// omitted) so the sidebar groups on one fetch without guessing
+	// whether the field was populated.
+	TeamspaceID *string `json:"teamspace_id"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -247,7 +252,7 @@ func scanProjectBase(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID,
 	)
 	if err != nil {
 		return nil, err
@@ -271,7 +276,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var labelsJSON []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID,
 		&labelsJSON,
 	)
 	if err != nil {
@@ -300,10 +305,10 @@ func scanProject(row pgx.Row) (*Project, error) {
 // the label-chip aggregate as the trailing column (scanProject decodes
 // it).
 const projectColumnsBase = `id::text, workspace_id::text, identifier, name, description,
-	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, parallel_cycles, created_at, updated_at`
+	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, parallel_cycles, created_at, updated_at, teamspace_id::text`
 
 const projectColumnsBaseP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.parallel_cycles, p.created_at, p.updated_at`
+	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.parallel_cycles, p.created_at, p.updated_at, p.teamspace_id::text`
 
 var projectColumns = projectColumnsBase + `,
 	` + projectLabelsAgg("projects")
@@ -444,6 +449,13 @@ type ProjectPatch struct {
 	// pre-existing overlapping cycles does NOT retroactively alter
 	// them — only new creates/updates are blocked.
 	ParallelCycles *bool
+	// TeamspaceID is the teamspace assignment (C89T0): tri-state via
+	// PatchField — Set=false = untouched, Set=true with Value=nil =
+	// explicit null (ungroup), Set=true with a UUID = move. A set
+	// value is validated to a teamspace of the same workspace;
+	// unknown, malformed, or foreign-workspace ids are
+	// ErrInvalidTeamspace (400), never a silent cross-workspace link.
+	TeamspaceID PatchField[string]
 }
 
 // UpdateProject applies a partial project update. Member (15) or admin
@@ -504,6 +516,13 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		args = append(args, *patch.ParallelCycles)
 		sets = append(sets, fmt.Sprintf("parallel_cycles = $%d", len(args)+2))
 	}
+	if patch.TeamspaceID.Set {
+		// A nil *string encodes as NULL: explicit null ungroups the
+		// project. Same-workspace validation runs in-tx below, after
+		// the workspace resolves — a bad id must not reach the UPDATE.
+		args = append(args, patch.TeamspaceID.Value)
+		sets = append(sets, fmt.Sprintf("teamspace_id = $%d", len(args)+2))
+	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
 	}
@@ -525,6 +544,11 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	if role < RoleMember {
 		return nil, ErrForbidden
+	}
+	if patch.TeamspaceID.Set && patch.TeamspaceID.Value != nil {
+		if err := resolveProjectTeamspace(ctx, tx, wsID, *patch.TeamspaceID.Value); err != nil {
+			return nil, err
+		}
 	}
 
 	p, err := scanProjectBase(tx.QueryRow(ctx,

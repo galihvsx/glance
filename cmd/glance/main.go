@@ -315,6 +315,8 @@ func main() {
 	// C71T0: epics — the missing hierarchy level.
 	api.RegisterEpicRoutes(e, issueHandler)
 	api.RegisterInitiativeRoutes(e, issueHandler)
+	// C89T0: teamspaces — workspace-scoped project groups.
+	api.RegisterTeamspaceRoutes(e, &api.TeamspaceHandler{Pool: pool})
 	// C35T0: OKRs — objectives + key results.
 	api.RegisterObjectiveRoutes(e, issueHandler)
 	// C28T2: recurring issue schedules (scheduled issue creation).
