@@ -2470,10 +2470,10 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 		}
 	}
 
-	// 2. Parameter set: exactly the 30 query params the handler
-	// reads (parseIssueListInput + the listIssues include_links
-	// branch) plus the Slug/Identifier path refs — no page,
-	// no search, no sort.
+	// 2. Parameter set: exactly the 31 query params the handler
+	// reads (parseIssueListInput / parsePQLListInput + the listIssues
+	// include_links branch) plus the Slug/Identifier path refs — no
+	// page, no search, no sort.
 	var params []struct {
 		Ref    string `json:"$ref"`
 		Name   string `json:"name"`
@@ -2510,7 +2510,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 		"per_page", "cursor", "order_by",
 		"state", "priority", "label", "assignee", "estimate", "cycle",
 		"parent", "epic",
-		"q", "fields", "draft", "sequence_id",
+		"q", "pql", "fields", "draft", "sequence_id",
 		"undated", "due_date_empty", "subscribed", "archived", "deleted",
 		"include_links", "include_project_structure",
 		"created_after", "created_before",
@@ -2598,6 +2598,14 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 	q := param("q")
 	if q.Schema.Type != "string" || !strings.Contains(q.Schema.Description, "Full-text") {
 		t.Fatalf("q param = %+v, want string full-text description", q.Schema)
+	}
+
+	// 5b. pql (C91T0): the handler reads qp.Get("pql") and routes to
+	// parsePQLListInput; the doc must say the visual filters are
+	// ignored under a non-blank pql.
+	pql := param("pql")
+	if pql.Schema.Type != "string" || !strings.Contains(pql.Schema.Description, "ignored") {
+		t.Fatalf("pql param = %+v, want string description noting visual filters are ignored", pql.Schema)
 	}
 
 	// 6. Validation semantics spot-checks, each verified in code

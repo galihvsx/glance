@@ -2897,6 +2897,14 @@ type ListIssuesInput struct {
 	// per-row ?include_project_structure=1 detail fetches. False keeps the
 	// list response byte-identical (no new fields, no extra query).
 	IncludeProjectStructure bool
+	// PQL (C91T0) is a Plane Query Language predicate for the issue
+	// list (see pql.go). When non-blank, ListIssues ignores every
+	// visual filter on this input (withoutVisualFilters) and appends
+	// the translated PQL condition instead; sort/pagination/orderBy
+	// still apply unchanged. A blank PQL means "no PQL" — the handler
+	// treats a blank ?pql= as absent, so a cleared PQL editor never
+	// filters. Parse/resolution failures are *PQLQueryError (400).
+	PQL string
 	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
 	// default — drafts live in the Drafts view until published);
 	// true = drafts only; false = explicitly exclude drafts (same as
@@ -3286,6 +3294,15 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		return nil, err
 	}
 
+	// C91T0: PQL wins over visual filters at the service layer too —
+	// a direct caller passing both gets the PQL predicate only, never
+	// a silent AND of two filter modes. The zeroing happens before
+	// validation so a stale invalid visual value cannot 400 a PQL
+	// request either.
+	if strings.TrimSpace(in.PQL) != "" {
+		in = in.withoutVisualFilters()
+	}
+
 	orderKey := in.OrderBy
 	if orderKey == "" {
 		orderKey = "-updated_at"
@@ -3321,7 +3338,7 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		cur = &c
 	}
 
-	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
+	wsID, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -3361,6 +3378,20 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	// export path (C8T3): one function, so the list and the export always
 	// see the same working set for the same filters.
 	conds := issueListConds(in, projectID, actorID, arg)
+	// C91T0: the PQL predicate compiles to one more ANDed condition,
+	// reusing the same placeholder sequence (arg) as the fragments
+	// above. Parse/resolution failures are *PQLQueryError (400).
+	if strings.TrimSpace(in.PQL) != "" {
+		node, err := ParsePQL(in.PQL)
+		if err != nil {
+			return nil, err
+		}
+		pqlCond, err := translatePQL(ctx, pool, wsID, projectID, actorID, node, arg)
+		if err != nil {
+			return nil, err
+		}
+		conds = append(conds, pqlCond)
+	}
 	if cur != nil {
 		op := ">"
 		if ord.desc {

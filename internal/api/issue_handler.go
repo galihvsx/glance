@@ -308,20 +308,99 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // ?undated=1 (C3T5: issues with neither target nor start date),
 // ?subscribed=true), ordering (?order_by=-updated_at), cursor pagination
 // (?cursor=&per_page=), delta sync (?updated_after=), and sparse fieldsets
-// (?fields=description). Multi-value filters take comma-separated lists
+// (?fields=description). C91T0: ?pql= (Plane Query Language, see
+// internal/service/pql.go) is mutually exclusive with the visual
+// filters — when non-blank, visual filter params are ignored entirely
+// (not parsed, not validated); sort/pagination/order_by still apply,
+// and PQL parse/resolution failures are 400 with message + position.
+// Multi-value filters take comma-separated lists
 // (single values keep working); assignee=/estimate= accept "none" for
 // unassigned / unestimated issues. 200 with the {results, next_cursor}
 // envelope (spec §5). ?include_links=true (C4T0) attaches the issue
 // dependency edges for the listed issues as a top-level "links" array,
 // fetched in ONE query — the Gantt view pairs it with
 // ?start_after/?start_before=.
+// issueListCommon carries the list params that are NOT visual filters:
+// pagination/sort (per_page, cursor, order_by, fields) and list-mode
+// flags (draft, sequence_id, archived, deleted,
+// ?include_project_structure=1, C21T2). parseIssueListCommon is shared
+// by the visual-filter parser and the PQL parser so both honor
+// identical pagination/mode semantics.
+type issueListCommon struct {
+	OrderBy                 string
+	Cursor                  string
+	PerPage                 int
+	Fields                  []string
+	Draft                   *bool
+	SequenceID              int
+	Archived                bool
+	Deleted                 bool
+	IncludeProjectStructure bool
+}
+
+func parseIssueListCommon(qp url.Values) (issueListCommon, error) {
+	// C2T8: per_page is REJECTED (400) when out of range, on every list
+	// endpoint — never silently clamped. Rationale: the documented
+	// contract is "want 1-100"; fail-fast surfaces client bugs instead of
+	// returning fewer rows than asked for. (The service layer still
+	// clamps as defense-in-depth for direct internal callers.)
+	perPage := 25
+	if s := qp.Get("per_page"); s != "" {
+		p, err := strconv.Atoi(s)
+		if err != nil || p < 1 || p > 100 {
+			return issueListCommon{}, errors.New("invalid per_page: want 1-100")
+		}
+		perPage = p
+	}
+	var fields []string
+	if s := qp.Get("fields"); s != "" {
+		fields = strings.Split(s, ",")
+	}
+	// C6T4: tri-state draft filter. Absent = working-set default (drafts
+	// excluded); true/false filter explicitly. Anything else is 400 —
+	// silently coercing would hide client bugs.
+	var draft *bool
+	if s := qp.Get("draft"); s != "" {
+		var b bool
+		switch s {
+		case "true", "1":
+			b = true
+		case "false", "0":
+			b = false
+		default:
+			return issueListCommon{}, errors.New("invalid draft: want true or false")
+		}
+		draft = &b
+	}
+	// C6T5: sequence_id lookup (command palette display-ID resolution).
+	// Must be a positive integer — garbage is 400, not ignored.
+	var sequenceID int
+	if s := qp.Get("sequence_id"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return issueListCommon{}, errors.New("invalid sequence_id: want a positive integer")
+		}
+		sequenceID = n
+	}
+	return issueListCommon{
+		OrderBy:                 qp.Get("order_by"),
+		Cursor:                  qp.Get("cursor"),
+		PerPage:                 perPage,
+		Fields:                  fields,
+		Draft:                   draft,
+		SequenceID:              sequenceID,
+		Archived:                qp.Get("archived") == "true" || qp.Get("archived") == "1",
+		Deleted:                 qp.Get("deleted") == "true" || qp.Get("deleted") == "1",
+		IncludeProjectStructure: qp.Get("include_project_structure") == "1" || qp.Get("include_project_structure") == "true",
+	}, nil
+}
+
 // parseIssueListInput parses the query params shared by the issue list
 // and the export endpoint (C8T3), so both honor identical filter
-// semantics. Pagination/sort params (per_page, cursor, order_by,
-// fields) and ?include_project_structure=1 (C21T2: batched
-// cycle/module/release membership on list rows) are parsed for the list;
-// exporters ignore them. A non-nil error is always a 400-class client
-// error with a human-readable message.
+// semantics. Pagination/sort params and list-mode flags come from
+// parseIssueListCommon; exporters ignore the pagination/sort ones. A
+// non-nil error is always a 400-class client error with a
+// human-readable message.
 func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 
 	var priorities []int
@@ -388,19 +467,6 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
-	// C2T8: per_page is REJECTED (400) when out of range, on every list
-	// endpoint — never silently clamped. Rationale: the documented
-	// contract is "want 1-100"; fail-fast surfaces client bugs instead of
-	// returning fewer rows than asked for. (The service layer still
-	// clamps as defense-in-depth for direct internal callers.)
-	perPage := 25
-	if s := qp.Get("per_page"); s != "" {
-		p, err := strconv.Atoi(s)
-		if err != nil || p < 1 || p > 100 {
-			return service.ListIssuesInput{}, errors.New("invalid per_page: want 1-100")
-		}
-		perPage = p
-	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -443,80 +509,84 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if dueDateEmpty && (dueAfter != nil || dueBefore != nil) {
 		return service.ListIssuesInput{}, errors.New("invalid due_date_empty: cannot be combined with due_after/due_before")
 	}
-	var fields []string
-	if s := qp.Get("fields"); s != "" {
-		fields = strings.Split(s, ",")
-	}
-	// C6T4: tri-state draft filter. Absent = working-set default (drafts
-	// excluded); true/false filter explicitly. Anything else is 400 —
-	// silently coercing would hide client bugs.
-	var draft *bool
-	if s := qp.Get("draft"); s != "" {
-		var b bool
-		switch s {
-		case "true", "1":
-			b = true
-		case "false", "0":
-			b = false
-		default:
-			return service.ListIssuesInput{}, errors.New("invalid draft: want true or false")
-		}
-		draft = &b
-	}
-	// C6T5: sequence_id lookup (command palette display-ID resolution).
-	// Must be a positive integer — garbage is 400, not ignored.
-	var sequenceID int
-	if s := qp.Get("sequence_id"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
-			return service.ListIssuesInput{}, errors.New("invalid sequence_id: want a positive integer")
-		}
-		sequenceID = n
+	common, err := parseIssueListCommon(qp)
+	if err != nil {
+		return service.ListIssuesInput{}, err
 	}
 	return service.ListIssuesInput{
-		State:          qp.Get("state"),
-		Priorities:     priorities,
-		Labels:         labels,
-		Assignees:      assignees,
-		EstimatePoints: estimatePoints,
-		Parents:        parents,
-		Epics:          epics,
-		Cycle:          qp.Get("cycle"),
-		Q:              qp.Get("q"),
-		OrderBy:        qp.Get("order_by"),
-		Cursor:         qp.Get("cursor"),
-		PerPage:        perPage,
-		CreatedAfter:   createdAfter,
-		CreatedBefore:  createdBefore,
-		UpdatedAfter:   updatedAfter,
-		UpdatedBefore:  updatedBefore,
-		DueAfter:       dueAfter,
-		DueBefore:      dueBefore,
-		StartAfter:     startAfter,
-		StartBefore:    startBefore,
-		Undated:        qp.Get("undated") == "true" || qp.Get("undated") == "1",
-		DueDateEmpty:   dueDateEmpty,
-		Subscribed:     qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
-		Archived:       qp.Get("archived") == "true" || qp.Get("archived") == "1",
-		// C52T0: deleted-only (trash) list. Same lenient truthy parsing
-		// as archived: "1"/"true" select trash, anything else means
-		// the normal list.
-		Deleted:    qp.Get("deleted") == "true" || qp.Get("deleted") == "1",
-		Draft:      draft,
-		SequenceID: sequenceID,
-		Fields:     fields,
-		// C21T2: batched project-structure on the list endpoint — the
-		// cycle/module/release membership rides on every returned row in
-		// ONE query, replacing the spreadsheet's old per-row
-		// ?include_project_structure=1 detail fetches. Same truthy
-		// parsing as the detail endpoint's flag.
-		IncludeProjectStructure: qp.Get("include_project_structure") == "1" || qp.Get("include_project_structure") == "true",
+		State:                   qp.Get("state"),
+		Priorities:              priorities,
+		Labels:                  labels,
+		Assignees:               assignees,
+		EstimatePoints:          estimatePoints,
+		Parents:                 parents,
+		Epics:                   epics,
+		Cycle:                   qp.Get("cycle"),
+		Q:                       qp.Get("q"),
+		OrderBy:                 common.OrderBy,
+		Cursor:                  common.Cursor,
+		PerPage:                 common.PerPage,
+		CreatedAfter:            createdAfter,
+		CreatedBefore:           createdBefore,
+		UpdatedAfter:            updatedAfter,
+		UpdatedBefore:           updatedBefore,
+		DueAfter:                dueAfter,
+		DueBefore:               dueBefore,
+		StartAfter:              startAfter,
+		StartBefore:             startBefore,
+		Undated:                 qp.Get("undated") == "true" || qp.Get("undated") == "1",
+		DueDateEmpty:            dueDateEmpty,
+		Subscribed:              qp.Get("subscribed") == "true" || qp.Get("subscribed") == "1",
+		Archived:                common.Archived,
+		Deleted:                 common.Deleted,
+		Draft:                   common.Draft,
+		SequenceID:              common.SequenceID,
+		Fields:                  common.Fields,
+		IncludeProjectStructure: common.IncludeProjectStructure,
+	}, nil
+}
+
+// parsePQLListInput parses the list params for a PQL request (C91T0):
+// the shared pagination/mode params plus the ?pql= predicate. Visual
+// filter params are NOT parsed here at all — not even validated — so a
+// stale visual param (even a malformed one) can never 400 a PQL
+// request; the service layer additionally zeroes any visual filters on
+// the input, so the exclusivity contract holds end to end. A blank
+// ?pql= never reaches this function: listIssues treats it as absent
+// and parses the visual filters instead.
+func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
+	common, err := parseIssueListCommon(qp)
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
+	return service.ListIssuesInput{
+		PQL:                     strings.TrimSpace(qp.Get("pql")),
+		OrderBy:                 common.OrderBy,
+		Cursor:                  common.Cursor,
+		PerPage:                 common.PerPage,
+		Archived:                common.Archived,
+		Deleted:                 common.Deleted,
+		Draft:                   common.Draft,
+		SequenceID:              common.SequenceID,
+		Fields:                  common.Fields,
+		IncludeProjectStructure: common.IncludeProjectStructure,
 	}, nil
 }
 
 func (h *IssueHandler) listIssues(c *echo.Context) error {
 	qp := c.QueryParams()
-	in, err := parseIssueListInput(qp)
+	// C91T0: PQL mode is exclusive — a non-blank ?pql= replaces the
+	// visual filters entirely (they are not parsed, not validated, not
+	// applied). A blank ?pql= is absent: the visual filters parse as
+	// usual, so a cleared PQL editor degrades to an unfiltered list
+	// rather than a 400.
+	var in service.ListIssuesInput
+	var err error
+	if strings.TrimSpace(qp.Get("pql")) != "" {
+		in, err = parsePQLListInput(qp)
+	} else {
+		in, err = parseIssueListInput(qp)
+	}
 	if err != nil {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, err.Error(), nil)
 	}
@@ -545,6 +615,18 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	res, err := service.ListIssues(c.Request().Context(), h.Pool,
 		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, in)
 	if err != nil {
+		// C91T0: a PQL failure is a client error with message +
+		// position, never a 500. details carries the 1-based column
+		// when the error names one, so the PQL editor can underline
+		// the offending token.
+		var pqlErr *service.PQLQueryError
+		if errors.As(err, &pqlErr) {
+			var details any
+			if pqlErr.Pos > 0 {
+				details = map[string]any{"position": pqlErr.Pos}
+			}
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, pqlErr.Msg, details)
+		}
 		switch {
 		case errors.Is(err, service.ErrInvalidOrderBy):
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid order_by", nil)
