@@ -76,6 +76,8 @@ func registerAllAPIRoutes(e *echo.Echo) {
 	RegisterEpicRoutes(e, issueHandler)
 	// C27T0: keep in lockstep with cmd/glance/main.go.
 	RegisterInitiativeRoutes(e, issueHandler)
+	// C89T0: keep in lockstep with cmd/glance/main.go.
+	RegisterTeamspaceRoutes(e, &TeamspaceHandler{})
 	// C28T2: keep in lockstep with cmd/glance/main.go.
 	RegisterRecurringRoutes(e, projectHandler)
 	RegisterPageRoutes(e, issueHandler)

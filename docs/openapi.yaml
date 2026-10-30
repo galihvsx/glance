@@ -454,7 +454,7 @@
         "summary": "Update a project",
         "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default). parallel_cycles is the parallel-cycles toggle: true lets cycles overlap in date; false (default) makes cycle create/update reject ranges overlapping another live cycle (grandfathering: turning it off does not change existing overlapping cycles).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" }, "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). true = multiple cycles may run simultaneously with overlapping dates; false (default) = cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle. Grandfathering: turning this off does not change existing overlapping cycles." } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" }, "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). true = multiple cycles may run simultaneously with overlapping dates; false (default) = cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle. Grandfathering: turning this off does not change existing overlapping cycles." }, "teamspace_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Teamspace assignment (C89T0). Absent = unchanged; explicit null = ungroup; UUID = move. Unknown, malformed, or foreign-workspace ids are 400, never a silent cross-workspace link." } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -1566,6 +1566,40 @@
         "description": "Member (15)+. Membership rows cascade; member projects and all issue data are untouched (initiatives own no issues).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "initiativeID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "204": { "description": "Deleted" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/teamspaces": {
+      "get": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List teamspaces",
+        "description": "Ordered by name; each entry carries its live (non-archived) project count from the same query. Any workspace member may read. Teamspaces are grouping + navigation only — no per-teamspace membership/ACL.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "responses": { "200": { "description": "Teamspaces", "content": { "application/json": { "schema": { "type": "object", "properties": { "teamspaces": { "type": "array", "items": { "$ref": "#/components/schemas/Teamspace" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Create a teamspace",
+        "description": "Member (15)+. Name is trimmed; empty is 400; a duplicate name in the workspace is 409 (UNIQUE(workspace_id, name)).",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } } } } },
+        "responses": { "201": { "description": "Created teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/teamspaces/{teamspaceID}": {
+      "patch": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Rename a teamspace",
+        "description": "Member (15)+. Partial semantics: a body without name is 400 (nothing to update); renaming to the same name is a no-op success; renaming to an existing name is 409.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "Updated teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Delete a teamspace",
+        "description": "Member (15)+. Deletes the teamspace row only — projects are never deleted: their teamspace_id is SET NULL by the FK. The response names exactly how many projects were ungrouped (including archived ones) so the UI can say 'N projects moved to Ungrouped' honestly.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Deleted teamspace with ungrouped-project count", "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "ungrouped_projects": { "type": "integer", "description": "Projects whose teamspace_id was SET NULL by the delete, including archived ones." } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/rollup": {
@@ -3518,6 +3552,17 @@
           "detail": { "type": "string", "description": "Human-readable breakdown, e.g. \"3 of 12 open issues overdue\"" }
         }
       },
+      "Teamspace": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "workspace_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "project_count": { "type": "integer", "description": "Live (non-archived) projects assigned to this teamspace, from the same query — never N+1. Archived projects keep their assignment but are not counted here." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
       "Project": {
         "type": "object",
         "properties": {
@@ -3531,6 +3576,7 @@
           "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "Project archive timestamp; null = live. Archived projects are excluded from the project list, sidebar and global search" },
           "labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" }, "description": "Workspace project-label chips [{id,name,color}] ordered by name. Always present ([]) on every project payload (C76T0)." },
           "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). When true, multiple cycles of the project may run simultaneously with overlapping date ranges (e.g. a two-week sprint alongside a longer release cycle). When false (default), cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle with 409. Grandfathering: turning this off does not change existing overlapping cycles — only new overlapping creates/updates are rejected." },
+          "teamspace_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Project's teamspace (C89T0). Null = ungrouped. Always present (null, never omitted) so the sidebar groups on one fetch." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
