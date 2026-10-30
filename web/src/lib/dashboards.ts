@@ -556,6 +556,90 @@ export const widgetIntakeDrilldownKey = (
   page = 1,
 ) => ["widget-intake-drilldown", widgetId, metric, page] as const;
 
+/* ------------------------------------------------------------------ */
+/* Intake trend (C86T0/T1): the time-bucketed intake series behind    */
+/* GET /api/v1/widgets/:id/trend — consecutive periods ending at the  */
+/* current period, so the series always ends "now". Buckets count     */
+/* rows by CREATION bucket, not decision time (a row decided this     */
+/* week but created last month counts in last month's bucket), so     */
+/* created volume vs decided volume stay comparable within a bucket.  */
+/* Email is always 0 — glance has no email ingestion; the series is   */
+/* present as all-zeros so the chart legend stays honest, never       */
+/* faked. Empty buckets render as zeros (no gaps). Scope = every      */
+/* non-archived project of the workspace; widget-level filters and    */
+/* project_ids are ignored, like the headline numbers.                */
+/* ------------------------------------------------------------------ */
+
+/** Intake trend granularities (C86T0): day = calendar days, week = ISO
+ *  weeks starting Monday, month = calendar months (all UTC). */
+export type IntakeTrendGranularity = "day" | "week" | "month";
+
+/** The granularity toggle options, in toggle order (default Week). */
+export const INTAKE_TREND_GRANULARITIES: {
+  value: IntakeTrendGranularity;
+  label: string;
+  period: string;
+}[] = [
+  { value: "day", label: "Day", period: "days" },
+  { value: "week", label: "Week", period: "weeks" },
+  { value: "month", label: "Month", period: "months" },
+];
+
+/** The trend bucket count is fixed at 12 — no bucket-count control
+ *  (C86T1 scope: the toggle is granularity only). */
+export const INTAKE_TREND_BUCKETS = 12;
+
+/** One period of the intake trend series. Field names reuse the
+ *  IntakeBreakdown vocabulary — no synonyms. */
+export interface IntakeTrendBucket {
+  bucket_start: string;
+  in_app: number;
+  form: number;
+  email: number;
+  accepted: number;
+  rejected: number;
+  duplicate: number;
+}
+
+/** The intake trend envelope: the granularity echoed back, the
+ *  zero-filled buckets, and the bucket count. */
+export interface IntakeTrend {
+  granularity: string;
+  buckets: IntakeTrendBucket[];
+  total_buckets: number;
+}
+
+/** Intake trend cache per widget + granularity (bucket count fixed). */
+export const widgetIntakeTrendKey = (
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+) => ["widget-intake-trend", widgetId, granularity] as const;
+
+/** Fetch the intake trend series for an intake_breakdown widget:
+ *  `?granularity=<g>&buckets=12` (unknown granularity or an
+ *  out-of-range bucket count is an honest server 400, surfaced by
+ *  the caller; a non-intake widget is a 400 too). */
+export function fetchIntakeTrend(
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+  buckets: number = INTAKE_TREND_BUCKETS,
+): Promise<IntakeTrend> {
+  return api.get<IntakeTrend>(
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/trend?granularity=${encodeURIComponent(granularity)}&buckets=${buckets}`,
+  );
+}
+
+/** Created volume in a bucket: in-app + form (+ email, always 0). */
+export function trendVolume(bucket: IntakeTrendBucket): number {
+  return bucket.in_app + bucket.form + bucket.email;
+}
+
+/** Decided volume in a bucket: accepted + rejected + duplicate
+ *  (by creation bucket, not decision time — see the header above). */
+export function trendDecided(bucket: IntakeTrendBucket): number {
+  return bucket.accepted + bucket.rejected + bucket.duplicate;
+}
+
 /** The intake rows behind one intake_breakdown tile (C85T0).
  *  `metric` is one of the eight row-set metrics; avg_decide and
  *  unknown metrics are honest server 400s, surfaced by the caller. */
@@ -708,15 +792,9 @@ export async function fetchWidgetCsv(
   };
 }
 
-/** Download the widget's CSV export via a blob URL (filename from the
- *  server's Content-Disposition). Visible to anyone who can read the
- *  widget — the caller has already gated the affordance. An intake
- *  metric scopes the export to that tile's rows (C85T0). */
-export async function downloadWidgetCsv(
-  widgetId: string,
-  metric?: string,
-): Promise<void> {
-  const { blob, filename } = await fetchWidgetCsv(widgetId, metric);
+/** Trigger a browser download for a fetched CSV blob (filename from
+ *  the server's Content-Disposition, carried by the CsvDownload). */
+function downloadCsvBlob({ blob, filename }: CsvDownload): void {
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement("a");
@@ -728,6 +806,54 @@ export async function downloadWidgetCsv(
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/** Download the widget's CSV export via a blob URL (filename from the
+ *  server's Content-Disposition). Visible to anyone who can read the
+ *  widget — the caller has already gated the affordance. An intake
+ *  metric scopes the export to that tile's rows (C85T0). */
+export async function downloadWidgetCsv(
+  widgetId: string,
+  metric?: string,
+): Promise<void> {
+  downloadCsvBlob(await fetchWidgetCsv(widgetId, metric));
+}
+
+/** Fetch the intake trend series as CSV (C86T0): the same series as
+ *  the trend endpoint, columns
+ *  bucket_start,in_app,form,email,accepted,rejected,duplicate.
+ *  `granularity` is the toggle's current value; the bucket count is
+ *  the server default (12 — fixed, same as the chart). */
+export async function fetchWidgetTrendCsv(
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+): Promise<CsvDownload> {
+  const url =
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/export.csv` +
+    `?trend=1&granularity=${encodeURIComponent(granularity)}`;
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new ApiError(res.status, text || res.statusText);
+  }
+  const blob = await res.blob();
+  return {
+    blob,
+    filename: exportFilename(
+      res.headers.get("Content-Disposition"),
+      `${widgetId}-trend.csv`,
+    ),
+    truncated: res.headers.get("X-Result-Truncated") === "true",
+  };
+}
+
+/** Download the intake trend CSV (C86T1 menu item). Read affordance
+ *  like the aggregate export — the server enforces read access. */
+export async function downloadWidgetTrendCsv(
+  widgetId: string,
+  granularity: IntakeTrendGranularity,
+): Promise<void> {
+  downloadCsvBlob(await fetchWidgetTrendCsv(widgetId, granularity));
 }
 
 /* ------------------------------------------------------------------ */

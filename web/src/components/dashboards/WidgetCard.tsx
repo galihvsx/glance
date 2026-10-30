@@ -41,12 +41,16 @@ import {
 import {
   chartSeries,
   downloadWidgetCsv,
+  downloadWidgetTrendCsv,
   EMAIL_INGESTION_NOTE,
   fetchIntakeDrilldown,
+  fetchIntakeTrend,
   fetchWidgetData,
   fetchWidgetDrilldown,
   formatDuration,
   INTAKE_TILES,
+  INTAKE_TREND_BUCKETS,
+  INTAKE_TREND_GRANULARITIES,
   intakeDrilldownRowToWidgetRow,
   isDrillableType,
   isPaginatedType,
@@ -56,10 +60,13 @@ import {
   ROW_COLUMN_LABELS,
   semiGaugeArc,
   seriesColor,
+  trendDecided,
+  trendVolume,
   updateWidget,
   widgetDataKey,
   widgetDrilldownKey,
   widgetIntakeDrilldownKey,
+  widgetIntakeTrendKey,
   widgetPageCount,
   widgetRowPageCount,
   DEFAULT_GAUGE_COLOR,
@@ -67,6 +74,8 @@ import {
   type IntakeDrilldownItem,
   type IntakeMetric,
   type IntakeTile,
+  type IntakeTrendBucket,
+  type IntakeTrendGranularity,
   type WidgetData,
   type WidgetDataGroup,
   type WidgetRowColumn,
@@ -532,7 +541,7 @@ function IntakeBody({
     );
   }
   return (
-    <div className="grid h-full grid-cols-2 content-start gap-2 overflow-auto p-3 sm:grid-cols-3">
+    <div className="grid grid-cols-2 content-start gap-2 p-3 sm:grid-cols-3">
       {INTAKE_TILES.map((tile) => {
         const raw = intake[tile.key];
         const value = tile.duration
@@ -573,6 +582,166 @@ function IntakeBody({
         );
       })}
     </div>
+  );
+}
+
+/** Multi-series tooltip for the intake trend chart: created volume
+ *  and decided volume per bucket (email is always 0 — it lives in
+ *  the legend, not the tooltip). */
+function TrendTooltipContent({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: { name?: string; value?: number | string }[];
+  label?: string | number;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  return (
+    <div className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs shadow-md">
+      <p className="font-medium text-ink">{label}</p>
+      {payload.map((p) => (
+        <p key={p.name} className="tabular-nums text-ink-muted">
+          {p.name}: {p.value}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** The intake trend section (C86T1, prototype-as-spec): a recharts
+ *  area chart BELOW the tiles (below the table in Table view — the
+ *  card renders this section after IntakeBody in both views), with
+ *  the granularity toggle above it (Day / Week / Month, default
+ *  Week, fixed 12 buckets — no bucket-count control) and the honest
+ *  legend: created volume (in-app + form), the decided line
+ *  (accepted + rejected + duplicate), and the all-zero email series
+ *  with the no-ingestion note, never hidden. Empty state: when the
+ *  widget has no intake rows at all, the honest empty state replaces
+ *  the chart — never a flat zero line pretending to be data. Partial
+ *  data renders the continuous zero-filled line, per the backend
+ *  contract. Read affordance: view-only readers fetch the trend too
+ *  (the server enforces read). */
+function IntakeTrendSection({
+  widgetId,
+  granularity,
+  onGranularity,
+  hasIntake,
+}: {
+  widgetId: string;
+  granularity: IntakeTrendGranularity;
+  onGranularity: (g: IntakeTrendGranularity) => void;
+  /** False when the headline intake volumes sum to zero — i.e. no
+   *  intake rows exist at all (a zero-filled window alone must NOT
+   *  trigger the empty state: old rows outside the window still
+   *  count as intake, and render as a zero line). */
+  hasIntake: boolean;
+}) {
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: widgetIntakeTrendKey(widgetId, granularity),
+    queryFn: () =>
+      fetchIntakeTrend(widgetId, granularity, INTAKE_TREND_BUCKETS),
+    retry: 1,
+    staleTime: 60_000,
+  });
+  const period =
+    INTAKE_TREND_GRANULARITIES.find((g) => g.value === granularity)
+      ?.period ?? "weeks";
+  const chartData = (data?.buckets ?? []).map((b: IntakeTrendBucket) => ({
+    name: b.bucket_start,
+    volume: trendVolume(b),
+    decided: trendDecided(b),
+  }));
+  const gradientId = `intakeTrendFill-${widgetId}`;
+  return (
+    <section
+      aria-label="Intake trend"
+      className="shrink-0 border-t border-border/60 px-3 py-3"
+    >
+      <h4 className="text-[13px] font-semibold text-ink">
+        Trend — last {INTAKE_TREND_BUCKETS} {period}
+      </h4>
+      <div className="mt-2 flex gap-1.5" role="group" aria-label="Trend granularity">
+        {INTAKE_TREND_GRANULARITIES.map((g) => (
+          <button
+            key={g.value}
+            type="button"
+            aria-pressed={granularity === g.value}
+            onClick={() => onGranularity(g.value)}
+            className={
+              granularity === g.value
+                ? "rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground"
+                : "rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+            }
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+      {isPending ? (
+        <div className="mt-3 flex flex-col gap-2" aria-label="Loading intake trend">
+          <Skeleton className="h-40 w-full" />
+        </div>
+      ) : isError ? (
+        <div className="mt-3 flex flex-col items-center gap-2 py-6 text-center">
+          <p className="text-sm text-destructive">
+            Couldn&apos;t load the intake trend.
+          </p>
+          <Button type="button" variant="outline" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      ) : !hasIntake ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          No intake yet — trends appear once intake rows exist
+        </p>
+      ) : (
+        <>
+          <div className="mt-2 h-56 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart
+                data={chartData}
+                margin={{ top: 8, right: 8, bottom: 0, left: -12 }}
+              >
+                <defs>
+                  <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.05} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+                <XAxis dataKey="name" tick={axisTick} interval="preserveStartEnd" tickLine={false} axisLine={{ stroke: "var(--color-border)" }} />
+                <YAxis tick={axisTick} tickLine={false} axisLine={false} allowDecimals={false} width={40} />
+                <Tooltip content={<TrendTooltipContent />} />
+                <Area type="monotone" dataKey="volume" name="In-app + form volume" stroke="#3b82f6" strokeWidth={2} fill={`url(#${gradientId})`} />
+                <Line type="monotone" dataKey="decided" name="Decided (accepted + rejected + duplicate)" stroke="#22c55e" strokeWidth={2} strokeDasharray="6 4" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>
+              <span className="mr-1.5 inline-block size-2.5 rounded-full bg-[#3b82f6]" aria-hidden="true" />
+              In-app + form volume
+            </span>
+            <span>
+              <span className="mr-1.5 inline-block size-2.5 rounded-full bg-[#22c55e]" aria-hidden="true" />
+              Decided (accepted + rejected + duplicate)
+            </span>
+            <span>
+              <span className="mr-1.5 inline-block size-2.5 rounded-full bg-muted-foreground" aria-hidden="true" />
+              Email — 0 (no email ingestion yet)
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Buckets count rows by creation {granularity === "day" ? "day" : granularity === "week" ? "week" : "month"} — a row
+            decided this week but created last month counts in last
+            month&apos;s bucket. Recent buckets read decided &lt; created
+            when triage lags — that is the honest signal.
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1062,6 +1231,11 @@ export default function WidgetCard({
     label: string;
     metric?: IntakeMetric;
   } | null>(null);
+  // C86T1: the trend granularity toggle lives in the trend section,
+  // but the Trend CSV menu item (header) needs the current value —
+  // so the card owns it and the section is controlled.
+  const [trendGranularity, setTrendGranularity] =
+    useState<IntakeTrendGranularity>("week");
   const drillable = isDrillableType(widget.widget_type);
   const openDrill = (group: WidgetDataGroup) =>
     setDrill({ key: group.key, label: group.label });
@@ -1182,16 +1356,33 @@ export default function WidgetCard({
       </div>
     );
   } else if (isIntake) {
+    // C86T1: the trend section renders BELOW the tiles in grid view
+    // and BELOW the table in table view — one scrollable column for
+    // both, so the chart never squeezes the tiles.
+    const intake = data!.intake!;
+    const hasIntake =
+      (intake.in_app_volume ?? 0) +
+        (intake.form_volume ?? 0) +
+        (intake.email_volume ?? 0) >
+      0;
     body = (
-      <IntakeBody
-        widget={widget}
-        data={data!}
-        onTileClick={(tile) => {
-          if (tile.metric) {
-            setDrill({ key: tile.metric, label: tile.label, metric: tile.metric });
-          }
-        }}
-      />
+      <div className="flex h-full flex-col overflow-auto">
+        <IntakeBody
+          widget={widget}
+          data={data!}
+          onTileClick={(tile) => {
+            if (tile.metric) {
+              setDrill({ key: tile.metric, label: tile.label, metric: tile.metric });
+            }
+          }}
+        />
+        <IntakeTrendSection
+          widgetId={widget.id}
+          granularity={trendGranularity}
+          onGranularity={setTrendGranularity}
+          hasIntake={hasIntake}
+        />
+      </div>
     );
   } else if (isRowList) {
     body = (
@@ -1274,6 +1465,19 @@ export default function WidgetCard({
               <Download className="size-3.5" aria-hidden="true" />
               Export CSV
             </DropdownMenuItem>
+            {isIntake && (
+              <DropdownMenuItem
+                onClick={() => {
+                  void downloadWidgetTrendCsv(widget.id, trendGranularity).catch(() => {
+                    // The server enforces read access; a failed export
+                    // leaves the card untouched (no partial download).
+                  });
+                }}
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                Trend CSV
+              </DropdownMenuItem>
+            )}
             {canEdit && (
               <>
                 <DropdownMenuItem onClick={onEdit}>
