@@ -7,8 +7,10 @@
 // returns widgets with config only, per the T0 contract).
 // C83T1: the four phase-2 renderers — smart_counter (grid tiles or
 // table), smart_gauge (SVG semi-circular arcs), table_2d (desc-sorted
-// rows), intake_breakdown (six headline tiles) — with page state
-// driving the paginated data envelope.
+// rows), intake_breakdown (nine tiles) — with page state driving the
+// paginated data envelope.
+// C85T1: intake_breakdown tiles drill into the intake drill-down modal
+// (eight row-set metrics; avg-time-to-decide stays plain text).
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,10 +42,12 @@ import {
   chartSeries,
   downloadWidgetCsv,
   EMAIL_INGESTION_NOTE,
+  fetchIntakeDrilldown,
   fetchWidgetData,
   fetchWidgetDrilldown,
   formatDuration,
   INTAKE_TILES,
+  intakeDrilldownRowToWidgetRow,
   isDrillableType,
   isPaginatedType,
   isRowListType,
@@ -55,10 +59,14 @@ import {
   updateWidget,
   widgetDataKey,
   widgetDrilldownKey,
+  widgetIntakeDrilldownKey,
   widgetPageCount,
   widgetRowPageCount,
   DEFAULT_GAUGE_COLOR,
   type DashboardWidget,
+  type IntakeDrilldownItem,
+  type IntakeMetric,
+  type IntakeTile,
   type WidgetData,
   type WidgetDataGroup,
   type WidgetRowColumn,
@@ -458,12 +466,29 @@ function SmartGaugeBody({
   );
 }
 
+/** Format an intake timestamp as a short date (Nov 5, 2026). */
+function intakeDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/** The intake_breakdown card body (C83T1 tiles, C85T1 drill-down):
+ *  every tile number is clickable into the intake drill-down modal
+ *  EXCEPT avg-time-to-decide, an aggregate with no row list — it
+ *  renders as plain text, never a dead click. The funnel tiles
+ *  (duplicate/pending/snoozed) behave exactly like the other tiles.
+ *  Clicking is a read affordance: view-only readers drill too. */
 function IntakeBody({
   widget,
   data,
+  onTileClick,
 }: {
   widget: DashboardWidget;
   data: WidgetData;
+  onTileClick?: (tile: IntakeTile) => void;
 }) {
   const intake = data.intake!;
   const cfg = normalizeWidgetConfig(widget.config);
@@ -473,6 +498,9 @@ function IntakeBody({
         <tbody>
           {INTAKE_TILES.map((tile) => {
             const raw = intake[tile.key];
+            const value = tile.duration
+              ? formatDuration(raw ?? 0)
+              : (raw ?? 0);
             return (
               <tr
                 key={tile.key}
@@ -483,7 +511,18 @@ function IntakeBody({
                   {tile.label}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-ink">
-                  {tile.duration ? formatDuration(raw) : raw}
+                  {tile.metric && onTileClick ? (
+                    <button
+                      type="button"
+                      aria-label={`Drill into ${tile.label}`}
+                      onClick={() => onTileClick(tile)}
+                      className="cursor-pointer hover:text-primary hover:underline"
+                    >
+                      {value}
+                    </button>
+                  ) : (
+                    value
+                  )}
                 </td>
               </tr>
             );
@@ -496,22 +535,202 @@ function IntakeBody({
     <div className="grid h-full grid-cols-2 content-start gap-2 overflow-auto p-3 sm:grid-cols-3">
       {INTAKE_TILES.map((tile) => {
         const raw = intake[tile.key];
+        const value = tile.duration
+          ? formatDuration(raw ?? 0)
+          : (raw ?? 0);
+        const inner = (
+          <>
+            <p className="truncate text-xs text-muted-foreground">
+              {tile.label}
+            </p>
+            <p className="text-2xl font-bold tabular-nums text-ink">
+              {value}
+            </p>
+          </>
+        );
+        if (tile.metric && onTileClick) {
+          return (
+            <button
+              key={tile.key}
+              type="button"
+              aria-label={`Drill into ${tile.label}`}
+              onClick={() => onTileClick(tile)}
+              className="cursor-pointer rounded-md border border-border/60 bg-surface px-3 py-2.5 text-left hover:border-primary/60"
+              {...(tile.honestEmpty ? { title: EMAIL_INGESTION_NOTE } : {})}
+            >
+              {inner}
+            </button>
+          );
+        }
         return (
           <div
             key={tile.key}
             className="rounded-md border border-border/60 bg-surface px-3 py-2.5"
             {...(tile.honestEmpty ? { title: EMAIL_INGESTION_NOTE } : {})}
           >
-            <p className="truncate text-xs text-muted-foreground">
-              {tile.label}
-            </p>
-            <p className="text-2xl font-bold tabular-nums text-ink">
-              {tile.duration ? formatDuration(raw) : raw}
-            </p>
+            {inner}
           </div>
         );
       })}
     </div>
+  );
+}
+
+/** The intake drill-down modal (C85T1): the C84 modal shape applied
+ *  to intake rows — fixed columns, pagination, metric-scoped CSV
+ *  export. Row click navigates to the issue detail via the C84
+ *  row-click pattern (issue_id + project id). Email shows the honest
+ *  empty state, never a spinner or an error; honest server 400s are
+ *  surfaced verbatim in-modal. Read affordance: view-only users
+ *  drill and export too (the server enforces read). */
+function IntakeDrilldownModal({
+  widget,
+  metric,
+  metricLabel,
+  onClose,
+  onIssueClick,
+}: {
+  widget: DashboardWidget;
+  metric: IntakeMetric;
+  metricLabel: string;
+  onClose: () => void;
+  onIssueClick?: (row: WidgetRowItem) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const { data, isPending, isError, error, refetch } = useQuery({
+    queryKey: widgetIntakeDrilldownKey(widget.id, metric, page),
+    queryFn: () => fetchIntakeDrilldown(widget.id, metric, page),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const pageCount =
+    data && data.per_page > 0
+      ? Math.max(1, Math.ceil(data.total / data.per_page))
+      : 1;
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-h-[88vh] overflow-y-auto sm:max-w-2xl"
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {widget.title} — {metricLabel}
+          </DialogTitle>
+          <DialogDescription>
+            {data
+              ? `${data.total} intake rows`
+              : "Loading the intake rows behind this tile…"}
+          </DialogDescription>
+        </DialogHeader>
+        {isPending ? (
+          <div className="flex flex-col gap-2 py-4" aria-label="Loading intake rows">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-24" />
+          </div>
+        ) : isError ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+            <p className="text-sm text-destructive">
+              {error instanceof Error
+                ? error.message
+                : "Couldn't load these intake rows."}
+            </p>
+            <Button type="button" variant="outline" size="sm" onClick={() => refetch()}>
+              Retry
+            </Button>
+          </div>
+        ) : data.items.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            {metric === "email"
+              ? "No email intake — glance has no email ingestion yet"
+              : "No intake rows for this metric."}
+          </p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
+                  <th scope="col" className="px-3 py-2 font-medium">Issue</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Project</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Status</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Source</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Snoozed till</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((item: IntakeDrilldownItem) => (
+                  <tr
+                    key={item.id}
+                    className={cn(
+                      "border-b border-border/40 last:border-0",
+                      onIssueClick && "cursor-pointer hover:bg-accent/50",
+                    )}
+                    onClick={
+                      onIssueClick
+                        ? () =>
+                            onIssueClick(intakeDrilldownRowToWidgetRow(item))
+                        : undefined
+                    }
+                  >
+                    <td className="max-w-[240px] truncate px-3 py-2 text-ink">
+                      {item.title}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {item.project.name}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      <span className="inline-block rounded border border-border px-1.5 py-0.5 text-[11px]">
+                        {item.status_name}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      <span className="inline-block rounded border border-border px-1.5 py-0.5 text-[11px]">
+                        {item.source}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {item.snoozed_till ? intakeDate(item.snoozed_till) : "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {intakeDate(item.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationControls
+              page={data.page}
+              pageCount={pageCount}
+              onPage={setPage}
+            />
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              void downloadWidgetCsv(widget.id, metric).catch(() => {
+                // Read-gated server-side; a failed export leaves the
+                // modal untouched (no partial download).
+              });
+            }}
+          >
+            <Download className="size-3.5" aria-hidden="true" />
+            Export CSV
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -836,10 +1055,12 @@ export default function WidgetCard({
 
   // Drill-down modal state (C84T1): the clicked segment's group key
   // (backend matches key OR label) + display label. Modal state only
-  // — opening it never changes the route.
+  // — opening it never changes the route. C85T1: intake tiles set
+  // `metric` instead, opening the intake drill-down modal.
   const [drill, setDrill] = useState<{
     key: string;
     label: string;
+    metric?: IntakeMetric;
   } | null>(null);
   const drillable = isDrillableType(widget.widget_type);
   const openDrill = (group: WidgetDataGroup) =>
@@ -961,7 +1182,17 @@ export default function WidgetCard({
       </div>
     );
   } else if (isIntake) {
-    body = <IntakeBody widget={widget} data={data!} />;
+    body = (
+      <IntakeBody
+        widget={widget}
+        data={data!}
+        onTileClick={(tile) => {
+          if (tile.metric) {
+            setDrill({ key: tile.metric, label: tile.label, metric: tile.metric });
+          }
+        }}
+      />
+    );
   } else if (isRowList) {
     body = (
       <WorkItemsTable
@@ -1070,7 +1301,15 @@ export default function WidgetCard({
         />
       )}
     </div>
-    {drill && (
+    {drill && drill.metric ? (
+      <IntakeDrilldownModal
+        widget={widget}
+        metric={drill.metric}
+        metricLabel={drill.label}
+        onClose={() => setDrill(null)}
+        onIssueClick={onIssueClick}
+      />
+    ) : drill ? (
       <DrilldownModal
         widget={widget}
         groupKey={drill.key}
@@ -1078,7 +1317,7 @@ export default function WidgetCard({
         onClose={() => setDrill(null)}
         onIssueClick={onIssueClick}
       />
-    )}
+    ) : null}
     </>
   );
 }

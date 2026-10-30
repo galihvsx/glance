@@ -108,14 +108,31 @@ describe("semiGaugeArc", () => {
 });
 
 describe("INTAKE_TILES", () => {
-  it("defines the six headline tiles in order", () => {
+  it("defines the nine tiles in prototype order (funnel tiles before avg)", () => {
     expect(INTAKE_TILES.map((t) => t.key)).toEqual([
       "in_app_volume",
-      "email_volume",
       "form_volume",
+      "email_volume",
       "total_accepted",
       "total_rejected",
+      "total_duplicate",
+      "pending",
+      "snoozed",
       "avg_decide_seconds",
+    ]);
+  });
+
+  it("maps every tile except avg to a drill-down metric", () => {
+    expect(INTAKE_TILES.map((t) => t.metric ?? null)).toEqual([
+      "in_app",
+      "form",
+      "email",
+      "accepted",
+      "rejected",
+      "duplicate",
+      "pending",
+      "snoozed",
+      null,
     ]);
   });
 

@@ -275,6 +275,78 @@ export interface IntakeBreakdown {
   total_accepted: number;
   total_rejected: number;
   avg_decide_seconds: number;
+  /** C85T0 funnel fields (new; older fixtures may omit them). */
+  total_duplicate?: number;
+  pending?: number;
+  snoozed?: number;
+}
+
+/** The eight row-set metrics of the intake_breakdown drill-down
+ *  (C85T0): every tile except the avg-decide aggregate. */
+export type IntakeMetric =
+  | "in_app"
+  | "form"
+  | "email"
+  | "accepted"
+  | "rejected"
+  | "duplicate"
+  | "pending"
+  | "snoozed";
+
+export const INTAKE_METRIC_LABELS: Record<IntakeMetric, string> = {
+  in_app: "In-app volume",
+  form: "Form volume",
+  email: "Email volume",
+  accepted: "Total accepted",
+  rejected: "Total rejected",
+  duplicate: "Total duplicate",
+  pending: "Pending",
+  snoozed: "Snoozed",
+};
+
+/** One intake row behind an intake_breakdown tile (C85T0): the
+ *  drill-down payload shape. `id` is the intake row id; `issue_id`
+ *  is the issue UUID the row-click navigation needs. `status_name`
+ *  is the effective status (pending includes resurfaced snoozed,
+ *  snoozed is still-snoozed only — the inbox EffectiveStatus rule). */
+export interface IntakeDrilldownItem {
+  id: string;
+  issue_id: string;
+  title: string;
+  project: { id: string; name: string };
+  status: number;
+  status_name: string;
+  source: string;
+  snoozed_till?: string | null;
+  duplicate_to_id?: string | null;
+  created_at: string;
+}
+
+/** The intake drill-down envelope (C85T0): per_page defaults to 10,
+ *  capped at 100 — the drill-down per_page convention. */
+export interface IntakeDrilldown {
+  items: IntakeDrilldownItem[];
+  page: number;
+  per_page: number;
+  total: number;
+  metric: string;
+}
+
+/** Map an intake drill-down row onto the C84 row-click shape: the
+ *  issue-detail route needs the issue UUID (issue_id, NOT the intake
+ *  row id) plus the project id for identifier resolution. */
+export function intakeDrilldownRowToWidgetRow(
+  item: IntakeDrilldownItem,
+): WidgetRowItem {
+  return {
+    id: item.issue_id,
+    title: item.title,
+    state: item.status_name,
+    priority: 0,
+    assignee: null,
+    labels: [],
+    project: item.project,
+  };
 }
 
 /** One canonical work-item row (C84T0): the row-list payload, the
@@ -477,6 +549,26 @@ export function fetchWidgetDrilldown(
   );
 }
 
+/** Intake drill-down modal cache per widget + metric + page. */
+export const widgetIntakeDrilldownKey = (
+  widgetId: string,
+  metric: string,
+  page = 1,
+) => ["widget-intake-drilldown", widgetId, metric, page] as const;
+
+/** The intake rows behind one intake_breakdown tile (C85T0).
+ *  `metric` is one of the eight row-set metrics; avg_decide and
+ *  unknown metrics are honest server 400s, surfaced by the caller. */
+export function fetchIntakeDrilldown(
+  widgetId: string,
+  metric: string,
+  page = 1,
+): Promise<IntakeDrilldown> {
+  return api.get<IntakeDrilldown>(
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/drilldown?metric=${encodeURIComponent(metric)}&page=${page}`,
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Shares (C83T1): owner-only batch management.                        */
 /* ------------------------------------------------------------------ */
@@ -589,13 +681,18 @@ export interface CsvDownload {
   truncated: boolean;
 }
 
-export async function fetchWidgetCsv(widgetId: string): Promise<CsvDownload> {
+export async function fetchWidgetCsv(
+  widgetId: string,
+  metric?: string,
+): Promise<CsvDownload> {
   // Raw fetch (not api.get): we need the headers (filename,
-  // truncation flag) alongside the blob body.
-  const res = await fetch(
-    `/api/v1/widgets/${encodeURIComponent(widgetId)}/export.csv`,
-    { credentials: "include" },
-  );
+  // truncation flag) alongside the blob body. A metric on an
+  // intake_breakdown widget scopes the export to that tile's rows
+  // (C85T0); without one the aggregate export is unchanged.
+  const url =
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/export.csv` +
+    (metric ? `?metric=${encodeURIComponent(metric)}` : "");
+  const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
     const text = await res.text();
     throw new ApiError(res.status, text || res.statusText);
@@ -613,9 +710,13 @@ export async function fetchWidgetCsv(widgetId: string): Promise<CsvDownload> {
 
 /** Download the widget's CSV export via a blob URL (filename from the
  *  server's Content-Disposition). Visible to anyone who can read the
- *  widget — the caller has already gated the affordance. */
-export async function downloadWidgetCsv(widgetId: string): Promise<void> {
-  const { blob, filename } = await fetchWidgetCsv(widgetId);
+ *  widget — the caller has already gated the affordance. An intake
+ *  metric scopes the export to that tile's rows (C85T0). */
+export async function downloadWidgetCsv(
+  widgetId: string,
+  metric?: string,
+): Promise<void> {
+  const { blob, filename } = await fetchWidgetCsv(widgetId, metric);
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement("a");
@@ -853,26 +954,36 @@ export function semiGaugeArc(
   return { path, endX, endY };
 }
 
-/** One of the six intake_breakdown tiles. `duration` renders the value
- *  through formatDuration; `honestEmpty` gets the no-ingestion
- *  tooltip instead of a bare 0. */
+/** One intake_breakdown tile. `duration` renders the value through
+ *  formatDuration; `honestEmpty` gets the no-ingestion tooltip
+ *  instead of a bare 0. `metric` is the drill-down metric — absent
+ *  only for avg-time-to-decide, the aggregate with no row list and
+ *  therefore no click target (C85T1). */
 export interface IntakeTile {
   key: keyof IntakeBreakdown;
   label: string;
   duration?: boolean;
   honestEmpty?: boolean;
+  metric?: IntakeMetric;
 }
 
+/** Grid/table order follows the C85 prototype: the six original
+ *  tiles, then the three funnel tiles, then the avg aggregate last
+ *  (plain text, never clickable). */
 export const INTAKE_TILES: IntakeTile[] = [
-  { key: "in_app_volume", label: "In-app volume" },
+  { key: "in_app_volume", label: "In-app volume", metric: "in_app" },
+  { key: "form_volume", label: "Form volume", metric: "form" },
   {
     key: "email_volume",
     label: "Email volume",
     honestEmpty: true,
+    metric: "email",
   },
-  { key: "form_volume", label: "Form volume" },
-  { key: "total_accepted", label: "Total accepted" },
-  { key: "total_rejected", label: "Total rejected" },
+  { key: "total_accepted", label: "Total accepted", metric: "accepted" },
+  { key: "total_rejected", label: "Total rejected", metric: "rejected" },
+  { key: "total_duplicate", label: "Total duplicate", metric: "duplicate" },
+  { key: "pending", label: "Pending", metric: "pending" },
+  { key: "snoozed", label: "Snoozed", metric: "snoozed" },
   { key: "avg_decide_seconds", label: "Avg. time to decide", duration: true },
 ];
 
