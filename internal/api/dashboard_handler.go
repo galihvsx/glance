@@ -84,6 +84,15 @@ func dashboardError(c *echo.Context, err error) error {
 			msg = "invalid drill-down group"
 		}
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
+	case errors.Is(err, service.ErrInvalidDrilldownMetric):
+		msg := strings.TrimPrefix(err.Error(), "service: invalid drill-down metric: ")
+		msg = strings.TrimPrefix(msg, "service: invalid drill-down metric")
+		if msg == "" {
+			msg = "invalid drill-down metric"
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, msg, nil)
+	case errors.Is(err, service.ErrInvalidDrilldownPerPage):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
 	case errors.Is(err, service.ErrDrilldownUnavailable):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "drill-down is not available for this widget type", nil)
 	case errors.Is(err, service.ErrInvalidWidgetConfig):
@@ -383,8 +392,11 @@ func (h *DashboardHandler) deleteWidget(c *echo.Context) error {
 //     share — issues in a 'completed'-group state or their points;
 //     percentage = 100*completed/value, 0 when value is 0)
 //   - intake_breakdown: {intake:{in_app_volume,email_volume,form_volume,
-//     total_accepted,total_rejected,avg_decide_seconds}}
-//     (email_volume is always 0 — glance has no email ingestion)
+//     total_accepted,total_rejected,avg_decide_seconds,
+//     total_duplicate,pending,snoozed}}
+//     (email_volume is always 0 — glance has no email ingestion;
+//     pending uses the inbox EffectiveStatus rule, snoozed is
+//     still-snoozed only)
 //   - work_items_table|assigned_to_me: {rows:[{id,title,state,
 //     state_group,priority,assignee:{id,name}|null,labels:[{id,name,
 //     color}],project:{id,name}}], page, max_rows, total} (rows holds
@@ -417,31 +429,49 @@ func (h *DashboardHandler) getWidgetData(c *echo.Context) error {
 }
 
 // getWidgetDrilldown implements GET
-// /api/v1/widgets/{widget_id}/drilldown?group=<group-key>&page=...:
-// the items behind one chart segment.
+// /api/v1/widgets/{widget_id}/drilldown — two shapes, dispatched on
+// the widget's type (authZ runs first, so a private unshared widget
+// is 404 before any metric/group validation can leak it):
 //
-// The group key is the widget's own human-label group key — the Key or
-// the Label getWidgetData returns for the segment (state name, priority
-// label, assignee display name / "Unassigned", label name / "No label",
-// state-group display name, project name, creator display name). The
-// backend maps it back to the dimension's filter value with the SAME
-// resolution the data compute uses (never a guess): an unresolvable
-// key is 400. group is required (400 when missing). Types without
-// groups (number, intake_breakdown, work_items_table, assigned_to_me)
-// are 400 — drill-down is not available for them.
+//   - Grouped widgets (bar|line|area|donut|pie|smart_counter|
+//     smart_gauge|table_2d): ?group=<group-key>&page=... — the items
+//     behind one chart segment. The group key is the widget's own
+//     human-label group key — the Key or the Label getWidgetData
+//     returns for the segment (state name, priority label, assignee
+//     display name / "Unassigned", label name / "No label",
+//     state-group display name, project name, creator display name).
+//     The backend maps it back to the dimension's filter value with
+//     the SAME resolution the data compute uses (never a guess): an
+//     unresolvable key is 400. group is required (400 when missing).
+//     A ?metric= param is meaningless here and ignored. Response:
+//     {items:[{id,title,state,state_group,priority,
+//     assignee:{id,name}|null,labels:[{id,name,color}],project:{id,name}}],
+//     page, per_page (the widget's max_rows), total, group_label,
+//     group_by}. Items are most-recently-updated first.
 //
-// The item set is the widget's base filters (dashboard project scope +
-// widget project_ids + widget filters) ANDed with the segment's group
-// filter. For smart_counter|smart_gauge the metric (count vs
-// estimate-points) changes the displayed group value, NOT the item
-// set — the drill-down lists the same items for both metrics.
+//   - intake_breakdown widgets (C85): ?metric=<metric>&page=...
+//     &per_page=... — the rows behind one tile. metric ∈ in_app|form|
+//     email|accepted|rejected|duplicate|pending|snoozed and is
+//     required (400 when missing); avg_decide is 400 (an aggregate,
+//     not a row set); unknown metrics are 400. A ?group= param is
+//     meaningless for intake tiles and is ignored. Scope = every
+//     non-archived project of the workspace (the
+//     computeIntakeBreakdown scope — widget-level filters and
+//     project_ids stay ignored). pending = status pending +
+//     resurfaced snoozed (the inbox EffectiveStatus rule); snoozed =
+//     still-snoozed only; email = an empty list (glance has no email
+//     ingestion — rows are never faked). per_page defaults to the
+//     widget's max_rows (the C84 drill-down convention — default 10)
+//     and is capped at 100 (400 past it). Response:
+//     {items:[{id,issue_id,title,project:{id,name},status,
+//     status_name,source,snoozed_till,duplicate_to_id,created_at}],
+//     page, per_page, total, metric} — status/status_name carry the
+//     EFFECTIVE status. Items are most-recently-updated first.
 //
-// Response: {items:[{id,title,state,state_group,priority,
-// assignee:{id,name}|null,labels:[{id,name,color}],project:{id,name}}],
-// page, per_page (the widget's max_rows), total, group_label, group_by}.
-// Items are most-recently-updated first. Read authZ = the widget read
-// rule (a shared-view member may drill; a private dashboard of another
-// creator without a share is 404).
+// Types without any drill-down (number, work_items_table,
+// assigned_to_me) are 400 — drill-down is not available for them.
+// Read authZ = the widget read rule (a shared-view member may drill;
+// a private dashboard of another creator without a share is 404).
 func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 	widgetID, ok := requireUUIDParam(c, "widget_id", "widget id")
 	if !ok {
@@ -454,6 +484,25 @@ func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid page: want an integer >= 1", nil)
 		}
 		page = p
+	}
+	widgetType, err := service.GetWidgetType(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID)
+	if err != nil {
+		return dashboardError(c, err)
+	}
+	if widgetType == "intake_breakdown" {
+		perPage := 0 // 0 = the widget's max_rows (service fallback)
+		if raw := c.QueryParam("per_page"); raw != "" {
+			p, err := strconv.Atoi(raw)
+			if err != nil || p < 1 || p > 100 {
+				return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid per_page: want 1-100", nil)
+			}
+			perPage = p
+		}
+		data, err := service.GetIntakeDrilldown(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"), page, perPage)
+		if err != nil {
+			return dashboardError(c, err)
+		}
+		return c.JSON(http.StatusOK, data)
 	}
 	data, err := service.GetWidgetDrilldown(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("group"), page)
 	if err != nil {
@@ -469,8 +518,15 @@ func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
 // carries X-Result-Truncated: true). Columns per type:
 // key,label,value (charts, smart_counter, table_2d);
 // key,label,completed,total,percentage (smart_gauge);
-// metric,value (intake_breakdown); value (number); the configured
-// columns in order (work_items_table, assigned_to_me). Content-Disposition:
+// metric,value (intake_breakdown aggregate); value (number); the configured
+// columns in order (work_items_table, assigned_to_me). For
+// intake_breakdown widgets, ?metric=<metric> dumps the drill-down row
+// set instead (id,issue_id,title,project,status,status_name,source,
+// snoozed_till,duplicate_to_id,created_at — same predicate and order
+// as the drill-down, same 10,000-row cap + X-Result-Truncated);
+// without metric the aggregate export is unchanged. A metric on a
+// non-intake widget is ignored; avg_decide/unknown metrics on intake
+// widgets are 400. Content-Disposition:
 // attachment; filename="<dashboard-slug>-<widget-slug>.csv" (sanitized).
 // Read authZ = the widget read rule (a shared-view member may export).
 func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
@@ -478,7 +534,7 @@ func (h *DashboardHandler) exportWidgetCSV(c *echo.Context) error {
 	if !ok {
 		return nil
 	}
-	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID)
+	filename, data, truncated, err := service.ExportWidgetCSV(c.Request().Context(), h.Pool, widgetID, CurrentUser(c).ID, c.QueryParam("metric"))
 	if err != nil {
 		return dashboardError(c, err)
 	}
