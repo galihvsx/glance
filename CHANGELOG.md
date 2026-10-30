@@ -5,6 +5,39 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Intake analytics, phase 4: bucket-rows CSV export (cycle 88)**
+
+- The intake_breakdown widget's bucket modal now has an Export CSV
+  button (footer, next to Close, same visual language as the metric
+  modal's button), closing the last gap the phase-3 cycle left open:
+  a bucket's rows can now leave the app as a file, not just be viewed
+  in the modal. Clicking it downloads exactly the rows the modal
+  lists, with the same columns. An empty bucket still exports (a valid
+  file of zero rows, not an error); a failed export leaves the modal
+  untouched.
+- Backend: `GET /api/v1/widgets/:widget_id/export.csv` for
+  intake_breakdown widgets accepts an optional `granularity`
+  day|week|month + `bucket_start` (YYYY-MM-DD) on the non-trend path,
+  reusing the phase-3 `parseIntakeDrilldownBucket` validation verbatim
+  (both or neither, unknown granularity, malformed date, or misaligned
+  start is an honest 400) so export windows can never drift from
+  drill-down windows. The window composes with `metric`; without a
+  metric it exports all rows created in the bucket. Same 10,000-row
+  cap and `X-Result-Truncated` header, same workspace/non-archived
+  scope, same authZ (widget READ; shared-view allowed). Bucket files
+  are named `<dashboard-slug>-<widget-slug>-<granularity>-<bucket_start>.csv`
+  so they are distinguishable from metric and full files at a glance.
+  The `?trend=1` path and grouped-widget exports ignore the new
+  params. OpenAPI pinned. 20 new Go tests.
+- Frontend: the bucket modal's footer gains the button; `fetchWidgetCsv`
+  / `downloadWidgetCsv` gain an optional bucket param alongside the
+  existing metric param, composing via URLSearchParams (1- and 2-arg
+  call shapes produce byte-identical URLs). The metric-mode button and
+  the card-level aggregate / trend buttons are unchanged. The C87 test
+  asserting "no Export CSV in bucket mode" now expects the button —
+  that assertion is exactly what this cycle supersedes. 18 new
+  frontend tests.
+
 **Intake analytics, phase 3: bucket-click drill-down (cycle 87)**
 
 - The intake_breakdown widget's trend chart is now clickable: clicking a
