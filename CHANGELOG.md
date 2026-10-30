@@ -33,6 +33,22 @@ All notable changes to glance are documented here. The format follows
   teamspace removes its memberships; projects are never touched.
   No audit-log rows or broadcast events (the grouping-entity
   precedent). OpenAPI pinned.
+- Frontend: the teamspace manage dialog gains an Admin-only Members
+  tab (Details/Members in rename mode; non-admins see the unchanged
+  rename form, never a disabled tab) with roster rows (name + email
+  — the roster carries no role), an add picker listing workspace
+  members not already in the teamspace, and remove affordances; a
+  failed add/remove leaves the roster untouched with an honest error.
+  The sidebar is visibility-aware: for non-admins, projects in
+  teamspaces absent from the server-filtered list are excluded from
+  sidebar groups entirely (never fallen back to Ungrouped, which
+  would mislabel them); Ungrouped means teamspace_id null only and
+  stays last. Admins keep the C89 fallback (their list is complete,
+  so an absent id is stale). A deep link into a hidden teamspace
+  no-ops cleanly — the page still loads, routes are not gated. The
+  Project settings move picker lists visible teamspaces only (it
+  already rendered exactly the server-filtered query — no code
+  change, proven by test). 15 new frontend tests.
 
 **Teamspaces: group projects in the sidebar (cycle 89)**
 
