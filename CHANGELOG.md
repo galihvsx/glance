@@ -5,6 +5,38 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Teamspaces: group projects in the sidebar (cycle 89)**
+
+- The sidebar Projects section now groups projects under collapsible
+  teamspace headers (Plane parity), with an Ungrouped group last for
+  projects without a teamspace. Group collapse persists per teamspace,
+  and a deep link into a project inside a collapsed group expands that
+  group so the row is never hidden. Archived projects stay excluded
+  from the sidebar groups, and project rows are indented under their
+  group header with row height, marks, and sub-links unchanged.
+- A teamspace manage dialog covers create, rename, and delete. Delete
+  confirms with the live count of projects that will move to Ungrouped
+  ("N projects will move to Ungrouped — no projects will be deleted"):
+  deleting a teamspace never deletes projects, it only ungroups them
+  (the load-bearing invariant, enforced by an ON DELETE SET NULL FK).
+- The Project settings page gains a teamspace picker (the workspace's
+  teamspaces plus Ungrouped); a failed save leaves the picker on the
+  old value with an honest error, never an optimistic lie. The Projects
+  page shows each project's teamspace as a small label under the name
+  (read-only this cycle — the move control lives on Project settings).
+- Backend: migration `000076_teamspaces` adds a `teamspaces` table
+  (workspace FK cascading on workspace delete, unique
+  `(workspace_id, name)`) and a nullable `projects.teamspace_id` FK
+  (ON DELETE SET NULL, indexed). CRUD routes
+  `POST/GET /api/v1/workspaces/:slug/teamspaces` and
+  `PATCH/DELETE .../teamspaces/:id` follow the initiative role shape
+  (Member+ for mutations, workspace members for reads); `PATCH`
+  project accepts `teamspace_id` (UUID or explicit null — absent means
+  unchanged, a foreign-workspace id is an honest 400); `ListProjects`
+  and `Project` JSON carry the nullable `teamspace_id` so the sidebar
+  groups on one fetch. OpenAPI pinned. 18 new Go tests, 18 new
+  frontend tests.
+
 **Intake analytics, phase 4: bucket-rows CSV export (cycle 88)**
 
 - The intake_breakdown widget's bucket modal now has an Export CSV
