@@ -3138,41 +3138,81 @@ func intakeDrilldownCSVRecord(item IntakeDrilldownItem) []string {
 // via encoding/csv. Read authZ = the widget read rule (a shared-view
 // member may export). The filename is
 // "<dashboard-slug>-<widget-slug>.csv", sanitized.
-func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric string) (filename string, data []byte, truncated bool, err error) {
+//
+// C88 bucket window (intake_breakdown only, non-trend path):
+// granularity + bucketStart are the C87 bucket params, validated by
+// parseIntakeDrilldownBucket VERBATIM — the drill-down and export
+// windows are the same windows, never two implementations that can
+// drift. Both or neither (one without the other is 400), unknown
+// granularity / malformed date / misaligned start are 400, and
+// validation runs AFTER resolveWidgetCompute, so a private unshared
+// widget reads 404 before any bucket 400 can leak it. With a bucket
+// present the export is the bucket-filtered drill-down row set:
+// bucket + metric → that metric's rows created in the bucket;
+// bucket without metric → all rows created in the bucket (the
+// metric is optional only with a bucket, as in GetIntakeDrilldown).
+// Same columns, same csvExportCap, same X-Result-Truncated, same
+// scope (workspace, non-archived projects; widget filters ignored).
+// Filename with a bucket: the base stem plus
+// "-<granularity>-<bucket_start>" (e.g.
+// "<dashboard-slug>-<widget-slug>-week-2026-10-26.csv") — no metric
+// segment is added, because existing metric exports carry none, so
+// the bucket suffix alone distinguishes a bucket file from a metric
+// file and from a full file. On non-intake widgets the bucket params
+// are ignored entirely (never parsed, never 400 — the C87 grouped
+// convention); the aggregate export path is otherwise untouched.
+func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID, metric, granularity, bucketStart string) (filename string, data []byte, truncated bool, err error) {
 	wc, err := resolveWidgetCompute(ctx, pool, widgetID, actorID)
 	if err != nil {
 		return "", nil, false, err
 	}
 	// Intake + metric short-circuits the aggregate recompute: the
-	// export is the drill-down row set, not the six numbers.
-	if wc.widget.WidgetType == WidgetTypeIntake && metric != "" {
-		if err := validateIntakeDrilldownMetric(metric); err != nil {
-			return "", nil, false, err
-		}
-		items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, nil, csvExportCap, 0)
+	// export is the drill-down row set, not the six numbers. A
+	// bucket short-circuits it too, with or without a metric.
+	if wc.widget.WidgetType == WidgetTypeIntake {
+		bucket, bucketPresent, err := parseIntakeDrilldownBucket(granularity, bucketStart)
 		if err != nil {
 			return "", nil, false, err
 		}
-		rows := [][]string{{"id", "issue_id", "title", "project", "status", "status_name", "source", "snoozed_till", "duplicate_to_id", "created_at"}}
-		for _, item := range items {
-			rows = append(rows, intakeDrilldownCSVRecord(item))
-		}
-		if total > csvExportCap {
-			truncated = true
-		}
-		var buf strings.Builder
-		w := csv.NewWriter(&buf)
-		for _, r := range rows {
-			if err := w.Write(r); err != nil {
+		if bucketPresent || metric != "" {
+			if metric != "" {
+				if err := validateIntakeDrilldownMetric(metric); err != nil {
+					return "", nil, false, err
+				}
+			}
+			var bucketPtr *IntakeDrilldownBucket
+			if bucketPresent {
+				bucketPtr = &bucket
+			}
+			items, total, err := queryIntakeDrilldown(ctx, pool, wc.dr.Dashboard.WorkspaceID, metric, bucketPtr, csvExportCap, 0)
+			if err != nil {
 				return "", nil, false, err
 			}
+			rows := [][]string{{"id", "issue_id", "title", "project", "status", "status_name", "source", "snoozed_till", "duplicate_to_id", "created_at"}}
+			for _, item := range items {
+				rows = append(rows, intakeDrilldownCSVRecord(item))
+			}
+			if total > csvExportCap {
+				truncated = true
+			}
+			var buf strings.Builder
+			w := csv.NewWriter(&buf)
+			for _, r := range rows {
+				if err := w.Write(r); err != nil {
+					return "", nil, false, err
+				}
+			}
+			w.Flush()
+			if err := w.Error(); err != nil {
+				return "", nil, false, err
+			}
+			filename = slugify(wc.dr.Dashboard.Name) + "-" + slugify(wc.widget.Title)
+			if bucketPresent {
+				filename += "-" + bucket.Granularity + "-" + bucket.StartDate
+			}
+			filename += ".csv"
+			return filename, []byte(buf.String()), truncated, nil
 		}
-		w.Flush()
-		if err := w.Error(); err != nil {
-			return "", nil, false, err
-		}
-		filename = slugify(wc.dr.Dashboard.Name) + "-" + slugify(wc.widget.Title) + ".csv"
-		return filename, []byte(buf.String()), truncated, nil
 	}
 	full, err := computeWidgetData(ctx, pool, wc, actorID, 1, false)
 	if err != nil {
