@@ -23,17 +23,22 @@ import {
   EMPTY_WIDGET_FILTERS,
   GROUP_BY_OPTIONS,
   METRIC_OPTIONS,
+  ROW_COLUMNS,
+  ROW_COLUMN_LABELS,
   VISUALIZATION_OPTIONS,
   WIDGET_TYPE_LABELS,
   WIDGET_TYPES,
   filterSummary,
   isGroupedType,
+  isRowListType,
   normalizeWidgetConfig,
   type DashboardWidget,
   type WidgetConfig,
   type WidgetFilters,
   type WidgetGroupBy,
   type WidgetMetric,
+  type WidgetRowColumn,
+  type WidgetSortDir,
   type WidgetType,
   type WidgetVisualization,
 } from "../../lib/dashboards";
@@ -212,6 +217,27 @@ function TypeGlyph({ type }: { type: WidgetType }) {
           ))}
         </svg>
       );
+    case "work_items_table":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          <rect x="2" y="2" width="44" height="20" rx="2" className="fill-primary/15 stroke-primary/50" strokeWidth="1" />
+          <line x1="2" y1="9" x2="46" y2="9" className="stroke-primary/50" strokeWidth="1" />
+          <line x1="2" y1="16" x2="46" y2="16" className="stroke-primary/50" strokeWidth="1" />
+          <rect x="5" y="4" width="12" height="3" rx="1" className="fill-primary/70" />
+          <rect x="21" y="4" width="16" height="3" rx="1" className="fill-primary/45" />
+          <rect x="5" y="11" width="9" height="3" rx="1" className="fill-primary/70" />
+          <rect x="18" y="11" width="20" height="3" rx="1" className="fill-primary/45" />
+          <rect x="5" y="18" width="14" height="3" rx="1" className="fill-primary/45" />
+        </svg>
+      );
+    case "assigned_to_me":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          <circle cx="24" cy="9" r="5" className="fill-primary/70" />
+          <path d="M14 22 a10 6 0 0 1 20 0 Z" className="fill-primary/45" />
+          <circle cx="24" cy="9" r="5" fill="none" className="stroke-primary" strokeWidth="1" />
+        </svg>
+      );
   }
 }
 
@@ -255,6 +281,9 @@ export default function WidgetDialog({
   const [intakeView, setIntakeView] = useState<WidgetVisualization>("grid");
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [filters, setFilters] = useState<WidgetFilters>(EMPTY_WIDGET_FILTERS);
+  const [columns, setColumns] = useState<WidgetRowColumn[]>([...ROW_COLUMNS]);
+  const [sortBy, setSortBy] = useState<WidgetRowColumn>("state");
+  const [sortDir, setSortDir] = useState<WidgetSortDir>("desc");
 
   useEffect(() => {
     if (open) {
@@ -270,8 +299,36 @@ export default function WidgetDialog({
       setIntakeView(cfg.view);
       setProjectIds(initial?.config?.project_ids ?? []);
       setFilters(cfg.filters);
+      // Row-list defaults: a stored config wins; a fresh
+      // assigned_to_me widget defaults to all columns except
+      // assignee (it is constant — the viewer), per the plan.
+      if (initial?.config?.columns && initial.config.columns.length > 0) {
+        setColumns(cfg.columns);
+      } else if (initial?.widget_type === "assigned_to_me") {
+        setColumns(ROW_COLUMNS.filter((c) => c !== "assignee"));
+      } else {
+        setColumns([...ROW_COLUMNS]);
+      }
+      setSortBy(cfg.sort_by);
+      setSortDir(cfg.sort_dir);
     }
   }, [open, initial?.title, initial?.widget_type, initial?.config]);
+
+  /** Switching into a row-list type resets its column default (the
+   *  dialog's own state, not the stored widget — nothing is saved
+   *  until submit). Switching within row-list types keeps the chips. */
+  const selectType = (t: WidgetType) => {
+    setWidgetType(t);
+    if (isRowListType(t) && !isRowListType(widgetType)) {
+      setColumns(
+        t === "assigned_to_me"
+          ? ROW_COLUMNS.filter((c) => c !== "assignee")
+          : [...ROW_COLUMNS],
+      );
+      setSortBy("state");
+      setSortDir("desc");
+    }
+  };
 
   // Reset the form every open (create after edit must not leak state).
 
@@ -434,6 +491,18 @@ export default function WidgetDialog({
       config.filters = prunedFilters;
       config.project_ids = projectIds;
     }
+    if (isRowListType(widgetType)) {
+      // The backend 400s when sort_by is not one of the configured
+      // columns, so a sort column dropped from the chips falls back
+      // to the first kept column instead of surfacing a 400.
+      const kept = columns.length > 0 ? columns : [...ROW_COLUMNS];
+      config.columns = kept;
+      config.sort_by = kept.includes(sortBy) ? sortBy : kept[0];
+      config.sort_dir = sortDir;
+      config.max_rows = maxRows;
+      config.filters = prunedFilters;
+      config.project_ids = projectIds;
+    }
     if (widgetType === "smart_counter" || widgetType === "smart_gauge") {
       config.metric = metric;
     }
@@ -461,6 +530,8 @@ export default function WidgetDialog({
   const isGauge = widgetType === "smart_gauge";
   const isCounter = widgetType === "smart_counter";
   const isTable2d = widgetType === "table_2d";
+  const isRowList = isRowListType(widgetType);
+  const isAssignedToMe = widgetType === "assigned_to_me";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -491,7 +562,7 @@ export default function WidgetDialog({
                   type="button"
                   role="radio"
                   aria-checked={widgetType === t}
-                  onClick={() => setWidgetType(t)}
+                  onClick={() => selectType(t)}
                   className={cn(
                     "flex flex-col items-center gap-1 rounded-lg border p-2 transition-colors hover:bg-accent",
                     widgetType === t
@@ -626,6 +697,133 @@ export default function WidgetDialog({
                 1–100 groups per page.
               </p>
             </div>
+          )}
+
+          {/* Phase-3 row-list config panels (C84T1). */}
+          {isRowList && (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <UiLabel>Columns</UiLabel>
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Columns">
+                  {ROW_COLUMNS.map((c) => {
+                    const on = columns.includes(c);
+                    const isLast = on && columns.length === 1;
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        aria-pressed={on}
+                        disabled={isLast}
+                        title={
+                          isLast
+                            ? "At least one column is required"
+                            : undefined
+                        }
+                        onClick={() =>
+                          setColumns((prev) =>
+                            on
+                              ? prev.filter((x) => x !== c)
+                              : [...ROW_COLUMNS.filter((x) => prev.includes(x) || x === c)]
+                          )
+                        }
+                        className={cn(
+                          "rounded-full border px-3 py-1 text-xs font-medium transition-colors hover:bg-accent",
+                          on
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border",
+                          isLast && "cursor-not-allowed opacity-50",
+                        )}
+                      >
+                        {ROW_COLUMN_LABELS[c]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Default: all columns. Unknown column → server 400
+                  (surfaced here).
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="flex flex-col gap-1.5">
+                  <UiLabel htmlFor="widget-sort-by">Sort by</UiLabel>
+                  <NativeSelect
+                    id="widget-sort-by"
+                    value={columns.includes(sortBy) ? sortBy : columns[0]}
+                    onChange={(e) =>
+                      setSortBy(e.target.value as WidgetRowColumn)
+                    }
+                  >
+                    {columns.map((c) => (
+                      <option key={c} value={c}>
+                        {ROW_COLUMN_LABELS[c]}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <UiLabel>Sort direction</UiLabel>
+                  <div
+                    role="radiogroup"
+                    aria-label="Sort direction"
+                    className="flex gap-2"
+                  >
+                    {(["asc", "desc"] as WidgetSortDir[]).map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        role="radio"
+                        aria-checked={sortDir === d}
+                        onClick={() => setSortDir(d)}
+                        className={cn(
+                          "rounded-lg border px-3 py-2 text-[13px] font-medium transition-colors hover:bg-accent",
+                          sortDir === d
+                            ? "border-primary ring-1 ring-primary"
+                            : "border-border",
+                        )}
+                      >
+                        {d === "asc" ? "Asc" : "Desc"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <UiLabel htmlFor="widget-max-rows-list">Max rows</UiLabel>
+                <Input
+                  id="widget-max-rows-list"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={maxRows}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setMaxRows(
+                      Number.isInteger(n)
+                        ? Math.min(100, Math.max(1, n))
+                        : maxRows,
+                    );
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  1–100 rows per page.
+                </p>
+              </div>
+
+              {isAssignedToMe && (
+                <div className="rounded-md border bg-muted/50 p-3">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Assigned to you
+                  </p>
+                  <p className="mt-1 text-sm">
+                    Assignee is always you — filter is forced. A
+                    conflicting assignee filter is overridden server-side.
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           {isCounter && (

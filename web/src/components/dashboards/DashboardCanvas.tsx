@@ -30,6 +30,7 @@ import {
   patchWidgetLayout,
   type DashboardWidget,
   type LayoutPatch,
+  type WidgetRowItem,
 } from "../../lib/dashboards";
 import WidgetCard from "./WidgetCard";
 import { Button } from "../ui/button";
@@ -77,6 +78,7 @@ function DraggableWidget({
   onEdit,
   onDelete,
   onResizeStart,
+  onIssueClick,
 }: {
   widget: DashboardWidget;
   geo: GridGeometry;
@@ -86,6 +88,7 @@ function DraggableWidget({
   onEdit: (w: DashboardWidget) => void;
   onDelete: (w: DashboardWidget) => void;
   onResizeStart: (e: React.PointerEvent, widget: DashboardWidget) => void;
+  onIssueClick?: (row: WidgetRowItem) => void;
 }) {
   const layout: GridLayout = preview ?? widget;
   const { attributes, listeners, setNodeRef, transform, isDragging } =
@@ -118,6 +121,7 @@ function DraggableWidget({
         canEdit={canEdit}
         onEdit={() => onEdit(widget)}
         onDelete={() => onDelete(widget)}
+        onIssueClick={onIssueClick}
         drag={
           canEdit
             ? { attributes, listeners: listeners ?? undefined, isDragging }
@@ -149,6 +153,7 @@ export default function DashboardCanvas({
   onEditWidget,
   onDeleteWidget,
   onAddWidget,
+  onIssueClick,
 }: {
   slug: string;
   dashboardId: string;
@@ -157,6 +162,7 @@ export default function DashboardCanvas({
   onEditWidget: (w: DashboardWidget) => void;
   onDeleteWidget: (w: DashboardWidget) => void;
   onAddWidget: () => void;
+  onIssueClick?: (row: WidgetRowItem) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -312,6 +318,7 @@ export default function DashboardCanvas({
               onEdit={onEditWidget}
               onDelete={onDeleteWidget}
               onResizeStart={handleResizeStart}
+              onIssueClick={onIssueClick}
             />
           ))}
         </div>

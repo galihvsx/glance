@@ -11,7 +11,8 @@ import { ApiError, api } from "./api";
 /** Dashboard visibility: public (default) or private. */
 export type DashboardVisibility = "public" | "private";
 
-/** The six Plane widget types (phase 1) plus the four phase-2 types (C83T0). */
+/** The six Plane widget types (phase 1) plus the four phase-2 types (C83T0)
+ *  plus the two phase-3 row-list types (C84T0). */
 export type WidgetType =
   | "bar"
   | "line"
@@ -22,7 +23,9 @@ export type WidgetType =
   | "smart_counter"
   | "smart_gauge"
   | "table_2d"
-  | "intake_breakdown";
+  | "intake_breakdown"
+  | "work_items_table"
+  | "assigned_to_me";
 
 export const WIDGET_TYPES: WidgetType[] = [
   "bar",
@@ -35,6 +38,8 @@ export const WIDGET_TYPES: WidgetType[] = [
   "smart_gauge",
   "table_2d",
   "intake_breakdown",
+  "work_items_table",
+  "assigned_to_me",
 ];
 
 /** Human label per widget type (dialog picker + canvas fallbacks). */
@@ -49,6 +54,8 @@ export const WIDGET_TYPE_LABELS: Record<WidgetType, string> = {
   smart_gauge: "Smart gauge",
   table_2d: "Table (2D)",
   intake_breakdown: "Intake breakdown",
+  work_items_table: "Work items table",
+  assigned_to_me: "Assigned to you",
 };
 
 /** Chart types that need a group_by; number is the scalar. */
@@ -78,6 +85,57 @@ export function isGroupedType(t: WidgetType): boolean {
 export function isPaginatedType(t: WidgetType): boolean {
   return t === "smart_counter" || t === "smart_gauge" || t === "table_2d";
 }
+
+/** Phase-3 row-list types (C84T0): a paginated row envelope
+ *  ({rows, page, max_rows, total}) instead of groups. */
+export function isRowListType(t: WidgetType): boolean {
+  return t === "work_items_table" || t === "assigned_to_me";
+}
+
+/** Types whose segments are clickable into the drill-down modal
+ *  (C84T0): every group-based widget. number, intake_breakdown, and
+ *  the row-list types themselves have no groups to drill into. */
+export function isDrillableType(t: WidgetType): boolean {
+  return (
+    isChartType(t) ||
+    t === "smart_counter" ||
+    t === "smart_gauge" ||
+    t === "table_2d"
+  );
+}
+
+/** Row-list column vocabulary (C84T0 backend contract), in display
+ *  order. The backend default is all seven. */
+export type WidgetRowColumn =
+  | "id"
+  | "title"
+  | "state"
+  | "priority"
+  | "assignee"
+  | "labels"
+  | "project";
+
+export const ROW_COLUMNS: WidgetRowColumn[] = [
+  "id",
+  "title",
+  "state",
+  "priority",
+  "assignee",
+  "labels",
+  "project",
+];
+
+export const ROW_COLUMN_LABELS: Record<WidgetRowColumn, string> = {
+  id: "ID",
+  title: "Title",
+  state: "State",
+  priority: "Priority",
+  assignee: "Assignee",
+  labels: "Labels",
+  project: "Project",
+};
+
+export type WidgetSortDir = "asc" | "desc";
 
 /** Grouping dimension for chart and grouped phase-2 widgets. The full
  *  set the backend accepts (phase 2 adds state_group, project,
@@ -150,6 +208,15 @@ export interface WidgetConfig {
   show_percentage?: boolean;
   /** intake_breakdown only: tile grid or table render. */
   view?: WidgetVisualization;
+  /** work_items_table|assigned_to_me only: rendered columns, in order
+   *  (default: all seven). The payload always carries the full row. */
+  columns?: WidgetRowColumn[];
+  /** work_items_table|assigned_to_me only: sort column (default:
+   *  "state"; must sit inside `columns` or the backend 400s). */
+  sort_by?: WidgetRowColumn;
+  /** work_items_table|assigned_to_me only: sort direction (default:
+   *  "desc"). */
+  sort_dir?: WidgetSortDir;
 }
 
 export interface DashboardWidget {
@@ -210,6 +277,35 @@ export interface IntakeBreakdown {
   avg_decide_seconds: number;
 }
 
+/** One canonical work-item row (C84T0): the row-list payload, the
+ *  drill-down payload, and the row CSV export all share this shape.
+ *  `state` is the state NAME (human label); `state_group` is the
+ *  machine slug. `id` is the issue UUID — the issue-detail route
+ *  needs the project identifier, resolved by the card from the
+ *  workspace project list (the row carries only {id, name}). */
+export interface WidgetRowItem {
+  id: string;
+  title: string;
+  state: string;
+  state_group?: string;
+  priority: number;
+  assignee: { id: string; name: string } | null;
+  labels: { id: string; name: string; color: string }[];
+  project: { id: string; name: string };
+}
+
+/** The drill-down envelope (C84T0): the items behind one chart
+ *  segment, most-recently-updated first. `per_page` is the widget's
+ *  max_rows; `group_label` echoes the human group key. */
+export interface WidgetDrilldown {
+  items: WidgetRowItem[];
+  page: number;
+  per_page: number;
+  total: number;
+  group_label: string;
+  group_by: string;
+}
+
 export interface WidgetData {
   groups?: WidgetDataGroup[];
   value?: number;
@@ -221,6 +317,10 @@ export interface WidgetData {
   total_groups?: number;
   /** Present only for intake_breakdown widgets. */
   intake?: IntakeBreakdown;
+  /** Present only for work_items_table|assigned_to_me: the page's rows. */
+  rows?: WidgetRowItem[];
+  /** Present only for work_items_table|assigned_to_me: total rows. */
+  total?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -234,6 +334,13 @@ export const dashboardKey = (slug: string, id: string) =>
  *  page-specific). */
 export const widgetDataKey = (widgetId: string, page = 1) =>
   ["widget-data", widgetId, page] as const;
+
+/** Drill-down modal cache per widget + group key + page. */
+export const widgetDrilldownKey = (
+  widgetId: string,
+  group: string,
+  page = 1,
+) => ["widget-drilldown", widgetId, group, page] as const;
 
 /* ------------------------------------------------------------------ */
 /* API.                                                                */
@@ -354,6 +461,19 @@ export function fetchWidgetData(
 ): Promise<WidgetData> {
   return api.get<WidgetData>(
     `/api/v1/widgets/${encodeURIComponent(widgetId)}/data?page=${page}`,
+  );
+}
+
+/** The items behind one chart segment (C84T0). `group` is the
+ *  widget's own human-label group key (the data endpoint's key or
+ *  label — the backend matches either). */
+export function fetchWidgetDrilldown(
+  widgetId: string,
+  group: string,
+  page = 1,
+): Promise<WidgetDrilldown> {
+  return api.get<WidgetDrilldown>(
+    `/api/v1/widgets/${encodeURIComponent(widgetId)}/drilldown?group=${encodeURIComponent(group)}&page=${page}`,
   );
 }
 
@@ -539,6 +659,9 @@ export function normalizeWidgetConfig(config: WidgetConfig): {
   gauge_color: string;
   show_percentage: boolean;
   view: WidgetVisualization;
+  columns: WidgetRowColumn[];
+  sort_by: WidgetRowColumn;
+  sort_dir: WidgetSortDir;
 } {
   const f = config.filters ?? {};
   const maxRows =
@@ -548,8 +671,21 @@ export function normalizeWidgetConfig(config: WidgetConfig): {
     config.max_rows <= 100
       ? config.max_rows
       : 10;
+  const columns =
+    config.columns && config.columns.length > 0
+      ? config.columns.filter((c) => ROW_COLUMNS.includes(c))
+      : [...ROW_COLUMNS];
+  const safeColumns = columns.length > 0 ? columns : [...ROW_COLUMNS];
   return {
     ...(config.group_by ? { group_by: config.group_by } : {}),
+    columns: safeColumns,
+    sort_by:
+      config.sort_by && safeColumns.includes(config.sort_by)
+        ? config.sort_by
+        : safeColumns.includes("state")
+          ? "state"
+          : safeColumns[0],
+    sort_dir: config.sort_dir ?? "desc",
     metric: config.metric ?? "count",
     filters: {
       assignees: f.assignees ?? [],
@@ -674,6 +810,18 @@ export const ACCESS_LABELS: Record<DashboardAccess, string> = {
   view: "View",
   edit: "Edit",
 };
+
+/** Pages in a row-list widget envelope (total rows / max_rows). */
+export function widgetRowPageCount(data: WidgetData | undefined): number {
+  if (
+    typeof data?.total !== "number" ||
+    typeof data?.max_rows !== "number" ||
+    data.max_rows <= 0
+  ) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(data.total / data.max_rows));
+}
 
 /** Pages in a paginated widget envelope. */
 export function widgetPageCount(data: WidgetData | undefined): number {

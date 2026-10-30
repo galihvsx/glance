@@ -9,8 +9,8 @@
 // table), smart_gauge (SVG semi-circular arcs), table_2d (desc-sorted
 // rows), intake_breakdown (six headline tiles) — with page state
 // driving the paginated data envelope.
-import { useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft,
   ChevronRight,
@@ -41,19 +41,28 @@ import {
   downloadWidgetCsv,
   EMAIL_INGESTION_NOTE,
   fetchWidgetData,
+  fetchWidgetDrilldown,
   formatDuration,
   INTAKE_TILES,
+  isDrillableType,
   isPaginatedType,
+  isRowListType,
   normalizeWidgetConfig,
   numberValue,
+  ROW_COLUMN_LABELS,
   semiGaugeArc,
   seriesColor,
+  updateWidget,
   widgetDataKey,
+  widgetDrilldownKey,
   widgetPageCount,
+  widgetRowPageCount,
   DEFAULT_GAUGE_COLOR,
   type DashboardWidget,
   type WidgetData,
   type WidgetDataGroup,
+  type WidgetRowColumn,
+  type WidgetRowItem,
   type WidgetType,
 } from "../../lib/dashboards";
 import { cn } from "cn";
@@ -65,6 +74,15 @@ import {
 } from "../ui/dropdown-menu";
 import { Skeleton } from "../ui/skeleton";
 import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
+import { priorityLabel } from "../../lib/types";
 
 /** dnd-kit draggable binding for the card's header grip. The canvas
  *  owns useDraggable and applies the drag transform to the positioned
@@ -102,10 +120,50 @@ const axisTick: { fontSize: number; fill: string } = {
   fill: "var(--color-ink-muted)",
 };
 
-function WidgetChart({ type, series }: { type: WidgetType; series: { name: string; value: number }[] }) {
+/** Extract the segment label from a recharts click payload (Bar/Pie
+ *  hand the datum; Line/Area hand the chart event with activeLabel). */
+function segmentLabelFromClick(d: unknown): string | null {
+  if (d && typeof d === "object") {
+    const o = d as Record<string, unknown>;
+    const direct = o.name ?? o.label;
+    if (typeof direct === "string" && direct) return direct;
+    const payload = o.payload as Record<string, unknown> | undefined;
+    if (payload && typeof payload.name === "string" && payload.name) {
+      return payload.name;
+    }
+    const active = o.activeLabel;
+    if (typeof active === "string" && active) return active;
+    if (typeof active === "number") return String(active);
+    const activePayload = o.activePayload as { name?: unknown }[] | undefined;
+    const first = activePayload?.[0]?.name;
+    if (typeof first === "string" && first) return first;
+  }
+  return null;
+}
+
+function WidgetChart({
+  type,
+  series,
+  onSegmentClick,
+}: {
+  type: WidgetType;
+  series: { name: string; value: number }[];
+  /** Absent = not drillable (number/intake/row-list never render here). */
+  onSegmentClick?: (label: string) => void;
+}) {
   const cells = series.map((_, i) => (
     <Cell key={i} fill={seriesColor(i)} />
   ));
+  const barClick = (d: unknown) => {
+    if (!onSegmentClick) return;
+    const label = segmentLabelFromClick(d);
+    if (label) onSegmentClick(label);
+  };
+  const chartClick = (e: unknown) => {
+    if (!onSegmentClick) return;
+    const label = segmentLabelFromClick(e);
+    if (label) onSegmentClick(label);
+  };
   if (type === "bar") {
     return (
       <BarChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
@@ -113,7 +171,13 @@ function WidgetChart({ type, series }: { type: WidgetType; series: { name: strin
         <XAxis dataKey="name" tick={axisTick} interval="preserveStartEnd" tickLine={false} axisLine={{ stroke: "var(--color-border)" }} />
         <YAxis tick={axisTick} tickLine={false} axisLine={false} allowDecimals={false} width={40} />
         <Tooltip content={<ChartTooltipContent />} cursor={{ fill: "var(--color-wash-hover)" }} />
-        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+        <Bar
+          dataKey="value"
+          radius={[4, 4, 0, 0]}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          onClick={barClick as any}
+          style={onSegmentClick ? { cursor: "pointer" } : undefined}
+        >
           {cells}
         </Bar>
       </BarChart>
@@ -121,7 +185,13 @@ function WidgetChart({ type, series }: { type: WidgetType; series: { name: strin
   }
   if (type === "line") {
     return (
-      <LineChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+      <LineChart
+        data={series}
+        margin={{ top: 8, right: 8, bottom: 0, left: -12 }}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onClick={chartClick as any}
+        style={onSegmentClick ? { cursor: "pointer" } : undefined}
+      >
         <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
         <XAxis dataKey="name" tick={axisTick} interval="preserveStartEnd" tickLine={false} axisLine={{ stroke: "var(--color-border)" }} />
         <YAxis tick={axisTick} tickLine={false} axisLine={false} allowDecimals={false} width={40} />
@@ -132,7 +202,13 @@ function WidgetChart({ type, series }: { type: WidgetType; series: { name: strin
   }
   if (type === "area") {
     return (
-      <AreaChart data={series} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+      <AreaChart
+        data={series}
+        margin={{ top: 8, right: 8, bottom: 0, left: -12 }}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onClick={chartClick as any}
+        style={onSegmentClick ? { cursor: "pointer" } : undefined}
+      >
         <defs>
           <linearGradient id="widgetAreaFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--color-primary)" stopOpacity={0.35} />
@@ -159,6 +235,9 @@ function WidgetChart({ type, series }: { type: WidgetType; series: { name: strin
         outerRadius="85%"
         paddingAngle={2}
         strokeWidth={0}
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onClick={barClick as any}
+        style={onSegmentClick ? { cursor: "pointer" } : undefined}
       >
         {cells}
       </Pie>
@@ -218,9 +297,12 @@ function PaginationControls({
 function GroupRowsTable({
   groups,
   sortDesc,
+  onRowClick,
 }: {
   groups: WidgetDataGroup[];
   sortDesc?: boolean;
+  /** Absent = row is not drillable (never for intake/number). */
+  onRowClick?: (group: WidgetDataGroup) => void;
 }) {
   const rows = sortDesc
     ? [...groups].sort((a, b) => b.value - a.value)
@@ -239,7 +321,14 @@ function GroupRowsTable({
       </thead>
       <tbody>
         {rows.map((g) => (
-          <tr key={g.key} className="border-b border-border/40 last:border-0">
+          <tr
+            key={g.key}
+            className={cn(
+              "border-b border-border/40 last:border-0",
+              onRowClick && "cursor-pointer hover:bg-accent/50",
+            )}
+            onClick={onRowClick ? () => onRowClick(g) : undefined}
+          >
             <td className="truncate px-3 py-2 text-ink">{g.label}</td>
             <td className="px-3 py-2 text-right tabular-nums text-ink">
               {g.value}
@@ -254,15 +343,17 @@ function GroupRowsTable({
 function SmartCounterBody({
   widget,
   groups,
+  onGroupClick,
 }: {
   widget: DashboardWidget;
   groups: WidgetDataGroup[];
+  onGroupClick?: (group: WidgetDataGroup) => void;
 }) {
   const cfg = normalizeWidgetConfig(widget.config);
   if (cfg.visualization === "table") {
     return (
       <div className="h-full overflow-auto">
-        <GroupRowsTable groups={groups} />
+        <GroupRowsTable groups={groups} onRowClick={onGroupClick} />
       </div>
     );
   }
@@ -271,7 +362,12 @@ function SmartCounterBody({
       {groups.map((g) => (
         <div
           key={g.key}
-          className="rounded-md border border-border/60 bg-surface px-3 py-2.5"
+          className={cn(
+            "rounded-md border border-border/60 bg-surface px-3 py-2.5",
+            onGroupClick && "cursor-pointer hover:bg-accent/50",
+          )}
+          title={onGroupClick ? "Click to drill down" : undefined}
+          onClick={onGroupClick ? () => onGroupClick(g) : undefined}
         >
           <p className="truncate text-xs text-muted-foreground">{g.label}</p>
           <p className="text-2xl font-bold tabular-nums text-ink">{g.value}</p>
@@ -294,9 +390,11 @@ export function gaugePercentage(g: WidgetDataGroup): number {
 function SmartGaugeBody({
   widget,
   groups,
+  onGroupClick,
 }: {
   widget: DashboardWidget;
   groups: WidgetDataGroup[];
+  onGroupClick?: (group: WidgetDataGroup) => void;
 }) {
   const cfg = normalizeWidgetConfig(widget.config);
   const color = cfg.gauge_color || DEFAULT_GAUGE_COLOR;
@@ -308,7 +406,15 @@ function SmartGaugeBody({
         const pct = gaugePercentage(g);
         const arc = semiGaugeArc(pct, radius);
         return (
-          <div key={g.key} className="flex flex-col items-center gap-1">
+          <div
+            key={g.key}
+            className={cn(
+              "flex flex-col items-center gap-1",
+              onGroupClick && "cursor-pointer",
+            )}
+            title={onGroupClick ? "Click to drill down" : undefined}
+            onClick={onGroupClick ? () => onGroupClick(g) : undefined}
+          >
             <svg
               viewBox={`0 0 ${radius * 2} ${radius + 6}`}
               className="w-full max-w-[120px]"
@@ -409,20 +515,310 @@ function IntakeBody({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase-3 renderers (C84T1).                                          */
+/* ------------------------------------------------------------------ */
+
+/** One row cell per configured column, in config order. */
+function RowCells({
+  row,
+  columns,
+}: {
+  row: WidgetRowItem;
+  columns: WidgetRowColumn[];
+}) {
+  return (
+    <>
+      {columns.map((c) => {
+        switch (c) {
+          case "id":
+            return (
+              <td key={c} className="whitespace-nowrap px-3 py-2 font-semibold text-primary">
+                {row.id}
+              </td>
+            );
+          case "title":
+            return (
+              <td key={c} className="max-w-[240px] truncate px-3 py-2 text-ink">
+                {row.title}
+              </td>
+            );
+          case "state":
+            return (
+              <td key={c} className="whitespace-nowrap px-3 py-2 text-ink">
+                {row.state}
+              </td>
+            );
+          case "priority":
+            return (
+              <td key={c} className="whitespace-nowrap px-3 py-2 text-ink">
+                {priorityLabel(row.priority)}
+              </td>
+            );
+          case "assignee":
+            return (
+              <td key={c} className="whitespace-nowrap px-3 py-2 text-ink">
+                {row.assignee ? row.assignee.name : "Unassigned"}
+              </td>
+            );
+          case "labels":
+            return (
+              <td key={c} className="px-3 py-2 text-ink">
+                {row.labels.length > 0 ? (
+                  row.labels.map((l) => (
+                    <span
+                      key={l.id}
+                      className="mr-1 inline-block rounded border border-border px-1.5 py-0.5 text-[11px]"
+                    >
+                      {l.name}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+            );
+          case "project":
+            return (
+              <td key={c} className="whitespace-nowrap px-3 py-2 text-ink">
+                {row.project.name}
+              </td>
+            );
+        }
+      })}
+    </>
+  );
+}
+
+/** The row-list card body: configured columns in order, sortable
+ *  headers (click toggles asc/desc and SAVES to the widget config —
+ *  sort is config, not ephemeral table state), paginated by the card.
+ *  View-only readers get plain headers (a sort PATCH would 403). */
+function WorkItemsTable({
+  rows,
+  columns,
+  sortBy,
+  sortDir,
+  canEdit,
+  onSort,
+  onRowClick,
+}: {
+  rows: WidgetRowItem[];
+  columns: WidgetRowColumn[];
+  sortBy: WidgetRowColumn;
+  sortDir: "asc" | "desc";
+  canEdit: boolean;
+  onSort: (column: WidgetRowColumn) => void;
+  onRowClick?: (row: WidgetRowItem) => void;
+}) {
+  return (
+    <div className="h-full overflow-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
+            {columns.map((c) => (
+              <th key={c} scope="col" className="whitespace-nowrap px-3 py-2 font-medium">
+                {canEdit ? (
+                  <button
+                    type="button"
+                    onClick={() => onSort(c)}
+                    aria-label={`Sort by ${ROW_COLUMN_LABELS[c]}`}
+                    className="inline-flex items-center gap-1 uppercase tracking-wide hover:text-foreground"
+                  >
+                    {ROW_COLUMN_LABELS[c]}
+                    {sortBy === c && (
+                      <span aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>
+                    )}
+                  </button>
+                ) : (
+                  <span className="uppercase tracking-wide">
+                    {ROW_COLUMN_LABELS[c]}
+                    {sortBy === c && (
+                      <span aria-hidden="true"> {sortDir === "asc" ? "▲" : "▼"}</span>
+                    )}
+                  </span>
+                )}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.id}
+              className={cn(
+                "border-b border-border/40 last:border-0",
+                onRowClick && "cursor-pointer hover:bg-accent/50",
+              )}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+            >
+              <RowCells row={row} columns={columns} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** The drill-down modal (C84T1): the items behind one chart segment.
+ *  Title is "«Widget title» — «group label»"; closing returns to the
+ *  dashboard — modal state only, no route change. Read affordance:
+ *  view-only users drill and export too (the server enforces read). */
+function DrilldownModal({
+  widget,
+  groupKey,
+  groupLabel,
+  onClose,
+  onIssueClick,
+}: {
+  widget: DashboardWidget;
+  groupKey: string;
+  groupLabel: string;
+  onClose: () => void;
+  onIssueClick?: (row: WidgetRowItem) => void;
+}) {
+  const [page, setPage] = useState(1);
+  const { data, isPending, isError, refetch } = useQuery({
+    queryKey: widgetDrilldownKey(widget.id, groupKey, page),
+    queryFn: () => fetchWidgetDrilldown(widget.id, groupKey, page),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const pageCount =
+    data && data.per_page > 0
+      ? Math.max(1, Math.ceil(data.total / data.per_page))
+      : 1;
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent
+        className="max-h-[88vh] overflow-y-auto sm:max-w-2xl"
+        showCloseButton={false}
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {widget.title} — {data?.group_label ?? groupLabel}
+          </DialogTitle>
+          <DialogDescription>
+            {data
+              ? `${data.total} work items · dashboard filters apply`
+              : "Loading the items behind this segment…"}
+          </DialogDescription>
+        </DialogHeader>
+        {isPending ? (
+          <div className="flex flex-col gap-2 py-4" aria-label="Loading drill-down items">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-24" />
+          </div>
+        ) : isError ? (
+          <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+            <p className="text-sm text-destructive">
+              Couldn&apos;t load these items.
+            </p>
+            <Button type="button" variant="outline" size="sm" onClick={() => refetch()}>
+              Retry
+            </Button>
+          </div>
+        ) : data.items.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No items in this segment.
+          </p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
+                  <th scope="col" className="px-3 py-2 font-medium">ID</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Title</th>
+                  <th scope="col" className="px-3 py-2 font-medium">State</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Priority</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Assignee</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((item) => (
+                  <tr
+                    key={item.id}
+                    className={cn(
+                      "border-b border-border/40 last:border-0",
+                      onIssueClick && "cursor-pointer hover:bg-accent/50",
+                    )}
+                    onClick={onIssueClick ? () => onIssueClick(item) : undefined}
+                  >
+                    <td className="whitespace-nowrap px-3 py-2 font-semibold text-primary">
+                      {item.id}
+                    </td>
+                    <td className="max-w-[240px] truncate px-3 py-2 text-ink">
+                      {item.title}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {item.state}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {priorityLabel(item.priority)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {item.assignee ? item.assignee.name : "Unassigned"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <PaginationControls
+              page={data.page}
+              pageCount={pageCount}
+              onPage={setPage}
+            />
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              void downloadWidgetCsv(widget.id).catch(() => {
+                // Read-gated server-side; a failed export leaves the
+                // modal untouched (no partial download).
+              });
+            }}
+          >
+            <Download className="size-3.5" aria-hidden="true" />
+            Export CSV
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function WidgetCard({
   widget,
   canEdit,
   onEdit,
   onDelete,
   drag,
+  onIssueClick,
 }: {
   widget: DashboardWidget;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
   drag?: WidgetDragBinding;
+  /** Row-click navigation (DashboardDetail supplies the workspace
+   *  slug + project-identifier resolution — the row payload carries
+   *  only the project {id, name}). Absent = rows are not clickable. */
+  onIssueClick?: (row: WidgetRowItem) => void;
 }) {
   const paginated = isPaginatedType(widget.widget_type);
+  const isRowList = isRowListType(widget.widget_type);
   const isIntake = widget.widget_type === "intake_breakdown";
   const [page, setPage] = useState(1);
   const {
@@ -431,24 +827,78 @@ export default function WidgetCard({
     isError,
     refetch,
   } = useQuery({
-    queryKey: widgetDataKey(widget.id, paginated ? page : 1),
-    queryFn: () => fetchWidgetData(widget.id, paginated ? page : 1),
+    queryKey: widgetDataKey(widget.id, paginated || isRowList ? page : 1),
+    queryFn: () => fetchWidgetData(widget.id, paginated || isRowList ? page : 1),
     // Widget data is live but cheap; a failure shouldn't hammer.
     retry: 1,
     staleTime: 60_000,
   });
 
+  // Drill-down modal state (C84T1): the clicked segment's group key
+  // (backend matches key OR label) + display label. Modal state only
+  // — opening it never changes the route.
+  const [drill, setDrill] = useState<{
+    key: string;
+    label: string;
+  } | null>(null);
+  const drillable = isDrillableType(widget.widget_type);
+  const openDrill = (group: WidgetDataGroup) =>
+    setDrill({ key: group.key, label: group.label });
+  const openDrillByLabel = (label: string) =>
+    setDrill({ key: label, label });
+
+  // Row-list sort state mirrors the widget config (sort is config, not
+  // ephemeral table state). It syncs when the parent refetches the
+  // dashboard, and updates optimistically on a header click.
+  const rowCfg = normalizeWidgetConfig(widget.config);
+  const [rowSort, setRowSort] = useState({
+    sortBy: rowCfg.sort_by,
+    sortDir: rowCfg.sort_dir,
+  });
+  useEffect(() => {
+    setRowSort({ sortBy: rowCfg.sort_by, sortDir: rowCfg.sort_dir });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widget.config]);
+  const queryClient = useQueryClient();
+  const sortMutation = useMutation({
+    mutationFn: (v: { sort_by: WidgetRowColumn; sort_dir: "asc" | "desc" }) =>
+      updateWidget(widget.id, {
+        config: { ...widget.config, sort_by: v.sort_by, sort_dir: v.sort_dir },
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["widget-data", widget.id],
+      });
+    },
+    onError: () => {
+      // Roll the header arrow back — the server kept the old sort.
+      setRowSort({ sortBy: rowCfg.sort_by, sortDir: rowCfg.sort_dir });
+    },
+  });
+  const handleSort = (column: WidgetRowColumn) => {
+    if (!canEdit) return;
+    const next =
+      rowSort.sortBy === column
+        ? { sortBy: column, sortDir: (rowSort.sortDir === "asc" ? "desc" : "asc") as "asc" | "desc" }
+        : { sortBy: column, sortDir: "desc" as const };
+    setRowSort(next);
+    sortMutation.mutate({ sort_by: next.sortBy, sort_dir: next.sortDir });
+  };
+
   const isNumber = widget.widget_type === "number";
   const series = chartSeries(data?.groups);
   const scalar = numberValue(data);
   const groups = data?.groups ?? [];
+  const rows = data?.rows ?? [];
   const empty = isIntake
     ? !data?.intake
-    : paginated
-      ? groups.length === 0
-      : isNumber
-        ? scalar === null
-        : series.every((s) => s.value === 0) || series.length === 0;
+    : isRowList
+      ? rows.length === 0
+      : paginated
+        ? groups.length === 0
+        : isNumber
+          ? scalar === null
+          : series.every((s) => s.value === 0) || series.length === 0;
 
   let body: ReactNode;
   if (isPending) {
@@ -485,30 +935,68 @@ export default function WidgetCard({
       </div>
     );
   } else if (widget.widget_type === "smart_counter") {
-    body = <SmartCounterBody widget={widget} groups={groups} />;
+    body = (
+      <SmartCounterBody
+        widget={widget}
+        groups={groups}
+        onGroupClick={drillable ? openDrill : undefined}
+      />
+    );
   } else if (widget.widget_type === "smart_gauge") {
-    body = <SmartGaugeBody widget={widget} groups={groups} />;
+    body = (
+      <SmartGaugeBody
+        widget={widget}
+        groups={groups}
+        onGroupClick={drillable ? openDrill : undefined}
+      />
+    );
   } else if (widget.widget_type === "table_2d") {
     body = (
       <div className="h-full overflow-auto">
-        <GroupRowsTable groups={groups} sortDesc />
+        <GroupRowsTable
+          groups={groups}
+          sortDesc
+          onRowClick={drillable ? openDrill : undefined}
+        />
       </div>
     );
   } else if (isIntake) {
     body = <IntakeBody widget={widget} data={data!} />;
+  } else if (isRowList) {
+    body = (
+      <WorkItemsTable
+        rows={rows}
+        columns={rowCfg.columns}
+        sortBy={rowSort.sortBy}
+        sortDir={rowSort.sortDir}
+        canEdit={canEdit}
+        onSort={handleSort}
+        onRowClick={onIssueClick}
+      />
+    );
   } else {
     body = (
-      <div className="h-full w-full p-2">
+      <div
+        className={cn("h-full w-full p-2", drillable && "cursor-pointer")}
+        title={drillable ? "Click a segment to drill down" : undefined}
+      >
         <ResponsiveContainer width="100%" height="100%">
-          <WidgetChart type={widget.widget_type} series={series} />
+          <WidgetChart
+            type={widget.widget_type}
+            series={series}
+            onSegmentClick={drillable ? openDrillByLabel : undefined}
+          />
         </ResponsiveContainer>
       </div>
     );
   }
 
-  const pageCount = widgetPageCount(data);
+  const pageCount = isRowList
+    ? widgetRowPageCount(data)
+    : widgetPageCount(data);
 
   return (
+    <>
     <div
       className={cn(
         "flex h-full flex-col overflow-hidden rounded-lg border border-border bg-raised shadow-sm",
@@ -530,6 +1018,11 @@ export default function WidgetCard({
         )}
         <h3 className="min-w-0 flex-1 truncate px-1 text-[13px] font-semibold text-ink">
           {widget.title}
+          {widget.widget_type === "assigned_to_me" && (
+            <span className="ml-2 inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 align-middle text-[11px] font-medium text-primary">
+              Assigned to you
+            </span>
+          )}
         </h3>
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -569,7 +1062,7 @@ export default function WidgetCard({
         </DropdownMenu>
       </div>
       <div className="min-h-0 flex-1">{body}</div>
-      {paginated && !isPending && !isError && (
+      {(paginated || isRowList) && !isPending && !isError && (
         <PaginationControls
           page={data?.page ?? page}
           pageCount={pageCount}
@@ -577,5 +1070,15 @@ export default function WidgetCard({
         />
       )}
     </div>
+    {drill && (
+      <DrilldownModal
+        widget={widget}
+        groupKey={drill.key}
+        groupLabel={drill.label}
+        onClose={() => setDrill(null)}
+        onIssueClick={onIssueClick}
+      />
+    )}
+    </>
   );
 }
