@@ -844,17 +844,37 @@ export interface CsvDownload {
   truncated: boolean;
 }
 
+/** A bucket filter for a widget CSV export (C88T0): the current
+ *  granularity + the trend payload's bucket_start, verbatim — the
+ *  client never recomputes the bucket window, same as the C87
+ *  drill-down fetch. Composes with metric exactly as the drill-down
+ *  does; in bucket mode today no metric is passed. */
+export interface WidgetCsvBucket {
+  granularity: IntakeTrendGranularity;
+  bucket_start: string;
+}
+
 export async function fetchWidgetCsv(
   widgetId: string,
   metric?: string,
+  bucket?: WidgetCsvBucket,
 ): Promise<CsvDownload> {
   // Raw fetch (not api.get): we need the headers (filename,
   // truncation flag) alongside the blob body. A metric on an
   // intake_breakdown widget scopes the export to that tile's rows
-  // (C85T0); without one the aggregate export is unchanged.
+  // (C85T0); a bucket scopes it to the rows created in that period
+  // (C88T0, same windows as the drill-down); without either the
+  // aggregate export is unchanged.
+  const params = new URLSearchParams();
+  if (metric) params.set("metric", metric);
+  if (bucket) {
+    params.set("granularity", bucket.granularity);
+    params.set("bucket_start", bucket.bucket_start);
+  }
+  const query = params.toString();
   const url =
     `/api/v1/widgets/${encodeURIComponent(widgetId)}/export.csv` +
-    (metric ? `?metric=${encodeURIComponent(metric)}` : "");
+    (query ? `?${query}` : "");
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) {
     const text = await res.text();
@@ -890,12 +910,15 @@ function downloadCsvBlob({ blob, filename }: CsvDownload): void {
 /** Download the widget's CSV export via a blob URL (filename from the
  *  server's Content-Disposition). Visible to anyone who can read the
  *  widget — the caller has already gated the affordance. An intake
- *  metric scopes the export to that tile's rows (C85T0). */
+ *  metric scopes the export to that tile's rows (C85T0); a bucket
+ *  scopes it to that period's rows (C88T0, bucket mode passes no
+ *  metric — the server filename carries the bucket suffix). */
 export async function downloadWidgetCsv(
   widgetId: string,
   metric?: string,
+  bucket?: WidgetCsvBucket,
 ): Promise<void> {
-  downloadCsvBlob(await fetchWidgetCsv(widgetId, metric));
+  downloadCsvBlob(await fetchWidgetCsv(widgetId, metric, bucket));
 }
 
 /** Fetch the intake trend series as CSV (C86T0): the same series as

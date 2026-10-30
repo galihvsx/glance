@@ -814,11 +814,17 @@ function IntakeTrendSection({
  *  payload's bucket_start) and NO metric — the C85 modal carries no
  *  metric filter UI, so "All" is the fetch itself, not a control
  *  default. Title is the bucket title ("Intake — week of …" etc.),
- *  the empty state is the honest "No intake rows in this period.",
- *  and there is no Export CSV button in bucket mode — bucket-rows
- *  CSV was explicitly deferred out of this cycle (plan's rejected
- *  list), so the modal must not export an unfiltered file under a
- *  bucket title. */
+ *  the empty state is the honest "No intake rows in this period."
+ *  C88T1 bucket mode: the footer gains the Export CSV button (same
+ *  position + visual language as the C85 metric modal's button,
+ *  prototype cycle88-prototype.html as spec). It downloads exactly
+ *  the rows the modal lists, via the T0 contract
+ *  GET /api/v1/widgets/:widget_id/export.csv?granularity=<current>
+ *  &bucket_start=<bucket_start> with NO metric — the server
+ *  filename carries the bucket suffix
+ *  (<dashboard-slug>-<widget-slug>-<granularity>-<bucket_start>.csv).
+ *  An empty bucket still shows the button: an empty file is a valid
+ *  export of zero rows, not an error. */
 function IntakeDrilldownModal({
   widget,
   metric,
@@ -978,19 +984,36 @@ function IntakeDrilldownModal({
           <Button type="button" variant="outline" onClick={onClose}>
             Close
           </Button>
-          {!bucket && metric && (
+          {bucket ? (
             <Button
               type="button"
               onClick={() => {
-                void downloadWidgetCsv(widget.id, metric).catch(() => {
-                  // Read-gated server-side; a failed export leaves the
-                  // modal untouched (no partial download).
-                });
+                void downloadWidgetCsv(widget.id, undefined, bucket).catch(
+                  () => {
+                    // Read-gated server-side; a failed export leaves
+                    // the modal untouched (no partial download).
+                  },
+                );
               }}
             >
               <Download className="size-3.5" aria-hidden="true" />
               Export CSV
             </Button>
+          ) : (
+            metric && (
+              <Button
+                type="button"
+                onClick={() => {
+                  void downloadWidgetCsv(widget.id, metric).catch(() => {
+                    // Read-gated server-side; a failed export leaves the
+                    // modal untouched (no partial download).
+                  });
+                }}
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                Export CSV
+              </Button>
+            )
           )}
         </DialogFooter>
       </DialogContent>
