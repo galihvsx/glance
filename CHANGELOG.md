@@ -5,6 +5,27 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL dimension expansion (cycle 97)**
+
+- PQL gains the `epic` and `estimate` fields, closing the gap
+  with the visual filters: `epic` matches by project-scoped
+  epic name (EXISTS on the `epic_issues` junction),
+  `estimate` matches by estimate-point key within the
+  project's estimate system, and both accept `none` (issues in
+  no epic / with no estimate point) and `in (...)`. Unknown or
+  ambiguous names are 400, never a silent empty list.
+- PQL gains the `parent` field (parent issue by key
+  `{IDENTIFIER}-{sequence_id}`, project-scoped, with `none`
+  for top-level issues) plus the `hasParent()` and
+  `hasChildren()` functions. `hasChildren()` counts live
+  children only (not deleted, not archived, not draft).
+  `!=` on the new fields uses the inclusive-NULL convention:
+  NULL rows count as "not that value", the same as the
+  existing name fields. The cycle/module scope-survives
+  contract is unchanged, and no migration was needed.
+  Dashboard PQL, PQL ORDER BY/LIMIT, and AI text-to-PQL stay
+  deferred.
+
 **PQL on the Board (cycle 96)**
 
 - The Board gains a PQL mode (All issues / PQL toggle + the
