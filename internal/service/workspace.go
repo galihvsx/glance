@@ -606,10 +606,25 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 		wsID, targetUserID); err != nil {
 		return err
 	}
-	// C92T0: leaving the workspace ends teamspace membership, so a
-	// Lead designation held by the removed user clears in the same
-	// transaction (the teamspace-membership-removal rule, applied to
-	// its workspace-level form).
+	// C93T0: leaving the workspace ends EVERYTHING derived from that
+	// membership, in the same transaction: the removed user's
+	// teamspace_members rows in all of this workspace's teamspaces
+	// (the C90 quirk — C92T0 only implemented the Lead half below),
+	// plus the Lead designations they held (the
+	// teamspace-membership-removal rule, applied to its
+	// workspace-level form). Honest framing: the dangling rows alone
+	// could not regain project access — EffectiveProjectAccess
+	// requires a workspace_members row first — so this is a
+	// roster-integrity + defense-in-depth fix, not a live
+	// privilege-escalation hole. Rows in other workspaces' teamspaces
+	// are untouched: the subquery is scoped to this workspace.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM teamspace_members
+		  WHERE user_id = $2::uuid
+		    AND teamspace_id IN (SELECT id FROM teamspaces WHERE workspace_id = $1::uuid)`,
+		wsID, targetUserID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE teamspaces SET lead_user_id = NULL, updated_at = now()
 		  WHERE workspace_id = $1::uuid AND lead_user_id = $2::uuid`,

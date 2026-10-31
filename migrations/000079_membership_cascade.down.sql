@@ -1,0 +1,9 @@
+-- 000079_membership_cascade down: no-op (manual rollback only; the
+-- migrator never applies down files).
+--
+-- The up migration deletes dangling teamspace_members rows; deleted
+-- rows cannot be resurrected by a down migration — the pre-repair
+-- roster state is not recoverable from the schema, and re-adding
+-- rows would re-create exactly the dangling state the up migration
+-- removes. There is nothing to drop: no table, column, index, or
+-- constraint was added.
