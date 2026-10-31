@@ -2509,6 +2509,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 	wantParams := []string{
 		"per_page", "cursor", "order_by",
 		"state", "priority", "label", "assignee", "estimate", "cycle",
+		"module",
 		"parent", "epic",
 		"q", "pql", "fields", "draft", "sequence_id",
 		"undated", "due_date_empty", "subscribed", "archived", "deleted",
@@ -2641,7 +2642,7 @@ func TestOpenAPIDocShapesIssueListParams(t *testing.T) {
 			t.Fatalf("%s param = %+v, want date-time + RFC3339/400 description", name, p.Schema)
 		}
 	}
-	for _, name := range []string{"state", "cycle"} {
+	for _, name := range []string{"state", "cycle", "module"} {
 		if param(name).Schema.Format != "uuid" {
 			t.Fatalf("%s param format = %q, want uuid (malformed UUID is 400)", name, param(name).Schema.Format)
 		}

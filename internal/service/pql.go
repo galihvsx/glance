@@ -49,11 +49,23 @@ package service
 // user input is never interpolated into SQL; only the operator and
 // column (both from fixed whitelists) appear literally.
 //
-// OUT of scope this cycle (documented, not silently cut): ORDER BY /
-// LIMIT clauses (existing order_by + cursor pagination cover them),
-// AI text-to-PQL generation, and PQL on dashboards/cycles/modules
-// lists. hasChildren()-style functions are deferred: they need joins
-// beyond the existing list shapes.
+// Scope-survives contract (C95T0): Cycle and Module are scope
+// containers, not filter dimensions. When PQL is present,
+// withoutVisualFilters zeroes every visual filter dimension (state,
+// labels, assignees, priorities, dates, epics, parents, text) but
+// leaves Cycle and Module untouched, so the translated PQL predicate
+// ANDs with the scope condition: a query run inside a cycle or
+// module stays inside it. A foreign cycle/module UUID therefore
+// yields an empty list by construction (the project predicate in the
+// list query confines the scope, same as the cycle scope today).
+//
+// OUT of scope (documented, not silently cut): ORDER BY / LIMIT
+// clauses (existing order_by + cursor pagination cover them), AI
+// text-to-PQL generation, and PQL on dashboards lists.
+// hasChildren()-style functions are deferred: they need joins
+// beyond the existing list shapes. Cycle/module detail lists are
+// queryable through the scope params: ?cycle= / ?module= survive
+// PQL mode (this contract); the detail-page PQL UI lands separately.
 
 import (
 	"context"
@@ -564,11 +576,13 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 // withoutVisualFilters returns a copy of the input with every visual
 // filter zeroed. ListIssues applies it whenever PQL is present so the
 // "PQL wins, visual filters ignored" contract holds for direct service
-// callers too, not just the HTTP handler. Sort, pagination, fieldset,
-// and list-mode flags (archived, draft, sequence lookup) are kept.
+// callers too, not just the HTTP handler. Scope containers (Cycle,
+// Module) are NOT zeroed — they survive PQL mode and AND with the
+// PQL predicate (C95T0 scope-survives contract, see the package
+// header). Sort, pagination, fieldset, and list-mode flags
+// (archived, draft, sequence lookup) are kept.
 func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.State = ""
-	in.Cycle = ""
 	in.Q = ""
 	in.Priorities = nil
 	in.Labels = nil
