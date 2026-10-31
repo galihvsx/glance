@@ -2840,15 +2840,21 @@ func listSortKey(o listOrder, iss *Issue) string {
 }
 
 // ListIssuesInput carries the list filters. Empty/zero values mean "no
-// filter". State/Assignee/Label/Cycle take UUIDs.
+// filter". State/Assignee/Label/Cycle/Module take UUIDs.
 // filterNone is the sentinel value meaning "no relation" inside the
 // Assignees and EstimatePoints multi-filters (matches issues with zero
 // assignees / a NULL estimate point).
 const filterNone = "none"
 
 type ListIssuesInput struct {
-	State   string
-	Cycle   string
+	State string
+	Cycle string
+	// Module (C95T0) is a scope container mirroring Cycle: it limits
+	// the list to the module_issues junction membership, and — like
+	// Cycle — it survives PQL mode (withoutVisualFilters) and ANDs
+	// with the PQL predicate. It is a container, not a filter
+	// dimension: a PQL query run inside a module must stay inside it.
+	Module  string
 	Q       string
 	OrderBy string
 	Cursor  string
@@ -2915,10 +2921,13 @@ type ListIssuesInput struct {
 	// PQL (C91T0) is a Plane Query Language predicate for the issue
 	// list (see pql.go). When non-blank, ListIssues ignores every
 	// visual filter on this input (withoutVisualFilters) and appends
-	// the translated PQL condition instead; sort/pagination/orderBy
-	// still apply unchanged. A blank PQL means "no PQL" — the handler
-	// treats a blank ?pql= as absent, so a cleared PQL editor never
-	// filters. Parse/resolution failures are *PQLQueryError (400).
+	// the translated PQL condition instead — EXCEPT the scope
+	// containers Cycle and Module (C95T0), which survive and AND
+	// with the PQL predicate, so a query run inside a cycle/module
+	// stays inside it. Sort/pagination/orderBy still apply
+	// unchanged. A blank PQL means "no PQL" — the handler treats a
+	// blank ?pql= as absent, so a cleared PQL editor never filters.
+	// Parse/resolution failures are *PQLQueryError (400).
 	PQL string
 	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
 	// default — drafts live in the Drafts view until published);
@@ -2939,7 +2948,7 @@ func validateListFilterValues(in ListIssuesInput) error {
 			return ErrInvalidListFilter
 		}
 	}
-	for _, f := range []string{in.State, in.Cycle} {
+	for _, f := range []string{in.State, in.Cycle, in.Module} {
 		if f != "" && !isUUIDFormat(f) {
 			return ErrInvalidListFilter
 		}
@@ -3224,6 +3233,12 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 		// issues).
 		conds = append(conds, "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = "+arg(in.Cycle)+"::uuid)")
 	}
+	if in.Module != "" {
+		// C95T0: same EXISTS shape as Cycle, over the module_issues
+		// junction (migrations/000012_cycle) — there is no module_id
+		// column on issues.
+		conds = append(conds, "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = "+arg(in.Module)+"::uuid)")
+	}
 	if in.Q != "" {
 		conds = append(conds, "i.search @@ plainto_tsquery('english', "+arg(in.Q)+")")
 	}
@@ -3311,9 +3326,12 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 
 	// C91T0: PQL wins over visual filters at the service layer too —
 	// a direct caller passing both gets the PQL predicate only, never
-	// a silent AND of two filter modes. The zeroing happens before
-	// validation so a stale invalid visual value cannot 400 a PQL
-	// request either.
+	// a silent AND of two filter modes. C95T0: the scope containers
+	// Cycle and Module are the exception — they survive
+	// withoutVisualFilters and AND with the PQL predicate, so a
+	// query run inside a cycle/module stays inside it. The zeroing
+	// happens before validation so a stale invalid visual value
+	// cannot 400 a PQL request either.
 	if strings.TrimSpace(in.PQL) != "" {
 		in = in.withoutVisualFilters()
 	}

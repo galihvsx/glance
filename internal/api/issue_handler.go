@@ -299,7 +299,7 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 }
 
 // listIssues implements GET /api/v1/workspaces/{slug}/projects/{identifier}/issues:
-// filters (?state=&assignee=&label=&priority=&estimate=&cycle=&q=,
+// filters (?state=&assignee=&label=&priority=&estimate=&cycle=&module=&q=,
 // ?parent=&epic= (C75T0: comma-separated or repeatable; "none" = top-level / no epic),
 // ?created_after/before=&updated_after/before=&due_after/before=,
 // ?due_date_empty=1 (C80T0: target_date IS NULL — "no due date",
@@ -313,6 +313,9 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // filters — when non-blank, visual filter params are ignored entirely
 // (not parsed, not validated); sort/pagination/order_by still apply,
 // and PQL parse/resolution failures are 400 with message + position.
+// C95T0 exception: the scope containers ?cycle= and ?module= are NOT
+// visual filters — they survive PQL mode and AND with the PQL
+// predicate, so a query run inside a cycle/module stays inside it.
 // Multi-value filters take comma-separated lists
 // (single values keep working); assignee=/estimate= accept "none" for
 // unassigned / unestimated issues. 200 with the {results, next_cursor}
@@ -522,6 +525,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		Parents:                 parents,
 		Epics:                   epics,
 		Cycle:                   qp.Get("cycle"),
+		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),
 		OrderBy:                 common.OrderBy,
 		Cursor:                  common.Cursor,
@@ -551,7 +555,11 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 // filter params are NOT parsed here at all — not even validated — so a
 // stale visual param (even a malformed one) can never 400 a PQL
 // request; the service layer additionally zeroes any visual filters on
-// the input, so the exclusivity contract holds end to end. A blank
+// the input, so the exclusivity contract holds end to end. C95T0
+// exception: the scope containers ?cycle= and ?module= ARE parsed
+// here — they are containers, not filter dimensions, and they survive
+// PQL mode (service withoutVisualFilters) and AND with the predicate,
+// so /issues?cycle=<uuid>&pql=... stays inside the cycle. A blank
 // ?pql= never reaches this function: listIssues treats it as absent
 // and parses the visual filters instead.
 func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
@@ -561,6 +569,8 @@ func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
 	}
 	return service.ListIssuesInput{
 		PQL:                     strings.TrimSpace(qp.Get("pql")),
+		Cycle:                   qp.Get("cycle"),
+		Module:                  qp.Get("module"),
 		OrderBy:                 common.OrderBy,
 		Cursor:                  common.Cursor,
 		PerPage:                 common.PerPage,
@@ -577,7 +587,9 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	qp := c.QueryParams()
 	// C91T0: PQL mode is exclusive — a non-blank ?pql= replaces the
 	// visual filters entirely (they are not parsed, not validated, not
-	// applied). A blank ?pql= is absent: the visual filters parse as
+	// applied). C95T0: the scope params ?cycle=/?module= are the one
+	// exception — they are parsed in PQL mode and AND with the
+	// predicate. A blank ?pql= is absent: the visual filters parse as
 	// usual, so a cleared PQL editor degrades to an unfiltered list
 	// rather than a 400.
 	var in service.ListIssuesInput
