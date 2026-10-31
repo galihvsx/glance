@@ -435,15 +435,18 @@ func (h *DashboardHandler) deleteWidget(c *echo.Context) error {
 //     frontend renders; assigned_to_me forces assignee = the caller at
 //     compute time)
 //   - pql_table: the same rows shape, for the rows matching the
-//     stored PQL query against the exactly-one pinned project: the
-//     query's ORDER BY (multi-key) wins over the config sort, and the
-//     query's LIMIT caps the TOTAL rows across pages (total is the
-//     capped count). A stored query whose names no longer resolve
+//     stored PQL query translated once per pinned project and UNION
+//     ALLed with ONE global ORDER BY (the query's ORDER BY
+//     (multi-key) wins over the config sort, and the query's LIMIT
+//     caps the TOTAL rows across pages and projects (total is the
+//     capped count)). A stored query whose names no longer resolve
 //     (a renamed state/epic/label) is a per-widget 400 on this route
-//     with the PQL message + position in details — the rest of the
-//     dashboard still loads. The config itself rejects a blank query,
-//     a bad parse at write time, 0 or 2+ pinned projects, and any
-//     filters key (PQL is the filter).
+//     with the PQL message + position in details, annotated with the
+//     failing project's name when 2+ projects are pinned — the rest
+//     of the dashboard still loads. A project the viewer cannot
+//     reach contributes zero rows, not an error. The config itself
+//     rejects a blank query, a bad parse at write time, 0 pinned
+//     projects, and any filters key (PQL is the filter).
 //
 // The paginated types take ?page= (default 1, must be >= 1).
 // Read authZ = the dashboard's viewer rule (member 15+; a private

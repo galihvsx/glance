@@ -25,17 +25,28 @@ package service
 // for this type, so a visual filters key is rejected, not silently
 // ignored (C91's "PQL wins over visual filters" rule, applied at the
 // config surface); group_by/metric are accepted-but-ignored (row-list
-// precedent). The PQL translator is single-project-scoped, so
-// project_ids must contain exactly one project (anything else is a
-// 400 at write time); multi-project PQL widgets are a follow-up, not
-// a silent scope widening. Compute reuses the existing translator
-// against the pinned project: the query's ORDER BY (multi-key, C99)
-// wins over the config sort, its LIMIT caps the TOTAL rows across
-// pages (max_rows stays the page size), and name resolution happens
-// at compute — a stored query naming a renamed state/epic/label
-// surfaces as a per-widget 400 on the data route, never a
-// dashboard-wide 500. Drill-down is unavailable (the rows already ARE
-// the list, like the other row-list types).
+// precedent). C101T0 widens the pin from exactly one project to
+// 1..N: names resolve PER PROJECT (the translator is
+// single-project-scoped), so the stored query is translated once per
+// pinned project and the rows are a UNION ALL of the per-project
+// SELECTs (shared row-list SELECT shape, project column included),
+// with ONE global ORDER BY over the union (query ORDER BY wins,
+// else the config sort + id tiebreak) and the query LIMIT capping
+// the TOTAL rows across projects. Empty project_ids is a 400 —
+// translating against every workspace project would be unbounded
+// work, and the explicit-pin spirit is "say which projects you
+// mean". A name-resolution failure in any project surfaces as that
+// widget's 400 annotated with the project name; an unreachable
+// project (C92 access semantics) contributes zero rows, not an
+// error. Compute reuses the existing translator against each pinned
+// project: the query's ORDER BY (multi-key, C99) wins over the
+// config sort, its LIMIT caps the TOTAL rows across pages (max_rows
+// stays the page size), and name resolution happens at compute — a
+// stored query naming a renamed state/epic/label surfaces as a
+// per-widget 400 on the data route, never a dashboard-wide 500.
+// Drill-down is unavailable (the rows already ARE the list, like
+// the other row-list types). A one-project widget keeps the C100
+// compute path verbatim, so its behavior is byte-identical.
 //
 // AuthZ:
 //   - Reads (list/get/widget data/export.csv/drilldown): workspace
@@ -95,14 +106,18 @@ package service
 //     instead of visual filters. query is required and non-blank
 //     (parse + semantic validation at write time, 400 with position
 //     on failure — name resolution stays a compute-time concern, so a
-//     renamed state/epic/label surfaces per-widget at data time);
-//     project_ids must contain exactly one project (the translator's
-//     single-project scope); filters is REJECTED (PQL is the filter —
-//     a silently-ignored filters key would be a lie); group_by/metric
+//     renamed state/epic/label surfaces per-widget at data time,
+//     annotated with the failing project's name when 2+ projects are
+//     pinned); project_ids must contain 1..N projects (empty is a
+//     400 — empty-means-all is a follow-up, not a silent widening);
+//     filters is REJECTED (PQL is the filter — a silently-ignored
+//     filters key would be a lie); group_by/metric
 //     accepted-but-ignored (row-list precedent). Query ORDER BY wins
 //     over sort_by/sort_dir (fallback sort only, with the usual id
-//     tiebreak); query LIMIT caps the total rows across pages and in
-//     the CSV export (max_rows stays the page size).
+//     tiebreak) — the ORDER BY is GLOBAL over the union of the
+//     per-project translations, never per-branch concatenation;
+//     query LIMIT caps the total rows across pages and in the CSV
+//     export (max_rows stays the page size).
 //   - filters.{assignees,states,labels} are UUID arrays;
 //     filters.priorities are ints 0..4; unknown keys are rejected.
 //   - project_ids is a UUID array; unknown keys are rejected. Keys that
@@ -174,7 +189,8 @@ const (
 	WidgetTypeAssignedToMe   = "assigned_to_me"
 	// C100T0: PQL-driven row list. Same row shape, columns, and
 	// pagination as work_items_table, filtered by a PQL query string
-	// against exactly one pinned project instead of visual filters.
+	// against 1..N pinned projects (C101T0: translated once per
+	// project, UNION ALLed, globally ordered) instead of visual filters.
 	WidgetTypePQLTable = "pql_table"
 )
 
@@ -963,10 +979,12 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		// Plus the PQL contract: query required and non-blank,
 		// parse + semantic validation at write time (name resolution
 		// stays compute-time — a renamed state/epic/label must still
-		// surface per-widget at data time), and exactly one pinned
-		// project (the translator takes one projectID; a
-		// workspace-wide query would need per-project translation
-		// plus merged ordering, a follow-up design, not a flag).
+		// surface per-widget at data time), and 1..N pinned projects
+		// (C101T0 widening of the C100 exactly-one pin: the
+		// translator takes one projectID, so compute translates
+		// once per project and UNION ALLs the results; empty stays
+		// a 400 — empty-means-all is a follow-up, not a silent
+		// widening).
 		cfg.groupBy = ""
 		if strings.TrimSpace(cfg.query) == "" {
 			return nil, fmt.Errorf("%w: query is required for %q widgets and must not be blank", ErrInvalidWidgetConfig, widgetType)
@@ -982,8 +1000,8 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		if err := ValidatePQL(parsed.Predicate); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInvalidWidgetConfig, err)
 		}
-		if len(cfg.projectIDs) != 1 {
-			return nil, fmt.Errorf("%w: project_ids must contain exactly one project for %q widgets", ErrInvalidWidgetConfig, widgetType)
+		if len(cfg.projectIDs) < 1 {
+			return nil, fmt.Errorf("%w: project_ids must contain at least one project for %q widgets", ErrInvalidWidgetConfig, widgetType)
 		}
 		inCols := false
 		for _, c := range cfg.columns {
@@ -1844,13 +1862,15 @@ func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, act
 // WidgetRowItem rows in the config's sort order (assigned_to_me forces
 // assignee = the caller at compute time). The C100T0 pql_table widget
 // returns the same rows shape: the rows matching the stored PQL query
-// against the pinned project, in the query's ORDER BY when present
+// (C101T0: translated once per pinned project, UNION ALLed, with ONE
+// global ORDER BY), in the query's ORDER BY when present
 // (else the config sort + id tiebreak), with the query's LIMIT
 // capping the TOTAL rows across pages (total is the capped count, so
 // pages past the cap are empty rather than a lie about more rows).
 // A stored query naming a renamed state/epic/label fails name
 // resolution here and surfaces as that widget's 400 (the PQL error,
-// with position) — the rest of the dashboard still loads. Viewer
+// with position — annotated with the failing project's name when
+// 2+ projects are pinned) — the rest of the dashboard still loads. Viewer
 // role: any member (15)+ may read; a private dashboard of another
 // creator without a share reads as a missing widget.
 func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string, page int) (*WidgetData, error) {
@@ -2023,6 +2043,15 @@ func queryRowItems(ctx context.Context, pool *pgxpool.Pool, where string, args [
 		return nil, err
 	}
 	defer rows.Close()
+	return readRowItems(rows)
+}
+
+// readRowItems scans the nine shared row-list columns (rowItemsSelect
+// order) from an open row set: id, title, state, state_group,
+// priority, assignee JSONB (nullable), labels JSONB, project id,
+// project name. Shared by queryRowItems and queryUnionRowItems so
+// the single-project and union paths can never drift in row shape.
+func readRowItems(rows pgx.Rows) ([]WidgetRowItem, error) {
 	out := []WidgetRowItem{}
 	for rows.Next() {
 		var item WidgetRowItem
@@ -2137,28 +2166,47 @@ func pqlWidgetOrderBy(parsed *pqlParsedQuery, cfg *widgetConfig) string {
 
 // computePQLRowItems runs the pql_table recompute: the stored query
 // re-parsed (parse-only at write time, so a re-parse here is cheap
-// and keeps the translator's input fresh), its predicate translated
-// against the pinned project via the existing translator (no forked
-// PQL semantics — state/epic/estimate/parent names resolve within
-// that project, unknown names are the PQL error with position), and
-// rows fetched through the shared row-list SELECT. The base WHERE is
-// the widget's project scope (the pinned project intersected with
-// the actor's effective access, C92T2 — an unreachable pinned project
-// silently yields zero rows, like every other widget) plus live-issue
-// liveness, ANDed with the PQL predicate. Query ORDER BY wins over
-// the config sort (C98 precedence); query LIMIT caps the TOTAL rows
-// (total is the capped count; paginate slices pages out of at most
-// LIMIT rows, and the CSV path — paginate=false — fetches at most
-// LIMIT rows, so the export honors the same cap).
+// and keeps the translator's input fresh). A one-project widget
+// keeps the C100 compute path verbatim (byte-identical behavior);
+// a multi-project widget translates once per pinned project and
+// UNION ALLs the per-project SELECTs (computePQLRowItemsMulti).
+// The base WHERE is the widget's project scope (each pinned project
+// intersected with the actor's effective access, C92T2 — an
+// unreachable pinned project silently yields zero rows, like every
+// other widget) plus live-issue liveness, ANDed with the PQL
+// predicate. Query ORDER BY wins over the config sort (C98
+// precedence); query LIMIT caps the TOTAL rows (total is the capped
+// count; paginate slices pages out of at most LIMIT rows, and the
+// CSV path — paginate=false — fetches at most LIMIT rows, so the
+// export honors the same cap).
 func computePQLRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
 	cfg := wc.cfg
-	if len(cfg.projectIDs) != 1 {
+	if len(cfg.projectIDs) < 1 {
 		// Unreachable through validated writes (parseWidgetConfig
-		// enforces exactly one), but a corrupt stored config must
-		// fail as a config 400, never translate against a guessed
+		// enforces 1..N), but a corrupt stored config must fail
+		// as a config 400, never translate against a guessed
 		// project.
-		return nil, fmt.Errorf("%w: project_ids must contain exactly one project for %q widgets", ErrInvalidWidgetConfig, wc.widget.WidgetType)
+		return nil, fmt.Errorf("%w: project_ids must contain at least one project for %q widgets", ErrInvalidWidgetConfig, wc.widget.WidgetType)
 	}
+	if len(cfg.projectIDs) == 1 {
+		return computePQLRowItemsSingle(ctx, pool, wc, actorID, page, paginate)
+	}
+	parsed, err := ParsePQLWithOrder(cfg.query)
+	if err != nil {
+		return nil, err
+	}
+	return computePQLRowItemsMulti(ctx, pool, wc, actorID, parsed, page, paginate)
+}
+
+// computePQLRowItemsSingle is the C100 compute path, untouched by
+// C101T0: the stored query translated against the single pinned
+// project via the existing translator (no forked PQL semantics —
+// state/epic/estimate/parent names resolve within that project,
+// unknown names are the PQL error with position), rows fetched
+// through the shared row-list SELECT. Kept verbatim so a
+// one-project widget behaves byte-identically to C100.
+func computePQLRowItemsSingle(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
+	cfg := wc.cfg
 	parsed, err := ParsePQLWithOrder(cfg.query)
 	if err != nil {
 		return nil, err
@@ -2214,6 +2262,223 @@ func computePQLRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompu
 		}
 	}
 	return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+}
+
+// pqlUnionBranchSelect is the per-project SELECT of the multi-project
+// union: the shared row-list columns (rowItemsSelect order) plus the
+// sort-helper columns the outer ORDER BY needs, since the outer query
+// can only order by the union subquery's output columns. The helper
+// columns (state_seq, the PQL sort keys, assignee_name,
+// first_label_name) are never selected by the outer query — they exist
+// only so the single GLOBAL order over the union can be expressed.
+// Every branch selects the same columns in the same order with the
+// same types, so UNION ALL needs no casts.
+const pqlUnionBranchSelect = `SELECT i.id::text AS id, i.name AS title, s.name AS state, s."group" AS state_group, i.priority AS priority,
+	       ` + firstAssigneeJSON + ` AS assignee, ` + labelsAgg + ` AS labels,
+	       i.project_id::text AS project_id, p.name AS project_name,
+	       s.sequence AS state_seq, i.updated_at AS updated_at, i.created_at AS created_at,
+	       i.sequence_id AS sequence_id, i.sort_order AS sort_order,
+	       ` + firstAssigneeName + ` AS assignee_name, ` + firstLabelName + ` AS first_label_name`
+
+// pqlUnionOrderBy renders the multi-project widget's GLOBAL ORDER BY
+// fragment over the union subquery's output columns: the query's
+// ORDER BY (multi-key, C99) when present — each key mapped through
+// the listOrders whitelist to its union column, so no query text
+// ever reaches SQL as a column name — with a stable id tiebreak in
+// the last key's direction; otherwise the config sort mapped to its
+// union column + id tiebreak (the rowListOrderBy fallback, in union
+// terms). A per-branch ORDER BY + LIMIT-then-concatenate would
+// silently mis-order the merged list; the outer query carries the
+// single ORDER BY.
+func pqlUnionOrderBy(parsed *pqlParsedQuery, cfg *widgetConfig) string {
+	if parsed.OrderBy != nil {
+		parts := make([]string, 0, len(parsed.OrderBy.Keys)+1)
+		lastDir := "ASC"
+		for _, k := range parsed.OrderBy.Keys {
+			key := k.Field
+			if k.Desc {
+				key = "-" + key
+			}
+			ord, ok := listOrders[key]
+			if !ok {
+				// Unreachable: the parse validated every key
+				// against pqlSortableFields (the same field set
+				// as listOrders). Fall back to the config sort
+				// rather than panicking.
+				return pqlUnionFallbackOrderBy(cfg)
+			}
+			dir := "ASC"
+			if ord.desc {
+				dir = "DESC"
+			}
+			lastDir = dir
+			parts = append(parts, strings.TrimPrefix(ord.column, "i.")+" "+dir)
+		}
+		parts = append(parts, "id "+lastDir)
+		return strings.Join(parts, ", ")
+	}
+	return pqlUnionFallbackOrderBy(cfg)
+}
+
+// pqlUnionFallbackOrderBy maps the config sort to the union
+// subquery's output columns (rowSortExpr's expressions, in union
+// terms), with a stable id tiebreak in the same direction.
+func pqlUnionFallbackOrderBy(cfg *widgetConfig) string {
+	var expr string
+	nullable := false
+	switch cfg.sortBy {
+	case widgetRowColumnID:
+		expr = "id"
+	case widgetRowColumnTitle:
+		expr = "title"
+	case widgetRowColumnState:
+		expr = "state_seq"
+	case widgetRowColumnPriority:
+		expr = "priority"
+	case widgetRowColumnAssignee:
+		expr, nullable = "assignee_name", true
+	case widgetRowColumnLabels:
+		expr, nullable = "first_label_name", true
+	case widgetRowColumnProject:
+		expr = "project_name"
+	default:
+		expr = "state_seq"
+	}
+	dir := "ASC"
+	if cfg.sortDir == "desc" {
+		dir = "DESC"
+	}
+	ob := expr + " " + dir
+	if nullable {
+		ob += " NULLS LAST"
+	}
+	return ob + ", id " + dir
+}
+
+// pqlProjectDisplayName resolves a project's display name for the
+// per-project error annotation: the name where available, else the
+// identifier, else the id itself (a lookup failure must never turn
+// a name-resolution error into a second failure).
+func pqlProjectDisplayName(ctx context.Context, pool *pgxpool.Pool, projectID string) string {
+	var name, identifier string
+	if err := pool.QueryRow(ctx,
+		`SELECT name, identifier FROM projects WHERE id = $1::uuid`, projectID).Scan(&name, &identifier); err != nil {
+		return projectID
+	}
+	if strings.TrimSpace(name) != "" {
+		return name
+	}
+	if identifier != "" {
+		return identifier
+	}
+	return projectID
+}
+
+// computePQLRowItemsMulti runs the C101T0 multi-project recompute:
+// the parsed query translated ONCE PER resolved project via the
+// existing translator — one shared arg allocator, so placeholders
+// stay in sequence across the whole union query and no PQL semantics
+// are forked — with each branch's base WHERE narrowed to that single
+// project (widgetIssueFilter with a one-element scope, so the C92
+// liveness + access rules ride along). The branches are UNION ALLed
+// (never per-branch ORDER BY + LIMIT — the outer query carries the
+// single global ORDER BY and the LIMIT cap). A name-resolution
+// failure in any project returns the PQL error annotated with that
+// project's name (display name where available, else identifier),
+// preserving the PQL position so the handler still maps it to a
+// per-widget 400 with details. Projects outside the resolved scope
+// (unreachable, archived) contribute no branch at all — zero rows,
+// not an error, exactly as C92. An empty resolved scope is an empty
+// widget (total 0), not an error.
+func computePQLRowItemsMulti(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, parsed *pqlParsedQuery, page int, paginate bool) (*WidgetData, error) {
+	cfg := wc.cfg
+	maxRows := cfg.maxRows
+	if maxRows < 1 {
+		maxRows = 10
+	}
+	if len(wc.projectIDs) == 0 {
+		total := 0
+		return &WidgetData{Rows: []WidgetRowItem{}, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+	}
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	branches := make([]string, 0, len(wc.projectIDs))
+	for _, pid := range wc.projectIDs {
+		where := widgetIssueFilter(cfg, []string{pid}, &args)
+		pred, err := translatePQL(ctx, pool, wc.dr.Dashboard.WorkspaceID, pid, actorID, parsed.Predicate, arg)
+		if err != nil {
+			var pqlErr *PQLQueryError
+			if errors.As(err, &pqlErr) {
+				return nil, &PQLQueryError{
+					Msg: fmt.Sprintf("in project %q: %s", pqlProjectDisplayName(ctx, pool, pid), pqlErr.Msg),
+					Pos: pqlErr.Pos,
+				}
+			}
+			return nil, err
+		}
+		branches = append(branches, pqlUnionBranchSelect+"\n\t  "+rowItemsFrom+"\n\t WHERE "+where+" AND "+pred)
+	}
+	union := strings.Join(branches, "\n\t UNION ALL\n\t ")
+	var total int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM (`+union+`) AS u`, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	limitCap := -1
+	if parsed.Limit != nil {
+		limitCap = parsed.Limit.Value
+		if total > limitCap {
+			total = limitCap
+		}
+	}
+	orderBy := pqlUnionOrderBy(parsed, cfg)
+	var items []WidgetRowItem
+	switch {
+	case !paginate:
+		items, err := queryUnionRowItems(ctx, pool, union, args, orderBy, limitCap, 0)
+		if err != nil {
+			return nil, err
+		}
+		return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+	case limitCap >= 0 && (page-1)*maxRows >= limitCap:
+		// Past the cap: an empty page (total already reports the
+		// capped count, so no phantom pages exist).
+		items = []WidgetRowItem{}
+	default:
+		limit := maxRows
+		offset := (page - 1) * maxRows
+		if limitCap >= 0 && offset+limit > limitCap {
+			limit = limitCap - offset
+		}
+		var err error
+		items, err = queryUnionRowItems(ctx, pool, union, args, orderBy, limit, offset)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+}
+
+// queryUnionRowItems runs the outer query over a UNION ALL of
+// pqlUnionBranchSelect branches: only the nine display columns are
+// selected, in rowItemsSelect order, globally ordered, with
+// LIMIT/OFFSET applied once to the union (limit < 0 means no
+// pagination — the CSV path). Row scanning is shared with
+// queryRowItems via readRowItems.
+func queryUnionRowItems(ctx context.Context, pool *pgxpool.Pool, union string, args []any, orderBy string, limit, offset int) ([]WidgetRowItem, error) {
+	q := `SELECT id, title, state, state_group, priority, assignee, labels, project_id, project_name FROM (` + union + `) AS u ORDER BY ` + orderBy
+	if limit >= 0 {
+		q += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
+	}
+	rows, err := pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return readRowItems(rows)
 }
 
 // drilldownDimFilter maps a matched group's raw key back to the

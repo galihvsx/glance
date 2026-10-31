@@ -54,7 +54,8 @@ func TestC100_PQLWriteValidation(t *testing.T) {
 		{"blank query", `{"title":"t","widget_type":"pql_table","config":{"query":"  ","project_ids":["` + fx.wd.projAID + `"]}}`},
 		{"no projects", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":[]}}`},
 		{"missing projects", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0"}}`},
-		{"two projects", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":["` + fx.wd.projAID + `","` + fx.wd.projBID + `"]}}`},
+		// C101T0: two projects are now ACCEPTED (see
+		// dashboard_c101t0_test.go); the exactly-one pin is gone.
 		{"filters key", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":["` + fx.wd.projAID + `"],"filters":{"states":["` + fx.wd.backlogA + `"]}}}`},
 		{"visualization key", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":["` + fx.wd.projAID + `"],"visualization":"table"}}`},
 		{"bad syntax", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >=","project_ids":["` + fx.wd.projAID + `"]}}`},
@@ -95,11 +96,20 @@ func TestC100_PQLWriteErrorCarriesPosition(t *testing.T) {
 func TestC100_PQLUpdateValidation(t *testing.T) {
 	fx := setupRowList(t)
 	wid := pqlWidget(t, fx, pqlWidgetConfig(t, fx, ""))
-	// A type flip to pql_table with two pinned projects is 400.
+	// C101T0: a type flip to pql_table with two pinned projects is
+	// now VALID (the C100 exactly-one pin is widened to 1..N) and
+	// merges both projects' rows (3 from A + 2 from B).
 	rec := postAuthedJSON(t, fx.wd.fx.e, http.MethodPatch, "/api/v1/widgets/"+wid, fx.wd.fx.adminCookie,
 		`{"config":{"query":"priority >= 0","project_ids":["`+fx.wd.projAID+`","`+fx.wd.projBID+`"]}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("update to 2 projects: status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update to 2 projects: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	code, body := getWidgetData(t, fx.wd.fx, wid, fx.wd.fx.adminCookie)
+	if code != http.StatusOK {
+		t.Fatalf("data after 2-project update: status = %d (body: %v)", code, body)
+	}
+	if body["total"] != float64(5) {
+		t.Fatalf("total after 2-project update = %v, want 5 (A 3 + B 2)", body["total"])
 	}
 	// A valid query swap succeeds and takes effect.
 	rec = postAuthedJSON(t, fx.wd.fx.e, http.MethodPatch, "/api/v1/widgets/"+wid, fx.wd.fx.adminCookie,
@@ -107,7 +117,7 @@ func TestC100_PQLUpdateValidation(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("valid update: status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
-	code, body := getWidgetData(t, fx.wd.fx, wid, fx.wd.fx.adminCookie)
+	code, body = getWidgetData(t, fx.wd.fx, wid, fx.wd.fx.adminCookie)
 	if code != http.StatusOK {
 		t.Fatalf("data after update: status = %d (body: %v)", code, body)
 	}
