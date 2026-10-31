@@ -5,6 +5,33 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**ACL hardening: close the cycle 92 residuals (cycle 93)**
+
+- Workspace removal now ends everything derived from that
+  membership in the same transaction: removing a workspace member
+  deletes their `teamspace_members` rows in all of the workspace's
+  teamspaces (the cycle 90 quirk — cycle 92 only implemented the
+  Lead half) in addition to the existing Lead clear and audit
+  event. Migration 000079 repairs rows that already dangle. A
+  dangling row alone could never regain project access
+  (effective access requires a workspace membership first), so
+  this is a roster-integrity + defense-in-depth fix, stated
+  honestly rather than as a privilege-escalation hole.
+- OKR key-result progress aggregates now respect project access:
+  for any caller other than a workspace Admin, linked issues in
+  projects the caller cannot reach are excluded from both total
+  and done counts (reusing the cycle 92 shared access predicate;
+  Admin sees the unfiltered aggregate). Progress history gets the
+  same filter, so it cannot re-expose the ratio progress now
+  hides. This closes the first item in cycle 92's honest-boundary
+  note; linked-issue titles were already filtered in detail views.
+- Privatizing a project now permanently revokes its outstanding
+  public share links in the same transaction (Admin-gated, as the
+  visibility flip itself is); re-publicizing does not restore
+  them, and the toggle copy warns about this. This closes the
+  second item in cycle 92's honest-boundary note. Other projects'
+  links are untouched, and private → public flips revoke nothing.
+
 **Project ACL via teamspace membership + teamspace Lead designation (cycle 92)**
 
 - Projects gain membership-based access control (Plane parity):
