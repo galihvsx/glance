@@ -101,6 +101,33 @@ export function removeTeamspaceMember(
   );
 }
 
+/** Set a teamspace's Lead (C92T0). Workspace Admin (20) only; the
+ *  target must be a teamspace member (else 400). Setting a new Lead
+ *  replaces the old one. 200 with the teamspace JSON (including
+ *  lead_user_id). */
+export function setTeamspaceLead(
+  slug: string,
+  teamspaceId: string,
+  userId: string,
+): Promise<Teamspace> {
+  return api.post<Teamspace>(
+    `${base(slug)}/${encodeURIComponent(teamspaceId)}/lead`,
+    { user_id: userId },
+  );
+}
+
+/** Clear a teamspace's Lead (C92T0). Workspace Admin (20) only;
+ *  clearing when no Lead is set is idempotent OK. 200 with the
+ *  teamspace JSON. */
+export function clearTeamspaceLead(
+  slug: string,
+  teamspaceId: string,
+): Promise<Teamspace> {
+  return api.del<Teamspace>(
+    `${base(slug)}/${encodeURIComponent(teamspaceId)}/lead`,
+  );
+}
+
 /** List the workspace's members (any member may read) — the add-picker
  *  source. The envelope is {"members": [...]} — [] never null. */
 export function fetchWorkspaceMembers(

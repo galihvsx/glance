@@ -39,11 +39,25 @@ const teamspace: Teamspace = {
   updated_at: "",
 };
 
+// Same teamspace with Rina as Lead (C92T1 fixture).
+const teamspaceWithLead: Teamspace = { ...teamspace, lead_user_id: "u-rina" };
+
 let roster: TeamspaceMember[];
 let workspaceMembers: WorkspaceMember[];
+// Caller id for GET /api/v1/me (null = unauthenticated-shaped {}).
+let meId: string | null;
+// Live Lead id, mutated by the lead POST/DELETE mocks.
+let leadId: string | null;
 
 function installApiMocks() {
   get().mockImplementation((url: string) => {
+    if (url.endsWith("/me")) {
+      return Promise.resolve(
+        meId
+          ? { id: meId, email: `${meId}@example.com`, name: null, avatar_url: null, is_active: true, is_admin: false, last_login_at: null, created_at: "", updated_at: "" }
+          : {},
+      );
+    }
     // Roster URL contains /teamspaces/ AND /members; the workspace
     // members URL contains only /members — check teamspaces first.
     if (url.includes("/teamspaces/")) return Promise.resolve({ members: roster });
@@ -51,6 +65,10 @@ function installApiMocks() {
     return Promise.resolve({});
   });
   post().mockImplementation((url: string, body: { user_id: string }) => {
+    if (url.includes("/lead")) {
+      leadId = body.user_id;
+      return Promise.resolve({ ...teamspaceWithLead, lead_user_id: leadId });
+    }
     if (url.includes("/members")) {
       const m = workspaceMembers.find((w) => w.id === body.user_id)!;
       const row: TeamspaceMember = { id: m.id, name: m.name, email: m.email };
@@ -60,6 +78,10 @@ function installApiMocks() {
     return Promise.resolve({});
   });
   del().mockImplementation((url: string) => {
+    if (url.includes("/lead")) {
+      leadId = null;
+      return Promise.resolve({ ...teamspaceWithLead, lead_user_id: null });
+    }
     if (url.includes("/members/")) {
       const id = url.split("/").pop()!;
       roster = roster.filter((m) => m.id !== id);
@@ -69,12 +91,16 @@ function installApiMocks() {
   });
 }
 
-function renderDialog(isAdmin: boolean) {
+function renderDialog(
+  isAdmin: boolean,
+  opts: { teamspace?: Teamspace; me?: string | null } = {},
+) {
+  if (opts.me !== undefined) meId = opts.me;
   render(
     <QueryClientProvider client={makeQueryClient()}>
       <TeamspaceManageDialog
         slug="acme"
-        state={{ mode: "rename", teamspace }}
+        state={{ mode: "rename", teamspace: opts.teamspace ?? teamspace }}
         projects={[]}
         onClose={() => {}}
         isAdmin={isAdmin}
@@ -93,6 +119,8 @@ beforeEach(() => {
     { id: "u-rina", name: "Rina Dewi", email: "rina@example.com", role: 15 },
     { id: "u-budi", name: "Budi Santoso", email: "budi@example.com", role: 15 },
   ];
+  meId = null;
+  leadId = "u-rina";
   installApiMocks();
 });
 
@@ -180,5 +208,80 @@ describe("Members tab (C90T1)", () => {
     expect(
       screen.getByText("All workspace members are already in this teamspace."),
     ).toBeTruthy();
+  });
+});
+
+describe("Lead tab + Lead affordances (C92T1)", () => {
+  it("admin sees the Lead tab and the Lead name in the header", async () => {
+    renderDialog(true, { teamspace: teamspaceWithLead });
+    expect(screen.getByRole("tab", { name: "Lead" })).toBeTruthy();
+    await screen.findByText(/Lead: Rina Dewi/);
+  });
+
+  it("admin sets a new Lead from the member list", async () => {
+    renderDialog(true, { teamspace: teamspaceWithLead });
+    fireEvent.click(screen.getByRole("tab", { name: "Lead" }));
+    const select = (await screen.findByLabelText(
+      "Teamspace lead",
+    )) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Rina Dewi (current lead)" });
+    fireEvent.change(select, { target: { value: "u-galih" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(post()).toHaveBeenCalledWith(
+        expect.stringContaining("/teamspaces/ts-platform/lead"),
+        { user_id: "u-galih" },
+      ),
+    );
+    await screen.findByText(/Lead: Galih Putro Aji/);
+  });
+
+  it("admin clears the Lead", async () => {
+    renderDialog(true, { teamspace: teamspaceWithLead });
+    fireEvent.click(screen.getByRole("tab", { name: "Lead" }));
+    const select = (await screen.findByLabelText(
+      "Teamspace lead",
+    )) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Rina Dewi (current lead)" });
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(del()).toHaveBeenCalledWith(
+        expect.stringContaining("/teamspaces/ts-platform/lead"),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/Lead:/)).toBeNull(),
+    );
+  });
+
+  it("a failed Lead save keeps the old Lead and shows an error", async () => {
+    post().mockRejectedValueOnce(new ApiError(403, "forbidden"));
+    renderDialog(true, { teamspace: teamspaceWithLead });
+    fireEvent.click(screen.getByRole("tab", { name: "Lead" }));
+    const select = (await screen.findByLabelText(
+      "Teamspace lead",
+    )) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Rina Dewi (current lead)" });
+    fireEvent.change(select, { target: { value: "u-galih" } });
+    fireEvent.click(screen.getByText("Save"));
+    await screen.findByText("forbidden");
+    expect(leadId).toBe("u-rina");
+  });
+
+  it("the Lead (not a workspace Admin) sees Details + Members, never the Lead tab", async () => {
+    renderDialog(false, { teamspace: teamspaceWithLead, me: "u-rina" });
+    await screen.findByText(/Lead: Rina Dewi/);
+    expect(screen.getByRole("tab", { name: "Details" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Members (2)" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Lead" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Members (2)" }));
+    await screen.findByText("Galih Putro Aji");
+  });
+
+  it("a non-Lead non-admin still gets the plain rename form", async () => {
+    renderDialog(false, { teamspace: teamspaceWithLead, me: "u-budi" });
+    expect(screen.queryByRole("tab", { name: "Members (2)" })).toBeNull();
+    expect(screen.getByLabelText("Name")).toBeTruthy();
   });
 });

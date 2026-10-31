@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import type { Workspace } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import EstimatesSection from "../components/settings/EstimatesSection";
@@ -21,6 +22,8 @@ import CustomFieldsSection from "../components/settings/CustomFieldsSection";
 import ImportSection from "../components/settings/ImportSection";
 import AutomationsSection from "../components/settings/AutomationsSection";
 import DangerZoneSection from "../components/settings/DangerZoneSection";
+import ProjectMembersSection from "../components/settings/ProjectMembersSection";
+import VisibilitySection from "../components/settings/VisibilitySection";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 
@@ -30,6 +33,13 @@ export default function ProjectSettings() {
     identifier: string;
   }>();
   const [role, setRole] = useState<number | null>(null);
+  // C92T1: the caller's id drives direct-project-Admin detection in
+  // the Members tab / visibility toggle (workspace Admin alone is
+  // not the whole gate — a direct project Admin manages too).
+  // ProjectSettings renders under AuthProvider (App shell), so
+  // useAuth is available here; the sections themselves stay
+  // prop-driven and testable without a provider.
+  const { user } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -66,6 +76,10 @@ export default function ProjectSettings() {
           <Tabs defaultValue="general">
             <TabsList>
               <TabsTrigger value="general">General</TabsTrigger>
+              {/* C92T1: project ACL roster — visible to all readers,
+                  editable only by project/workspace Admins (the
+                  section itself gates the controls). */}
+              <TabsTrigger value="members">Members</TabsTrigger>
               {/* C78T1: per-project parallel-cycles toggle lives next to
                   General (Plane: Project Settings → Features → Cycles). */}
               <TabsTrigger value="cycles">Cycles</TabsTrigger>
@@ -91,8 +105,23 @@ export default function ProjectSettings() {
                 {/* C89T1: the teamspace move control lives here on
                     Project settings, not on the sidebar row or the
                     Projects card. */}
-                <TeamspaceSection slug={slug} identifier={identifier} canEdit={canEdit} />
+                <TeamspaceSection slug={slug} identifier={identifier} canEdit={canEdit} currentUserId={user?.id ?? null} />
+                {/* C92T1: visibility toggle, Admin-gated inside. */}
+                <VisibilitySection
+                  slug={slug}
+                  identifier={identifier}
+                  isWorkspaceAdmin={isAdmin}
+                  currentUserId={user?.id ?? null}
+                />
               </div>
+            </TabsContent>
+            <TabsContent value="members" className="mt-4">
+              <ProjectMembersSection
+                slug={slug}
+                identifier={identifier}
+                isWorkspaceAdmin={isAdmin}
+                currentUserId={user?.id ?? null}
+              />
             </TabsContent>
             <TabsContent value="cycles" className="mt-4">
               <CyclesSection slug={slug} identifier={identifier} canEdit={canEdit} />

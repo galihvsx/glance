@@ -27,6 +27,10 @@ export interface Teamspace {
   /** Live member count (C90T0, same-query count). Optional: older
    *  callers constructing a Teamspace literal may omit it. */
   member_count?: number;
+  /** Lead designation (C92T0, migration 000078): the user id of the
+   *  teamspace's Lead, or null when none is set. Optional: older
+   *  callers constructing a Teamspace literal may omit it. */
+  lead_user_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +56,11 @@ export interface Project {
   icon?: string | null;
   /** Project archive timestamp (C18T3); null/undefined = live. */
   archived_at?: string | null;
+  /** Project ACL visibility (C92T0, migration 000078): 'public' |
+   *  'private'. Optional: older callers constructing a Project
+   *  literal may omit it; readers treat absence as 'public' (the
+   *  backfilled default for pre-C92 projects). */
+  visibility?: string;
   /** Per-project parallel cycles toggle (C78T0); off = single active
    *  cycle, no overlapping dates. Server always emits it. */
   parallel_cycles: boolean;
@@ -95,6 +104,17 @@ export interface WorkspaceMember {
   name?: string | null;
   email: string;
   /** 20 = admin, 15 = member, 10 = viewer, 5 = guest */
+  role: number;
+}
+
+/** One direct project member (C92T0): the roster row from
+ *  GET /api/v1/workspaces/:slug/projects/:identifier/members.
+ *  Role is the stored workspace-ladder value (20/15/10/5); the
+ *  members UI names 20 Admin, 15 Member, 5 Guest. */
+export interface ProjectMember {
+  user_id: string;
+  name?: string | null;
+  email: string;
   role: number;
 }
 

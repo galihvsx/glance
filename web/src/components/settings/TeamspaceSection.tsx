@@ -5,6 +5,14 @@
 // the current assignment; a failed save reverts to the old value with
 // an honest error — no optimistic lie (the select is disabled while
 // the save is in flight, and onError restores the saved value).
+// C92T1 Lead affordance: a teamspace Lead below member (15) — in
+// practice a guest-role Lead — may still link/unlink projects for
+// THEIR teamspace (server rule: the move must target, or ungroup
+// from, a teamspace the caller Leads, and carry no other field).
+// The picker is therefore also enabled when the caller Leads any
+// teamspace; the server stays the per-teamspace gate and 403s a move
+// into another team's teamspace, which surfaces here as the honest
+// error + revert, same as any failed save.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,10 +36,14 @@ export default function TeamspaceSection({
   slug,
   identifier,
   canEdit,
+  currentUserId,
 }: {
   slug: string;
   identifier: string;
   canEdit: boolean;
+  /** The caller's user id, for the C92 Lead link/unlink affordance.
+   *  Optional: without it only canEdit gates the picker. */
+  currentUserId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const projectQuery = useQuery({
@@ -93,6 +105,10 @@ export default function TeamspaceSection({
 
   const value = draft ?? savedValue;
   const teamspaces = teamspacesQuery.data ?? [];
+  const isLead =
+    currentUserId != null &&
+    teamspaces.some((t) => t.lead_user_id === currentUserId);
+  const canMove = canEdit || isLead;
 
   return (
     <Card className="rounded-lg border-border-hairline">
@@ -108,7 +124,7 @@ export default function TeamspaceSection({
           aria-label="Teamspace"
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none disabled:cursor-not-allowed disabled:opacity-50"
           value={value}
-          disabled={!canEdit || saveMutation.isPending}
+          disabled={!canMove || saveMutation.isPending}
           onChange={(e) => {
             const next = e.target.value;
             setDraft(next);

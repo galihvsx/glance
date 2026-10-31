@@ -50,14 +50,19 @@ function project(): Project {
   };
 }
 
-function renderSection(canEdit = true) {
+function renderSection(canEdit = true, currentUserId?: string | null) {
   get().mockImplementation((url: string) => {
     if (url.includes("/teamspaces")) return Promise.resolve({ teamspaces });
     return Promise.resolve(project());
   });
   render(
     <QueryClientProvider client={makeQueryClient()}>
-      <TeamspaceSection slug="acme" identifier="ENG" canEdit={canEdit} />
+      <TeamspaceSection
+        slug="acme"
+        identifier="ENG"
+        canEdit={canEdit}
+        currentUserId={currentUserId}
+      />
     </QueryClientProvider>,
   );
 }
@@ -156,6 +161,49 @@ describe("teamspace picker", () => {
     );
     await screen.findByRole("option", { name: "Platform" });
     expect(screen.getByRole("option", { name: "Mobile" })).toBeTruthy();
+  });
+
+  // C92T1: a below-member Lead moves a project into/out of THEIR
+  // teamspace; the server stays the per-teamspace gate and 403s a
+  // move into another team's teamspace, which surfaces as the honest
+  // error + revert, same as any failed save.
+  it("a guest-role Lead can move a project into their own teamspace", async () => {
+    teamspaces[1] = { ...teamspaces[1], lead_user_id: "u-lead" };
+    patch().mockImplementation((_url: string, body: { teamspace_id: string | null }) => {
+      projectTeamspace = body.teamspace_id;
+      return Promise.resolve(project());
+    });
+    renderSection(false, "u-lead");
+    const select = (await screen.findByRole("combobox", {
+      name: "Teamspace",
+    })) as HTMLSelectElement;
+    expect(select.disabled).toBe(false);
+    await screen.findByRole("option", { name: "Mobile" });
+    fireEvent.change(select, { target: { value: "ts-mobile" } });
+    await waitFor(() => {
+      expect(patch()).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG",
+        { teamspace_id: "ts-mobile" },
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Currently in Mobile.")).toBeTruthy();
+    });
+  });
+
+  it("a Lead moving into another team's teamspace gets the honest 403 + revert", async () => {
+    teamspaces[1] = { ...teamspaces[1], lead_user_id: "u-lead" };
+    patch().mockRejectedValue(new ApiError(403, "forbidden"));
+    renderSection(false, "u-lead");
+    const select = (await screen.findByRole("combobox", {
+      name: "Teamspace",
+    })) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Platform" });
+    fireEvent.change(select, { target: { value: "ts-platform" } });
+    await waitFor(() => {
+      expect(screen.getByText("forbidden")).toBeTruthy();
+    });
+    expect(select.value).toBe("");
   });
 
   it("moving back to Ungrouped sends an explicit null", async () => {

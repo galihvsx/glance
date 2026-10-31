@@ -714,7 +714,7 @@ function ProjectsSection() {
   // non-admins exclude absent ids: for an Admin the list is complete,
   // so an absent id is genuinely unknown/stale and keeps the C89
   // Ungrouped fallback. The dialog's Members tab is admin-only on the
-  // same signal.
+  // same signal, plus the teamspace's Lead since C92T1.
   const { data: workspaces } = useWorkspaces();
   const isAdmin =
     (slug
