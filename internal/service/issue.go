@@ -2877,6 +2877,40 @@ func listSortKey(o listOrder, iss *Issue) string {
 	}
 }
 
+// resolveParamOrderBy parses a ?order_by= value (C99T1): a
+// comma-separated list of listOrders whitelist keys, each a bare field
+// or "-" + field for DESC — the param's existing "-" convention is
+// the direction syntax (no per-key ASC/DESC words; those belong to
+// PQL only). A single key resolves exactly as before (one ord, so the
+// single-key SQL and legacy cursor shape are byte-identical).
+// Unknown key, empty segment (a leading, trailing, or doubled comma),
+// or a duplicate field (same field twice, any direction — mirroring
+// the PQL ORDER BY rule, since a repeated field is almost certainly
+// a typo) is ErrInvalidOrderBy, never a silently-dropped key. No
+// trimming: a segment with whitespace is not a whitelist key and
+// 400s, exactly as a single-key param with whitespace did before.
+func resolveParamOrderBy(orderKey string) ([]listOrder, error) {
+	keys := strings.Split(orderKey, ",")
+	ords := make([]listOrder, 0, len(keys))
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			return nil, ErrInvalidOrderBy
+		}
+		ord, ok := listOrders[key]
+		if !ok {
+			return nil, ErrInvalidOrderBy
+		}
+		field := strings.TrimPrefix(key, "-")
+		if seen[field] {
+			return nil, ErrInvalidOrderBy
+		}
+		seen[field] = true
+		ords = append(ords, ord)
+	}
+	return ords, nil
+}
+
 // ListIssuesInput carries the list filters. Empty/zero values mean "no
 // filter". State/Assignee/Label/Cycle/Module take UUIDs.
 // filterNone is the sentinel value meaning "no relation" inside the
@@ -3414,14 +3448,17 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if orderKey == "" {
 		orderKey = "-updated_at"
 	}
-	// C99T0: the EFFECTIVE order is a key list. A PQL ORDER BY
+	// C99T0/C99T1: the EFFECTIVE order is a key list. A PQL ORDER BY
 	// renders a comma-joined composite (one key per clause key);
-	// the ?order_by= param is still a single key (multi-key params
-	// land in C99T1) — splitting the composite here keeps the
-	// single-key path byte-identical: one ord, one ORDER BY term,
-	// the legacy tuple-comparison predicate, the legacy cursor shape.
-	// Every key resolves through the listOrders whitelist, so no user
-	// input ever reaches SQL as a column name.
+	// the ?order_by= param is a comma-separated key list resolved by
+	// resolveParamOrderBy (a single key still yields one ord, so the
+	// single-key path stays byte-identical: one ORDER BY term, the
+	// legacy tuple-comparison predicate, the legacy cursor shape).
+	// A multi-key param order mints/validates the same composite
+	// cursor as the PQL multi-key path — orderKey is the composite
+	// string in both cases. Every key resolves through the
+	// listOrders whitelist, so no user input ever reaches SQL as a
+	// column name.
 	var ords []listOrder
 	if pqlParsed != nil && pqlParsed.OrderBy != nil {
 		for _, k := range pqlParsed.OrderBy.Keys {
@@ -3436,11 +3473,11 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 			ords = append(ords, ord)
 		}
 	} else {
-		ord, ok := listOrders[orderKey]
-		if !ok {
-			return nil, ErrInvalidOrderBy
+		var err error
+		ords, err = resolveParamOrderBy(orderKey)
+		if err != nil {
+			return nil, err
 		}
-		ords = []listOrder{ord}
 	}
 
 	perPage := in.PerPage

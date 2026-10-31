@@ -25,7 +25,9 @@ export interface PqlCheatEntry {
  * sort_order, or priority, each with an optional ASC/DESC direction
  * (default ASC per key); it wins over the order_by param, and an
  * unknown or duplicate sort field, a trailing comma, or a missing
- * field after a comma is a 400. (Multi-key examples land in C99T1.)
+ * field after a comma is a 400. The order_by param itself accepts
+ * the same idea as a comma-separated list (C99T1, e.g.
+ * order_by=priority,-updated_at), with the same 400 rules.
  * A trailing LIMIT clause (C98T1, after ORDER BY or standalone)
  * caps the page to at most min(per_page, n) rows with next_cursor
  * always null (single page); a cursor combined with LIMIT, a second
@@ -123,6 +125,16 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: "state = Todo ORDER BY created_at",
     meaning: "Direction defaults to ASC when omitted (also ORDER BY updated_at DESC)",
+  },
+  {
+    example: "priority >= 3 ORDER BY priority DESC, updated_at DESC",
+    meaning:
+      "Sort by several keys: the second key decides when the first ties (same keys, any direction each)",
+  },
+  {
+    example: "state = Todo ORDER BY priority DESC, sequence_id",
+    meaning:
+      "The same list as an order_by param is order_by=-priority,sequence_id (the param uses - for DESC, no ASC/DESC words)",
   },
   {
     example: "state = Todo LIMIT 10",
