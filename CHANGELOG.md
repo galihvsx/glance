@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL multi-key ordering (cycle 99)**
+
+- PQL `ORDER BY` now takes several keys — `ORDER BY priority DESC,
+  updated_at DESC` works, each key with its own optional ASC/DESC
+  direction (default ASC per key), keywords case-insensitive like
+  the rest of the language. An unknown field, a duplicate field, a
+  trailing comma, or a missing field after a comma is a 400 with
+  position, never a silently-dropped key. The list query sorts by
+  all keys plus an id tiebreak in the last key's direction, and
+  keyset cursors are now composite (one value per key): a cursor
+  minted under one key list is rejected under another, and paging
+  a multi-key order visits each row exactly once. Cursors minted
+  before this cycle (single-key, single value) still decode and
+  paginate — single-key queries behave byte-identically.
+- `?order_by=` accepts the same idea as a comma-separated list
+  (e.g. `?order_by=priority,-updated_at`), each key from the
+  existing whitelist with the param's `-` convention for DESC;
+  unknown key, empty segment, or duplicate field is the existing
+  400, never a silently-dropped key. A PQL ORDER BY still wins
+  over the param. The PQL cheat-sheet gains multi-key examples.
+  Dashboard PQL and AI text-to-PQL stay deferred.
+
 **PQL query-language completion: ORDER BY + LIMIT (cycle 98)**
 
 - PQL gains `ORDER BY <field> [ASC|DESC]` — a single sort key
