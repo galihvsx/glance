@@ -60,6 +60,7 @@ import {
 } from "../components/issue/boardEpic";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
+import PqlEditor from "../components/issue/PqlEditor";
 import { useCloneIssue } from "../components/issue/useCloneIssue";
 import { toApiParams, useIssueFilters } from "../lib/filters";
 import {
@@ -505,6 +506,31 @@ export default function Board() {
   const { peekUuid, openPeek, closePeek } = usePeekParam();
   const [filters, setFilters, clearFilters] = useIssueFilters();
 
+  // C96T0: PQL mode on the board — mirrors the C95 detail-page pattern
+  // (toggle + PqlEditor reused verbatim, probe-first, display-only
+  // filtering). Default mode (pqlMode false) is byte-for-byte today's
+  // behavior: the boardQuery below is untouched. In PQL mode the
+  // displayed list comes from the PQL query instead; grouping and the
+  // header count follow the displayed list because they derive from
+  // displayedIssues. No save-as-view for PQL (SavedViewsMenu is
+  // unchanged and saves visual filters only) and no URL persistence
+  // of the mode (C95 precedent).
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  // A query must never leak across projects: reset synchronously
+  // during render when slug/identifier change. An effect would be too
+  // late — the PQL query for the new project (keyed by slug +
+  // identifier + the stale query) would already have fetched once
+  // against the new project. This is React's documented render-phase
+  // state-update pattern: the mismatched render is discarded before
+  // commit, so no PQL fetch for the new project ever fires.
+  const [projectKey, setProjectKey] = useState(`${slug}:${identifier}`);
+  if (projectKey !== `${slug}:${identifier}`) {
+    setProjectKey(`${slug}:${identifier}`);
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   // Filters are part of the key: changing them refetches the board.
   const issuesKey = ["board-issues", slug, identifier, filters] as const;
@@ -543,6 +569,61 @@ export default function Board() {
     },
   });
 
+  // Committed PQL query: same fetch shape as the visual board
+  // (order_by sort_order, per_page 100, cursor loop) but pql-only
+  // params — visual filters never combine with a PQL query.
+  const pqlIssuesKey = ["board-issues-pql", slug, identifier, appliedQuery] as const;
+  const pqlIssuesQuery = useQuery({
+    queryKey: pqlIssuesKey,
+    enabled: pqlMode && appliedQuery.trim() !== "",
+    queryFn: async () => {
+      const all: Issue[] = [];
+      let cursor: string | undefined;
+      do {
+        const p = new URLSearchParams({
+          pql: appliedQuery.trim(),
+          order_by: "sort_order",
+          per_page: "100",
+        });
+        if (cursor) p.set("cursor", cursor);
+        const page = await api.get<IssueListResult>(
+          `${base}/issues?${p.toString()}`,
+        );
+        all.push(...page.results);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return all;
+    },
+  });
+  // Probe-first apply (C95 pattern): fetch one page with the query and
+  // commit only on success. A 400 rejects, so PqlEditor shows it
+  // inline and the board is untouched (appliedQuery never changes).
+  // Empty query = no filter: stays in PQL mode, shows the full board.
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    const p = new URLSearchParams({
+      pql: q,
+      order_by: "sort_order",
+      per_page: "100",
+    });
+    await api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
+    setAppliedQuery(q);
+  }
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the visual-filter
+    // board (already cached) is restored immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+
   const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
 
   const states = useMemo(
@@ -567,10 +648,26 @@ export default function Board() {
   // Stabilized so downstream memos (column grouping) don't re-evaluate
   // every render on a fresh [] identity while the query is pending.
   const issues = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
+  // C96T0: the displayed list — the visual board by default, the PQL
+  // result while a PQL query is committed. While a committed query is
+  // still loading, keep showing the visual board rather than blanking
+  // it (C95 pattern); the filtered list replaces it on arrival.
+  const displayedIssues =
+    pqlMode && appliedQuery.trim() !== ""
+      ? (pqlIssuesQuery.data ?? issues)
+      : issues;
+  // The query feeding the displayed columns. Drag-drop, QuickAdd, and
+  // settle-invalidations target this key, so in PQL mode a card whose
+  // new state no longer matches the query leaves the board on the
+  // settle refetch — the same behavior visual filters already have
+  // today, documented here, deliberately NOT special-cased.
+  const displayKey =
+    pqlMode && appliedQuery.trim() !== "" ? pqlIssuesKey : issuesKey;
   // C72T1: in epic mode the active id is a compound epicCardDragId;
   // epicDragIssueId is identity for plain ids.
   const activeIssue = activeId
-    ? (issues.find((i) => i.id === epicDragIssueId(activeId)) ?? null)
+    ? (displayedIssues.find((i) => i.id === epicDragIssueId(activeId)) ??
+      null)
     : null;
 
   const patchMutation = useMutation({
@@ -612,9 +709,11 @@ export default function Board() {
         }
       }
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
   });
 
@@ -637,9 +736,11 @@ export default function Board() {
         e instanceof ApiError ? e.message : "Failed to change priority",
       );
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
   });
 
@@ -656,9 +757,11 @@ export default function Board() {
         e instanceof ApiError ? e.message : "Failed to attach issue to epic",
       );
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
     },
   });
 
@@ -666,7 +769,7 @@ export default function Board() {
    *  immediately; the refetch on settle corrects any drift. */
   function attachToEpic(issueId: string, epicId: string, epicName: string) {
     setBoardError(null);
-    queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
+    queryClient.setQueryData<Issue[]>(displayKey, (old) =>
       old?.map((i) =>
         i.id === issueId
           ? {
@@ -716,7 +819,7 @@ export default function Board() {
       // Progress counts come from the loaded states — no extra fetches
       // (the C70/C71 derived-data discipline).
       gs = buildEpicBoardGroups(
-        issues,
+        displayedIssues,
         (i) => stateById.get(i.state_id)?.group,
         states[0]?.id,
       ).map((g) => ({
@@ -733,7 +836,7 @@ export default function Board() {
         droppableId: `priority:${p}`,
         title: priorityLabel(p),
         priority: p,
-        issues: issues.filter((i) => i.priority === p),
+        issues: displayedIssues.filter((i) => i.priority === p),
         newStateId: states[0]?.id,
         newPriority: p,
       }));
@@ -742,7 +845,7 @@ export default function Board() {
         droppableId: s.id,
         title: s.name,
         state: s,
-        issues: columnIssues(issues, s.id),
+        issues: columnIssues(displayedIssues, s.id),
         newStateId: s.id,
       }));
     }
@@ -755,7 +858,7 @@ export default function Board() {
     settings.showEmptyGroups,
     states,
     stateById,
-    issues,
+    displayedIssues,
   ]);
 
   // C68T1: per-column drop hint while a drag is active — the set of
@@ -809,6 +912,7 @@ export default function Board() {
       }
     }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
   }
 
   /** Expand a column quick-add into the full create form on the list
@@ -831,7 +935,7 @@ export default function Board() {
     ignoreBlockers = false,
   ) {
     setBoardError(null);
-    queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
+    queryClient.setQueryData<Issue[]>(displayKey, (old) =>
       old?.map((i) =>
         i.id === activeId
           ? { ...i, state_id: destStateId, sort_order: sortOrder }
@@ -854,7 +958,7 @@ export default function Board() {
     destStateId: string,
     destIndex: number,
   ) {
-    const fresh0 = queryClient.getQueryData<Issue[]>(issuesKey) ?? [];
+    const fresh0 = queryClient.getQueryData<Issue[]>(displayKey) ?? [];
     const so0 = dropSortOrder(
       fresh0,
       activeId,
@@ -876,7 +980,13 @@ export default function Board() {
       return;
     }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
-    const refetched = await boardQuery.refetch();
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    // Retry against the displayed list: the PQL query in PQL mode,
+    // the visual board query otherwise.
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
     const fresh = refetched.data ?? [];
     const so1 = dropSortOrder(
       fresh,
@@ -904,7 +1014,7 @@ export default function Board() {
     const activeIssueId = String(active.id);
     const overId = String(over.id);
 
-    const all = queryClient.getQueryData<Issue[]>(issuesKey) ?? [];
+    const all = queryClient.getQueryData<Issue[]>(displayKey) ?? [];
     // C72T1: epicDragIssueId is identity for plain (state/priority mode)
     // ids; in epic mode it unwraps the compound epicCardDragId.
     const dragged = all.find((i) => i.id === epicDragIssueId(activeIssueId));
@@ -937,7 +1047,7 @@ export default function Board() {
       if (destPriority === null || destPriority === dragged.priority) return;
       setBoardError(null);
       const p = destPriority;
-      queryClient.setQueryData<Issue[]>(issuesKey, (old) =>
+      queryClient.setQueryData<Issue[]>(displayKey, (old) =>
         old?.map((i) => (i.id === activeIssueId ? { ...i, priority: p } : i)),
       );
       priorityMutation.mutate({ id: activeIssueId, priority: p });
@@ -992,7 +1102,7 @@ export default function Board() {
         // issue count — the header shows UNIQUE issues, not memberships.
         count={
           groupByEpic
-            ? uniqueIssueCount(issues)
+            ? uniqueIssueCount(displayedIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
         showViews
@@ -1027,6 +1137,47 @@ export default function Board() {
           />
         }
       />
+
+      {/* C96T0: All issues / PQL toggle + editor above the columns
+          (below the header), mirroring the C95 detail-page placement.
+          Drag-drop + QuickAdd stay enabled in PQL mode; see the
+          displayKey note above for the refetch semantics. */}
+      <div className="px-[18px] pt-[14px]">
+        <div
+          role="group"
+          aria-label="Board mode"
+          className="flex w-[280px] rounded-md border p-0.5"
+        >
+          <button
+            type="button"
+            aria-pressed={!pqlMode}
+            onClick={() => handlePqlModeChange("all")}
+            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+              !pqlMode ? "bg-primary text-primary-foreground" : ""
+            }`}
+          >
+            All issues
+          </button>
+          <button
+            type="button"
+            aria-pressed={pqlMode}
+            onClick={() => handlePqlModeChange("pql")}
+            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+              pqlMode ? "bg-primary text-primary-foreground" : ""
+            }`}
+          >
+            PQL
+          </button>
+        </div>
+        {pqlMode && (
+          <PqlEditor
+            key={`${slug}:${identifier}`}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => setAppliedQuery("")}
+          />
+        )}
+      </div>
 
       {(boardError || loadError) && (
         <div className="px-[18px] pt-[14px]">
