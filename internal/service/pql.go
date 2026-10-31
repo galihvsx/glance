@@ -27,6 +27,9 @@ package service
 //	priority         i.priority        name (none/low/medium/high/urgent) or 0-4
 //	assignee         issue_assignees   member name, email, `me`, or `none`
 //	label            issue_labels      label name (workspace-scoped)
+//	epic             epic_issues       epic name (project-scoped) or `none`
+//	estimate         i.estimate_point_id  estimate-point key within the project's
+//	                                     estimate system, or `none`
 //	due, due_date,   i.target_date     YYYY-MM-DD or RFC3339 (date part)
 //	  target_date
 //	start,           i.start_date      YYYY-MM-DD or RFC3339 (date part)
@@ -42,8 +45,9 @@ package service
 // range, <= becomes < day+1, > becomes >= day+1, so date-only queries
 // match the day users mean instead of a single midnight instant.
 //
-// Name resolution is scoped (states to the project, labels and
-// assignees to the workspace). An unknown or ambiguous name is a
+// Name resolution is scoped (states, epics, and estimate-point keys
+// to the project; labels and assignees to the workspace). An unknown
+// or ambiguous name is a
 // PQLQueryError (400), never a silent empty list. All values are
 // parameterized through the caller's arg() placeholder function —
 // user input is never interpolated into SQL; only the operator and
@@ -429,7 +433,7 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField pqlFieldKind = iota // state, assignee, label
+	pqlNameField pqlFieldKind = iota // state, assignee, label, epic, estimate
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
 	pqlTsField   // created_at / updated_at (timestamptz columns)
@@ -440,6 +444,8 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"priority":    pqlPriorityField,
 	"assignee":    pqlNameField,
 	"label":       pqlNameField,
+	"epic":        pqlNameField,
+	"estimate":    pqlNameField,
 	"due":         pqlDateField,
 	"due_date":    pqlDateField,
 	"target_date": pqlDateField,
@@ -451,7 +457,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, label, epic, estimate, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -664,6 +670,10 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 			return translatePQLState(ctx, pool, projectID, n, arg)
 		case "label":
 			return translatePQLLabel(ctx, pool, wsID, n, arg)
+		case "epic":
+			return translatePQLEpic(ctx, pool, projectID, n, arg)
+		case "estimate":
+			return translatePQLEstimate(ctx, pool, projectID, n, arg)
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
 		}
@@ -918,6 +928,120 @@ func translatePQLAssignee(ctx context.Context, pool *pgxpool.Pool, wsID, actorID
 		}
 		if wantNone {
 			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLEpic resolves epic names project-scoped (epics carry a
+// UNIQUE(project_id, name) constraint, so an ambiguous match can only
+// arise from case-variant names, e.g. "Platform" vs "PLATFORM", which
+// the case-insensitive lookup then rejects as ambiguous — same shape
+// as state). The `none` sentinel matches issues in no epic, mirroring
+// the C75 visual filter's NOT EXISTS on the epic_issues junction.
+// != against a named epic uses NOT EXISTS, so issues in other epics
+// and issues in no epic both count as "not this epic", like label !=.
+func translatePQLEpic(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	// Same EXISTS shape as issueListConds' epic filter.
+	existsFor := func(ids []string) string {
+		if len(ids) == 1 {
+			return "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = " + arg(ids[0]) + "::uuid)"
+		}
+		return "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM epics WHERE project_id = $1::uuid AND lower(name) = lower($2)`,
+			projectID, v.Text, v.Pos, "epic", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named epic, or none.
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		// Single value: not that epic, or "in any epic".
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in: epic matches OR no-epic, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLEstimate resolves estimate-point keys within the
+// project's estimate system: points carry key + value under an
+// estimate_id, and scales are per-project, so the lookup joins
+// estimate_points to estimates and confines to the project. Keys are
+// UNIQUE per scale but not per project, so the same key on two scales
+// in one project is an ambiguous-name 400 (via resolvePQLIDs), never a
+// silent pick. The `none` sentinel matches issues with no estimate
+// point (estimate_point_id IS NULL), mirroring the C75 visual filter.
+// != against a named point uses IS DISTINCT FROM, so unestimated
+// (NULL) issues count as "not this point" — the same inclusive-!=
+// convention as label != / assignee !=, which include the empty case
+// (a plain <> would silently drop NULL rows).
+func translatePQLEstimate(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT ep.id::text FROM estimate_points ep JOIN estimates e ON e.id = ep.estimate_id
+			 WHERE e.project_id = $1::uuid AND lower(ep.key) = lower($2)`,
+			projectID, v.Text, v.Pos, "estimate point", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named point, or none.
+		if wantNone {
+			return "i.estimate_point_id IS NULL", nil
+		}
+		return "i.estimate_point_id = " + arg(ids[0]) + "::uuid", nil
+	case "!=":
+		// Single value: not that point (NULL counts as not it), or
+		// "has any estimate point".
+		if wantNone {
+			return "i.estimate_point_id IS NOT NULL", nil
+		}
+		return "i.estimate_point_id IS DISTINCT FROM " + arg(ids[0]) + "::uuid", nil
+	default: // in: point matches OR no-point, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.estimate_point_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.estimate_point_id IS NULL")
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", nil
 	}
