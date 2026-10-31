@@ -5,6 +5,36 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL: Plane Query Language for work-item filtering (cycle 91)**
+
+- The issue list gains a PQL mode (Plane parity): a text query
+  language for filters the visual filter bar cannot state — `AND` /
+  `OR` / `NOT`, parentheses, `in (...)`, and functions such as
+  `hasNoAssignee()`, e.g. `priority = High`, `state = Todo OR
+  state = "In Progress"`. Queries run through `GET .../issues`
+  with a `?pql=` parameter; bad queries are an honest HTTP 400
+  with a message and 1-based error position, never a 500, and
+  unknown names resolve to a 400 rather than a silent empty list.
+- Backend: a deterministic PQL lexer/parser plus a server-side
+  translator that reuses the existing issue-list SQL shapes — all
+  values parameterized, operators reachable only via
+  lexer-produced tokens, so no user string can become an
+  operator. Name resolution is scoped to the project/workspace
+  (state by name, priority by name or number, assignee by name or
+  email, label by name); bare dates on timestamp columns mean the
+  whole UTC day. PQL and visual filters are exclusive: when PQL
+  is present the visual filters are zeroed, and a PQL request
+  sends only `pql` plus pagination/ordering. OpenAPI pinned.
+- Frontend: the filter bar gains a PQL toggle (prototype-as-spec
+  from the cycle 91 prototype). The PQL editor applies
+  probe-first with an inline server 400 message + column and a
+  cheat-sheet; Clear returns to visual mode. Queries save as
+  views like any other filter (`?pql=` round-trips in the URL)
+  and old saved views keep loading unchanged and pql-free. The
+  AI text-to-PQL generator is explicitly out of scope (Plane
+  gates it Enterprise + requires Plane AI; glance stays fully
+  free with no LLM key).
+
 **Teamspaces: membership + visibility (cycle 90)**
 
 - Teamspace visibility is now membership-gated (Plane parity):
