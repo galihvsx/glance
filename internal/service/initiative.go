@@ -514,6 +514,15 @@ func AddInitiativeProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	if _, err := resolveInitiativeProject(ctx, pool, wsID, projectID); err != nil {
 		return err
 	}
+	// C92T0: linking a project to an initiative is a project-scoped
+	// write — the effective-access order applies (a private project
+	// the caller cannot reach is ErrNotFound) and the member+ gate
+	// runs on the effective role.
+	if _, effRole, err := effectiveRoleForProjectID(ctx, pool, wsID, projectID, actorID); err != nil {
+		return err
+	} else if effRole < RoleMember {
+		return ErrForbidden
+	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO initiative_projects (initiative_id, project_id)
 		 VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`,
@@ -538,6 +547,16 @@ func RemoveInitiativeProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, ac
 		// Malformed ids are a client error — 400, not a 500 from the
 		// ::uuid cast.
 		return ErrInvalidInitiativeID
+	}
+	// C92T0: same effective-access gate as AddInitiativeProject.
+	// A project id that names nothing of this workspace resolves
+	// to ErrProjectNotFound here (not the idempotent no-op): the
+	// no-op below covers only linked-row absence, never a project
+	// the caller cannot prove access to.
+	if _, effRole, err := effectiveRoleForProjectID(ctx, pool, wsID, projectID, actorID); err != nil {
+		return err
+	} else if effRole < RoleMember {
+		return ErrForbidden
 	}
 	if _, err := pool.Exec(ctx,
 		`DELETE FROM initiative_projects

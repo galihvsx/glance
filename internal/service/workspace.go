@@ -606,6 +606,16 @@ func RemoveMember(ctx context.Context, pool *pgxpool.Pool, slug, actorID, target
 		wsID, targetUserID); err != nil {
 		return err
 	}
+	// C92T0: leaving the workspace ends teamspace membership, so a
+	// Lead designation held by the removed user clears in the same
+	// transaction (the teamspace-membership-removal rule, applied to
+	// its workspace-level form).
+	if _, err := tx.Exec(ctx,
+		`UPDATE teamspaces SET lead_user_id = NULL, updated_at = now()
+		  WHERE workspace_id = $1::uuid AND lead_user_id = $2::uuid`,
+		wsID, targetUserID); err != nil {
+		return err
+	}
 	// C37T0: member.removed carries the role the member held.
 	if err := recordWorkspaceAuditInTx(ctx, tx, wsID, actorID,
 		WorkspaceAuditMemberRemoved, "member", targetUserID,

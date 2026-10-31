@@ -238,11 +238,19 @@ func isInvalidUUID(err error) bool {
 }
 
 // resolveIssueProject resolves the workspace membership and the project in
-// one shot: non-members get ErrNotFound (the tenancy boundary — the same
-// rule as GetWorkspace), members asking for a missing identifier get
-// ErrProjectNotFound.
+// one shot, then applies the C92T0 effective-access order (see
+// project_access.go): workspace Admin, direct project_members row,
+// linked-teamspace membership, public fallback, private 404.
+// Non-members get ErrNotFound (the tenancy boundary — the same rule as
+// GetWorkspace), members asking for a missing identifier get
+// ErrProjectNotFound, and a private project the caller cannot reach is
+// ErrNotFound (shared 404, no existence oracle). The returned role is
+// the EFFECTIVE role: every caller that gates on it (member 15+ writes,
+// guest 5 read-only) now gates on project ACL, not just the workspace
+// role. Callers normalize the identifier before calling (ident is
+// already uppercased); this function does not re-normalize.
 func resolveIssueProject(ctx context.Context, q queryRower, wsSlug, ident, actorID string) (wsID, projectID string, role int, err error) {
-	wsID, role, err = workspaceIDForActor(q.QueryRow(ctx,
+	wsID, wsRole, err := workspaceIDForActor(q.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
@@ -260,6 +268,13 @@ func resolveIssueProject(ctx context.Context, q queryRower, wsSlug, ident, actor
 			return "", "", 0, ErrProjectNotFound
 		}
 		return "", "", 0, err
+	}
+	role, err = effectiveAccessForProject(ctx, q, wsID, wsRole, projectID, actorID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if role < 0 {
+		return "", "", 0, ErrNotFound
 	}
 	return wsID, projectID, role, nil
 }
