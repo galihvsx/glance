@@ -6,6 +6,9 @@ package service
 // ?pql= on GET /api/v1/workspaces/:slug/projects/:identifier/issues.
 // Grammar:
 //
+//	query      := expr [orderBy]
+//	orderBy    := ORDER BY sortField [ASC | DESC]
+//	sortField  := updated_at | created_at | sequence_id | sort_order | priority
 //	expr       := orExpr
 //	orExpr     := andExpr (OR andExpr)*
 //	andExpr    := notExpr (AND notExpr)*
@@ -15,10 +18,24 @@ package service
 //	comparison := field op value | field IN '(' value (',' value)* ')'
 //	op         := '=' | '!=' | '<>' (alias for !=) | '<' | '>' | '<=' | '>='
 //
-// Keywords (AND/OR/NOT/IN), field names, priority names, and function
-// names are case-insensitive. String literals are single- or
-// double-quoted ('' / "" escape the quote); bare values are unquoted
-// words (names, numbers, YYYY-MM-DD dates, RFC3339 datetimes).
+// Keywords (AND/OR/NOT/IN/ORDER/BY/ASC/DESC), field names, priority
+// names, and function names are case-insensitive. String literals are
+// single- or double-quoted ('' / "" escape the quote); bare values are
+// unquoted words (names, numbers, YYYY-MM-DD dates, RFC3339 datetimes).
+//
+// ORDER BY (C98T0) is a result-shape clause, not a filter: it sorts
+// the list by exactly ONE key (the list query sorts by one key + id
+// tiebreak and its cursor is minted for one order_by), defaulting to
+// ASC when the direction is omitted. The sort fields map onto the
+// existing listOrders whitelist in issue.go — the same five names,
+// no aliases (created/updated are predicate aliases, not sort keys).
+// An unknown sort field, or a second sort key (comma or a bare second
+// field), is a PQLQueryError (400) with position, never a silently
+// dropped key. Precedence: a PQL ORDER BY wins over the ?order_by=
+// param (the query is self-contained); without one, ?order_by=
+// applies exactly as today. The EFFECTIVE order (PQL ORDER BY if
+// present, else the param) is what cursors are validated and minted
+// against, so a cursor minted under a different order is rejected.
 //
 // Field table (all map to existing issue-model columns; no new columns):
 //
@@ -72,8 +89,8 @@ package service
 // yields an empty list by construction (the project predicate in the
 // list query confines the scope, same as the cycle scope today).
 //
-// OUT of scope (documented, not silently cut): ORDER BY / LIMIT
-// clauses (existing order_by + cursor pagination cover them), AI
+// OUT of scope (documented, not silently cut): LIMIT clauses
+// (existing per_page + cursor pagination cover them), AI
 // text-to-PQL generation, and PQL on dashboards lists.
 // Cycle/module detail lists are queryable through the scope params:
 // ?cycle= / ?module= survive PQL mode (this contract); the
@@ -274,12 +291,64 @@ func (p *pqlParser) isKeyword(t pqlToken, kw string) bool {
 	return t.kind == pqlWord && strings.EqualFold(t.text, kw)
 }
 
+// pqlOrderBy is a parsed ORDER BY clause (C98T0): exactly one sort
+// key. Field is a bare listOrders name (no "-" prefix); Desc selects
+// the "-" order key. Pos is the 1-based column of the sort-field token.
+type pqlOrderBy struct {
+	Field string
+	Desc  bool
+	Pos   int
+}
+
+// OrderKey renders the order_by key the list query understands:
+// the bare field for ASC, "-" + field for DESC — the same keys as
+// the listOrders whitelist in issue.go.
+func (o *pqlOrderBy) OrderKey() string {
+	if o.Desc {
+		return "-" + o.Field
+	}
+	return o.Field
+}
+
+// pqlParsedQuery is a fully parsed PQL query: the boolean predicate
+// plus its optional ORDER BY clause (nil when absent).
+type pqlParsedQuery struct {
+	Predicate *pqlNode
+	OrderBy   *pqlOrderBy
+}
+
+// pqlSortableFields is the ORDER BY whitelist (C98T0): the bare
+// listOrders names in issue.go. Predicate aliases (created, updated,
+// due, start, ...) are NOT sort keys — an ORDER BY naming one is an
+// unknown-sort-field 400, not a silent alias.
+var pqlSortableFields = map[string]bool{
+	"updated_at": true, "created_at": true, "sequence_id": true,
+	"sort_order": true, "priority": true,
+}
+
+const pqlKnownSortFields = "updated_at, created_at, sequence_id, sort_order, priority"
+
 // ParsePQL parses a PQL query into a predicate tree. Syntax errors are
 // *PQLQueryError; semantic checks (field/operator/value shapes) live in
 // ValidatePQL, and name resolution in translatePQL. An empty query is
 // an error here — callers treat a blank ?pql= as "no PQL" before
-// calling, so an empty string reaching this function is a bug.
+// calling, so an empty string reaching this function is a bug. A
+// trailing ORDER BY clause is parsed and discarded here; callers that
+// need it (ListIssues) use ParsePQLWithOrder instead.
 func ParsePQL(q string) (*pqlNode, error) {
+	parsed, err := ParsePQLWithOrder(q)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.Predicate, nil
+}
+
+// ParsePQLWithOrder parses a PQL query into its predicate plus its
+// optional ORDER BY clause. The ORDER BY is validated here (unknown
+// field, missing BY/field/direction, or a second sort key are all
+// *PQLQueryError with position) so a bad clause never reaches the
+// list query, where it could otherwise be mistaken for a param.
+func ParsePQLWithOrder(q string) (*pqlParsedQuery, error) {
 	if strings.TrimSpace(q) == "" {
 		return nil, pqlErr(1, "empty query")
 	}
@@ -292,10 +361,55 @@ func ParsePQL(q string) (*pqlNode, error) {
 	if err != nil {
 		return nil, err
 	}
+	orderBy, err := p.parseOrderBy()
+	if err != nil {
+		return nil, err
+	}
 	if p.peek().kind != pqlEOF {
 		return nil, pqlErr(p.peek().pos, "unexpected %q after expression", p.peek().text)
 	}
-	return node, nil
+	return &pqlParsedQuery{Predicate: node, OrderBy: orderBy}, nil
+}
+
+// parseOrderBy consumes an optional trailing ORDER BY clause after the
+// boolean expression, returning nil when the next token is not ORDER.
+// Single key only: a comma or any further token after the (optional)
+// direction is a 400, never a silently dropped second key.
+func (p *pqlParser) parseOrderBy() (*pqlOrderBy, error) {
+	if !p.isKeyword(p.peek(), "ORDER") {
+		return nil, nil
+	}
+	p.next() // ORDER
+	if !p.isKeyword(p.peek(), "BY") {
+		return nil, pqlErr(p.peek().pos, "expected BY after ORDER")
+	}
+	p.next() // BY
+	fieldTok := p.peek()
+	if fieldTok.kind != pqlWord {
+		return nil, pqlErr(fieldTok.pos, "expected a sort field after ORDER BY (sortable fields: %s)", pqlKnownSortFields)
+	}
+	p.next()
+	field := strings.ToLower(fieldTok.text)
+	if !pqlSortableFields[field] {
+		return nil, pqlErr(fieldTok.pos, "unknown sort field %q (sortable fields: %s)", fieldTok.text, pqlKnownSortFields)
+	}
+	orderBy := &pqlOrderBy{Field: field, Pos: fieldTok.pos}
+	if p.isKeyword(p.peek(), "DESC") {
+		orderBy.Desc = true
+		p.next()
+	} else if p.isKeyword(p.peek(), "ASC") {
+		p.next()
+	}
+	// Anything left is either a second sort key or trailing junk —
+	// both are 400 here (not the generic trailing-token error) so the
+	// message names the single-key rule.
+	switch t := p.peek(); {
+	case t.kind == pqlComma:
+		return nil, pqlErr(t.pos, "multiple sort keys are not supported (only one ORDER BY key; got a second key after comma)")
+	case t.kind != pqlEOF:
+		return nil, pqlErr(t.pos, "unexpected %q after ORDER BY clause (only a single sort key is supported)", t.text)
+	}
+	return orderBy, nil
 }
 
 func (p *pqlParser) parseOr() (*pqlNode, error) {

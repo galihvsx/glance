@@ -311,8 +311,11 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // (?fields=description). C91T0: ?pql= (Plane Query Language, see
 // internal/service/pql.go) is mutually exclusive with the visual
 // filters — when non-blank, visual filter params are ignored entirely
-// (not parsed, not validated); sort/pagination/order_by still apply,
-// and PQL parse/resolution failures are 400 with message + position.
+// (not parsed, not validated); pagination still applies, and PQL
+// parse/resolution failures are 400 with message + position. C98T0:
+// a PQL ORDER BY clause wins over ?order_by= (the query is
+// self-contained); without one, ?order_by= applies exactly as today,
+// and cursors are validated/minted against the effective order.
 // C95T0 exception: the scope containers ?cycle= and ?module= are NOT
 // visual filters — they survive PQL mode and AND with the PQL
 // predicate, so a query run inside a cycle/module stays inside it.
