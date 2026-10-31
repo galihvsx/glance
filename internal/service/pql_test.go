@@ -318,3 +318,101 @@ func TestPQLOrderByErrors(t *testing.T) {
 		t.Fatalf("unknown sort field position: err = %v, want position %d", err, strings.Index(q, "bogus")+1)
 	}
 }
+
+// PQL LIMIT tests (C98T1): standalone and after ORDER BY, bounds,
+// case-insensitive keyword, and every 400 shape.
+func TestPQLLimit(t *testing.T) {
+	// Standalone after the expression.
+	parsed, err := ParsePQLWithOrder(`priority >= 3 LIMIT 10`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder: %v", err)
+	}
+	if parsed.OrderBy != nil {
+		t.Fatalf("orderBy = %+v, want nil for standalone LIMIT", parsed.OrderBy)
+	}
+	if parsed.Limit == nil || parsed.Limit.Value != 10 {
+		t.Fatalf("limit = %+v, want 10", parsed.Limit)
+	}
+	if parsed.Predicate.Kind != pqlCmp || parsed.Predicate.Field != "priority" {
+		t.Fatalf("predicate = %+v, want priority comparison", parsed.Predicate)
+	}
+
+	// After ORDER BY (both orders compose); keywords case-insensitive.
+	parsed, err = ParsePQLWithOrder(`priority >= 3 order by priority desc limit 5`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder ORDER BY + LIMIT: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.Field != "priority" || !parsed.OrderBy.Desc {
+		t.Fatalf("orderBy = %+v, want priority DESC", parsed.OrderBy)
+	}
+	if parsed.Limit == nil || parsed.Limit.Value != 5 {
+		t.Fatalf("limit = %+v, want 5", parsed.Limit)
+	}
+
+	// Bounds are inclusive: 1 and 100 both parse.
+	for _, n := range []int{1, 100} {
+		parsed, err = ParsePQLWithOrder(`priority >= 0 LIMIT ` + itoa(n))
+		if err != nil || parsed.Limit == nil || parsed.Limit.Value != n {
+			t.Fatalf("LIMIT %d: parsed = %+v err = %v", n, parsed, err)
+		}
+	}
+
+	// ParsePQL still returns just the predicate with LIMIT present.
+	node, err := ParsePQL(`priority >= 3 LIMIT 10`)
+	if err != nil || node.Kind != pqlCmp {
+		t.Fatalf("ParsePQL with LIMIT: node = %+v err = %v", node, err)
+	}
+
+	// No LIMIT: nil, so per_page applies exactly as today.
+	parsed, err = ParsePQLWithOrder(`priority >= 3 ORDER BY priority DESC`)
+	if err != nil || parsed.Limit != nil {
+		t.Fatalf("no LIMIT: parsed = %+v err = %v", parsed, err)
+	}
+}
+
+func TestPQLLimitErrors(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string // substring of the error message
+	}{
+		// Bounds: 0 and 101 are 400, never a silent clamp.
+		{`priority >= 3 LIMIT 0`, "out of range"},
+		{`priority >= 3 LIMIT 101`, "out of range"},
+		{`priority >= 3 LIMIT -1`, "out of range"},
+		// Non-integer values are 400.
+		{`priority >= 3 LIMIT abc`, "invalid LIMIT value"},
+		{`priority >= 3 LIMIT 10.5`, "invalid LIMIT value"},
+		{`priority >= 3 LIMIT "10"`, "expected a limit value"},
+		{`priority >= 3 LIMIT`, "expected a limit value"},
+		// Single-clause discipline, mirroring ORDER BY: a second
+		// LIMIT, or LIMIT before ORDER BY, is a 400.
+		{`priority >= 3 LIMIT 10 LIMIT 5`, "multiple LIMIT clauses"},
+		{`priority >= 3 LIMIT 10 ORDER BY priority`, "before LIMIT"},
+		{`priority >= 3 ORDER BY priority LIMIT 10 LIMIT 5`, "multiple LIMIT clauses"},
+		// Trailing junk after LIMIT is a 400, not a silent drop.
+		{`priority >= 3 LIMIT 10 foo`, "unexpected"},
+	}
+	for _, tc := range cases {
+		_, err := ParsePQLWithOrder(tc.query)
+		if err == nil {
+			t.Errorf("ParsePQLWithOrder(%q): want error containing %q, got nil", tc.query, tc.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ParsePQLWithOrder(%q): error = %v, want substring %q", tc.query, err, tc.want)
+		}
+		var pqlErr *PQLQueryError
+		if !errors.As(err, &pqlErr) {
+			t.Errorf("ParsePQLWithOrder(%q): error type = %T, want *PQLQueryError", tc.query, err)
+		} else if pqlErr.Pos < 1 {
+			t.Errorf("ParsePQLWithOrder(%q): position = %d, want a 1-based position", tc.query, pqlErr.Pos)
+		}
+	}
+	// Out-of-range position points at the value token.
+	q := `priority >= 3 LIMIT 101`
+	_, err := ParsePQLWithOrder(q)
+	pqlErr, ok := err.(*PQLQueryError)
+	if !ok || pqlErr.Pos != strings.Index(q, "101")+1 {
+		t.Fatalf("LIMIT value position: err = %v, want position %d", err, strings.Index(q, "101")+1)
+	}
+}

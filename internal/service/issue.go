@@ -2930,9 +2930,15 @@ type ListIssuesInput struct {
 	// as today. The EFFECTIVE order (PQL ORDER BY if present, else
 	// OrderBy) is what cursors are validated and minted against, so
 	// a cursor minted under a different order is rejected, never
-	// silently honored. A blank PQL means "no PQL" — the handler
-	// treats a blank ?pql= as absent, so a cleared PQL editor never
-	// filters. Parse/resolution failures are *PQLQueryError (400).
+	// silently honored. C98T1: a PQL LIMIT clause caps the page to at
+	// most min(PerPage, n) rows with next_cursor always null (single
+	// page — keyset cursors carry no row count, so no
+	// total-across-pages cap); a Cursor combined with LIMIT is a
+	// *PQLQueryError (400), never silently ignored. LIMIT without
+	// ORDER BY uses the endpoint's default order. A blank PQL means
+	// "no PQL" — the handler treats a blank ?pql= as absent, so a
+	// cleared PQL editor never filters. Parse/resolution failures
+	// are *PQLQueryError (400).
 	PQL string
 	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
 	// default — drafts live in the Drafts view until published);
@@ -3356,6 +3362,13 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		pqlParsed = parsed
 	}
 
+	// C98T1: LIMIT means a single page — a cursor combined with LIMIT
+	// is a 400 (the cursor would otherwise be silently ignored), with
+	// the LIMIT value's position so the editor can point at the clause.
+	if pqlParsed != nil && pqlParsed.Limit != nil && in.Cursor != "" {
+		return nil, pqlErr(pqlParsed.Limit.Pos, "cursor cannot be combined with LIMIT (LIMIT returns a single page; omit cursor)")
+	}
+
 	orderKey := in.OrderBy
 	if pqlParsed != nil && pqlParsed.OrderBy != nil {
 		orderKey = pqlParsed.OrderBy.OrderKey()
@@ -3376,6 +3389,13 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		perPage = defaultListPerPage
 	case perPage > maxListPerPage:
 		perPage = maxListPerPage
+	}
+
+	// C98T1: LIMIT caps the page: at most min(per_page, n) rows.
+	// Queries without LIMIT are untouched (per_page applies exactly
+	// as today).
+	if pqlParsed != nil && pqlParsed.Limit != nil && pqlParsed.Limit.Value < perPage {
+		perPage = pqlParsed.Limit.Value
 	}
 
 	if err := validateListFilterValues(in); err != nil {
@@ -3516,9 +3536,13 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	res := &ListIssuesResult{Issues: items}
 	if len(items) > perPage {
 		items = items[:perPage]
-		last := items[len(items)-1]
 		res.Issues = items
-		res.NextCursor = encodeListCursor(orderKey, listSortKey(ord, &last.Issue), last.ID)
+		// C98T1: LIMIT means a single page — next_cursor stays null
+		// even when more rows match; there is no further paging.
+		if pqlParsed == nil || pqlParsed.Limit == nil {
+			last := items[len(items)-1]
+			res.NextCursor = encodeListCursor(orderKey, listSortKey(ord, &last.Issue), last.ID)
+		}
 	}
 	// C21T2: ?include_project_structure=1 on the list endpoint attaches the
 	// cycle/module/release membership to every returned row in ONE batched

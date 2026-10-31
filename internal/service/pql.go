@@ -6,8 +6,9 @@ package service
 // ?pql= on GET /api/v1/workspaces/:slug/projects/:identifier/issues.
 // Grammar:
 //
-//	query      := expr [orderBy]
+//	query      := expr [orderBy] [limit]
 //	orderBy    := ORDER BY sortField [ASC | DESC]
+//	limit      := LIMIT int (1..100)
 //	sortField  := updated_at | created_at | sequence_id | sort_order | priority
 //	expr       := orExpr
 //	orExpr     := andExpr (OR andExpr)*
@@ -36,6 +37,20 @@ package service
 // applies exactly as today. The EFFECTIVE order (PQL ORDER BY if
 // present, else the param) is what cursors are validated and minted
 // against, so a cursor minted under a different order is rejected.
+//
+// LIMIT (C98T1) is a result-shape clause, not a filter: it caps the
+// response to at most n rows IN A SINGLE PAGE. Keyset cursors carry
+// no row count, so a total-across-pages cap cannot be enforced
+// server-side without a second query — instead the endpoint returns
+// at most min(per_page, n) rows AND next_cursor is always null when
+// LIMIT is present (no further paging; a client that wants more does
+// not use LIMIT). A cursor param combined with LIMIT is a
+// PQLQueryError (400), never a silently ignored cursor. LIMIT without
+// ORDER BY uses the endpoint's default order. LIMIT comes after the
+// optional ORDER BY (or standalone after the expression); a second
+// LIMIT, or LIMIT before ORDER BY, is a 400. Out-of-range (0, >100)
+// or non-integer LIMIT values are 400 with position, never a silent
+// clamp or an empty list.
 //
 // Field table (all map to existing issue-model columns; no new columns):
 //
@@ -89,9 +104,8 @@ package service
 // yields an empty list by construction (the project predicate in the
 // list query confines the scope, same as the cycle scope today).
 //
-// OUT of scope (documented, not silently cut): LIMIT clauses
-// (existing per_page + cursor pagination cover them), AI
-// text-to-PQL generation, and PQL on dashboards lists.
+// OUT of scope (documented, not silently cut): AI text-to-PQL
+// generation, and PQL on dashboards lists.
 // Cycle/module detail lists are queryable through the scope params:
 // ?cycle= / ?module= survive PQL mode (this contract); the
 // detail-page PQL UI lands separately.
@@ -310,11 +324,20 @@ func (o *pqlOrderBy) OrderKey() string {
 	return o.Field
 }
 
+// pqlLimit is a parsed LIMIT clause (C98T1): the row cap n (1..100,
+// maxListPerPage). Pos is the 1-based column of the value token, so
+// a cursor-combined-with-LIMIT rejection can point at the clause.
+type pqlLimit struct {
+	Value int
+	Pos   int
+}
+
 // pqlParsedQuery is a fully parsed PQL query: the boolean predicate
-// plus its optional ORDER BY clause (nil when absent).
+// plus its optional ORDER BY and LIMIT clauses (nil when absent).
 type pqlParsedQuery struct {
 	Predicate *pqlNode
 	OrderBy   *pqlOrderBy
+	Limit     *pqlLimit
 }
 
 // pqlSortableFields is the ORDER BY whitelist (C98T0): the bare
@@ -332,9 +355,9 @@ const pqlKnownSortFields = "updated_at, created_at, sequence_id, sort_order, pri
 // *PQLQueryError; semantic checks (field/operator/value shapes) live in
 // ValidatePQL, and name resolution in translatePQL. An empty query is
 // an error here — callers treat a blank ?pql= as "no PQL" before
-// calling, so an empty string reaching this function is a bug. A
-// trailing ORDER BY clause is parsed and discarded here; callers that
-// need it (ListIssues) use ParsePQLWithOrder instead.
+// calling, so an empty string reaching this function is a bug. The
+// trailing ORDER BY / LIMIT clauses are parsed and discarded here;
+// callers that need them (ListIssues) use ParsePQLWithOrder instead.
 func ParsePQL(q string) (*pqlNode, error) {
 	parsed, err := ParsePQLWithOrder(q)
 	if err != nil {
@@ -344,10 +367,12 @@ func ParsePQL(q string) (*pqlNode, error) {
 }
 
 // ParsePQLWithOrder parses a PQL query into its predicate plus its
-// optional ORDER BY clause. The ORDER BY is validated here (unknown
-// field, missing BY/field/direction, or a second sort key are all
-// *PQLQueryError with position) so a bad clause never reaches the
-// list query, where it could otherwise be mistaken for a param.
+// optional ORDER BY and LIMIT clauses. The clauses are validated here
+// (unknown sort field, missing BY/field/direction, a second sort key,
+// a non-integer or out-of-range LIMIT, a second LIMIT, or LIMIT
+// before ORDER BY are all *PQLQueryError with position) so a bad
+// clause never reaches the list query, where it could otherwise be
+// mistaken for a param.
 func ParsePQLWithOrder(q string) (*pqlParsedQuery, error) {
 	if strings.TrimSpace(q) == "" {
 		return nil, pqlErr(1, "empty query")
@@ -365,16 +390,32 @@ func ParsePQLWithOrder(q string) (*pqlParsedQuery, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.peek().kind != pqlEOF {
-		return nil, pqlErr(p.peek().pos, "unexpected %q after expression", p.peek().text)
+	limit, err := p.parseLimit()
+	if err != nil {
+		return nil, err
 	}
-	return &pqlParsedQuery{Predicate: node, OrderBy: orderBy}, nil
+	if p.peek().kind != pqlEOF {
+		// A second LIMIT, or an ORDER BY trailing a LIMIT (i.e. LIMIT
+		// before ORDER BY), each get their own message — the generic
+		// trailing-token error would hide which single-clause rule
+		// was broken.
+		switch t := p.peek(); {
+		case p.isKeyword(t, "LIMIT"):
+			return nil, pqlErr(t.pos, "multiple LIMIT clauses are not supported (only one LIMIT clause)")
+		case p.isKeyword(t, "ORDER"):
+			return nil, pqlErr(t.pos, "ORDER BY must come before LIMIT (got LIMIT before ORDER BY)")
+		default:
+			return nil, pqlErr(t.pos, "unexpected %q after expression", t.text)
+		}
+	}
+	return &pqlParsedQuery{Predicate: node, OrderBy: orderBy, Limit: limit}, nil
 }
 
 // parseOrderBy consumes an optional trailing ORDER BY clause after the
 // boolean expression, returning nil when the next token is not ORDER.
 // Single key only: a comma or any further token after the (optional)
-// direction is a 400, never a silently dropped second key.
+// direction is a 400, never a silently dropped second key — except a
+// LIMIT keyword, which terminates the clause for parseLimit (C98T1).
 func (p *pqlParser) parseOrderBy() (*pqlOrderBy, error) {
 	if !p.isKeyword(p.peek(), "ORDER") {
 		return nil, nil
@@ -402,14 +443,44 @@ func (p *pqlParser) parseOrderBy() (*pqlOrderBy, error) {
 	}
 	// Anything left is either a second sort key or trailing junk —
 	// both are 400 here (not the generic trailing-token error) so the
-	// message names the single-key rule.
+	// message names the single-key rule. A LIMIT keyword is the one
+	// exception: it terminates the ORDER BY clause and is consumed by
+	// parseLimit (LIMIT composes after ORDER BY, C98T1).
 	switch t := p.peek(); {
 	case t.kind == pqlComma:
 		return nil, pqlErr(t.pos, "multiple sort keys are not supported (only one ORDER BY key; got a second key after comma)")
+	case p.isKeyword(t, "LIMIT"):
+		return orderBy, nil
 	case t.kind != pqlEOF:
 		return nil, pqlErr(t.pos, "unexpected %q after ORDER BY clause (only a single sort key is supported)", t.text)
 	}
 	return orderBy, nil
+}
+
+// parseLimit consumes an optional trailing LIMIT clause after the
+// boolean expression (or after ORDER BY), returning nil when the next
+// token is not LIMIT. The value must be an integer 1..maxListPerPage:
+// out-of-range or non-integer values are 400 with the value token's
+// position, never a silent clamp. A second LIMIT, or an ORDER BY
+// after a LIMIT, is rejected by ParsePQLWithOrder's trailing check.
+func (p *pqlParser) parseLimit() (*pqlLimit, error) {
+	if !p.isKeyword(p.peek(), "LIMIT") {
+		return nil, nil
+	}
+	p.next() // LIMIT
+	valTok := p.peek()
+	if valTok.kind != pqlWord {
+		return nil, pqlErr(valTok.pos, "expected a limit value after LIMIT (want an integer 1..%d)", maxListPerPage)
+	}
+	p.next()
+	n, err := atoiStrict(valTok.text)
+	if err != nil {
+		return nil, pqlErr(valTok.pos, "invalid LIMIT value %q (want an integer 1..%d)", valTok.text, maxListPerPage)
+	}
+	if n < 1 || n > maxListPerPage {
+		return nil, pqlErr(valTok.pos, "LIMIT value %d out of range (want 1..%d)", n, maxListPerPage)
+	}
+	return &pqlLimit{Value: n, Pos: valTok.pos}, nil
 }
 
 func (p *pqlParser) parseOr() (*pqlNode, error) {

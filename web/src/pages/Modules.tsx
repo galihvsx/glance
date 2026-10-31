@@ -35,7 +35,7 @@ import {
 } from "../components/ui/native-select";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { stateDotClass } from "../lib/stateDot";
-import { buildPqlRequestParams } from "../lib/pql";
+import { buildPqlRequestParams, pqlHasLimit } from "../lib/pql";
 import PqlEditor from "../components/issue/PqlEditor";
 import {
   OrgCard,
@@ -722,6 +722,22 @@ function ModuleDetail({
 
   async function fetchPqlIssues(query: string): Promise<Issue[]> {
     const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+    // C98T1: a LIMIT query is a single page (the server always
+    // returns next_cursor null), so skip the cursor loop and fetch
+    // once. This also covers the probe-first apply, which shares
+    // this fetch.
+    if (pqlHasLimit(query)) {
+      const p = buildPqlRequestParams(query, {
+        orderBy: "sort_order",
+        perPage: 100,
+      });
+      p.set("module", module.id);
+      const page = await api.get<{
+        results: Issue[];
+        next_cursor?: string;
+      }>(`${base}/issues?${p.toString()}`);
+      return page.results;
+    }
     const all: Issue[] = [];
     let cursor: string | undefined;
     do {

@@ -257,6 +257,25 @@ describe("board PQL mode (C96T0)", () => {
     expect(pqlCalls.some((qs) => qs.get("cursor") === "c1")).toBe(true);
   });
 
+  it("LIMIT query skips the cursor loop: probe + one committed fetch, never a cursor page", async () => {
+    const { get } = renderBoard();
+    await openBoard();
+    await applyPql("priority = High LIMIT 2");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+    const pqlCalls = issueCalls(get).filter((qs) => qs.get("pql") !== null);
+    // Probe (1) + single committed fetch (1). The stub offers a
+    // cursor on the first PQL page, but a LIMIT query never follows
+    // it — that is the client-side half of the single-page contract.
+    expect(pqlCalls.length).toBe(2);
+    for (const qs of pqlCalls) {
+      expect(qs.get("pql")).toBe("priority = High LIMIT 2");
+      expect(qs.get("cursor")).toBeNull();
+    }
+  });
+
   it("PQL editor on the board hides the save hint (C96T1: board Views save visual filters only, not PQL)", async () => {
     renderBoard();
     await openBoard();

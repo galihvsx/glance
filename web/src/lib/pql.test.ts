@@ -13,6 +13,7 @@ import {
   formatPqlError,
   PQL_CHEAT_SHEET,
   pqlErrorPosition,
+  pqlHasLimit,
   pqlOf,
 } from "./pql";
 
@@ -169,5 +170,34 @@ describe("IssueFilters pql round-trip (view payload)", () => {
 
   it("registers pql as a filter param (view apply + clear honor it)", () => {
     expect(isFilterParam("pql")).toBe(true);
+  });
+});
+
+describe("pqlHasLimit (C98T1 single-fetch gate)", () => {
+  it("detects standalone and post-ORDER BY LIMIT, case-insensitively", () => {
+    expect(pqlHasLimit("state = Todo LIMIT 10")).toBe(true);
+    expect(pqlHasLimit("priority >= 3 ORDER BY priority DESC LIMIT 10")).toBe(true);
+    expect(pqlHasLimit("priority >= 3 order by created_at limit 5")).toBe(true);
+    expect(pqlHasLimit("state = Todo LIMIT 10  ")).toBe(true);
+  });
+
+  it("rejects non-LIMIT queries and limit-like values", () => {
+    expect(pqlHasLimit("state = Todo")).toBe(false);
+    expect(pqlHasLimit("priority >= 3 ORDER BY priority DESC")).toBe(false);
+    expect(pqlHasLimit("")).toBe(false);
+    // A bare limit-like value is not a clause (no number).
+    expect(pqlHasLimit("label = limit")).toBe(false);
+    // LIMIT before ORDER BY is invalid server-side, so it is not a
+    // trailing clause either — the first fetch 400s regardless.
+    expect(pqlHasLimit("state = Todo LIMIT 10 ORDER BY priority")).toBe(false);
+    // A quoted "LIMIT 10" value is data, not a clause.
+    expect(pqlHasLimit('label = "LIMIT 10"')).toBe(false);
+    expect(pqlHasLimit("label = 'LIMIT 10'")).toBe(false);
+  });
+
+  it("documents LIMIT in the cheat sheet", () => {
+    expect(
+      PQL_CHEAT_SHEET.some((e) => e.example.includes("LIMIT")),
+    ).toBe(true);
   });
 });

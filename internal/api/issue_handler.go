@@ -316,6 +316,9 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // a PQL ORDER BY clause wins over ?order_by= (the query is
 // self-contained); without one, ?order_by= applies exactly as today,
 // and cursors are validated/minted against the effective order.
+// C98T1: a PQL LIMIT clause caps the page to at most
+// min(per_page, n) rows with next_cursor always null (single page);
+// a cursor combined with LIMIT is a 400, never silently ignored.
 // C95T0 exception: the scope containers ?cycle= and ?module= are NOT
 // visual filters — they survive PQL mode and AND with the PQL
 // predicate, so a query run inside a cycle/module stays inside it.
