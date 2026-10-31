@@ -92,6 +92,16 @@ func TestPQLParseFunctionsAndOperators(t *testing.T) {
 		`assignee = none`,
 		`assignee != me`,
 		`state in (Todo, Done)`,
+		`epic = Platform`,
+		`epic = none`,
+		`epic != Platform`,
+		`epic in (Platform, "Mobile App")`,
+		`epic in (Platform, none)`,
+		`estimate = 3`,
+		`estimate = none`,
+		`estimate != 5`,
+		`estimate in (S, M)`,
+		`estimate in (M, none)`,
 	} {
 		if _, err := ParsePQL(q); err != nil {
 			t.Errorf("ParsePQL(%q): %v", q, err)
@@ -162,12 +172,14 @@ func TestPQLValidateErrors(t *testing.T) {
 		want  string
 	}{
 		{`foo = Bar`, "unknown field"},
-		{`estimate = 3`, "unknown field"},
+		{`parent = ENG-1`, "unknown field"},
 		{`hasChildren()`, "unknown function"},
 		{`state > Todo`, "not supported for field"},
 		{`state < Todo`, "not supported for field"},
 		{`label >= x`, "not supported for field"},
 		{`assignee <= me`, "not supported for field"},
+		{`epic > Platform`, "not supported for field"},
+		{`estimate < 3`, "not supported for field"},
 		{`priority = banana`, "unknown priority"},
 		{`priority = 5`, "invalid priority"},
 		{`priority = -1`, "invalid priority"},

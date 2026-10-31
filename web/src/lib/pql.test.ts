@@ -117,6 +117,8 @@ describe("PQL_CHEAT_SHEET (documented field table)", () => {
       "priority",
       "assignee",
       "label",
+      "epic",
+      "estimate",
       "due",
       "start",
       "created",

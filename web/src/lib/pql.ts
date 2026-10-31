@@ -54,6 +54,23 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
     meaning: "Label is one of the listed names",
   },
   {
+    example: "epic = Platform",
+    meaning: "Epic by name (project-scoped; also none for issues in no epic)",
+  },
+  {
+    example: "epic in (Platform, none)",
+    meaning: "Epic is one of the listed names, or in no epic",
+  },
+  {
+    example: "estimate = S",
+    meaning:
+      "Estimate-point key within the project's estimate system (also none for unestimated issues)",
+  },
+  {
+    example: "estimate in (S, M)",
+    meaning: "Estimate point is one of the listed keys",
+  },
+  {
     example: "due > 2026-11-01",
     meaning: "Target date (aliases: due_date, target_date)",
   },
