@@ -120,6 +120,16 @@ describe("visibility toggle (C92T1)", () => {
     expect(visibility).toBe("public");
   });
 
+  it("the note warns privatizing permanently revokes share links (C93T2)", async () => {
+    renderSection({ isWorkspaceAdmin: true, currentUserId: "u-rani" });
+    await screen.findByText(
+      /Warning: making a public project private permanently revokes its outstanding share links/,
+    );
+    expect(
+      screen.getByText(/re-publicizing later does not restore them/),
+    ).toBeTruthy();
+  });
+
   it("the note explains private in plain language", async () => {
     renderSection({ isWorkspaceAdmin: true, currentUserId: "u-rani" });
     await screen.findByText(
