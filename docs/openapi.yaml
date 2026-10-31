@@ -1231,6 +1231,15 @@
         "responses": { "204": { "description": "Link removed" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/links/cycles": {
+      "get": {
+        "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List blocks-dependency cycles in a project",
+        "description": "Read-only report of pre-existing 'blocks' cycles stored for the project (live, unarchived endpoints only; relates_to / duplicates rings are not ordering cycles and are never reported). Each cycle is an ordered list of display IDs in edge direction, closed by repeating the first ID at the end, reported once regardless of start point. Empty list when the project is clean. Any member (guest 5+); non-members get 404. Never deletes or modifies links.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Blocks cycles", "content": { "application/json": { "schema": { "type": "object", "properties": { "cycles": { "type": "array", "items": { "type": "array", "items": { "type": "string" } } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/api/v1/workspaces/{slug}/projects/{identifier}/issues/{uuid}/refs": {
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],

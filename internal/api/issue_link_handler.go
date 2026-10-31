@@ -33,6 +33,12 @@ func RegisterIssueLinkRoutes(e *echo.Echo, h *IssueHandler) {
 	g.GET("", h.listIssueLinks)
 	g.POST("", h.createIssueLink)
 	g.DELETE("/:linkID", h.deleteIssueLink)
+	// C94T1: project-scoped read-only cycle report — deliberately a
+	// separate group (not nested under an issue) because it reports on
+	// the whole project's blocks graph. Read-only; it never modifies
+	// links.
+	p := e.Group("/api/v1/workspaces/:slug/projects/:identifier/links", RequireAuth(h.Pool))
+	p.GET("/cycles", h.listIssueLinkCycles)
 }
 
 // linkError maps issue-link sentinel errors to HTTP statuses, delegating
@@ -80,6 +86,21 @@ func (h *IssueHandler) listIssueLinks(c *echo.Context) error {
 		return linkError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"links": links})
+}
+
+// listIssueLinkCycles implements GET
+// /api/v1/workspaces/{slug}/projects/{identifier}/links/cycles: the
+// project's pre-existing 'blocks' cycles as closed display-ID rings
+// (first ID repeated at the end), or {"cycles":[]} when clean. Any
+// member (guest 5+); non-members get 404 via the shared tenancy
+// sentinels. Read-only — it never deletes or modifies links.
+func (h *IssueHandler) listIssueLinkCycles(c *echo.Context) error {
+	cycles, err := service.ListIssueLinkCycles(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID)
+	if err != nil {
+		return linkError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"cycles": cycles})
 }
 
 type createIssueLinkBody struct {
