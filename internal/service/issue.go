@@ -2924,10 +2924,15 @@ type ListIssuesInput struct {
 	// the translated PQL condition instead — EXCEPT the scope
 	// containers Cycle and Module (C95T0), which survive and AND
 	// with the PQL predicate, so a query run inside a cycle/module
-	// stays inside it. Sort/pagination/orderBy still apply
-	// unchanged. A blank PQL means "no PQL" — the handler treats a
-	// blank ?pql= as absent, so a cleared PQL editor never filters.
-	// Parse/resolution failures are *PQLQueryError (400).
+	// stays inside it. Sort/pagination still apply, with one C98T0
+	// precedence rule: a PQL ORDER BY clause wins over OrderBy (the
+	// query is self-contained); without one, OrderBy applies exactly
+	// as today. The EFFECTIVE order (PQL ORDER BY if present, else
+	// OrderBy) is what cursors are validated and minted against, so
+	// a cursor minted under a different order is rejected, never
+	// silently honored. A blank PQL means "no PQL" — the handler
+	// treats a blank ?pql= as absent, so a cleared PQL editor never
+	// filters. Parse/resolution failures are *PQLQueryError (400).
 	PQL string
 	// Draft tri-state (C6T4): nil = exclude drafts (the working-set
 	// default — drafts live in the Drafts view until published);
@@ -3336,7 +3341,25 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		in = in.withoutVisualFilters()
 	}
 
+	// C98T0: parse PQL up front (parse is DB-free) so a PQL ORDER BY
+	// clause can set the EFFECTIVE order before the order key is
+	// resolved and the cursor is decoded against it. A PQL ORDER BY
+	// wins over OrderBy; without one, OrderBy applies exactly as
+	// today (including an invalid OrderBy 400). The parsed predicate
+	// is reused below for translation — no second parse.
+	var pqlParsed *pqlParsedQuery
+	if strings.TrimSpace(in.PQL) != "" {
+		parsed, err := ParsePQLWithOrder(in.PQL)
+		if err != nil {
+			return nil, err
+		}
+		pqlParsed = parsed
+	}
+
 	orderKey := in.OrderBy
+	if pqlParsed != nil && pqlParsed.OrderBy != nil {
+		orderKey = pqlParsed.OrderBy.OrderKey()
+	}
 	if orderKey == "" {
 		orderKey = "-updated_at"
 	}
@@ -3415,11 +3438,10 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	// reusing the same placeholder sequence (arg) as the fragments
 	// above. Parse/resolution failures are *PQLQueryError (400).
 	if strings.TrimSpace(in.PQL) != "" {
-		node, err := ParsePQL(in.PQL)
-		if err != nil {
-			return nil, err
-		}
-		pqlCond, err := translatePQL(ctx, pool, wsID, projectID, actorID, node, arg)
+		// pqlParsed is always set here: a non-blank PQL is parsed
+		// above before the order key (a parse failure already
+		// returned), and withoutVisualFilters never touches PQL.
+		pqlCond, err := translatePQL(ctx, pool, wsID, projectID, actorID, pqlParsed.Predicate, arg)
 		if err != nil {
 			return nil, err
 		}

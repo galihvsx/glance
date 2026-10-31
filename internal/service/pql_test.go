@@ -224,3 +224,97 @@ func TestPQLParseErrorPositions(t *testing.T) {
 		t.Fatalf("foo = Bar: validation err = %v, want position 1", verr)
 	}
 }
+
+// PQL ORDER BY tests (C98T0): single sort key, ASC default, DESC,
+// case-insensitive keywords, and every 400 shape.
+func TestPQLOrderBy(t *testing.T) {
+	parsed, err := ParsePQLWithOrder(`priority >= 3 ORDER BY priority DESC`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder: %v", err)
+	}
+	if parsed.Predicate.Kind != pqlCmp || parsed.Predicate.Field != "priority" {
+		t.Fatalf("predicate = %+v, want priority comparison", parsed.Predicate)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.Field != "priority" || !parsed.OrderBy.Desc || parsed.OrderBy.OrderKey() != "-priority" {
+		t.Fatalf("orderBy = %+v, want priority DESC (-priority)", parsed.OrderBy)
+	}
+
+	// Direction defaults to ASC; keywords are case-insensitive.
+	parsed, err = ParsePQLWithOrder(`priority >= 3 order by created_at`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder ASC default: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.Field != "created_at" || parsed.OrderBy.Desc || parsed.OrderBy.OrderKey() != "created_at" {
+		t.Fatalf("orderBy = %+v, want created_at ASC", parsed.OrderBy)
+	}
+	parsed, err = ParsePQLWithOrder(`priority >= 3 OrDeR bY SEQUENCE_ID asc`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder mixed case: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.Field != "sequence_id" || parsed.OrderBy.Desc {
+		t.Fatalf("orderBy = %+v, want sequence_id ASC", parsed.OrderBy)
+	}
+
+	// Every sortable field parses.
+	for _, f := range []string{"updated_at", "created_at", "sequence_id", "sort_order", "priority"} {
+		if _, err := ParsePQLWithOrder(`priority >= 0 ORDER BY ` + f); err != nil {
+			t.Errorf("ORDER BY %s: %v", f, err)
+		}
+	}
+
+	// ParsePQL still returns just the predicate with ORDER BY present.
+	node, err := ParsePQL(`priority >= 3 ORDER BY priority DESC`)
+	if err != nil || node.Kind != pqlCmp {
+		t.Fatalf("ParsePQL with ORDER BY: node = %+v err = %v", node, err)
+	}
+
+	// No ORDER BY: nil, so the ?order_by= param applies as today.
+	parsed, err = ParsePQLWithOrder(`priority >= 3`)
+	if err != nil || parsed.OrderBy != nil {
+		t.Fatalf("no ORDER BY: parsed = %+v err = %v", parsed, err)
+	}
+}
+
+func TestPQLOrderByErrors(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string // substring of the error message
+	}{
+		{`priority >= 3 ORDER BY bogus`, "unknown sort field"},
+		// Predicate aliases are NOT sort keys.
+		{`priority >= 3 ORDER BY created`, "unknown sort field"},
+		{`priority >= 3 ORDER BY due`, "unknown sort field"},
+		{`priority >= 3 ORDER BY state`, "unknown sort field"},
+		// Multi-key: comma and bare second field are both 400, never
+		// a silently dropped second key.
+		{`priority >= 3 ORDER BY priority, created_at`, "multiple sort keys"},
+		{`priority >= 3 ORDER BY priority DESC, created_at`, "multiple sort keys"},
+		{`priority >= 3 ORDER BY priority created_at`, "single sort key"},
+		{`priority >= 3 ORDER priority`, "expected BY"},
+		{`priority >= 3 ORDER BY`, "expected a sort field"},
+		{`priority >= 3 ORDER BY priority sideways`, "single sort key"},
+	}
+	for _, tc := range cases {
+		_, err := ParsePQLWithOrder(tc.query)
+		if err == nil {
+			t.Errorf("ParsePQLWithOrder(%q): want error containing %q, got nil", tc.query, tc.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ParsePQLWithOrder(%q): error = %v, want substring %q", tc.query, err, tc.want)
+		}
+		var pqlErr *PQLQueryError
+		if !errors.As(err, &pqlErr) {
+			t.Errorf("ParsePQLWithOrder(%q): error type = %T, want *PQLQueryError", tc.query, err)
+		} else if pqlErr.Pos < 1 {
+			t.Errorf("ParsePQLWithOrder(%q): position = %d, want a 1-based position", tc.query, pqlErr.Pos)
+		}
+	}
+	// Unknown sort-field position points at the field token.
+	q := `priority >= 3 ORDER BY bogus`
+	_, err := ParsePQLWithOrder(q)
+	pqlErr, ok := err.(*PQLQueryError)
+	if !ok || pqlErr.Pos != strings.Index(q, "bogus")+1 {
+		t.Fatalf("unknown sort field position: err = %v, want position %d", err, strings.Index(q, "bogus")+1)
+	}
+}

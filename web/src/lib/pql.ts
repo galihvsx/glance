@@ -20,6 +20,10 @@ export interface PqlCheatEntry {
  * priority and dates accept all comparison operators plus in.
  * Keywords (AND/OR/NOT/IN), field names, priority names, and
  * function names are case-insensitive. Quote names containing spaces.
+ * A trailing ORDER BY clause (C98T0) sorts by exactly one key from
+ * updated_at, created_at, sequence_id, sort_order, or priority, with
+ * an optional ASC/DESC direction (default ASC); it wins over the
+ * order_by param, and a second key or unknown sort field is a 400.
  */
 export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   { example: "state = Todo", meaning: "State by name (project-scoped)" },
@@ -103,6 +107,15 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: "NOT hasNoAssignee()",
     meaning: "Combine with AND, OR, NOT, and parentheses",
+  },
+  {
+    example: "priority >= 3 ORDER BY priority DESC",
+    meaning:
+      "Sort by one key (updated_at, created_at, sequence_id, sort_order, or priority); wins over the order_by param",
+  },
+  {
+    example: "state = Todo ORDER BY created_at",
+    meaning: "Direction defaults to ASC when omitted (also ORDER BY updated_at DESC)",
   },
 ];
 
