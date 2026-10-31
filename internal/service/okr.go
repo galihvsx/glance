@@ -422,39 +422,84 @@ type krProgressEntry struct {
 // ""). Issue-KR counts count only live (non-deleted) linked issues;
 // done = linked issues in a done state group (completed/cancelled —
 // doneStateGroups, the same predicate as the initiative rollup).
-func queryKRProgress(ctx context.Context, q *pgxpool.Pool, objectiveID, wsID string) (map[string]krProgressEntry, error) {
+// C93T1: for any caller other than a workspace Admin (20), linked
+// issues in projects the caller cannot reach are excluded from BOTH
+// total and done counts, through the C92T2 shared
+// projectAccessibleSQL predicate (reused, not re-spelled) — Admin
+// short-circuits to the current unfiltered query, since Admin
+// reaches everything. A KR whose linked issues are all inaccessible
+// reports progress 0, not an error, and this query selects no
+// title/ID of a hidden issue, so none can leak through the counts.
+// Metric KRs replay values, not issue counts, so the filter leaves
+// them unchanged.
+func queryKRProgress(ctx context.Context, q *pgxpool.Pool, objectiveID, wsID, actorID string, wsRole int) (map[string]krProgressEntry, error) {
 	done := doneStateGroups
 	var rows pgx.Rows
 	var err error
-	if objectiveID != "" {
+	if wsRole == RoleAdmin {
+		if objectiveID != "" {
+			rows, err = q.Query(ctx,
+				`SELECT kr.id::text, kr.objective_id::text, kr.kind,
+					kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
+					COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
+					COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+				 FROM key_results kr
+				 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
+				 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+				 LEFT JOIN states s ON s.id = i.state_id
+				 WHERE kr.objective_id = $1::uuid
+				 GROUP BY kr.id, kr.objective_id, kr.kind,
+					kr.start_value, kr.target_value, kr.current_value`,
+				objectiveID, done)
+		} else {
+			rows, err = q.Query(ctx,
+				`SELECT kr.id::text, kr.objective_id::text, kr.kind,
+					kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
+					COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
+					COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+				 FROM key_results kr
+				 JOIN objectives o ON o.id = kr.objective_id
+				 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
+				 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+				 LEFT JOIN states s ON s.id = i.state_id
+				 WHERE o.workspace_id = $1::uuid
+				 GROUP BY kr.id, kr.objective_id, kr.kind,
+					kr.start_value, kr.target_value, kr.current_value`,
+				wsID, done)
+		}
+	} else if objectiveID != "" {
+		accessible := projectAccessibleSQL("p", "$3::uuid")
 		rows, err = q.Query(ctx,
 			`SELECT kr.id::text, kr.objective_id::text, kr.kind,
 				kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
-				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
-				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL AND `+accessible+`) AS total,
+				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[]) AND `+accessible+`) AS done
 			 FROM key_results kr
 			 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
 			 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 LEFT JOIN projects p ON p.id = i.project_id
 			 LEFT JOIN states s ON s.id = i.state_id
 			 WHERE kr.objective_id = $1::uuid
 			 GROUP BY kr.id, kr.objective_id, kr.kind,
 				kr.start_value, kr.target_value, kr.current_value`,
-			objectiveID, done)
+			objectiveID, done, actorID)
 	} else {
+		accessible := projectAccessibleSQL("p", "$3::uuid")
 		rows, err = q.Query(ctx,
 			`SELECT kr.id::text, kr.objective_id::text, kr.kind,
 				kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
-				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
-				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL AND `+accessible+`) AS total,
+				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[]) AND `+accessible+`) AS done
 			 FROM key_results kr
 			 JOIN objectives o ON o.id = kr.objective_id
 			 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
 			 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 LEFT JOIN projects p ON p.id = i.project_id
 			 LEFT JOIN states s ON s.id = i.state_id
 			 WHERE o.workspace_id = $1::uuid
 			 GROUP BY kr.id, kr.objective_id, kr.kind,
 				kr.start_value, kr.target_value, kr.current_value`,
-			wsID, done)
+			wsID, done, actorID)
 	}
 	if err != nil {
 		return nil, err
@@ -855,7 +900,14 @@ func loadIssueTransitions(ctx context.Context, pool *pgxpool.Pool, objectiveIDs 
 // state), one for those issues' state_id activity rows, and one
 // for the done-group membership of every state id the replay can
 // observe.
-func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs []*Objective) error {
+// C93T1 companion to queryKRProgress: the history replay's current
+// issue-KR progress and its linked-issue inputs go through the same
+// actor filter, so ProgressHistory cannot re-expose the unfiltered
+// ratio that Progress itself now hides. Metric-KR history replays
+// check-in values, not issue counts, so it is unchanged by the
+// filter. State transitions attach only to filtered links, so an
+// inaccessible issue's transitions never reach the builder.
+func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs []*Objective, actorID string, wsRole int) error {
 	if len(objs) == 0 {
 		return nil
 	}
@@ -866,20 +918,41 @@ func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs 
 		byID[ob.ID] = ob
 	}
 	done := doneStateGroups
-	rows, err := pool.Query(ctx,
-		`SELECT kr.id::text, kr.objective_id::text, kr.kind,
-			kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
-			kr.created_at,
-			COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
-			COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
-		 FROM key_results kr
-		 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
-		 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
-		 LEFT JOIN states s ON s.id = i.state_id
-		 WHERE kr.objective_id::text = ANY($1::text[])
-		 GROUP BY kr.id, kr.objective_id, kr.kind,
-			kr.start_value, kr.target_value, kr.current_value, kr.created_at`,
-		ids, done)
+	var rows pgx.Rows
+	var err error
+	if wsRole == RoleAdmin {
+		rows, err = pool.Query(ctx,
+			`SELECT kr.id::text, kr.objective_id::text, kr.kind,
+				kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
+				kr.created_at,
+				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL) AS total,
+				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[])) AS done
+			 FROM key_results kr
+			 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
+			 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 LEFT JOIN states s ON s.id = i.state_id
+			 WHERE kr.objective_id::text = ANY($1::text[])
+			 GROUP BY kr.id, kr.objective_id, kr.kind,
+				kr.start_value, kr.target_value, kr.current_value, kr.created_at`,
+			ids, done)
+	} else {
+		accessible := projectAccessibleSQL("p", "$3::uuid")
+		rows, err = pool.Query(ctx,
+			`SELECT kr.id::text, kr.objective_id::text, kr.kind,
+				kr.start_value::float8, kr.target_value::float8, kr.current_value::float8,
+				kr.created_at,
+				COUNT(i.id) FILTER (WHERE i.id IS NOT NULL AND `+accessible+`) AS total,
+				COUNT(i.id) FILTER (WHERE s."group" = ANY($2::text[]) AND `+accessible+`) AS done
+			 FROM key_results kr
+			 LEFT JOIN key_result_issues kri ON kri.key_result_id = kr.id
+			 LEFT JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 LEFT JOIN projects p ON p.id = i.project_id
+			 LEFT JOIN states s ON s.id = i.state_id
+			 WHERE kr.objective_id::text = ANY($1::text[])
+			 GROUP BY kr.id, kr.objective_id, kr.kind,
+				kr.start_value, kr.target_value, kr.current_value, kr.created_at`,
+			ids, done, actorID)
+	}
 	if err != nil {
 		return err
 	}
@@ -936,15 +1009,30 @@ func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs 
 	// (link + issue created_at, current state) grouped by
 	// objective → KR.
 	linksByObjective := map[string]map[string][]historyIssueLink{}
-	linkRows, err := pool.Query(ctx,
-		`SELECT kr.objective_id::text, kri.key_result_id::text,
-			kri.issue_id::text, kri.created_at, i.created_at, i.state_id::text
-		 FROM key_result_issues kri
-		 JOIN key_results kr ON kr.id = kri.key_result_id
-		 JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
-		 WHERE kr.objective_id::text = ANY($1::text[])
-		 ORDER BY kri.key_result_id, kri.created_at, kri.issue_id`,
-		ids)
+	var linkRows pgx.Rows
+	if wsRole == RoleAdmin {
+		linkRows, err = pool.Query(ctx,
+			`SELECT kr.objective_id::text, kri.key_result_id::text,
+				kri.issue_id::text, kri.created_at, i.created_at, i.state_id::text
+			 FROM key_result_issues kri
+			 JOIN key_results kr ON kr.id = kri.key_result_id
+			 JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 WHERE kr.objective_id::text = ANY($1::text[])
+			 ORDER BY kri.key_result_id, kri.created_at, kri.issue_id`,
+			ids)
+	} else {
+		linkRows, err = pool.Query(ctx,
+			`SELECT kr.objective_id::text, kri.key_result_id::text,
+				kri.issue_id::text, kri.created_at, i.created_at, i.state_id::text
+			 FROM key_result_issues kri
+			 JOIN key_results kr ON kr.id = kri.key_result_id
+			 JOIN issues i ON i.id = kri.issue_id AND i.deleted_at IS NULL
+			 JOIN projects p ON p.id = i.project_id
+			 WHERE kr.objective_id::text = ANY($1::text[])
+			   AND `+projectAccessibleSQL("p", "$2::uuid")+`
+			 ORDER BY kri.key_result_id, kri.created_at, kri.issue_id`,
+			ids, actorID)
+	}
 	if err != nil {
 		return err
 	}
@@ -1045,8 +1133,8 @@ func fillObjectiveProgressHistory(ctx context.Context, pool *pgxpool.Pool, objs 
 }
 
 // loadKeyResults loads an objective's KRs ordered by creation with
-// computed progress attached.
-func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID string) ([]KeyResult, error) {
+// computed progress attached (access-filtered for the caller, C93T1).
+func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID, actorID string, wsRole int) ([]KeyResult, error) {
 	rows, err := q.Query(ctx,
 		`SELECT `+keyResultColumns+`
 		 FROM key_results kr WHERE kr.objective_id = $1::uuid
@@ -1066,7 +1154,7 @@ func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID string) ([
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := queryKRProgress(ctx, q, objectiveID, "")
+	entries, err := queryKRProgress(ctx, q, objectiveID, "", actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
@@ -1180,7 +1268,7 @@ func CreateObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID st
 // creation, with computed progress + live KR counts. Any role may
 // read.
 func ListObjectives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string) ([]*Objective, error) {
-	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, false)
+	wsID, wsRole, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1204,12 +1292,12 @@ func ListObjectives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := queryKRProgress(ctx, pool, "", wsID)
+	entries, err := queryKRProgress(ctx, pool, "", wsID, actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
 	fillObjectiveProgress(out, entries)
-	if err := fillObjectiveProgressHistory(ctx, pool, out); err != nil {
+	if err := fillObjectiveProgressHistory(ctx, pool, out, actorID, wsRole); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1218,7 +1306,7 @@ func ListObjectives(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID str
 // GetObjective returns one objective with its KRs (each with computed
 // progress; issue KRs carry their linked issues). Any role may read.
 func GetObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, objectiveID string) (*Objective, error) {
-	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, false)
+	wsID, wsRole, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1226,7 +1314,7 @@ func GetObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, obje
 	if err != nil {
 		return nil, err
 	}
-	krs, err := loadKeyResults(ctx, pool, ob.ID)
+	krs, err := loadKeyResults(ctx, pool, ob.ID, actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
@@ -1243,12 +1331,12 @@ func GetObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, obje
 		}
 	}
 	ob.KeyResults = krs
-	entries, err := queryKRProgress(ctx, pool, ob.ID, "")
+	entries, err := queryKRProgress(ctx, pool, ob.ID, "", actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
 	fillObjectiveProgress([]*Objective{ob}, entries)
-	if err := fillObjectiveProgressHistory(ctx, pool, []*Objective{ob}); err != nil {
+	if err := fillObjectiveProgressHistory(ctx, pool, []*Objective{ob}, actorID, wsRole); err != nil {
 		return nil, err
 	}
 	return ob, nil
@@ -1361,7 +1449,7 @@ func DeleteObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 // (15)+. Target is required and must differ from start (zero-span
 // rejected); metric-only fields on an issue KR are rejected.
 func CreateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, objectiveID string, in KeyResultInput) (*KeyResult, error) {
-	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, wsRole, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1438,7 +1526,7 @@ func CreateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	kr, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	kr, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id, actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
@@ -1448,13 +1536,14 @@ func CreateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 
 // loadKeyResultWithProgress loads one KR with its computed progress
 // attached (issue KRs carry no linked issues here — GetObjective is
-// the detail view that populates them).
-func loadKeyResultWithProgress(ctx context.Context, q *pgxpool.Pool, objectiveID, krID string) (*KeyResult, error) {
+// the detail view that populates them). Progress is access-filtered
+// for the caller (C93T1).
+func loadKeyResultWithProgress(ctx context.Context, q *pgxpool.Pool, objectiveID, krID, actorID string, wsRole int) (*KeyResult, error) {
 	kr, err := resolveKeyResult(ctx, q, objectiveID, krID)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := queryKRProgress(ctx, q, objectiveID, "")
+	entries, err := queryKRProgress(ctx, q, objectiveID, "", actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
@@ -1474,7 +1563,7 @@ func loadKeyResultWithProgress(ctx context.Context, q *pgxpool.Pool, objectiveID
 // updates, title/unit/target-only changes, and issue KRs record
 // nothing. A checkin_note over 1000 chars is ErrInvalidKeyResult.
 func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, objectiveID, krID string, patch KeyResultPatch) (*KeyResult, error) {
-	wsID, _, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, wsRole, err := resolveObjectiveWorkspace(ctx, pool, wsSlug, actorID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1559,7 +1648,7 @@ func UpdateKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, o
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	updated, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id)
+	updated, err := loadKeyResultWithProgress(ctx, pool, ob.ID, id, actorID, wsRole)
 	if err != nil {
 		return nil, err
 	}
