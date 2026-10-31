@@ -1,4 +1,5 @@
-// Project visibility toggle (C92T1, prototype-as-spec): lives in the
+// Project visibility toggle (C92T1, prototype-as-spec; C93T2 adds the
+// privatization-revokes-share-links warning copy): lives in the
 // General tab of Project Settings. Public = today's behavior (every
 // workspace member can access the project). Private = only project
 // members and members of the linked teamspace can access it — the
@@ -151,7 +152,9 @@ export default function VisibilitySection({
           vanishes from other members&apos; sidebar, project list, and
           search, and its direct URL shows the same not-found state as
           a missing project. Changing visibility requires project
-          Admin or workspace Admin.
+          Admin or workspace Admin. Warning: making a public project
+          private permanently revokes its outstanding share links —
+          re-publicizing later does not restore them.
         </p>
         {error && (
           <Alert variant="destructive">

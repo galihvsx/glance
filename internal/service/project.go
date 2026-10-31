@@ -568,11 +568,11 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	// workspace (else ErrProjectNotFound) and the caller must reach
 	// it (private + no access -> ErrNotFound). Writes need effective
 	// member (15)+; a visibility change needs effective Admin (20).
-	var projectID string
+	var projectID, storedVisibility string
 	if err := tx.QueryRow(ctx,
-		`SELECT p.id::text FROM projects p
+		`SELECT p.id::text, p.visibility FROM projects p
 		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2`,
-		wsID, ident).Scan(&projectID); err != nil {
+		wsID, ident).Scan(&projectID, &storedVisibility); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProjectNotFound
 		}
@@ -653,6 +653,23 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return nil, ErrProjectNotFound
 		}
 		return nil, err
+	}
+	// C93T2: privatizing revokes outstanding share links, in the same
+	// transaction. Only the public -> private transition revokes: a
+	// patch that does not touch visibility, a private -> public flip,
+	// and same-value writes revoke nothing. Revocation is permanent —
+	// re-publicizing later does NOT un-revoke (the revoked links keep
+	// resolving to the shared 404 via GetPublicShare's revoked_at IS
+	// NULL predicate). share_links carries project_id directly, so
+	// this is one UPDATE, no joins.
+	if patch.Visibility != nil && storedVisibility == VisibilityPublic &&
+		*patch.Visibility == VisibilityPrivate {
+		if _, err := tx.Exec(ctx,
+			`UPDATE share_links SET revoked_at = now()
+			 WHERE project_id = $1::uuid AND revoked_at IS NULL`,
+			projectID); err != nil {
+			return nil, err
+		}
 	}
 	// UPDATE ... RETURNING cannot correlate the chip aggregate
 	// (projectColumns is unusable here), so the chips load in-tx.
