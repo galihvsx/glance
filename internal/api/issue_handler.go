@@ -316,6 +316,10 @@ func (h *IssueHandler) createIssue(c *echo.Context) error {
 // a PQL ORDER BY clause wins over ?order_by= (the query is
 // self-contained); without one, ?order_by= applies exactly as today,
 // and cursors are validated/minted against the effective order.
+// C99T1: ?order_by= accepts a comma-separated key list
+// (e.g. ?order_by=priority,-updated_at), each key from the
+// listOrders whitelist, "-" prefix for DESC; unknown key, empty
+// segment, or duplicate key is 400 ErrInvalidOrderBy.
 // C98T1: a PQL LIMIT clause caps the page to at most
 // min(per_page, n) rows with next_cursor always null (single page);
 // a cursor combined with LIMIT is a 400, never silently ignored.
