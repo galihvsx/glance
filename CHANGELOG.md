@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL on cycle and module detail lists (cycle 95)**
+
+- The issue list gains a `module` scope (an EXISTS condition over
+  the `module_issues` junction, mirroring the existing `cycle`
+  scope), and cycle/module scopes now survive PQL mode: a PQL
+  query run inside a cycle or module ANDs with the scope
+  predicate instead of silently dropping it, so results stay
+  inside the container. Every other visual filter is still
+  zeroed under PQL exactly as before — scope containers are the
+  one exception, now documented as the scope-survives contract.
+  The PQL language itself is unchanged (no new fields, no
+  ORDER BY / LIMIT), and there is no migration.
+- Frontend: cycle and module detail pages gain a PQL mode
+  (All issues / PQL toggle + the existing PQL editor, reused
+  verbatim, probe-first with inline errors). PQL mode changes
+  only the displayed issue list: progress counts and burndown
+  always come from the unfiltered membership list, default mode
+  is unchanged, and leaving PQL mode restores the full list. A
+  valid query matching nothing gets its own empty state instead
+  of masquerading as "no issues assigned". Detail pages get no
+  visual filter bar and no save-as-view this cycle; Board and
+  dashboard PQL stay deferred.
+
 **Dependency cycle guard for issue links (cycle 94)**
 
 - Creating a `blocks` link that would close a dependency cycle is
