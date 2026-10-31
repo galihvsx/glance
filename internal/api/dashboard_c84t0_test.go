@@ -829,7 +829,8 @@ func TestOpenAPIDocShapesDashboardPhase3(t *testing.T) {
 		t.Fatalf("WidgetConfig.sort_dir enum = %v, want [asc desc]", got)
 	}
 
-	// Every widget_type enum in the spec carries the twelve types.
+	// Every widget_type enum in the spec carries the thirteen types
+	// (C100T0 adds pql_table).
 	var widget struct {
 		Props map[string]struct {
 			Enum []string `json:"enum"`
@@ -838,7 +839,7 @@ func TestOpenAPIDocShapesDashboardPhase3(t *testing.T) {
 	decode("DashboardWidget", &widget)
 	wantTypes := []string{"bar", "line", "area", "donut", "pie", "number",
 		"smart_counter", "smart_gauge", "table_2d", "intake_breakdown",
-		"work_items_table", "assigned_to_me"}
+		"work_items_table", "assigned_to_me", "pql_table"}
 	if got := widget.Props["widget_type"].Enum; !reflect.DeepEqual(got, wantTypes) {
 		t.Fatalf("DashboardWidget.widget_type enum = %v, want %v", got, wantTypes)
 	}
