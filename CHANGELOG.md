@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL on the Board (cycle 96)**
+
+- The Board gains a PQL mode (All issues / PQL toggle + the
+  existing PQL editor, reused verbatim, probe-first with inline
+  errors), completing PQL coverage of the primary issue
+  surfaces: issue list, cycle detail, module detail, and now
+  the Board. PQL mode changes only the displayed cards:
+  grouping (state / epic / priority) and the header count
+  follow the filtered list, while drag-drop and QuickAdd stay
+  enabled with the existing refetch-on-settle semantics (a card
+  whose new state no longer matches the query leaves the board
+  after refetch, the same behavior visual filters already
+  have). Default mode is unchanged, leaving PQL mode restores
+  the visual board, and the query never leaks across projects.
+  No backend change, no migration; dashboard PQL stays
+  deferred.
+- The PQL editor's "Views → Save current view" hint is now
+  hidden on the Board, cycle detail, and module detail pages,
+  where no PQL save path exists (detail pages have no Views
+  menu; the Board's Views menu saves visual filters only).
+  The hint still shows on the issue list, where the save path
+  is real.
+
 **PQL on cycle and module detail lists (cycle 95)**
 
 - The issue list gains a `module` scope (an EXISTS condition over
