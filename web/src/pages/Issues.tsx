@@ -80,10 +80,12 @@ import PageHeader, {
 } from "../components/shell/PageHeader";
 import {
   activeFilterCount,
+  EMPTY_FILTERS,
   toApiParams,
   useIssueFilters,
   type IssueFilters,
 } from "../lib/filters";
+import { buildPqlRequestParams } from "../lib/pql";
 import {
   buildExportUrl,
   downloadExport,
@@ -138,6 +140,14 @@ function buildIssuePath(
   orderBy: string,
   cursor?: string,
 ): string {
+  // C91T1 exclusivity: a non-blank PQL query replaces the visual
+  // filters entirely — the request carries ONLY pql (+ pagination /
+  // ordering). The backend enforces the same rule server-side, but
+  // the frontend must not send a two-mode request in the first place.
+  if (f.pql?.trim()) {
+    const p = buildPqlRequestParams(f.pql, { orderBy, perPage: PER_PAGE, cursor });
+    return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
+  }
   const p = toApiParams(f);
   p.set("per_page", String(PER_PAGE));
   p.set("order_by", orderBy);
@@ -156,6 +166,25 @@ export default function Issues() {
   const [filters, setFilters, clearFilters] = useIssueFilters();
   // Seed from the URL so a pasted link shows its query in the box.
   const [searchInput, setSearchInput] = useState(filters.q);
+  // C91T1 PQL mode. MODE-RESTORE DECISION (documented choice): the
+  // visual selection is preserved IN MEMORY, not discarded — entering
+  // PQL mode snapshots the current filters (including the search
+  // text) into parkedFiltersRef and clears them from the URL, so the
+  // list request can never mix modes; switching back to Filters
+  // restores the snapshot exactly. No confirm dialog: switching modes
+  // never loses anything, so a confirm would be pure friction. The
+  // snapshot is in-memory only — a reload keeps the applied PQL query
+  // (it lives in the URL) but not the parked visual selection.
+  const [pqlMode, setPqlMode] = useState(filters.pql?.trim() ? true : false);
+  const parkedFiltersRef = useRef<IssueFilters | null>(null);
+  // Backstop for mode sync: a non-blank ?pql= in the URL (pasted link,
+  // back/forward, view apply) always means PQL mode. Mode is NEVER
+  // auto-cleared here — leaving PQL mode happens only via an explicit
+  // toggle to Filters or applying a visual saved view, because PQL
+  // mode with an empty (cleared) query is a real state: no filter.
+  useEffect(() => {
+    if (filters.pql?.trim()) setPqlMode(true);
+  }, [filters.pql]);
   // C8T3: export state — format selector + download with the current filters.
   const [exportFormat, setExportFormat] = useState<ExportFormat>("csv");
   const [exporting, setExporting] = useState(false);
@@ -195,6 +224,68 @@ export default function Issues() {
     identifier,
   );
   const { peekUuid, openPeek, closePeek } = usePeekParam();
+
+  // C91T1 PQL mode handlers (see the mode-restore note at the pqlMode
+  // state above). The applied query lives in the URL (?pql=) via the
+  // shared filter state; the mode flag itself is page state.
+  function handlePqlModeChange(mode: "visual" | "pql") {
+    if (mode === "pql") {
+      if (!pqlMode) {
+        // Park the visual selection (pql stripped — the parked set is
+        // visual-only) and clear the URL so no request can mix modes.
+        parkedFiltersRef.current = { ...filters, pql: "" };
+        setFilters({ ...EMPTY_FILTERS, pql: "" });
+        setSearchInput("");
+      }
+      setPqlMode(true);
+      return;
+    }
+    const parked = parkedFiltersRef.current;
+    parkedFiltersRef.current = null;
+    setPqlMode(false);
+    if (parked) {
+      setFilters({ ...parked, pql: "" });
+      setSearchInput(parked.q);
+    } else {
+      setFilters({ pql: "" });
+    }
+  }
+
+  /**
+   * Probe-first PQL apply (prototype spec): fetch one page with the
+   * pql-only params; commit to the URL only when the server accepts
+   * the query. A 400 rejects, so the list query never changes, the
+   * list data stays on screen, and the editor shows the server's
+   * message + column inline. Empty query = no filter (commits "" and
+   * stays in PQL mode).
+   */
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setFilters({ pql: "" });
+      return;
+    }
+    await api.get<IssueListResult>(
+      buildIssuePath(slug, identifier, { ...EMPTY_FILTERS, pql: q }, settings.orderBy),
+    );
+    setFilters({ pql: q });
+  }
+
+  function handlePqlClear() {
+    setFilters({ pql: "" });
+  }
+
+  /**
+   * Saved-view application (C91T1): the menu already wrote the view's
+   * filters to the URL; this only settles the mode. A PQL view enters
+   * PQL mode; a visual view leaves it. Either way the parked visual
+   * selection is dropped — the view, not the pre-view selection, is
+   * now the state.
+   */
+  function handleSavedViewApplied(pqlQuery: string | null) {
+    parkedFiltersRef.current = null;
+    setPqlMode(pqlQuery !== null);
+  }
 
   // Opened from the command palette ("Create issue" action) or from the
   // board's inline quick-add expand button (prefills title + state, and
@@ -864,6 +955,11 @@ export default function Issues() {
             onChange={setFilters}
             onClear={clearFilters}
             triggerClassName={pageHeaderControlClass}
+            pqlMode={pqlMode}
+            pqlAppliedQuery={filters.pql?.trim() ?? ""}
+            onPqlModeChange={handlePqlModeChange}
+            onPqlApply={handlePqlApply}
+            onPqlClear={handlePqlClear}
           />
         }
         displayPanel={
@@ -884,6 +980,9 @@ export default function Issues() {
             display={settings}
             onApplyDisplay={update}
             triggerClassName={pageHeaderControlClass}
+            pqlMode={pqlMode}
+            pqlQuery={filters.pql?.trim() ?? ""}
+            onViewApplied={handleSavedViewApplied}
           />
         }
         addButton={{ onClick: () => setDialogOpen(true) }}
@@ -1136,7 +1235,17 @@ export default function Issues() {
               ref={searchRef}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search issues…  ( / )"
+              placeholder={
+                pqlMode
+                  ? "Search is replaced by PQL mode"
+                  : "Search issues…  ( / )"
+              }
+              disabled={pqlMode}
+              title={
+                pqlMode
+                  ? "Free-text search is a visual filter — switch back to Filters to search"
+                  : undefined
+              }
               className="h-[30px] w-56 pl-8 text-[11px]"
             />
           </form>
@@ -1145,6 +1254,9 @@ export default function Issues() {
               variant="ghost"
               size="sm"
               onClick={() => {
+                // Clearing means clearing: the parked visual selection
+                // is dropped too, so toggling back cannot resurrect it.
+                parkedFiltersRef.current = null;
                 clearFilters();
                 setSearchInput("");
               }}
@@ -1172,7 +1284,12 @@ export default function Issues() {
             <Button
               variant="outline"
               onClick={onExport}
-              disabled={exporting}
+              disabled={exporting || pqlMode}
+              title={
+                pqlMode
+                  ? "Export follows visual filters only — the export endpoint does not take a PQL query yet"
+                  : undefined
+              }
               className="h-[30px] text-[10px]"
             >
               <Download className="mr-1 h-3.5 w-3.5" />

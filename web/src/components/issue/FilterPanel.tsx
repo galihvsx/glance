@@ -15,6 +15,7 @@ import {
   activeFilterCount,
   type IssueFilters,
 } from "../../lib/filters";
+import PqlEditor from "./PqlEditor";
 import type {
   Epic,
   Issue,
@@ -147,7 +148,14 @@ function DateRange({
  *  (multi + top-level, C75T1), epic (multi + none, C75T1), date ranges
  *  (created / updated / due) plus a "No due date" is-empty chip for the
  *  due range (C80T1, mutually exclusive with the due range), and
- *  subscribed-by-me. */
+ *  subscribed-by-me.
+ *
+ *  C91T1 PQL mode (opt-in per page via the pql* props; only the Issues
+ *  list page passes them today): a Filters/PQL toggle above the panel.
+ *  PQL mode replaces the visual controls with the PQL editor (see
+ *  PqlEditor). Modes are mutually exclusive — the page owns the mode
+ *  and parks the visual selection in memory while PQL is on, so
+ *  switching back restores it. The panel itself never merges modes. */
 export default function FilterPanel({
   slug,
   identifier,
@@ -155,6 +163,11 @@ export default function FilterPanel({
   onChange,
   onClear,
   triggerClassName,
+  pqlMode,
+  pqlAppliedQuery,
+  onPqlModeChange,
+  onPqlApply,
+  onPqlClear,
 }: {
   slug: string;
   identifier: string;
@@ -163,6 +176,24 @@ export default function FilterPanel({
   onClear: () => void;
   /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
   triggerClassName?: string;
+  /**
+   * C91T1: true while the page is in PQL mode. Only meaningful when
+   * onPqlApply is provided — pages that do not pass it get no toggle
+   * and no PQL UI at all.
+   */
+  pqlMode?: boolean;
+  /** Last applied PQL query ("" when none) — the editor's draft seed. */
+  pqlAppliedQuery?: string;
+  /** Mode toggle (Filters ↔ PQL); the page parks/restores filters. */
+  onPqlModeChange?: (mode: "visual" | "pql") => void;
+  /**
+   * Probe + commit for the editor's Apply. Must resolve only once
+   * the query is applied and reject on a 400, so the editor can show
+   * the error inline while the list stays untouched.
+   */
+  onPqlApply?: (query: string) => Promise<void>;
+  /** Commit an empty query (no filter) for the editor's Clear. */
+  onPqlClear?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
@@ -312,7 +343,10 @@ export default function FilterPanel({
       <PopoverContent className="max-h-[70vh] w-72 overflow-y-auto p-2" align="start">
         <div className="mb-1 flex items-center justify-between px-2 py-1">
           <span className="text-sm font-medium">Filters</span>
-          {count > 0 && (
+          {/* PQL mode has its own Clear inside the editor; the visual
+              "Clear all" must not appear there (it would clear the
+              wrong mode's state). */}
+          {count > 0 && !pqlMode && (
             <Button
               variant="ghost"
               size="sm"
@@ -327,6 +361,52 @@ export default function FilterPanel({
             </Button>
           )}
         </div>
+
+        {/* C91T1: Filters/PQL mode toggle (Issues page only — rendered
+            only when the page wires PQL apply). PQL mode replaces the
+            visual controls below with the editor; the two modes never
+            render together, so a visual control can never edit a
+            PQL-filtered list behind the user's back. */}
+        {onPqlApply && (
+          <div
+            role="group"
+            aria-label="Filter mode"
+            className="mx-2 mb-2 flex rounded-md border p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => onPqlModeChange?.("visual")}
+              className={cn(
+                "h-7 flex-1 rounded-sm text-xs font-medium",
+                !pqlMode && "bg-primary text-primary-foreground",
+              )}
+            >
+              Filters
+            </button>
+            <button
+              type="button"
+              aria-pressed={!!pqlMode}
+              onClick={() => onPqlModeChange?.("pql")}
+              className={cn(
+                "h-7 flex-1 rounded-sm text-xs font-medium",
+                pqlMode && "bg-primary text-primary-foreground",
+              )}
+            >
+              PQL
+            </button>
+          </div>
+        )}
+
+        {pqlMode && onPqlApply ? (
+          <PqlEditor
+            appliedQuery={pqlAppliedQuery ?? ""}
+            onApply={onPqlApply}
+            onClear={() => onPqlClear?.()}
+            onApplied={() => setOpen(false)}
+          />
+        ) : (
+          <>
 
         <SectionHeader
           title="State"
@@ -652,6 +732,8 @@ export default function FilterPanel({
             Show archived
           </Label>
         </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );

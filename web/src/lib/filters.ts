@@ -40,6 +40,12 @@ import { useSearchParams } from "react-router-dom";
  *                   from the UI.
  *   subscribed      "1" = only issues the current user subscribed to
  *   archived        "1" = include archived issues (default: hidden)
+ *   pql             Plane Query Language predicate (C91T1). Mutually
+ *                   exclusive with every visual dimension above: when
+ *                   non-blank, the list request sends ONLY pql (plus
+ *                   pagination/ordering) — see lib/pql.ts. The visual
+ *                   selection is parked in memory while PQL mode is on
+ *                   and restored when switching back (Issues page).
  *
  * The list API takes the same params except dates, which it wants as
  * RFC3339 (existing `updated_after` convention). toApiParams() converts:
@@ -47,7 +53,13 @@ import { useSearchParams } from "react-router-dom";
  * *_before -> (day+1)T00:00:00Z   (exclusive start of next day, so the
  *             named day is fully included)
  *
- * AI / PQL code mode is deliberately out of scope (lean thesis).
+ * NOTE: toApiParams() serializes whatever the filter state carries,
+ * including pql when set — callers that must honor PQL exclusivity
+ * (the Issues list request) branch on a non-blank pql BEFORE calling
+ * it and use buildPqlRequestParams() instead (lib/pql.ts).
+ *
+ * AI text-to-PQL generation is deliberately out of scope (C91 plan:
+ * deterministic language only; the AI on-ramp is galih's call).
  */
 
 export interface IssueFilters {
@@ -75,6 +87,13 @@ export interface IssueFilters {
   subscribed: boolean;
   /** Include archived issues; default false hides them. */
   archived: boolean;
+  /**
+   * Applied PQL query (C91T1), carried as the URL `pql` param and in
+   * saved-view payloads. Optional so views saved before C91 (which
+   * have no such key) keep loading unchanged — absent means "".
+   * Non-blank means PQL mode: the list request sends only this.
+   */
+  pql?: string;
 }
 
 export const EMPTY_FILTERS: IssueFilters = {
@@ -173,6 +192,11 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
       search.get("due_date_empty") === "true",
     subscribed: search.get("subscribed") === "1",
     archived: search.get("archived") === "1",
+    // Trimmed; a blank pql is absent (the backend treats it as such),
+    // so "pql=" in a pasted URL never activates PQL mode. Absent means
+    // the key is undefined — parse/serialize round-trips stay exact
+    // against pre-C91 fixtures that carry no pql key at all.
+    pql: (search.get("pql") ?? "").trim() || undefined,
   };
 }
 
@@ -197,6 +221,10 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.dueDateEmpty) p.set("due_date_empty", "1");
   if (f.subscribed) p.set("subscribed", "1");
   if (f.archived) p.set("archived", "1");
+  // PQL rides along as its own param; blank means absent. Callers
+  // that must honor exclusivity branch on it before sending (see the
+  // NOTE on toApiParams and lib/pql.ts buildPqlRequestParams).
+  if (f.pql?.trim()) p.set("pql", f.pql.trim());
   return p;
 }
 
@@ -249,6 +277,8 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
   if (f.subscribed) n++;
   if (f.archived) n++;
+  // A PQL query is one active filter dimension, whatever it contains.
+  if (f.pql?.trim()) n++;
   return n;
 }
 
@@ -307,6 +337,7 @@ const FILTER_PARAM_NAMES = new Set([
   "due_date_empty",
   "subscribed",
   "archived",
+  "pql",
 ]);
 
 /** True for the URL params that belong to the filter schema (C2T6 uses this
