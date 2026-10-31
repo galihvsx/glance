@@ -174,6 +174,14 @@ describe("cycle detail PQL mode (C95T1)", () => {
     }
   });
 
+  it("cycle detail PQL editor hides the save hint (C96T1: no Views menu on detail pages)", async () => {
+    renderPage();
+    await openDetail();
+    fireEvent.click(screen.getByRole("button", { name: "PQL" }));
+    await screen.findByLabelText("PQL query");
+    expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
+  });
+
   it("invalid PQL shows the editor error with column and leaves the list intact", async () => {
     renderPage();
     await openDetail();

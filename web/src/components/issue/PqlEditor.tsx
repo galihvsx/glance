@@ -26,6 +26,15 @@ interface PqlEditorProps {
   onClear: () => void;
   /** Called after a successful apply so the host can close up. */
   onApplied?: () => void;
+  /**
+   * Show the "Views → Save current view" hint. Default true (the
+   * Issues page, where that save path exists). Pass false on
+   * surfaces with no Views save path for PQL — Board (its Views
+   * menu saves visual filters only), cycle detail, and module
+   * detail (no Views menu at all) — so the hint is not wrong
+   * there (C96T1).
+   */
+  showSaveHint?: boolean;
 }
 
 export default function PqlEditor({
@@ -33,6 +42,7 @@ export default function PqlEditor({
   onApply,
   onClear,
   onApplied,
+  showSaveHint = true,
 }: PqlEditorProps) {
   const [draft, setDraft] = useState(appliedQuery);
   const [error, setError] = useState<string | null>(null);
@@ -104,10 +114,12 @@ export default function PqlEditor({
             Empty query = no filter.
           </span>
         </div>
-        <p className="text-xs text-muted-foreground">
-          To save this query, use Views → Save current view in the page
-          header; it re-applies when the view is opened.
-        </p>
+        {showSaveHint && (
+          <p className="text-xs text-muted-foreground">
+            To save this query, use Views → Save current view in the page
+            header; it re-applies when the view is opened.
+          </p>
+        )}
       </div>
 
       <div className="mt-3 border-t pt-2">

@@ -884,6 +884,7 @@ function CycleDetail({
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
             onClear={() => setAppliedQuery("")}
+            showSaveHint={false}
           />
         )}
         <OrgSectionHead
