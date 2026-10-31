@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 
 /** Issue links (C8T0): directed dependency edges between issues, backed by
  *  GET/POST .../issues/{uuid}/links and DELETE .../links/{linkID}.
@@ -138,6 +138,63 @@ export function issueLinksPath(
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}/links`;
 }
 
+/** Base path for the project-scoped cycle report (C94T1): closed
+ *  display-ID rings, {"cycles": []} when the project is clean. */
+export function issueLinkCyclesPath(
+  slug: string,
+  identifier: string,
+): string {
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/links/cycles`;
+}
+
+/** Pre-existing `blocks` cycles for the project, as closed display-ID
+ *  rings (first ID repeated at the end). Read-only: the report never
+ *  modifies links, and a failed report hides the notice rather than
+ *  inventing cycles. */
+export function useIssueLinkCycles(slug: string, identifier: string) {
+  const cyclesQuery = useQuery({
+    queryKey: ["issue-link-cycles", slug, identifier],
+    queryFn: () =>
+      api.get<{ cycles: string[][] }>(issueLinkCyclesPath(slug, identifier)),
+    // A stale report is a display state, not a retry loop.
+    retry: false,
+  });
+
+  return {
+    cycles: cyclesQuery.data?.cycles ?? [],
+    isLoading: cyclesQuery.isPending,
+    isError: cyclesQuery.isError,
+    refetch: cyclesQuery.refetch,
+  };
+}
+
+/** A closed display-ID ring rendered verbatim: "ENG-12 → ENG-7 → ENG-12". */
+export function formatCyclePath(path: string[]): string {
+  return path.join(" → ");
+}
+
+/** C94T2: a create-link 409 with code `issue_link_cycle` renders the
+ *  cycle path verbatim from details.path. Anything else returns null
+ *  so the caller keeps its existing rendering — other 409s (self-link,
+ *  duplicate, cross-project) are untouched. When the code matches but
+ *  details carry no usable path, the backend's own sentence is the
+ *  honest fallback. */
+export function cycleErrorMessage(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.code !== "issue_link_cycle") {
+    return null;
+  }
+  const details = e.details as { path?: unknown } | undefined;
+  const path = details?.path;
+  if (
+    Array.isArray(path) &&
+    path.length > 0 &&
+    path.every((p): p is string => typeof p === "string")
+  ) {
+    return `Adding this link would create a cycle: ${formatCyclePath(path)}`;
+  }
+  return e.message;
+}
+
 /** Issue-link data + mutations for the detail page. Errors are left to
  *  the caller (honest backend messages), but remove always refreshes
  *  the list — a 404 means the link was already gone, which is exactly
@@ -161,6 +218,11 @@ export function useIssueLinks(
 
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: key });
+    // Adding/removing an edge can create or break a project cycle, so
+    // the cycles notice refreshes with the link list.
+    void queryClient.invalidateQueries({
+      queryKey: ["issue-link-cycles", slug, identifier],
+    });
   }
 
   const addMutation = useMutation({
