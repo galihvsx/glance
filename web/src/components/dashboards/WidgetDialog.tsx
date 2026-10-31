@@ -7,9 +7,18 @@
 // max-rows + gauge color + show-percentage (smart_gauge), max-rows
 // (table_2d), view toggle (intake_breakdown). intake_breakdown hides the
 // projects/filters sections — the backend ignores widget-level filters
-// and project scope there. Config keys mirror the backend's per-type
-// allow-list (parseWidgetConfig): a key meaningless for the type is a
-// 400, so each type sends exactly its own key set.
+// and project scope there. C100T1: the pql_table panel — a single-project
+// picker (required, exactly one — the PQL translator is
+// single-project-scoped), a PQL query editor reusing lib/pql's
+// cheat-sheet (PqlEditor itself is a probe-and-commit control whose
+// draft lives outside the form, so the dialog owns the textarea and
+// reuses the cheat-sheet data + error wording instead; parse
+// validation is the server's at save time, surfaced via serverError),
+// and the row-list columns/sort/max-rows controls. Config keys mirror
+// the backend's per-type allow-list (parseWidgetConfig): a key
+// meaningless for the type is a 400, so each type sends exactly its
+// own key set — pql_table sends query/columns/sort_by/sort_dir/
+// max_rows/project_ids and NEVER filters.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -43,6 +52,7 @@ import {
   type WidgetVisualization,
 } from "../../lib/dashboards";
 import { PRIORITY_LABELS } from "../../lib/types";
+import { PQL_CHEAT_SHEET } from "../../lib/pql";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -53,6 +63,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 import { Label as UiLabel } from "../ui/label";
 import { NativeSelect } from "../ui/native-select";
 import { Switch } from "../ui/switch";
@@ -238,6 +249,19 @@ function TypeGlyph({ type }: { type: WidgetType }) {
           <circle cx="24" cy="9" r="5" fill="none" className="stroke-primary" strokeWidth="1" />
         </svg>
       );
+    case "pql_table":
+      return (
+        <svg viewBox="0 0 48 24" className={cls} aria-hidden="true">
+          <rect x="2" y="2" width="30" height="20" rx="2" className="fill-primary/15 stroke-primary/50" strokeWidth="1" />
+          <line x1="2" y1="9" x2="32" y2="9" className="stroke-primary/50" strokeWidth="1" />
+          <rect x="5" y="4" width="9" height="3" rx="1" className="fill-primary/70" />
+          <rect x="18" y="4" width="10" height="3" rx="1" className="fill-primary/45" />
+          <rect x="5" y="11" width="14" height="3" rx="1" className="fill-primary/45" />
+          <rect x="5" y="18" width="9" height="3" rx="1" className="fill-primary/45" />
+          <circle cx="38" cy="15" r="4.5" fill="none" className="stroke-primary" strokeWidth="1.5" />
+          <line x1="41.5" y1="18.5" x2="45" y2="22" className="stroke-primary" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      );
   }
 }
 
@@ -284,6 +308,10 @@ export default function WidgetDialog({
   const [columns, setColumns] = useState<WidgetRowColumn[]>([...ROW_COLUMNS]);
   const [sortBy, setSortBy] = useState<WidgetRowColumn>("state");
   const [sortDir, setSortDir] = useState<WidgetSortDir>("desc");
+  // C100T1: pql_table only — the query string (dialog-owned state;
+  // see the header note on why PqlEditor itself is not embedded).
+  const [query, setQuery] = useState("");
+  const [showCheatSheet, setShowCheatSheet] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -311,6 +339,8 @@ export default function WidgetDialog({
       }
       setSortBy(cfg.sort_by);
       setSortDir(cfg.sort_dir);
+      setQuery(initial?.config?.query ?? "");
+      setShowCheatSheet(false);
     }
   }, [open, initial?.title, initial?.widget_type, initial?.config]);
 
@@ -471,7 +501,13 @@ export default function WidgetDialog({
   );
 
   const trimmed = title.trim();
-  const canSave = trimmed.length > 0 && !pending;
+  // pql_table additionally requires a non-blank query and exactly one
+  // pinned project — the dialog must not submit with 0 or 2+ projects.
+  const canSave =
+    trimmed.length > 0 &&
+    !pending &&
+    (widgetType !== "pql_table" ||
+      (query.trim().length > 0 && projectIds.length === 1));
 
   const summary = filterSummary(
     { project_ids: projectIds, filters: prunedFilters },
@@ -491,7 +527,22 @@ export default function WidgetDialog({
       config.filters = prunedFilters;
       config.project_ids = projectIds;
     }
-    if (isRowListType(widgetType)) {
+    if (widgetType === "pql_table") {
+      // The backend 400s when sort_by is not one of the configured
+      // columns, so a sort column dropped from the chips falls back
+      // to the first kept column instead of surfacing a 400.
+      // Exactly the C100T0 allow-list: query, columns, sort_by,
+      // sort_dir, max_rows, project_ids — NEVER filters (PQL is the
+      // filter); group_by/metric are accepted-but-ignored server-side
+      // and are not sent.
+      const kept = columns.length > 0 ? columns : [...ROW_COLUMNS];
+      config.query = query.trim();
+      config.columns = kept;
+      config.sort_by = kept.includes(sortBy) ? sortBy : kept[0];
+      config.sort_dir = sortDir;
+      config.max_rows = maxRows;
+      config.project_ids = projectIds;
+    } else if (isRowListType(widgetType)) {
       // The backend 400s when sort_by is not one of the configured
       // columns, so a sort column dropped from the chips falls back
       // to the first kept column instead of surfacing a 400.
@@ -527,6 +578,7 @@ export default function WidgetDialog({
   };
 
   const isIntake = widgetType === "intake_breakdown";
+  const isPql = widgetType === "pql_table";
   const isGauge = widgetType === "smart_gauge";
   const isCounter = widgetType === "smart_counter";
   const isTable2d = widgetType === "table_2d";
@@ -592,8 +644,11 @@ export default function WidgetDialog({
 
           {/* Project scope: empty = all visible (live) projects. Hidden
               for intake_breakdown — the backend ignores project_ids
-              there (dashboard scope only). */}
-          {!isIntake && (
+              there (dashboard scope only). pql_table replaces the
+              multi-select with a required single-select: the PQL
+              translator is single-project-scoped, so the widget is
+              pinned to exactly one project. */}
+          {!isIntake && !isPql && (
           <div className="flex flex-col gap-1.5">
             <UiLabel>Projects</UiLabel>
             <FilterPicker
@@ -616,6 +671,34 @@ export default function WidgetDialog({
                   : `${projectIds.length} project${projectIds.length > 1 ? "s" : ""} selected`
               }
             />
+          </div>
+          )}
+
+          {isPql && (
+          <div className="flex flex-col gap-1.5">
+            <UiLabel htmlFor="widget-project">
+              Project (exactly one — PQL names resolve within one project)
+            </UiLabel>
+            <NativeSelect
+              id="widget-project"
+              value={projectIds.length === 1 ? projectIds[0] : ""}
+              onChange={(e) =>
+                setProjectIds(e.target.value ? [e.target.value] : [])
+              }
+            >
+              <option value="">Select a project…</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </NativeSelect>
+            {projectIds.length !== 1 && (
+              <p className="text-xs text-destructive">
+                Select exactly one project — a PQL widget is pinned to a
+                single project.
+              </p>
+            )}
           </div>
           )}
 
@@ -644,6 +727,17 @@ export default function WidgetDialog({
               <p className="mt-1 text-sm">
                 Intake metrics use the dashboard's project scope —
                 widget-level filters and project selection don't apply.
+              </p>
+            </div>
+          ) : isPql ? (
+            <div className="rounded-md border bg-muted/50 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                PQL is the filter
+              </p>
+              <p className="mt-1 text-sm">
+                Visual filters don&apos;t apply to this widget — the
+                query below is the filter. The server validates the
+                query when you save.
               </p>
             </div>
           ) : (
@@ -696,6 +790,60 @@ export default function WidgetDialog({
               <p className="text-xs text-muted-foreground">
                 1–100 groups per page.
               </p>
+            </div>
+          )}
+
+          {/* C100T1 PQL query panel (prototype-as-spec): the query
+              editor, the ORDER BY / LIMIT precedence note, and the
+              cheat-sheet reused from lib/pql (the same entries
+              PqlEditor renders). A blank query blocks save; parse
+              errors surface from the server on save. */}
+          {isPql && (
+            <div className="flex flex-col gap-1.5">
+              <UiLabel htmlFor="widget-pql-query">PQL query</UiLabel>
+              <Textarea
+                id="widget-pql-query"
+                aria-label="PQL query"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder='state = "In Progress" AND priority >= high ORDER BY priority DESC, updated_at DESC LIMIT 20'
+                rows={3}
+                className="font-mono text-xs"
+              />
+              {query.trim().length === 0 ? (
+                <p className="text-xs text-destructive">
+                  A PQL query is required.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Query ORDER BY wins over the sort below; LIMIT caps
+                  total rows.
+                </p>
+              )}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowCheatSheet((v) => !v)}
+                  aria-expanded={showCheatSheet}
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  {showCheatSheet ? "Hide cheat-sheet" : "Cheat-sheet"}
+                </button>
+                {showCheatSheet && (
+                  <ul className="mt-2 space-y-1">
+                    {PQL_CHEAT_SHEET.map((row) => (
+                      <li key={row.example} className="text-xs">
+                        <code className="rounded bg-muted px-1 py-0.5">
+                          {row.example}
+                        </code>{" "}
+                        <span className="text-muted-foreground">
+                          {row.meaning}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
 
@@ -920,8 +1068,10 @@ export default function WidgetDialog({
           )}
 
           {/* Filters — hidden for intake_breakdown (the backend ignores
-              widget-level filters there; showing them would be a lie). */}
-          {!isIntake && (
+              widget-level filters there; showing them would be a lie)
+              and for pql_table (PQL is the filter; sending a filters
+              key is a server 400). */}
+          {!isIntake && !isPql && (
           <fieldset>
             <legend className="mb-2 text-sm font-medium">Filters</legend>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

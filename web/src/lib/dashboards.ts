@@ -12,7 +12,9 @@ import { ApiError, api } from "./api";
 export type DashboardVisibility = "public" | "private";
 
 /** The six Plane widget types (phase 1) plus the four phase-2 types (C83T0)
- *  plus the two phase-3 row-list types (C84T0). */
+ *  plus the two phase-3 row-list types (C84T0) plus the C100 PQL
+ *  row-list type. pql_table stays last so the picker order of the
+ *  existing types never shifts. */
 export type WidgetType =
   | "bar"
   | "line"
@@ -25,7 +27,8 @@ export type WidgetType =
   | "table_2d"
   | "intake_breakdown"
   | "work_items_table"
-  | "assigned_to_me";
+  | "assigned_to_me"
+  | "pql_table";
 
 export const WIDGET_TYPES: WidgetType[] = [
   "bar",
@@ -40,6 +43,7 @@ export const WIDGET_TYPES: WidgetType[] = [
   "intake_breakdown",
   "work_items_table",
   "assigned_to_me",
+  "pql_table",
 ];
 
 /** Human label per widget type (dialog picker + canvas fallbacks). */
@@ -56,6 +60,7 @@ export const WIDGET_TYPE_LABELS: Record<WidgetType, string> = {
   intake_breakdown: "Intake breakdown",
   work_items_table: "Work items table",
   assigned_to_me: "Assigned to you",
+  pql_table: "PQL table",
 };
 
 /** Chart types that need a group_by; number is the scalar. */
@@ -86,10 +91,12 @@ export function isPaginatedType(t: WidgetType): boolean {
   return t === "smart_counter" || t === "smart_gauge" || t === "table_2d";
 }
 
-/** Phase-3 row-list types (C84T0): a paginated row envelope
- *  ({rows, page, max_rows, total}) instead of groups. */
+/** Phase-3 row-list types (C84T0) plus the C100 PQL type: a paginated
+ *  row envelope ({rows, page, max_rows, total}) instead of groups. */
 export function isRowListType(t: WidgetType): boolean {
-  return t === "work_items_table" || t === "assigned_to_me";
+  return (
+    t === "work_items_table" || t === "assigned_to_me" || t === "pql_table"
+  );
 }
 
 /** Types whose segments are clickable into the drill-down modal
@@ -198,7 +205,8 @@ export interface WidgetConfig {
   metric?: WidgetMetric;
   filters?: Partial<WidgetFilters>;
   project_ids?: string[];
-  /** smart_counter|smart_gauge|table_2d only: groups per page (1–100). */
+  /** smart_counter|smart_gauge|table_2d|work_items_table|assigned_to_me|
+   *  pql_table only: groups/rows per page (1–100, default 10). */
   max_rows?: number;
   /** smart_counter only: tile grid or table render. */
   visualization?: WidgetVisualization;
@@ -208,15 +216,23 @@ export interface WidgetConfig {
   show_percentage?: boolean;
   /** intake_breakdown only: tile grid or table render. */
   view?: WidgetVisualization;
-  /** work_items_table|assigned_to_me only: rendered columns, in order
-   *  (default: all seven). The payload always carries the full row. */
+  /** work_items_table|assigned_to_me|pql_table only: rendered columns,
+   *  in order (default: all seven). The payload always carries the
+   *  full row. */
   columns?: WidgetRowColumn[];
-  /** work_items_table|assigned_to_me only: sort column (default:
-   *  "state"; must sit inside `columns` or the backend 400s). */
+  /** work_items_table|assigned_to_me|pql_table only: sort column
+   *  (default: "state"; must sit inside `columns` or the backend
+   *  400s). For pql_table this is the fallback sort only — a query
+   *  ORDER BY wins. */
   sort_by?: WidgetRowColumn;
-  /** work_items_table|assigned_to_me only: sort direction (default:
-   *  "desc"). */
+  /** work_items_table|assigned_to_me|pql_table only: sort direction
+   *  (default: "desc"). For pql_table the fallback direction only. */
   sort_dir?: WidgetSortDir;
+  /** pql_table only (required, non-blank): the PQL query string
+   *  driving the row list. The query ORDER BY wins over sort_by/
+   *  sort_dir; the query LIMIT caps the total rows across pages
+   *  and in the CSV export. */
+  query?: string;
 }
 
 export interface DashboardWidget {
@@ -394,9 +410,11 @@ export interface WidgetData {
   total_groups?: number;
   /** Present only for intake_breakdown widgets. */
   intake?: IntakeBreakdown;
-  /** Present only for work_items_table|assigned_to_me: the page's rows. */
+  /** Present only for work_items_table|assigned_to_me|pql_table: the
+   *  page's rows. */
   rows?: WidgetRowItem[];
-  /** Present only for work_items_table|assigned_to_me: total rows. */
+  /** Present only for work_items_table|assigned_to_me|pql_table: total
+   *  rows (for pql_table, the query-LIMIT-capped total). */
   total?: number;
 }
 

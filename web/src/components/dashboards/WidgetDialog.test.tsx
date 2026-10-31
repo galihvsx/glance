@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// C81T1/C83T1/C84T1: WidgetDialog — twelve type picker, group-by hidden for
+// C81T1/C83T1/C84T1: WidgetDialog — thirteen type picker, group-by hidden for
 // number/intake_breakdown, filter summary for number, per-type config
 // panels and config key sets (C83T1), submit config shape, edit prefill.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -52,13 +52,13 @@ function renderDialog(
 }
 
 describe("WidgetDialog", () => {
-  it("renders all twelve widget types in the picker", () => {
+  it("renders all thirteen widget types in the picker", () => {
     renderDialog();
-    // Twelve type cards + the visualization/view segmented radios render
+    // Thirteen type cards + the visualization/view segmented radios render
     // only for their own types; filter to the type-picker radiogroup.
     const group = screen.getByRole("radiogroup", { name: "Widget type" });
     const typeRadios = within(group).getAllByRole("radio");
-    expect(typeRadios).toHaveLength(12);
+    expect(typeRadios).toHaveLength(13);
     for (const label of [
       "Bar chart",
       "Line chart",
@@ -72,6 +72,7 @@ describe("WidgetDialog", () => {
       "Intake breakdown",
       "Work items table",
       "Assigned to you",
+      "PQL table",
     ]) {
       expect(
         within(group).getByRole("radio", { name: new RegExp(label) }),

@@ -12,9 +12,10 @@ import {
 } from "./dashboards";
 
 describe("phase-3 row-list helpers", () => {
-  it("classifies the two row-list types", () => {
+  it("classifies the three row-list types", () => {
     expect(isRowListType("work_items_table")).toBe(true);
     expect(isRowListType("assigned_to_me")).toBe(true);
+    expect(isRowListType("pql_table")).toBe(true);
     expect(isRowListType("bar")).toBe(false);
     expect(isRowListType("table_2d")).toBe(false);
   });
@@ -37,6 +38,7 @@ describe("phase-3 row-list helpers", () => {
       "intake_breakdown",
       "work_items_table",
       "assigned_to_me",
+      "pql_table",
     ] as const) {
       expect(isDrillableType(t)).toBe(false);
     }
