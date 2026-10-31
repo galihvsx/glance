@@ -235,7 +235,7 @@ func TestPQLOrderBy(t *testing.T) {
 	if parsed.Predicate.Kind != pqlCmp || parsed.Predicate.Field != "priority" {
 		t.Fatalf("predicate = %+v, want priority comparison", parsed.Predicate)
 	}
-	if parsed.OrderBy == nil || parsed.OrderBy.Field != "priority" || !parsed.OrderBy.Desc || parsed.OrderBy.OrderKey() != "-priority" {
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 1 || parsed.OrderBy.Keys[0].Field != "priority" || !parsed.OrderBy.Keys[0].Desc || parsed.OrderBy.OrderKey() != "-priority" {
 		t.Fatalf("orderBy = %+v, want priority DESC (-priority)", parsed.OrderBy)
 	}
 
@@ -244,14 +244,14 @@ func TestPQLOrderBy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePQLWithOrder ASC default: %v", err)
 	}
-	if parsed.OrderBy == nil || parsed.OrderBy.Field != "created_at" || parsed.OrderBy.Desc || parsed.OrderBy.OrderKey() != "created_at" {
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 1 || parsed.OrderBy.Keys[0].Field != "created_at" || parsed.OrderBy.Keys[0].Desc || parsed.OrderBy.OrderKey() != "created_at" {
 		t.Fatalf("orderBy = %+v, want created_at ASC", parsed.OrderBy)
 	}
 	parsed, err = ParsePQLWithOrder(`priority >= 3 OrDeR bY SEQUENCE_ID asc`)
 	if err != nil {
 		t.Fatalf("ParsePQLWithOrder mixed case: %v", err)
 	}
-	if parsed.OrderBy == nil || parsed.OrderBy.Field != "sequence_id" || parsed.OrderBy.Desc {
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 1 || parsed.OrderBy.Keys[0].Field != "sequence_id" || parsed.OrderBy.Keys[0].Desc {
 		t.Fatalf("orderBy = %+v, want sequence_id ASC", parsed.OrderBy)
 	}
 
@@ -285,14 +285,14 @@ func TestPQLOrderByErrors(t *testing.T) {
 		{`priority >= 3 ORDER BY created`, "unknown sort field"},
 		{`priority >= 3 ORDER BY due`, "unknown sort field"},
 		{`priority >= 3 ORDER BY state`, "unknown sort field"},
-		// Multi-key: comma and bare second field are both 400, never
-		// a silently dropped second key.
-		{`priority >= 3 ORDER BY priority, created_at`, "multiple sort keys"},
-		{`priority >= 3 ORDER BY priority DESC, created_at`, "multiple sort keys"},
-		{`priority >= 3 ORDER BY priority created_at`, "single sort key"},
+		// Bare second field (no comma) and an unknown direction word
+		// are trailing junk, never a silently dropped key. (Comma-
+		// separated multi-key clauses are valid since C99T0; see
+		// TestPQLMultiKeyOrderBy.)
+		{`priority >= 3 ORDER BY priority created_at`, "unexpected"},
 		{`priority >= 3 ORDER priority`, "expected BY"},
 		{`priority >= 3 ORDER BY`, "expected a sort field"},
-		{`priority >= 3 ORDER BY priority sideways`, "single sort key"},
+		{`priority >= 3 ORDER BY priority sideways`, "unexpected"},
 	}
 	for _, tc := range cases {
 		_, err := ParsePQLWithOrder(tc.query)
@@ -342,7 +342,7 @@ func TestPQLLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePQLWithOrder ORDER BY + LIMIT: %v", err)
 	}
-	if parsed.OrderBy == nil || parsed.OrderBy.Field != "priority" || !parsed.OrderBy.Desc {
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 1 || parsed.OrderBy.Keys[0].Field != "priority" || !parsed.OrderBy.Keys[0].Desc {
 		t.Fatalf("orderBy = %+v, want priority DESC", parsed.OrderBy)
 	}
 	if parsed.Limit == nil || parsed.Limit.Value != 5 {
@@ -414,5 +414,152 @@ func TestPQLLimitErrors(t *testing.T) {
 	pqlErr, ok := err.(*PQLQueryError)
 	if !ok || pqlErr.Pos != strings.Index(q, "101")+1 {
 		t.Fatalf("LIMIT value position: err = %v, want position %d", err, strings.Index(q, "101")+1)
+	}
+}
+
+// PQL multi-key ORDER BY tests (C99T0): comma-separated keys, per-key
+// direction defaults, mixed directions, the composite OrderKey, and
+// every multi-key 400 shape.
+func TestPQLMultiKeyOrderBy(t *testing.T) {
+	// Per-key direction defaults: DESC on the first key, ASC default
+	// on the second; the composite key is comma-joined.
+	parsed, err := ParsePQLWithOrder(`priority >= 3 ORDER BY priority DESC, updated_at`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder: %v", err)
+	}
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 2 {
+		t.Fatalf("orderBy = %+v, want 2 keys", parsed.OrderBy)
+	}
+	k0, k1 := parsed.OrderBy.Keys[0], parsed.OrderBy.Keys[1]
+	if k0.Field != "priority" || !k0.Desc || k1.Field != "updated_at" || k1.Desc {
+		t.Fatalf("keys = %+v, want priority DESC + updated_at ASC", parsed.OrderBy.Keys)
+	}
+	if parsed.OrderBy.OrderKey() != "-priority,updated_at" {
+		t.Fatalf("OrderKey = %q, want %q", parsed.OrderBy.OrderKey(), "-priority,updated_at")
+	}
+
+	// Mixed directions across three keys, explicit ASC included.
+	parsed, err = ParsePQLWithOrder(`priority >= 0 ORDER BY priority DESC, sequence_id ASC, sort_order DESC`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder mixed: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.OrderKey() != "-priority,sequence_id,-sort_order" {
+		t.Fatalf("OrderKey = %q, want %q", parsed.OrderBy.OrderKey(), "-priority,sequence_id,-sort_order")
+	}
+
+	// Keywords and field names are case-insensitive.
+	parsed, err = ParsePQLWithOrder(`priority >= 0 order by PRIORITY desc, UPDATED_AT asc`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder mixed case: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.OrderKey() != "-priority,updated_at" {
+		t.Fatalf("OrderKey = %q, want %q", parsed.OrderBy.OrderKey(), "-priority,updated_at")
+	}
+
+	// A single key still renders exactly as before (no comma).
+	parsed, err = ParsePQLWithOrder(`priority >= 3 ORDER BY priority DESC`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder single: %v", err)
+	}
+	if parsed.OrderBy == nil || parsed.OrderBy.OrderKey() != "-priority" {
+		t.Fatalf("OrderKey = %q, want %q", parsed.OrderBy.OrderKey(), "-priority")
+	}
+
+	// LIMIT composes after a multi-key ORDER BY.
+	parsed, err = ParsePQLWithOrder(`priority >= 3 ORDER BY priority DESC, updated_at LIMIT 10`)
+	if err != nil {
+		t.Fatalf("ParsePQLWithOrder multi + LIMIT: %v", err)
+	}
+	if parsed.OrderBy == nil || len(parsed.OrderBy.Keys) != 2 || parsed.Limit == nil || parsed.Limit.Value != 10 {
+		t.Fatalf("parsed = %+v, want 2 keys + LIMIT 10", parsed)
+	}
+
+	// ParsePQL still returns just the predicate with a multi-key
+	// ORDER BY present (the clause is parsed and discarded safely).
+	node, err := ParsePQL(`priority >= 3 ORDER BY priority DESC, updated_at`)
+	if err != nil || node.Kind != pqlCmp {
+		t.Fatalf("ParsePQL with multi-key ORDER BY: node = %+v err = %v", node, err)
+	}
+}
+
+func TestPQLMultiKeyOrderByErrors(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string // substring of the error message
+	}{
+		// Unknown field in a later key is still an unknown-field 400.
+		{`priority >= 3 ORDER BY priority, bogus`, "unknown sort field"},
+		{`priority >= 3 ORDER BY priority DESC, created`, "unknown sort field"},
+		// Duplicate field in one clause, any direction, any case.
+		{`priority >= 3 ORDER BY priority, priority`, "duplicate sort field"},
+		{`priority >= 3 ORDER BY priority DESC, PRIORITY ASC`, "duplicate sort field"},
+		{`priority >= 3 ORDER BY updated_at, created_at, updated_at DESC`, "duplicate sort field"},
+		// Trailing comma, missing field after a comma, comma before
+		// LIMIT — all 400 with position, never a dropped key.
+		{`priority >= 3 ORDER BY priority,`, "expected a sort field after ','"},
+		{`priority >= 3 ORDER BY priority, LIMIT 10`, "expected a sort field after ','"},
+		{`priority >= 3 ORDER BY priority,, updated_at`, "expected a sort field after ','"},
+		// Direction without a following key is a trailing comma too.
+		{`priority >= 3 ORDER BY priority DESC,`, "expected a sort field after ','"},
+	}
+	for _, tc := range cases {
+		_, err := ParsePQLWithOrder(tc.query)
+		if err == nil {
+			t.Errorf("ParsePQLWithOrder(%q): want error containing %q, got nil", tc.query, tc.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("ParsePQLWithOrder(%q): error = %v, want substring %q", tc.query, err, tc.want)
+		}
+		var pqlErr *PQLQueryError
+		if !errors.As(err, &pqlErr) {
+			t.Errorf("ParsePQLWithOrder(%q): error type = %T, want *PQLQueryError", tc.query, err)
+		} else if pqlErr.Pos < 1 {
+			t.Errorf("ParsePQLWithOrder(%q): position = %d, want a 1-based position", tc.query, pqlErr.Pos)
+		}
+	}
+	// Duplicate-field position points at the second field token.
+	q := `priority >= 3 ORDER BY priority, priority`
+	_, err := ParsePQLWithOrder(q)
+	pqlErr, ok := err.(*PQLQueryError)
+	if !ok || pqlErr.Pos != strings.LastIndex(q, "priority")+1 {
+		t.Fatalf("duplicate sort field position: err = %v, want position %d", err, strings.LastIndex(q, "priority")+1)
+	}
+	// Trailing-comma position points at the end of the query (EOF).
+	q = `priority >= 3 ORDER BY priority,`
+	_, err = ParsePQLWithOrder(q)
+	pqlErr, ok = err.(*PQLQueryError)
+	if !ok || pqlErr.Pos < 1 {
+		t.Fatalf("trailing comma position: err = %v, want a 1-based position", err)
+	}
+}
+
+// Multi-value cursor round-trip (C99T0): the new Values shape encodes
+// and decodes, while the legacy single-Value shape still decodes for
+// a single-key order.
+func TestListCursorMultiValue(t *testing.T) {
+	id := "00000000-0000-0000-0000-000000000000"
+	enc := encodeListCursorMulti("-priority,updated_at", []string{"3", "2026-01-01T00:00:00Z"}, id)
+	c, err := decodeListCursor(enc, "-priority,updated_at")
+	if err != nil {
+		t.Fatalf("decode multi-value cursor: %v", err)
+	}
+	if len(c.Values) != 2 || c.Values[0] != "3" || c.Values[1] != "2026-01-01T00:00:00Z" || c.ID != id {
+		t.Fatalf("cursor = %+v, want Values [3 2026-01-01T00:00:00Z] + id", c)
+	}
+	// Order mismatch is rejected even for the multi-value shape.
+	if _, err := decodeListCursor(enc, "-priority"); err == nil {
+		t.Fatalf("decode under a different order: want ErrInvalidCursor, got nil")
+	}
+	// Legacy single-value shape still decodes for a single-key order.
+	legacy := encodeListCursor("-priority", "3", id)
+	c, err = decodeListCursor(legacy, "-priority")
+	if err != nil || c.Value != "3" || c.ID != id {
+		t.Fatalf("legacy cursor decode: cursor = %+v err = %v, want Value 3", c, err)
+	}
+	// A cursor with neither Value nor Values is rejected.
+	bad := encodeListCursorMulti("-priority,updated_at", nil, id)
+	if _, err := decodeListCursor(bad, "-priority,updated_at"); err == nil {
+		t.Fatalf("empty multi-value cursor: want ErrInvalidCursor, got nil")
 	}
 }

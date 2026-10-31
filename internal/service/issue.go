@@ -2756,18 +2756,56 @@ const (
 	maxListPerPage     = 100
 )
 
-// listCursor is the opaque pagination cursor: the sort key of the last
-// row on the page plus its id (tiebreak), minted for one order_by. JSON →
-// base64url, no padding.
+// listCursor is the opaque pagination cursor: the sort key(s) of the
+// last row on the page plus its id (tiebreak), minted for one
+// (possibly composite) order_by. JSON → base64url, no padding.
+// Single-key orders keep the legacy single-Value shape (v) so cursors
+// minted before C99T0 still decode and paginate; multi-key orders
+// mint the Values shape (vs, one value per key, in key order).
+// decodeListCursor accepts either shape — callers that need a
+// specific arity validate the count against their key list (ListIssues
+// does; the single-key callers keep checking Value, which a
+// multi-value cursor never carries under their order string).
 type listCursor struct {
-	Order string `json:"o"`
-	Value string `json:"v"`
-	ID    string `json:"i"`
+	Order  string   `json:"o"`
+	Value  string   `json:"v,omitempty"`
+	Values []string `json:"vs,omitempty"`
+	ID     string   `json:"i"`
 }
 
 func encodeListCursor(order, value, id string) string {
 	b, _ := json.Marshal(listCursor{Order: order, Value: value, ID: id})
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// encodeListCursorMulti mints a cursor for a multi-key order: one
+// value per key, in key order.
+func encodeListCursorMulti(order string, values []string, id string) string {
+	b, _ := json.Marshal(listCursor{Order: order, Values: values, ID: id})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// cursorValues resolves a decoded cursor to one value per sort key:
+// the multi-value shape when present (count must equal key count),
+// otherwise the legacy single value, valid only for a single-key
+// order. Every value must parse for its key's sort kind (else
+// ErrInvalidCursor, never a 500 on the SQL cast).
+func (c listCursor) cursorValues(ords []listOrder) ([]string, error) {
+	if len(c.Values) > 0 {
+		if len(c.Values) != len(ords) {
+			return nil, ErrInvalidCursor
+		}
+		for i, v := range c.Values {
+			if !validCursorValue(ords[i].kind, v) {
+				return nil, ErrInvalidCursor
+			}
+		}
+		return c.Values, nil
+	}
+	if len(ords) != 1 || !validCursorValue(ords[0].kind, c.Value) {
+		return nil, ErrInvalidCursor
+	}
+	return []string{c.Value}, nil
 }
 
 func decodeListCursor(s, wantOrder string) (listCursor, error) {
@@ -2779,7 +2817,7 @@ func decodeListCursor(s, wantOrder string) (listCursor, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, ErrInvalidCursor
 	}
-	if c.Order != wantOrder || c.Value == "" || c.ID == "" || !isUUIDFormat(c.ID) {
+	if c.Order != wantOrder || (c.Value == "" && len(c.Values) == 0) || c.ID == "" || !isUUIDFormat(c.ID) {
 		return c, ErrInvalidCursor
 	}
 	return c, nil
@@ -3376,9 +3414,33 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if orderKey == "" {
 		orderKey = "-updated_at"
 	}
-	ord, ok := listOrders[orderKey]
-	if !ok {
-		return nil, ErrInvalidOrderBy
+	// C99T0: the EFFECTIVE order is a key list. A PQL ORDER BY
+	// renders a comma-joined composite (one key per clause key);
+	// the ?order_by= param is still a single key (multi-key params
+	// land in C99T1) — splitting the composite here keeps the
+	// single-key path byte-identical: one ord, one ORDER BY term,
+	// the legacy tuple-comparison predicate, the legacy cursor shape.
+	// Every key resolves through the listOrders whitelist, so no user
+	// input ever reaches SQL as a column name.
+	var ords []listOrder
+	if pqlParsed != nil && pqlParsed.OrderBy != nil {
+		for _, k := range pqlParsed.OrderBy.Keys {
+			key := k.Field
+			if k.Desc {
+				key = "-" + key
+			}
+			ord, ok := listOrders[key]
+			if !ok {
+				return nil, ErrInvalidOrderBy
+			}
+			ords = append(ords, ord)
+		}
+	} else {
+		ord, ok := listOrders[orderKey]
+		if !ok {
+			return nil, ErrInvalidOrderBy
+		}
+		ords = []listOrder{ord}
 	}
 
 	perPage := in.PerPage
@@ -3403,15 +3465,18 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	}
 
 	var cur *listCursor
+	var curValues []string
 	if in.Cursor != "" {
 		c, err := decodeListCursor(in.Cursor, orderKey)
 		if err != nil {
 			return nil, err
 		}
-		if !validCursorValue(ord.kind, c.Value) {
-			return nil, ErrInvalidCursor
+		vals, err := c.cursorValues(ords)
+		if err != nil {
+			return nil, err
 		}
 		cur = &c
+		curValues = vals
 	}
 
 	wsID, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
@@ -3468,25 +3533,76 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		conds = append(conds, pqlCond)
 	}
 	if cur != nil {
-		op := ">"
-		if ord.desc {
-			op = "<"
+		if len(ords) == 1 {
+			// Single key: the legacy tuple comparison, byte-identical
+			// to before C99T0. A row is strictly after the cursor row
+			// in the page order — new rows sorting before the cursor
+			// never cause dupes or skips.
+			ord := ords[0]
+			op := ">"
+			if ord.desc {
+				op = "<"
+			}
+			conds = append(conds, fmt.Sprintf("(i.%s, i.id) %s (%s%s, %s::uuid)",
+				strings.TrimPrefix(ord.column, "i."), op,
+				arg(curValues[0]), ord.kind.sqlCast(), arg(cur.ID)))
+		} else {
+			// Multi-key (C99T0): the row-comparison expansion over
+			// (k1..kn, id). A row is strictly after the cursor row
+			// iff (k1 op1 v1) OR (k1 = v1 AND k2 op2 v2) OR ... OR
+			// (k1 = v1 AND ... AND kn = vn AND id op_id cursorID),
+			// with op per key (ASC → >, DESC → <) and op_id
+			// following the LAST key's direction — the same direction
+			// as the id tiebreak below. All values are parameterized
+			// through arg(); columns come from the whitelist only.
+			idOp := ">"
+			if ords[len(ords)-1].desc {
+				idOp = "<"
+			}
+			terms := make([]string, 0, len(ords)+1)
+			for i, ord := range ords {
+				op := ">"
+				if ord.desc {
+					op = "<"
+				}
+				parts := make([]string, 0, i+1)
+				for j := 0; j < i; j++ {
+					parts = append(parts, fmt.Sprintf("%s = %s%s",
+						ords[j].column, arg(curValues[j]), ords[j].kind.sqlCast()))
+				}
+				parts = append(parts, fmt.Sprintf("%s %s %s%s",
+					ord.column, op, arg(curValues[i]), ord.kind.sqlCast()))
+				terms = append(terms, "("+strings.Join(parts, " AND ")+")")
+			}
+			eqs := make([]string, 0, len(ords)+1)
+			for j, ord := range ords {
+				eqs = append(eqs, fmt.Sprintf("%s = %s%s",
+					ord.column, arg(curValues[j]), ord.kind.sqlCast()))
+			}
+			eqs = append(eqs, fmt.Sprintf("i.id %s %s::uuid", idOp, arg(cur.ID)))
+			terms = append(terms, "("+strings.Join(eqs, " AND ")+")")
+			conds = append(conds, "("+strings.Join(terms, " OR ")+")")
 		}
-		// Tuple comparison on (sort key, id): strictly after the cursor
-		// row in the page order — new rows sorting before the cursor
-		// never cause dupes or skips.
-		conds = append(conds, fmt.Sprintf("(i.%s, i.id) %s (%s%s, %s::uuid)",
-			strings.TrimPrefix(ord.column, "i."), op,
-			arg(cur.Value), ord.kind.sqlCast(), arg(cur.ID)))
 	}
 
-	dir := "ASC"
-	if ord.desc {
-		dir = "DESC"
+	// C99T0: ORDER BY is col1 dir1, col2 dir2, ..., i.id <dir of the
+	// LAST key> — for one key this renders exactly as before.
+	orderParts := make([]string, 0, len(ords)+1)
+	for _, ord := range ords {
+		dir := "ASC"
+		if ord.desc {
+			dir = "DESC"
+		}
+		orderParts = append(orderParts, ord.column+" "+dir)
 	}
-	// ord.column comes from the whitelist above — never user input.
+	lastDir := "ASC"
+	if ords[len(ords)-1].desc {
+		lastDir = "DESC"
+	}
+	orderParts = append(orderParts, "i.id "+lastDir)
+	// Every ord.column comes from the whitelist above — never user input.
 	query := `SELECT ` + cols + ` FROM issues i WHERE ` + strings.Join(conds, " AND ") +
-		` ORDER BY ` + ord.column + ` ` + dir + `, i.id ` + dir +
+		` ORDER BY ` + strings.Join(orderParts, ", ") +
 		` LIMIT ` + arg(perPage+1)
 
 	rows, err := pool.Query(ctx, query, args...)
@@ -3541,7 +3657,17 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 		// even when more rows match; there is no further paging.
 		if pqlParsed == nil || pqlParsed.Limit == nil {
 			last := items[len(items)-1]
-			res.NextCursor = encodeListCursor(orderKey, listSortKey(ord, &last.Issue), last.ID)
+			if len(ords) == 1 {
+				// Legacy single-value shape: single-key cursors
+				// (including pre-C99T0 ones) keep working verbatim.
+				res.NextCursor = encodeListCursor(orderKey, listSortKey(ords[0], &last.Issue), last.ID)
+			} else {
+				vals := make([]string, 0, len(ords))
+				for _, ord := range ords {
+					vals = append(vals, listSortKey(ord, &last.Issue))
+				}
+				res.NextCursor = encodeListCursorMulti(orderKey, vals, last.ID)
+			}
 		}
 	}
 	// C21T2: ?include_project_structure=1 on the list endpoint attaches the
