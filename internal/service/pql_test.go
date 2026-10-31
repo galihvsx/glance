@@ -102,6 +102,12 @@ func TestPQLParseFunctionsAndOperators(t *testing.T) {
 		`estimate != 5`,
 		`estimate in (S, M)`,
 		`estimate in (M, none)`,
+		`parent = ENG-123`,
+		`parent = none`,
+		`parent != ENG-123`,
+		`parent in (ENG-123, none)`,
+		`hasParent()`,
+		`hasChildren()`,
 	} {
 		if _, err := ParsePQL(q); err != nil {
 			t.Errorf("ParsePQL(%q): %v", q, err)
@@ -172,8 +178,8 @@ func TestPQLValidateErrors(t *testing.T) {
 		want  string
 	}{
 		{`foo = Bar`, "unknown field"},
-		{`parent = ENG-1`, "unknown field"},
-		{`hasChildren()`, "unknown function"},
+		{`hasGrandchildren()`, "unknown function"},
+		{`parent > ENG-1`, "not supported for field"},
 		{`state > Todo`, "not supported for field"},
 		{`state < Todo`, "not supported for field"},
 		{`label >= x`, "not supported for field"},

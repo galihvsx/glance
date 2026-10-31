@@ -71,6 +71,20 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
     meaning: "Estimate point is one of the listed keys",
   },
   {
+    example: "parent = ENG-123",
+    meaning:
+      "Parent issue by key {IDENTIFIER}-{sequence_id} (project-scoped; also none for top-level issues)",
+  },
+  {
+    example: "parent in (ENG-123, none)",
+    meaning: "Parent is the listed issue, or the issue is top-level",
+  },
+  { example: "hasParent()", meaning: "Issues with a parent" },
+  {
+    example: "hasChildren()",
+    meaning: "Issues with at least one live child (archived, deleted, and draft children do not count)",
+  },
+  {
     example: "due > 2026-11-01",
     meaning: "Target date (aliases: due_date, target_date)",
   },
