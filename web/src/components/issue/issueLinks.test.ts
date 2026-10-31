@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { ApiError } from "../../lib/api";
 import {
   LINK_KINDS,
+  cycleErrorMessage,
+  formatCyclePath,
   groupLinks,
+  issueLinkCyclesPath,
   issueLinksPath,
   linkGroupKey,
   linkGroupLabel,
@@ -161,5 +165,65 @@ describe("issueLinksPath", () => {
     expect(issueLinksPath("my ws", "GLA", "uuid-1")).toBe(
       "/api/v1/workspaces/my%20ws/projects/GLA/issues/uuid-1/links",
     );
+  });
+});
+
+describe("issueLinkCyclesPath", () => {
+  it("builds the project-scoped cycles route and encodes segments", () => {
+    expect(issueLinkCyclesPath("my ws", "ENG")).toBe(
+      "/api/v1/workspaces/my%20ws/projects/ENG/links/cycles",
+    );
+  });
+});
+
+describe("formatCyclePath", () => {
+  it("joins a closed ring verbatim with arrows", () => {
+    expect(formatCyclePath(["ENG-12", "ENG-7", "ENG-12"])).toBe(
+      "ENG-12 → ENG-7 → ENG-12",
+    );
+  });
+});
+
+describe("cycleErrorMessage", () => {
+  it("renders a 409 issue_link_cycle path verbatim", () => {
+    const err = new ApiError(
+      409,
+      "adding this link would create a cycle: ENG-12 → ENG-7 → ENG-12",
+      "issue_link_cycle",
+      { path: ["ENG-12", "ENG-7", "ENG-12"] },
+    );
+    expect(cycleErrorMessage(err)).toBe(
+      "Adding this link would create a cycle: ENG-12 → ENG-7 → ENG-12",
+    );
+  });
+
+  it("falls back to the backend message when the cycle code has no path", () => {
+    const err = new ApiError(
+      409,
+      "adding this link would create a cycle",
+      "issue_link_cycle",
+    );
+    expect(cycleErrorMessage(err)).toBe(
+      "adding this link would create a cycle",
+    );
+  });
+
+  it("leaves other 409s untouched so their rendering is unchanged", () => {
+    expect(
+      cycleErrorMessage(
+        new ApiError(409, "issue link already exists", "conflict"),
+      ),
+    ).toBeNull();
+    expect(
+      cycleErrorMessage(
+        new ApiError(409, "issue cannot link to itself", "conflict"),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for non-cycle errors and non-ApiError values", () => {
+    expect(cycleErrorMessage(new ApiError(403, "forbidden"))).toBeNull();
+    expect(cycleErrorMessage(new Error("boom"))).toBeNull();
+    expect(cycleErrorMessage(null)).toBeNull();
   });
 });

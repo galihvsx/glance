@@ -26,12 +26,16 @@ import {
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "cn";
 import { useOpenIssue } from "./SubIssues";
+import { parseDisplayId } from "../../lib/displayId";
 import {
   LINK_KINDS,
+  cycleErrorMessage,
+  formatCyclePath,
   groupLinks,
   linksTitle,
   otherIssueId,
   removeLinkMessage,
+  useIssueLinkCycles,
   useIssueLinks,
   type IssueLink,
   type IssueLinkKind,
@@ -208,10 +212,13 @@ function AddLinkDialog({
         },
         // Honest backend messages: "issue link already exists",
         // "issue cannot link to itself", "target issue is in another
-        // project", 404 on a raced-away target, 403 for guests.
+        // project", 404 on a raced-away target, 403 for guests. A 409
+        // with code issue_link_cycle renders the cycle path verbatim
+        // (C94T2) through the same dialog error — no second channel.
         onError: (e) => {
           const msg =
-            e instanceof ApiError ? e.message : "Failed to add link";
+            cycleErrorMessage(e) ??
+            (e instanceof ApiError ? e.message : "Failed to add link");
           setDialogError(msg);
         },
       },
@@ -344,6 +351,117 @@ function AddLinkDialog({
   );
 }
 
+/** One member of a reported cycle. The cycles endpoint carries display
+ *  IDs only, so the member resolves to a UUID through the same
+ *  ?sequence_id= lookup the command palette uses for display-ID jumps.
+ *  Until (or unless) it resolves, the display ID still renders as plain
+ *  text — the notice stays readable even when resolution fails. */
+function CycleIssueLink({
+  projectBase,
+  slug,
+  identifier,
+  displayId,
+  onOpen,
+}: {
+  projectBase: string;
+  slug: string;
+  identifier: string;
+  displayId: string;
+  onOpen: (uuid: string) => void;
+}) {
+  const parsed = parseDisplayId(displayId);
+  const resolveQuery = useQuery({
+    queryKey: ["issue-link-cycle-resolve", slug, identifier, displayId],
+    queryFn: () =>
+      api.get<IssueListResult>(
+        `${projectBase}/issues?sequence_id=${parsed!.sequence}&per_page=1`,
+      ),
+    enabled: parsed !== null,
+    retry: false,
+  });
+
+  const issue = resolveQuery.data?.results[0];
+  const resolved =
+    parsed !== null &&
+    issue !== undefined &&
+    issue.display_id.toUpperCase() === displayId.toUpperCase();
+  if (!resolved) {
+    return <span className="font-mono">{displayId}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(issue.id)}
+      className="font-mono underline decoration-dotted underline-offset-2 hover:text-ink"
+      title={`Open ${displayId}`}
+    >
+      {displayId}
+    </button>
+  );
+}
+
+/** Pre-existing `blocks` cycles in this project (C94T1 report, C94T2
+ *  notice). Read-only: the notice deletes nothing — breaking a cycle
+ *  stays a manual per-link delete below. A clean project (or a failed
+ *  report) renders nothing: no notice, no new chrome. */
+function CyclesNotice({
+  slug,
+  identifier,
+  projectBase,
+  compact,
+}: {
+  slug: string;
+  identifier: string;
+  projectBase: string;
+  compact: boolean;
+}) {
+  const openIssue = useOpenIssue(slug, identifier, compact);
+  const { cycles, isLoading, isError } = useIssueLinkCycles(slug, identifier);
+
+  if (isLoading || isError || cycles.length === 0) return null;
+
+  return (
+    <div
+      role="note"
+      aria-label="Dependency cycles in this project"
+      className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5"
+    >
+      <p className="text-[11px] text-ink-secondary">
+        This project has dependency cycles: every issue in a cycle is
+        blocked, directly or indirectly, by another issue in it, so none
+        of them can complete. Remove one link in a cycle to break it,
+        using the per-link delete below.
+      </p>
+      <ul className="mt-1 space-y-0.5">
+        {cycles.map((cycle, i) => (
+          <li
+            key={i}
+            aria-label={formatCyclePath(cycle)}
+            className="text-[11px] text-ink"
+          >
+            {cycle.map((displayId, j) => (
+              <span key={`${displayId}-${j}`}>
+                {j > 0 && (
+                  <span aria-hidden="true" className="text-ink-muted">
+                    {" → "}
+                  </span>
+                )}
+                <CycleIssueLink
+                  projectBase={projectBase}
+                  slug={slug}
+                  identifier={identifier}
+                  displayId={displayId}
+                  onOpen={openIssue}
+                />
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** "Linked issues" section for the issue detail page (and peek drawer):
  *  edges grouped by type, add dialog, per-link remove with confirm. */
 export default function IssueLinks({
@@ -412,6 +530,12 @@ export default function IssueLinks({
         <Link2 className="h-3.5 w-3.5 text-ink-muted" aria-hidden />
         {linksTitle(links.length)}
       </h2>
+      <CyclesNotice
+        slug={slug}
+        identifier={identifier}
+        projectBase={projectBase}
+        compact={compact}
+      />
       <div className="space-y-2">
         {isLoading ? (
           <div className="space-y-2">
