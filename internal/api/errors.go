@@ -21,6 +21,11 @@ const (
 	// to a completed state while it has open blockers. details carries
 	// {"blockers":[...]} — the blocker display IDs.
 	ErrCodeOpenBlockers = "open_blockers"
+	// ErrCodeIssueLinkCycle is the 409 code (C94T0) when a new 'blocks'
+	// link would close a dependency cycle. details carries
+	// {"path":[...]} — the cycle path as display IDs, starting and
+	// ending at the new edge's source.
+	ErrCodeIssueLinkCycle = "issue_link_cycle"
 	// ErrCodeStateTransitionNotAllowed is the 409 code (C68T0) when a
 	// state move is not an allowed transition of the project's workflow.
 	// details carries {"allowed":[...]} — the permitted next-state IDs.
