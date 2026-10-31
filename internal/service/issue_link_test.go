@@ -229,10 +229,13 @@ func TestIssueLinkDelete(t *testing.T) {
 	if err := DeleteIssueLink(ctx, pool, slug, ident, a.ID, actor, l3.ID); err != nil {
 		t.Fatalf("incoming delete from target route: %v", err)
 	}
-	// But NOT from an unrelated issue's route.
-	l4, err := CreateIssueLink(ctx, pool, slug, ident, b.ID, actor, c.ID, "blocks")
+	// But NOT from an unrelated issue's route. (C94T0: b->c would
+	// close the c->b 2-cycle, so the unrelated fixture uses a fresh
+	// issue d instead.)
+	d := createTestIssue(t, pool, slug, ident, actor, "D")
+	l4, err := CreateIssueLink(ctx, pool, slug, ident, b.ID, actor, d.ID, "blocks")
 	if err != nil {
-		t.Fatalf("CreateIssueLink b->c: %v", err)
+		t.Fatalf("CreateIssueLink b->d: %v", err)
 	}
 	if err := DeleteIssueLink(ctx, pool, slug, ident, a.ID, actor, l4.ID); !errors.Is(err, ErrIssueLinkNotFound) {
 		t.Fatalf("unrelated delete err = %v, want ErrIssueLinkNotFound", err)

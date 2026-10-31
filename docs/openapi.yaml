@@ -1217,7 +1217,7 @@
       "post": {
         "tags": ["issues"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Link two issues",
-        "description": "409 on self-link, cross-project target, or duplicate edge; 404 on unknown target. Member (15)+.",
+        "description": "409 on self-link, cross-project target, duplicate edge, or a 'blocks' edge that would close a dependency cycle (code issue_link_cycle; details.path lists the cycle display IDs, starting and ending at the new edge's source); 'relates_to'/'duplicates' cycles stay allowed. 404 on unknown target. Member (15)+.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "$ref": "#/components/parameters/Uuid" } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["target_issue_id"], "properties": { "target_issue_id": { "type": "string", "format": "uuid" }, "kind": { "type": "string", "default": "blocks", "description": "Link kind; defaults to blocks" } } } } } },
         "responses": { "201": { "description": "Created link", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssueLink" } } } }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }

@@ -17,11 +17,14 @@ package service
 //
 // Roles: any member (guest 5+) may read; mutations need member (15)+.
 //
-// Honest scope, v0.3.0: we reject direct self-loops and duplicates.
-// There is NO cycle detection — A→B→C→A is accepted. Do not claim
-// otherwise in docs or UI copy. (The pre-existing issue_relations table
-// is the user-facing relation graph with its own type vocabulary;
-// issue_links is the lean dependency-edge contract the Gantt consumes.)
+// Contract, v0.3.0 + C94T0: we reject direct self-loops, duplicates,
+// AND 'blocks' cycles — creating a 'blocks' edge that closes a loop
+// (source reachable from target over 'blocks' edges) is rejected with
+// IssueLinkCycleError carrying the cycle path as display IDs.
+// 'relates_to' and 'duplicates' cycles are NOT ordering cycles and stay
+// allowed. (The pre-existing issue_relations table is the user-facing
+// relation graph with its own type vocabulary; issue_links is the lean
+// dependency-edge contract the Gantt consumes.)
 
 import (
 	"context"
@@ -59,6 +62,12 @@ var (
 	// The typed *OpenBlockersError carries the blocker display IDs; the
 	// handler maps it to 409 with code "open_blockers".
 	ErrOpenBlockers = errors.New("service: issue has open blockers")
+	// ErrIssueLinkCycle is returned when a new 'blocks' edge would close
+	// a dependency cycle (the target can already reach the source over
+	// 'blocks' edges). The typed *IssueLinkCycleError carries the cycle
+	// path as display IDs; the handler maps it to 409 with code
+	// "issue_link_cycle".
+	ErrIssueLinkCycle = errors.New("service: issue link would create a cycle")
 )
 
 // issueLinkKinds is the strict vocabulary enforced by CreateIssueLink.
@@ -112,6 +121,140 @@ func (e *OpenBlockersError) Error() string {
 }
 
 func (e *OpenBlockersError) Unwrap() error { return ErrOpenBlockers }
+
+// IssueLinkCycleError is returned when a new 'blocks' edge would close a
+// dependency cycle (C94T0). Path holds the full cycle as display IDs
+// ({IDENTIFIER}-{sequence}), starting AND ending at the new edge's
+// source: e.g. creating A→B when B→C→A already exists yields
+// [A, B, C, A]. Only 'blocks' edges count; 'relates_to'/'duplicates'
+// edges never appear in a path.
+type IssueLinkCycleError struct {
+	Path []string
+}
+
+func (e *IssueLinkCycleError) Error() string {
+	return fmt.Sprintf("service: issue link would create a cycle: %s",
+		strings.Join(e.Path, " → "))
+}
+
+func (e *IssueLinkCycleError) Unwrap() error { return ErrIssueLinkCycle }
+
+// findBlocksCyclePath runs the C94T0 reachability check for a proposed
+// edge source → target (kind 'blocks'): it BFS-walks the project's
+// 'blocks' adjacency starting at target and returns the cycle path as
+// display IDs — [source] + [target … source] — iff source is reachable
+// from target, else nil. Only live, unarchived issues in the SAME
+// project count as path nodes (both edge endpoints must satisfy that,
+// so an archived or deleted intermediary breaks the path); the edge
+// kind filter is 'blocks' only, so relates_to/duplicates edges never
+// extend a path. Neighbours are visited in edge creation order, so the
+// returned path is deterministic for a given graph.
+//
+// Read-committed is fine here: the unique (issue_id, target_issue_id)
+// backstop still serializes racing double-creates, and a racing
+// cycle-close pair is accepted only if neither create saw the other —
+// documented, not papered over with a serializable transaction.
+func findBlocksCyclePath(ctx context.Context, pool *pgxpool.Pool, projectID, ident, source, target string) ([]string, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT l.issue_id::text, l.target_issue_id::text
+		 FROM issue_links l
+		 JOIN issues src ON src.id = l.issue_id
+		   AND src.deleted_at IS NULL AND src.archived_at IS NULL
+		   AND src.project_id = $1::uuid
+		 JOIN issues tgt ON tgt.id = l.target_issue_id
+		   AND tgt.deleted_at IS NULL AND tgt.archived_at IS NULL
+		   AND tgt.project_id = $1::uuid
+		 WHERE l.kind = 'blocks'
+		 ORDER BY l.created_at ASC`,
+		projectID)
+	if err != nil {
+		return nil, err
+	}
+	adj := map[string][]string{}
+	for rows.Next() {
+		var from, to string
+		if err := rows.Scan(&from, &to); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		adj[from] = append(adj[from], to)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// BFS from target; parent links reconstruct the shortest path.
+	parent := map[string]string{target: ""}
+	queue := []string{target}
+	seen := map[string]bool{target: true}
+	found := false
+	for len(queue) > 0 && !found {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[cur] {
+			if seen[next] {
+				continue
+			}
+			seen[next] = true
+			parent[next] = cur
+			if next == source {
+				found = true
+				break
+			}
+			queue = append(queue, next)
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	// Reconstruct target … source, then prepend the new edge's source
+	// so the cycle starts and ends at the source.
+	var pathIDs []string
+	for cur := source; ; cur = parent[cur] {
+		pathIDs = append([]string{cur}, pathIDs...)
+		if cur == target {
+			break
+		}
+	}
+	pathIDs = append([]string{source}, pathIDs...)
+
+	// Resolve every path node to its display ID in one query.
+	drows, err := pool.Query(ctx,
+		`SELECT id::text, $2 || '-' || sequence_id::text FROM issues
+		 WHERE project_id = $1::uuid AND deleted_at IS NULL AND archived_at IS NULL`,
+		projectID, ident)
+	if err != nil {
+		return nil, err
+	}
+	display := map[string]string{}
+	for drows.Next() {
+		var id, d string
+		if err := drows.Scan(&id, &d); err != nil {
+			drows.Close()
+			return nil, err
+		}
+		display[id] = d
+	}
+	if err := drows.Err(); err != nil {
+		drows.Close()
+		return nil, err
+	}
+	drows.Close()
+	path := make([]string, 0, len(pathIDs))
+	for _, id := range pathIDs {
+		d, ok := display[id]
+		if !ok {
+			// Unreachable: every path node passed the live+unarchived
+			// join above, so it must appear here. Treat a miss as an
+			// internal error rather than emitting a half-named path.
+			return nil, fmt.Errorf("service: cycle path node %s has no display ID", id)
+		}
+		path = append(path, d)
+	}
+	return path, nil
+}
 
 // assertNoOpenBlockersTx is the shared blocker guard (C16T3): moving an
 // issue into a completed-group state is rejected while open 'blocks'
@@ -217,7 +360,7 @@ func ListIssueLinks(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 // the pair, then checked in Go). Member (15)+.
 func CreateIssueLink(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, actorID, targetID, kind string) (*IssueLink, error) {
 	issueID = normalizeIssueID(issueID)
-	_, projectID, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	ident, projectID, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +416,34 @@ func CreateIssueLink(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier
 	}
 	if targetProject != projectID {
 		return nil, ErrIssueLinkCrossProject
+	}
+
+	// Duplicate pre-check (mirrors the unique backstop below): a repeat
+	// edge stays ErrIssueLinkConflict even when it would also close a
+	// cycle, so duplicate behavior is unchanged by the cycle guard.
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM issue_links
+		 WHERE issue_id = $1::uuid AND target_issue_id = $2::uuid)`,
+		issueID, target).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, ErrIssueLinkConflict
+	}
+
+	// C94T0 cycle guard: only 'blocks' edges are ordering edges, and an
+	// empty kind defaults to 'blocks' (DB COALESCE below) — so empty
+	// counts as 'blocks' here too. 'relates_to'/'duplicates' cycles
+	// stay allowed.
+	if k == "" || k == "blocks" {
+		path, err := findBlocksCyclePath(ctx, pool, projectID, ident, issueID, target)
+		if err != nil {
+			return nil, err
+		}
+		if path != nil {
+			return nil, &IssueLinkCycleError{Path: path}
+		}
 	}
 
 	// Insert; the unique (issue_id, target_issue_id) is the race backstop.

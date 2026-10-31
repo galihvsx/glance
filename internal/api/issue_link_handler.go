@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 
@@ -19,8 +20,11 @@ import (
 // via linkError (which falls back to issueError for the shared
 // sentinels).
 //
-// Honest scope, v0.3.0: only direct self-loops and duplicate edges are
-// rejected. There is NO cycle detection — A→B→C→A is accepted.
+// Scope, v0.3.0 + C94T0: direct self-loops, duplicate edges, AND
+// 'blocks' cycles are rejected (a 'blocks' edge closing a loop answers
+// 409 with code issue_link_cycle and the cycle path in details).
+// 'relates_to'/'duplicates' cycles stay allowed — they are not ordering
+// edges.
 
 // RegisterIssueLinkRoutes mounts the issue-link endpoints. Call this
 // before the SPA catch-all so API routes are never shadowed.
@@ -42,6 +46,18 @@ func linkError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "issue link already exists", nil)
 	case errors.Is(err, service.ErrIssueLinkCrossProject):
 		return WriteError(c, http.StatusConflict, ErrCodeConflict, "target issue is in another project", nil)
+	// C94T0: blocks-cycle guard. 409 with code issue_link_cycle;
+	// details names the cycle path by display ID so the client can
+	// render it verbatim.
+	case errors.Is(err, service.ErrIssueLinkCycle):
+		var ce *service.IssueLinkCycleError
+		path := []string{}
+		if errors.As(err, &ce) && ce.Path != nil {
+			path = ce.Path
+		}
+		return WriteError(c, http.StatusConflict, ErrCodeIssueLinkCycle,
+			"adding this link would create a cycle: "+strings.Join(path, " → "),
+			map[string]any{"path": path})
 	case errors.Is(err, service.ErrIssueLinkNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "issue link not found", nil)
 	case errors.Is(err, service.ErrInvalidIssueLink):
@@ -72,8 +88,10 @@ type createIssueLinkBody struct {
 }
 
 // createIssueLink implements POST .../issues/{uuid}/links
-// {target_issue_id, kind?}. 409 on self-link, cross-project target, or
-// duplicate edge; 404 on unknown target. Member (15)+.
+// {target_issue_id, kind?}. 409 on self-link, cross-project target,
+// duplicate edge, or a 'blocks' edge that would close a cycle (code
+// issue_link_cycle, details.path lists the cycle display IDs); 404 on
+// unknown target. Member (15)+.
 func (h *IssueHandler) createIssueLink(c *echo.Context) error {
 	var body createIssueLinkBody
 	if err := c.Bind(&body); err != nil {
