@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Dashboard PQL widget (cycle 100)**
+
+- Dashboards gain a thirteenth widget type, `pql_table`: a row list
+  driven by a PQL query string, rendered like `work_items_table`
+  (same row shape, columns, and pagination). This closes the PQL
+  arc's last deferred surface — dashboards were the one surface
+  still without PQL. A widget is pinned to exactly one project
+  (the PQL translator is single-project-scoped; 0 or 2+ projects
+  is a 400, and visual `filters` are rejected rather than silently
+  ignored, since PQL is the filter). The query's ORDER BY
+  (multi-key) wins over the widget's sort, and its LIMIT caps the
+  total rows across pages and in the CSV export. A stored query
+  whose names no longer resolve (a renamed state/epic/label)
+  surfaces as a per-widget error on that card with an Edit
+  affordance — the rest of the dashboard still loads.
+- The widget dialog gains a PQL panel: type picker entry, a
+  required single-project picker (save is blocked with 0 or 2+
+  projects), a query editor with the ORDER BY/LIMIT precedence
+  note and the PQL cheat-sheet, and the row-list columns/sort/
+  max-rows controls. The card shows the stored query under its
+  header, an empty state when the query matches nothing, and the
+  per-widget error state above. Multi-project PQL widgets and AI
+  text-to-PQL stay deferred.
+
 **PQL multi-key ordering (cycle 99)**
 
 - PQL `ORDER BY` now takes several keys — `ORDER BY priority DESC,
