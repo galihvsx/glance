@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -102,20 +103,30 @@ const workloadOpenCond = `i.id IS NOT NULL AND ds.id IS NULL`
 // GetWorkload returns the workload report for a workspace. projectIDs
 // scopes issue counting to those projects; empty means all workspace
 // projects. Members are always all workspace members (ordered by
-// display name), even with zero issues.
-func GetWorkload(ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID, projectIDs []uuid.UUID) (*WorkloadReport, error) {
+// display name), even with zero issues. C92T2: the actor's effective
+// project access scopes the counting — a non-member is ErrNotFound
+// (as before for an unknown workspace), an empty scope counts only
+// projects the actor can reach, and an explicitly requested private
+// project the actor cannot reach is ErrProjectNotFound (the same
+// sentinel a foreign-workspace project already produced, so the
+// request never learns whether the id exists). Member rows and
+// capacity metadata are workspace-level and are not themselves
+// project data; only the issue counting is scoped.
+func GetWorkload(ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID, actorID string, projectIDs []uuid.UUID) (*WorkloadReport, error) {
 	wsID := workspaceID.String()
 
-	var exists bool
+	var wsRole int
 	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1::uuid)`, wsID).Scan(&exists); err != nil {
+		`SELECT m.role FROM workspace_members m
+		  WHERE m.workspace_id = $1::uuid AND m.user_id = $2::uuid`, wsID, actorID).Scan(&wsRole); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-	if !exists {
-		return nil, ErrNotFound
-	}
+	_ = wsRole
 
-	scope, err := workloadProjectScope(ctx, pool, wsID, projectIDs)
+	scope, err := workloadProjectScope(ctx, pool, wsID, actorID, projectIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -153,10 +164,19 @@ func GetWorkload(ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID,
 // workloadProjectScope resolves the project filter to in-workspace
 // project id strings. Empty input means every project of the
 // workspace; any id outside the workspace is ErrProjectNotFound.
-func workloadProjectScope(ctx context.Context, pool *pgxpool.Pool, wsID string, projectIDs []uuid.UUID) ([]string, error) {
+// C92T2: both branches apply effective access (see GetWorkload) —
+// the empty branch lists only reachable projects, and an explicitly
+// requested unreachable project is ErrProjectNotFound, never a
+// filtered-out silent scope (an explicit id is a probe; a silent
+// drop would let the caller distinguish "no issues" from "no
+// access" only by... nothing — but the pre-existing convention for
+// out-of-scope ids is the 404, and the sweep keeps it).
+func workloadProjectScope(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, projectIDs []uuid.UUID) ([]string, error) {
 	if len(projectIDs) == 0 {
 		rows, err := pool.Query(ctx,
-			`SELECT id::text FROM projects WHERE workspace_id = $1::uuid ORDER BY identifier`, wsID)
+			`SELECT id::text FROM projects p WHERE p.workspace_id = $1::uuid
+			   AND `+projectAccessibleSQL("p", "$2::uuid")+`
+			 ORDER BY p.identifier`, wsID, actorID)
 		if err != nil {
 			return nil, err
 		}
@@ -181,8 +201,10 @@ func workloadProjectScope(ctx context.Context, pool *pgxpool.Pool, wsID string, 
 		}
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT id::text FROM projects WHERE workspace_id = $1::uuid AND id = ANY($2::uuid[])`,
-		wsID, want)
+		`SELECT id::text FROM projects p
+		  WHERE p.workspace_id = $1::uuid AND p.id = ANY($2::uuid[])
+		    AND `+projectAccessibleSQL("p", "$3::uuid"),
+		wsID, want, actorID)
 	if err != nil {
 		return nil, err
 	}

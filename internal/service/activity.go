@@ -264,7 +264,13 @@ func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	}
 
 	var sb strings.Builder
-	args := []any{wsID}
+	// C92T2: the feed is workspace-wide, so it is a cross-project list
+	// surface — rows from private projects the actor cannot reach are
+	// filtered here, not after the page is built (cursor pagination
+	// must stay stable). The actor id rides as $2; the optional
+	// filters below number themselves off len(args), so they shift
+	// automatically.
+	args := []any{wsID, actorID}
 	sb.WriteString(`SELECT a.created_at,
 	        COALESCE(NULLIF(u.name, ''), u.email),
 	        i.id::text,
@@ -275,7 +281,8 @@ func GetWorkspaceActivity(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	   JOIN issues i ON i.id = a.issue_id
 	   JOIN projects p ON p.id = i.project_id
 	   JOIN users u ON u.id = a.actor_id
-	  WHERE p.workspace_id = $1::uuid AND i.deleted_at IS NULL`)
+	  WHERE p.workspace_id = $1::uuid AND i.deleted_at IS NULL
+	    AND ` + projectAccessibleSQL("p", "$2::uuid"))
 	if len(cleanTypes) > 0 {
 		args = append(args, cleanTypes)
 		fmt.Fprintf(&sb, " AND a.field = ANY($%d::text[])", len(args))

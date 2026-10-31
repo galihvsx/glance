@@ -88,6 +88,8 @@ func SearchPages(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor str
 
 	// Same defensive archived-project skip as SearchIssues: filter in SQL
 	// (not post-hoc) so keyset pagination page sizes stay correct.
+	// C92T2: same effective-access filter as SearchIssues — pages of
+	// private projects the actor cannot reach are not hits.
 	archivedFilter, err := archivedProjectsFilter(ctx, pool, "p")
 	if err != nil {
 		return nil, err
@@ -102,7 +104,8 @@ func SearchPages(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor str
 		JOIN workspaces w ON w.id = p.workspace_id
 		JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
 		CROSS JOIN q
-		WHERE pg.search @@ q.tsq` + archivedFilter
+		WHERE pg.search @@ q.tsq` + archivedFilter +
+		` AND ` + projectAccessibleSQL("p", "$2::uuid")
 	args := []any{q, actorID}
 	if cur != nil {
 		query += ` AND (ts_rank(pg.search, q.tsq) < $3::float8

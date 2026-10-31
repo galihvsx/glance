@@ -73,7 +73,13 @@ func ListMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string,
 	if err != nil {
 		return nil, err
 	}
-	where := `p.workspace_id = $1::uuid AND i.deleted_at IS NULL`
+	// C92T2: cross-project list surface — private projects the actor
+	// cannot reach (no direct row, no linked-teamspace seat, not a
+	// workspace Admin) contribute no rows, exactly like ListProjects
+	// vanishing them. The workspace-membership resolution above is
+	// what keeps this predicate from passing public projects to
+	// non-members (see projectAccessibleSQL).
+	where := `p.workspace_id = $1::uuid AND i.deleted_at IS NULL AND ` + projectAccessibleSQL("p", "$2::uuid")
 	if filter == MyWorkCreated {
 		where += ` AND i.created_by = $2::uuid`
 	}

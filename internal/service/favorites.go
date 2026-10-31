@@ -78,7 +78,10 @@ func validFavoriteType(t string) bool {
 
 // visibleIssue checks the issue exists, is not deleted, and the actor is
 // a member of its workspace. Malformed UUIDs read as "not visible" (404,
-// never 500).
+// never 500). C92T2: the project must also be effectively accessible
+// (public, workspace Admin, direct member, or linked-teamspace member)
+// — starring an issue of a private project the actor cannot reach is
+// the same 404 as a missing issue, never a leak.
 func visibleIssue(ctx context.Context, q queryRower, issueID, actorID string) error {
 	var one int
 	err := q.QueryRow(ctx,
@@ -87,7 +90,8 @@ func visibleIssue(ctx context.Context, q queryRower, issueID, actorID string) er
 		 JOIN projects p ON p.id = i.project_id
 		 JOIN workspaces w ON w.id = p.workspace_id
 		 JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
-		 WHERE i.id = $1::uuid AND i.deleted_at IS NULL`,
+		 WHERE i.id = $1::uuid AND i.deleted_at IS NULL
+		   AND `+projectAccessibleSQL("p", "$2::uuid"),
 		issueID, actorID).Scan(&one)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
@@ -99,7 +103,9 @@ func visibleIssue(ctx context.Context, q queryRower, issueID, actorID string) er
 }
 
 // visibleProject checks the project exists and the actor is a member of
-// its workspace. Malformed UUIDs read as "not visible".
+// its workspace. Malformed UUIDs read as "not visible". C92T2: the
+// project must also be effectively accessible (see visibleIssue) — a
+// private project the actor cannot reach cannot be starred.
 func visibleProject(ctx context.Context, q queryRower, projectID, actorID string) error {
 	var one int
 	err := q.QueryRow(ctx,
@@ -107,7 +113,8 @@ func visibleProject(ctx context.Context, q queryRower, projectID, actorID string
 		 FROM projects p
 		 JOIN workspaces w ON w.id = p.workspace_id
 		 JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
-		 WHERE p.id = $1::uuid`,
+		 WHERE p.id = $1::uuid
+		   AND `+projectAccessibleSQL("p", "$2::uuid"),
 		projectID, actorID).Scan(&one)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
@@ -182,7 +189,9 @@ func UnstarFavorite(ctx context.Context, pool *pgxpool.Pool, actorID, ftype, tar
 
 // ListFavorites returns the actor's stars, re-checking visibility at read
 // time: deleted issues and targets in workspaces the actor left (or was
-// removed from) silently drop out. Newest stars first.
+// removed from) silently drop out. C92T2: the re-check is effective
+// project access, so a star on a project that has since gone private
+// (and the actor cannot reach) drops out the same way. Newest first.
 func ListFavorites(ctx context.Context, pool *pgxpool.Pool, actorID string) (*FavoritesList, error) {
 	out := &FavoritesList{
 		Issues:   []FavoriteIssueSummary{},
@@ -198,6 +207,7 @@ func ListFavorites(ctx context.Context, pool *pgxpool.Pool, actorID string) (*Fa
 		 JOIN workspaces w ON w.id = p.workspace_id
 		 JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = f.user_id
 		 WHERE f.user_id = $1::uuid AND f.favoritable_type = 'issue'
+		   AND `+projectAccessibleSQL("p", "f.user_id")+`
 		 ORDER BY f.created_at DESC`,
 		actorID)
 	if err != nil {
@@ -225,6 +235,7 @@ func ListFavorites(ctx context.Context, pool *pgxpool.Pool, actorID string) (*Fa
 		 JOIN workspaces w ON w.id = p.workspace_id
 		 JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = f.user_id
 		 WHERE f.user_id = $1::uuid AND f.favoritable_type = 'project'
+		   AND `+projectAccessibleSQL("p", "f.user_id")+`
 		 ORDER BY f.created_at DESC`,
 		actorID)
 	if err != nil {
