@@ -5,6 +5,31 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL query-language completion: ORDER BY + LIMIT (cycle 98)**
+
+- PQL gains `ORDER BY <field> [ASC|DESC]` — a single sort key
+  only (a second key is a 400, never a silently-dropped key).
+  Sortable fields are the existing list-order whitelist
+  (updated_at, created_at, sequence_id, sort_order, priority);
+  an unknown field is a 400 with position, direction defaults to
+  ASC, and keywords are case-insensitive like the rest of the
+  language. A PQL ORDER BY wins over the `?order_by=` param;
+  without one, the param applies exactly as before. Cursors are
+  minted and validated against the effective order, so a cursor
+  minted under a different order is rejected, not silently
+  honored.
+- PQL gains `LIMIT <n>` (1..100; out-of-range or non-integer
+  is a 400 with position). LIMIT means "at most n rows, in a
+  single page": the endpoint returns at most min(per_page, n)
+  rows and next_cursor is always null when LIMIT is present; a
+  cursor param combined with LIMIT is rejected (400) rather
+  than silently ignored. LIMIT without ORDER BY uses the
+  endpoint's default order. Frontend PQL modes skip the cursor
+  loop and do a single fetch when the applied query carries a
+  LIMIT. Dashboard PQL and AI text-to-PQL stay deferred; the
+  PQL-mode staleness edge remains a documented follow-up
+  candidate, not a defect.
+
 **PQL dimension expansion (cycle 97)**
 
 - PQL gains the `epic` and `estimate` fields, closing the gap
