@@ -818,6 +818,17 @@ func resolveEpicWorkspace(ctx context.Context, q queryRower, wsSlug, actorID str
 		}
 		return "", "", err
 	}
+	// C92T0: the epic names a project, so linking it to an initiative
+	// is a project-scoped act — the effective-access order applies
+	// (a private project the caller cannot reach is ErrNotFound, and
+	// needMember gates on the effective role).
+	_, effRole, err := effectiveRoleForProjectID(ctx, q, wsID, projectID, actorID)
+	if err != nil {
+		return "", "", err
+	}
+	if needMember && effRole < RoleMember {
+		return "", "", ErrForbidden
+	}
 	return wsID, projectID, nil
 }
 

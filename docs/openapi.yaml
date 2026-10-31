@@ -452,9 +452,9 @@
       "patch": {
         "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Update a project",
-        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default). parallel_cycles is the parallel-cycles toggle: true lets cycles overlap in date; false (default) makes cycle create/update reject ranges overlapping another live cycle (grandfathering: turning it off does not change existing overlapping cycles).",
+        "description": "Member (15) or admin (20). Partial semantics — nil fields are untouched. close_in_days is the cycle-rollover grace: days after a cycle's end before incomplete issues detach to the backlog. automation_run_retention_days is the automation run retention window in days (0 = keep forever; unset = 90-day default). parallel_cycles is the parallel-cycles toggle: true lets cycles overlap in date; false (default) makes cycle create/update reject ranges overlapping another live cycle (grandfathering: turning it off does not change existing overlapping cycles). visibility (C92T0) is the project ACL gate: public (default) keeps today's workspace-role behavior; private restricts the project to direct members, the linked teamspace's members, and workspace Admins — a private project a caller cannot reach is a shared 404, and writes need effective member (15)+ while visibility changes, archive, and delete need effective Admin (20).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" }, "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). true = multiple cycles may run simultaneously with overlapping dates; false (default) = cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle. Grandfathering: turning this off does not change existing overlapping cycles." }, "teamspace_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Teamspace assignment (C89T0). Absent = unchanged; explicit null = ungroup; UUID = move. Unknown, malformed, or foreign-workspace ids are 400, never a silent cross-workspace link." } } } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" }, "description": { "type": "string" }, "icon": { "type": "string", "description": "Project emoji icon; single emoji, explicit empty string clears it (null = unset)" }, "close_in_days": { "type": "integer", "minimum": 0 }, "automation_run_retention_days": { "type": "integer", "minimum": 0, "description": "Automation run retention window in days; 0 = keep forever, unset = 90-day default" }, "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). true = multiple cycles may run simultaneously with overlapping dates; false (default) = cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle. Grandfathering: turning this off does not change existing overlapping cycles." }, "teamspace_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Teamspace assignment (C89T0). Absent = unchanged; explicit null = ungroup; UUID = move. Unknown, malformed, or foreign-workspace ids are 400, never a silent cross-workspace link." }, "visibility": { "type": "string", "enum": ["public", "private"], "description": "Project ACL gate (C92T0). Changing visibility requires effective project Admin (20) — workspace Admin or direct project Admin — anything else is 403; anything but public|private is 400. A teamspace Lead below member (15) may still link/unlink this project to their own teamspace via teamspace_id alone, but cannot change other fields." } } } } } },
         "responses": { "200": { "description": "Updated project", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       },
       "delete": {
@@ -463,6 +463,40 @@
         "description": "Admin (20) only. Hard-deletes the project and, via FK cascades, everything under it (issues, cycles, modules, pages, views, links). Safety interlocks: ?confirm=<identifier> must match the project identifier (400 on mismatch); with >0 non-archived issues the delete is refused with 409 naming the blocker count unless ?force=true.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "confirm", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Typed confirmation: must equal the project identifier" }, { "name": "force", "in": "query", "schema": { "type": "boolean", "default": false }, "description": "Delete even when the project still has non-archived issues" } ],
         "responses": { "204": { "description": "Deleted" }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "description": "Project has non-archived issues; details.non_archived_issues carries the blocker count", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/members": {
+      "get": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "List project members",
+        "description": "Direct roster ordered by user name (C92T0). Any caller with effective access to the project may read; a private project the caller cannot reach is 404 — never the roster.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "responses": { "200": { "description": "Project members", "content": { "application/json": { "schema": { "type": "object", "properties": { "members": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectMember" } } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Add a project member",
+        "description": "Effective project Admin (20) only — workspace Admin or direct project Admin. The target must be a workspace member — otherwise 400, the same error whether the user id matches nobody, a non-member, or is malformed, so no existence oracle. The role must be on the workspace ladder (20/15/10/5). Duplicate adds are idempotent OK (200 with the existing row) and do NOT overwrite the existing role; change-role is the update path.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id", "role"], "properties": { "user_id": { "type": "string", "format": "uuid" }, "role": { "type": "integer", "description": "Workspace-ladder value: 20 admin, 15 member, 10 viewer, 5 guest" } } } } } },
+        "responses": { "200": { "description": "Added project member", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectMember" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/projects/{identifier}/members/{user_id}": {
+      "patch": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Change a project member's role",
+        "description": "Effective project Admin (20) only. The target must hold a direct membership row (404 otherwise); the role must be on the workspace ladder (400 otherwise). Demoting the last direct admin is 409.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["role"], "properties": { "role": { "type": "integer", "description": "Workspace-ladder value: 20 admin, 15 member, 10 viewer, 5 guest" } } } } } },
+        "responses": { "200": { "description": "Updated project member", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectMember" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
+      },
+      "delete": {
+        "tags": ["projects"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove a project member",
+        "description": "Effective project Admin (20) only. Removing a non-member is idempotent OK (200). Removing the last direct admin is 409.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/archive": {
@@ -1590,7 +1624,7 @@
       "patch": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Rename a teamspace",
-        "description": "Member (15)+. Partial semantics: a body without name is 400 (nothing to update); renaming to the same name is a no-op success; renaming to an existing name is 409.",
+        "description": "Member (15)+, or the teamspace's Lead regardless of workspace role (C92T0). Partial semantics: a body without name is 400 (nothing to update); renaming to the same name is a no-op success; renaming to an existing name is 409.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "name": { "type": "string" } } } } } },
         "responses": { "200": { "description": "Updated teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } }
@@ -1598,7 +1632,7 @@
       "delete": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Delete a teamspace",
-        "description": "Member (15)+. Deletes the teamspace row only — projects are never deleted: their teamspace_id is SET NULL by the FK. The response names exactly how many projects were ungrouped (including archived ones) so the UI can say 'N projects moved to Ungrouped' honestly.",
+        "description": "Member (15)+, or the teamspace's Lead regardless of workspace role (C92T0). Deletes the teamspace row only — projects are never deleted: their teamspace_id is SET NULL by the FK. The response names exactly how many projects were ungrouped (including archived ones) so the UI can say 'N projects moved to Ungrouped' honestly.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "200": { "description": "Deleted teamspace with ungrouped-project count", "content": { "application/json": { "schema": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "ungrouped_projects": { "type": "integer", "description": "Projects whose teamspace_id was SET NULL by the delete, including archived ones." } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
@@ -1614,7 +1648,7 @@
       "post": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Add a teamspace member",
-        "description": "Admin (20) only. The target must be a workspace member — otherwise 400, the same error whether the user id matches nobody, a non-member, or is malformed, so no existence oracle. Duplicate adds are idempotent OK (200 with the existing row, not 409).",
+        "description": "Workspace Admin (20) or the teamspace's Lead (C92T0, Lead-scoped only). The target must be a workspace member — otherwise 400, the same error whether the user id matches nobody, a non-member, or is malformed, so no existence oracle. Duplicate adds are idempotent OK (200 with the existing row, not 409).",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id"], "properties": { "user_id": { "type": "string", "format": "uuid" } } } } } },
         "responses": { "200": { "description": "Added teamspace member", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TeamspaceMember" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
@@ -1624,9 +1658,26 @@
       "delete": {
         "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
         "summary": "Remove a teamspace member",
-        "description": "Admin (20) only. Removing a non-member is idempotent OK (200) — a DELETE that touches zero rows is still a success. Removing the last member is allowed: an Admin can always see the teamspace and re-add.",
+        "description": "Workspace Admin (20) or the teamspace's Lead (C92T0, Lead-scoped only). Removing a non-member is idempotent OK (200) — a DELETE that touches zero rows is still a success. Removing the last member is allowed: an Admin can always see the teamspace and re-add. Removing the Lead's membership clears lead_user_id in the same transaction.",
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "user_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "type": "boolean" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/lead": {
+      "post": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Set a teamspace Lead",
+        "description": "Workspace Admin (20) only — the Lead cannot designate their own successor. The target must be a teamspace member (400 otherwise, the same error whether the user id matches nobody, a non-member, or is malformed, so no existence oracle). Setting a new Lead replaces the old one. Returns the teamspace including lead_user_id.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["user_id"], "properties": { "user_id": { "type": "string", "format": "uuid" } } } } } },
+        "responses": { "200": { "description": "Updated teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["teamspaces"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Clear a teamspace Lead",
+        "description": "Workspace Admin (20) only. Clearing when no Lead is set is idempotent OK. Returns the teamspace with lead_user_id null. Removing the Lead's teamspace membership also clears the designation automatically.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "name": "teamspaceID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "responses": { "200": { "description": "Updated teamspace", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Teamspace" } } } }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/initiatives/{initiativeID}/rollup": {
@@ -3587,6 +3638,7 @@
           "name": { "type": "string" },
           "project_count": { "type": "integer", "description": "Live (non-archived) projects assigned to this teamspace, from the same query — never N+1. Archived projects keep their assignment but are not counted here." },
           "member_count": { "type": "integer", "description": "Teamspace members, from the same query — never N+1 (C90T0)." },
+          "lead_user_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Teamspace Lead (C92T0). Null = no Lead. One Lead per teamspace; the Lead must be a teamspace member, and removing the Lead's membership clears this. The Lead passes the teamspace's member-management, settings-edit, delete, and project link/unlink gates (Lead-scoped only — no workspace-level powers)." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
@@ -3598,6 +3650,16 @@
           "id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
           "email": { "type": "string" }
+        }
+      },
+      "ProjectMember": {
+        "type": "object",
+        "description": "One direct project member with their user identity (C92T0). Role mirrors the workspace ladder: admin 20 / member 15 / guest 5. Direct membership is checked first in the effective-access order, ahead of teamspace-derived access and the public fallback.",
+        "properties": {
+          "user_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "email": { "type": "string" },
+          "role": { "type": "integer", "description": "Workspace-ladder value: 20 admin, 15 member, 10 viewer, 5 guest" }
         }
       },
       "Project": {
@@ -3614,6 +3676,7 @@
           "labels": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectLabel" }, "description": "Workspace project-label chips [{id,name,color}] ordered by name. Always present ([]) on every project payload (C76T0)." },
           "parallel_cycles": { "type": "boolean", "description": "Parallel-cycles toggle (C78T0). When true, multiple cycles of the project may run simultaneously with overlapping date ranges (e.g. a two-week sprint alongside a longer release cycle). When false (default), cycle create/update rejects date ranges overlapping another live (upcoming/current) cycle with 409. Grandfathering: turning this off does not change existing overlapping cycles — only new overlapping creates/updates are rejected." },
           "teamspace_id": { "type": "string", "format": "uuid", "nullable": true, "description": "Project's teamspace (C89T0). Null = ungrouped. Always present (null, never omitted) so the sidebar groups on one fetch." },
+          "visibility": { "type": "string", "enum": ["public", "private"], "description": "Project ACL gate (C92T0). public (default; existing projects backfilled to public) = today's behavior: the workspace role applies. private = members-only: direct project members, members of the linked teamspace, and workspace Admins. A private project a caller cannot reach is a shared 404, and it vanishes from non-member project lists." },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },

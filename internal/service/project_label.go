@@ -350,13 +350,23 @@ func resolveProjectLabel(ctx context.Context, q queryRower, wsID, labelID string
 // deliberate, unlike the idempotent issue-label re-attach. Member
 // (15)+; guests ErrForbidden.
 func AssignProjectLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, labelID, actorID string) error {
-	wsID, _, err := resolveProjectLabelWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, _, err := resolveProjectLabelWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return err
 	}
 	projectID, err := resolveProjectForLabel(ctx, pool, wsID, identifier)
 	if err != nil {
 		return err
+	}
+	// C92T0: label assignment is a project-scoped write — the
+	// effective-access order applies (a private project the caller
+	// cannot reach is ErrNotFound) and the member+ gate runs on the
+	// EFFECTIVE role, so a teamspace-derived member passes and a
+	// direct guest does not.
+	if _, effRole, err := effectiveRoleForProjectID(ctx, pool, wsID, projectID, actorID); err != nil {
+		return err
+	} else if effRole < RoleMember {
+		return ErrForbidden
 	}
 	lid, err := resolveProjectLabel(ctx, pool, wsID, labelID)
 	if err != nil {
@@ -379,13 +389,21 @@ func AssignProjectLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identif
 // Idempotent: unassigning an absent or malformed label id succeeds
 // silently. Member (15)+; guests ErrForbidden.
 func UnassignProjectLabel(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, labelID, actorID string) error {
-	wsID, _, err := resolveProjectLabelWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, _, err := resolveProjectLabelWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return err
 	}
 	projectID, err := resolveProjectForLabel(ctx, pool, wsID, identifier)
 	if err != nil {
 		return err
+	}
+	// C92T0: same effective-access gate as AssignProjectLabel (see
+	// above). The malformed-id idempotent no-op below still applies
+	// — but only after the caller proves access to the project.
+	if _, effRole, err := effectiveRoleForProjectID(ctx, pool, wsID, projectID, actorID); err != nil {
+		return err
+	} else if effRole < RoleMember {
+		return ErrForbidden
 	}
 	lid := strings.ToLower(strings.TrimSpace(labelID))
 	if !isUUIDFormat(lid) {

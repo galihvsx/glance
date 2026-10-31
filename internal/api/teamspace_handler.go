@@ -45,6 +45,9 @@ func RegisterTeamspaceRoutes(e *echo.Echo, h *TeamspaceHandler) {
 	g.POST("/:teamspaceID/members", h.addTeamspaceMember)
 	g.GET("/:teamspaceID/members", h.listTeamspaceMembers)
 	g.DELETE("/:teamspaceID/members/:user_id", h.removeTeamspaceMember)
+	// C92T0: Lead designation (workspace Admin only).
+	g.POST("/:teamspaceID/lead", h.setTeamspaceLead)
+	g.DELETE("/:teamspaceID/lead", h.clearTeamspaceLead)
 }
 
 // teamspaceError maps service sentinel errors to HTTP statuses. Unknown
@@ -59,6 +62,8 @@ func teamspaceError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid teamspace id", nil)
 	case errors.Is(err, service.ErrTeamspaceTargetNotMember):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "target user is not a workspace member", nil)
+	case errors.Is(err, service.ErrTeamspaceLeadNotMember):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "target user is not a teamspace member", nil)
 	default:
 		return issueError(c, err)
 	}
@@ -143,7 +148,8 @@ type addTeamspaceMemberBody struct {
 
 // addTeamspaceMember implements POST
 // /api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/members.
-// Admin (20) only; the service enforces it. 200 with the member row —
+// Workspace Admin (20) or the teamspace's Lead; the service enforces
+// it. 200 with the member row —
 // upsert semantics, mirroring the workspace upsertMember handler: a
 // duplicate add is idempotent OK, not a fresh creation, so it is not
 // a 201. A target who is not a workspace member is a 400 (the same
@@ -185,12 +191,60 @@ func (h *TeamspaceHandler) listTeamspaceMembers(c *echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"members": members})
 }
 
+type setTeamspaceLeadBody struct {
+	UserID string `json:"user_id"`
+}
+
+// setTeamspaceLead implements POST
+// /api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/lead.
+// Workspace Admin (20) only; the service enforces it. The target
+// must be a teamspace member (400 otherwise). Setting a new Lead
+// replaces the old one. 200 with the teamspace JSON (including
+// lead_user_id).
+func (h *TeamspaceHandler) setTeamspaceLead(c *echo.Context) error {
+	id, ok := requireUUIDParam(c, "teamspaceID", "teamspace id")
+	if !ok {
+		return nil
+	}
+	var body setTeamspaceLeadBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	if !validUUID(body.UserID) {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid user_id", nil)
+	}
+	leadID := body.UserID
+	ts, err := service.SetTeamspaceLead(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, id, &leadID)
+	if err != nil {
+		return teamspaceError(c, err)
+	}
+	return c.JSON(http.StatusOK, ts)
+}
+
+// clearTeamspaceLead implements DELETE
+// /api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/lead.
+// Workspace Admin (20) only; the service enforces it. Clearing when
+// no Lead is set is idempotent OK. 200 with the teamspace JSON.
+func (h *TeamspaceHandler) clearTeamspaceLead(c *echo.Context) error {
+	id, ok := requireUUIDParam(c, "teamspaceID", "teamspace id")
+	if !ok {
+		return nil
+	}
+	ts, err := service.SetTeamspaceLead(c.Request().Context(), h.Pool, c.Param("slug"), CurrentUser(c).ID, id, nil)
+	if err != nil {
+		return teamspaceError(c, err)
+	}
+	return c.JSON(http.StatusOK, ts)
+}
+
 // removeTeamspaceMember implements DELETE
 // /api/v1/workspaces/{slug}/teamspaces/{teamspaceID}/members/{user_id}.
-// Admin (20) only; the service enforces it. Removing a non-member is
-// idempotent OK (200), mirroring the workspace removeMember response
-// shape — not the workspace handler's 404-on-non-member, which this
-// surface deliberately does not follow (see the service doc).
+// Workspace Admin (20) or the teamspace's Lead; the service enforces
+// it. Removing a non-member is idempotent OK (200), mirroring the
+// workspace removeMember response shape — not the workspace handler's
+// 404-on-non-member, which this surface deliberately does not follow
+// (see the service doc). Removing the Lead's membership clears the
+// Lead designation in the same transaction.
 func (h *TeamspaceHandler) removeTeamspaceMember(c *echo.Context) error {
 	id, ok := requireUUIDParam(c, "teamspaceID", "teamspace id")
 	if !ok {

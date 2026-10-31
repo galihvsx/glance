@@ -206,30 +206,16 @@ func scanAutomationRule(row pgx.Row) (*AutomationRule, error) {
 // resolveAutomationProject resolves wsSlug + identifier to (wsID,
 // projectID, role), mirroring ListStates' resolution. Non-members get
 // ErrNotFound; a missing project is ErrProjectNotFound.
+// resolveAutomationProject routes through the C92T0 effective-access
+// resolver (it used to duplicate the workspace+project lookup with
+// the raw workspace role): a private project the caller cannot reach
+// is ErrNotFound, and the returned role is the effective role.
 func resolveAutomationProject(ctx context.Context, q queryRower, wsSlug, identifier, actorID string) (wsID, projectID string, role int, err error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return "", "", 0, err
 	}
-	wsID, role, err = workspaceIDForActor(q.QueryRow(ctx,
-		`SELECT w.id::text, m.role
-		 FROM workspaces w
-		 JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		wsSlug, actorID))
-	if err != nil {
-		return "", "", 0, err
-	}
-	if err := q.QueryRow(ctx,
-		`SELECT p.id::text FROM projects p
-		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2`,
-		wsID, ident).Scan(&projectID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", "", 0, ErrProjectNotFound
-		}
-		return "", "", 0, err
-	}
-	return wsID, projectID, role, nil
+	return resolveIssueProject(ctx, q, wsSlug, ident, actorID)
 }
 
 // validateAutomationTrigger checks the trigger shape. issue.state_changed

@@ -250,9 +250,6 @@ func resolveScheduleProject(ctx context.Context, q queryRower, workspaceID, proj
 	if err != nil {
 		return "", "", err
 	}
-	if needMember && role < RoleMember {
-		return "", "", ErrForbidden
-	}
 	if isUUIDFormat(projectID) {
 		err = q.QueryRow(ctx,
 			`SELECT id::text FROM projects
@@ -269,6 +266,20 @@ func resolveScheduleProject(ctx context.Context, q queryRower, workspaceID, proj
 			return "", "", ErrProjectNotFound
 		}
 		return "", "", err
+	}
+	// C92T0: schedules are project-scoped, so the effective-access
+	// order applies — a private project the caller cannot reach is
+	// ErrNotFound, and needMember gates on the EFFECTIVE role (a
+	// teamspace-derived member passes; a direct guest does not).
+	effRole, err := effectiveAccessForProject(ctx, q, wsID, role, projID, actorID)
+	if err != nil {
+		return "", "", err
+	}
+	if effRole < 0 {
+		return "", "", ErrNotFound
+	}
+	if needMember && effRole < RoleMember {
+		return "", "", ErrForbidden
 	}
 	return wsID, projID, nil
 }

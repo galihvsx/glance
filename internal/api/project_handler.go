@@ -31,6 +31,13 @@ func RegisterProjectRoutes(e *echo.Echo, h *ProjectHandler) {
 	g.POST("/:identifier/unarchive", h.unarchiveProject)
 	g.GET("/:identifier/states", h.listStates)
 
+	// C92T0: direct project membership roster. Keep docs/openapi.yaml
+	// in lockstep — the route-coverage test fails otherwise.
+	g.GET("/:identifier/members", h.listProjectMembers)
+	g.POST("/:identifier/members", h.addProjectMember)
+	g.PATCH("/:identifier/members/:user_id", h.changeProjectMemberRole)
+	g.DELETE("/:identifier/members/:user_id", h.removeProjectMember)
+
 	// C76T0: workspace-level project-label taxonomy + assignment.
 	registerProjectLabelRoutes(e, h)
 }
@@ -57,6 +64,16 @@ func projectError(c *echo.Context, err error) error {
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "confirm must match the project identifier", nil)
 	case errors.Is(err, service.ErrInvalidTeamspace):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid teamspace_id: teamspace does not exist or belongs to another workspace", nil)
+	case errors.Is(err, service.ErrInvalidProjectVisibility):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid visibility: must be public or private", nil)
+	case errors.Is(err, service.ErrProjectTargetNotMember):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "target user is not a workspace member", nil)
+	case errors.Is(err, service.ErrProjectMemberNotFound):
+		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "project member not found", nil)
+	case errors.Is(err, service.ErrProjectMemberRoleInvalid):
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid project member role", nil)
+	case errors.Is(err, service.ErrLastProjectAdmin):
+		return WriteError(c, http.StatusConflict, ErrCodeConflict, "cannot remove the last project admin", nil)
 	default:
 		// ErrProjectDeleteBlocked carries the live-issue count in the
 		// 409 details so the client can name the blocker.
@@ -169,6 +186,10 @@ type updateProjectBody struct {
 	// UUID = move. Unknown, malformed, or foreign-workspace ids are
 	// 400 (never a silent cross-workspace link).
 	TeamspaceID service.PatchField[string] `json:"teamspace_id"`
+	// Visibility is the project ACL gate (C92T0): public|private.
+	// Changing it requires effective project Admin (20); anything
+	// else is a 400. Nil = untouched.
+	Visibility *string `json:"visibility"`
 }
 
 // updateProject implements PATCH /api/v1/workspaces/{slug}/projects/{identifier}.
@@ -180,7 +201,7 @@ func (h *ProjectHandler) updateProject(c *echo.Context) error {
 	}
 	p, err := service.UpdateProject(c.Request().Context(), h.Pool, c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID,
 		service.ProjectPatch{Name: body.Name, Description: body.Description, Icon: body.Icon, CloseInDays: body.CloseInDays,
-			AutomationRunRetentionDays: body.AutomationRunRetentionDays, ParallelCycles: body.ParallelCycles, TeamspaceID: body.TeamspaceID})
+			AutomationRunRetentionDays: body.AutomationRunRetentionDays, ParallelCycles: body.ParallelCycles, TeamspaceID: body.TeamspaceID, Visibility: body.Visibility})
 	if err != nil {
 		if errors.Is(err, service.ErrNameRequired) {
 			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "name is required", nil)

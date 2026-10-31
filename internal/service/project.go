@@ -45,6 +45,9 @@ var (
 	// project still has non-archived issues and force is false. The
 	// concrete *DeleteBlockedError carries the count for the 409 details.
 	ErrProjectDeleteBlocked = errors.New("service: project has non-archived issues")
+	// ErrInvalidProjectVisibility is returned by UpdateProject when the
+	// visibility patch is anything but public|private (C92T0).
+	ErrInvalidProjectVisibility = errors.New("service: invalid visibility: must be public or private")
 )
 
 // DeleteBlockedError is the concrete ErrProjectDeleteBlocked: the delete
@@ -107,6 +110,12 @@ type Project struct {
 	// omitted) so the sidebar groups on one fetch without guessing
 	// whether the field was populated.
 	TeamspaceID *string `json:"teamspace_id"`
+	// Visibility is the project ACL gate (C92T0, migration 000078):
+	// 'public' (default, today's behavior: the workspace role applies)
+	// or 'private' (members-only: direct members, the linked
+	// teamspace's members, and workspace Admins). Existing projects
+	// backfilled to 'public', so nothing changes visibility on upgrade.
+	Visibility string `json:"visibility"`
 }
 
 // State is a kanban column of a project. Group is the Plane vocabulary
@@ -252,7 +261,7 @@ func scanProjectBase(row pgx.Row) (*Project, error) {
 	var viewFlags []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID, &p.Visibility,
 	)
 	if err != nil {
 		return nil, err
@@ -276,7 +285,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 	var labelsJSON []byte
 	err := row.Scan(
 		&p.ID, &p.WorkspaceID, &p.Identifier, &p.Name, &p.Description,
-		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID,
+		&p.Icon, &viewFlags, &p.ArchiveInDays, &p.CloseInDays, &p.AutomationRunRetentionDays, &p.ArchivedAt, &p.ParallelCycles, &p.CreatedAt, &p.UpdatedAt, &p.TeamspaceID, &p.Visibility,
 		&labelsJSON,
 	)
 	if err != nil {
@@ -305,10 +314,10 @@ func scanProject(row pgx.Row) (*Project, error) {
 // the label-chip aggregate as the trailing column (scanProject decodes
 // it).
 const projectColumnsBase = `id::text, workspace_id::text, identifier, name, description,
-	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, parallel_cycles, created_at, updated_at, teamspace_id::text`
+	icon, view_flags, archive_in_days, close_in_days, automation_run_retention_days, archived_at, parallel_cycles, created_at, updated_at, teamspace_id::text, visibility`
 
 const projectColumnsBaseP = `p.id::text, p.workspace_id::text, p.identifier, p.name, p.description,
-	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.parallel_cycles, p.created_at, p.updated_at, p.teamspace_id::text`
+	p.icon, p.view_flags, p.archive_in_days, p.close_in_days, p.automation_run_retention_days, p.archived_at, p.parallel_cycles, p.created_at, p.updated_at, p.teamspace_id::text, p.visibility`
 
 var projectColumns = projectColumnsBase + `,
 	` + projectLabelsAgg("projects")
@@ -335,7 +344,7 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, nam
 // name no label of the workspace, are ErrInvalidProjectLabelFilter
 // (400). Non-members get ErrNotFound (see GetWorkspace).
 func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, includeArchived bool, labelIDs []string) ([]Project, error) {
-	wsID, _, err := workspaceIDForActor(pool.QueryRow(ctx,
+	wsID, wsRole, err := workspaceIDForActor(pool.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
@@ -354,6 +363,20 @@ func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID strin
 
 	var conds []string
 	conds = append(conds, `p.workspace_id = `+wsArg+`::uuid`)
+	// C92T0 project ACL: workspace Admins see every project; anyone
+	// else sees a project only via a direct membership row, via
+	// membership in the project's LIVE linked teamspace, or when the
+	// project is public. Private projects simply vanish from the list
+	// (no 404 row, no placeholder) — the list is the browse surface,
+	// so absence, not an error, is the no-oracle shape.
+	if wsRole != RoleAdmin {
+		actorArg := arg(actorID)
+		conds = append(conds, `(EXISTS (SELECT 1 FROM project_members pm
+				WHERE pm.project_id = p.id AND pm.user_id = `+actorArg+`::uuid)
+			OR EXISTS (SELECT 1 FROM teamspace_members tm
+				WHERE tm.teamspace_id = p.teamspace_id AND tm.user_id = `+actorArg+`::uuid)
+			OR p.visibility = 'public')`)
+	}
 	if !includeArchived {
 		conds = append(conds, `p.archived_at IS NULL`)
 	}
@@ -391,33 +414,16 @@ func ListProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID strin
 // GetProject returns one project by identifier (case-insensitive: the
 // lookup is uppercased the same way inserts are). Non-members get
 // ErrNotFound; members asking for a missing identifier get
-// ErrProjectNotFound.
+// ErrProjectNotFound; a private project the caller cannot reach is
+// ErrNotFound (shared 404, no existence oracle) via the effective
+// access resolver.
 func GetProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID string) (*Project, error) {
 	ident, err := normalizeIdentifier(identifier)
 	if err != nil {
 		return nil, err
 	}
-	wsID, _, err := workspaceIDForActor(pool.QueryRow(ctx,
-		`SELECT w.id::text, m.role
-		 FROM workspaces w
-		 JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		wsSlug, actorID))
-	if err != nil {
-		return nil, err
-	}
-
-	p, err := scanProject(pool.QueryRow(ctx,
-		`SELECT `+projectColumnsP+` FROM projects p
-		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2`,
-		wsID, ident))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrProjectNotFound
-		}
-		return nil, err
-	}
-	return p, nil
+	p, _, err := EffectiveProjectAccess(ctx, pool, wsSlug, ident, actorID)
+	return p, err
 }
 
 // ProjectPatch is a partial project update: nil fields are left unchanged,
@@ -456,6 +462,12 @@ type ProjectPatch struct {
 	// unknown, malformed, or foreign-workspace ids are
 	// ErrInvalidTeamspace (400), never a silent cross-workspace link.
 	TeamspaceID PatchField[string]
+	// Visibility is the project ACL gate (C92T0): nil = untouched;
+	// non-nil must be public|private (else ErrInvalidProjectVisibility) and
+	// changing it requires effective project Admin (20) — workspace
+	// Admin or direct project Admin — else ErrForbidden. Other patch
+	// fields keep their member (15)+ gate.
+	Visibility *string
 }
 
 // UpdateProject applies a partial project update. Member (15) or admin
@@ -523,6 +535,16 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		args = append(args, patch.TeamspaceID.Value)
 		sets = append(sets, fmt.Sprintf("teamspace_id = $%d", len(args)+2))
 	}
+	if patch.Visibility != nil {
+		// Validate the value before opening the transaction so a bad
+		// value is a 400 even for a caller who would fail authz —
+		// same shape as the other field validations above.
+		if *patch.Visibility != VisibilityPublic && *patch.Visibility != VisibilityPrivate {
+			return nil, ErrInvalidProjectVisibility
+		}
+		args = append(args, *patch.Visibility)
+		sets = append(sets, fmt.Sprintf("visibility = $%d", len(args)+2))
+	}
 	if len(sets) == 0 {
 		return nil, ErrNothingToUpdate
 	}
@@ -533,7 +555,7 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	defer tx.Rollback(ctx)
 
-	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
+	wsID, wsRole, err := workspaceIDForActor(tx.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
@@ -542,7 +564,77 @@ func UpdateProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if err != nil {
 		return nil, err
 	}
+	// Effective access (C92T0): the project must exist for this
+	// workspace (else ErrProjectNotFound) and the caller must reach
+	// it (private + no access -> ErrNotFound). Writes need effective
+	// member (15)+; a visibility change needs effective Admin (20).
+	var projectID string
+	if err := tx.QueryRow(ctx,
+		`SELECT p.id::text FROM projects p
+		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2`,
+		wsID, ident).Scan(&projectID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, err
+	}
+	role, err := effectiveAccessForProject(ctx, tx, wsID, wsRole, projectID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < 0 {
+		return nil, ErrNotFound
+	}
 	if role < RoleMember {
+		// C92T0 Lead link/unlink: a caller below member (15) — in
+		// practice a guest-role Lead — may still move a project
+		// into/out of THEIR teamspace, and nothing else. The patch
+		// must carry ONLY the teamspace change, and the actor must
+		// be the Lead of the target teamspace (link/move) or of the
+		// project's current teamspace (ungroup). Any other field in
+		// the patch, or a Lead of a different teamspace, stays
+		// ErrForbidden. The same-workspace teamspace validation
+		// below still runs for the link target.
+		onlyLink := patch.TeamspaceID.Set && patch.Visibility == nil &&
+			patch.Name == nil && patch.Description == nil && patch.Icon == nil &&
+			patch.CloseInDays == nil && patch.AutomationRunRetentionDays == nil &&
+			patch.ParallelCycles == nil
+		if !onlyLink {
+			return nil, ErrForbidden
+		}
+		var leadTeamspaceID string
+		if patch.TeamspaceID.Value != nil {
+			leadTeamspaceID = *patch.TeamspaceID.Value
+		} else {
+			var current *string
+			if err := tx.QueryRow(ctx,
+				`SELECT teamspace_id::text FROM projects WHERE id = $1::uuid`,
+				projectID).Scan(&current); err != nil {
+				return nil, err
+			}
+			if current == nil {
+				return nil, ErrForbidden
+			}
+			leadTeamspaceID = *current
+		}
+		if !isUUIDFormat(leadTeamspaceID) {
+			return nil, ErrForbidden
+		}
+		lead, err := isTeamspaceLead(ctx, tx, wsID, leadTeamspaceID, actorID)
+		if err != nil || !lead {
+			if err == nil {
+				err = ErrForbidden
+			}
+			// An unknown teamspace id is a bad link target, not a
+			// leak: surface the link validation error, not the
+			// teamspace's existence.
+			if errors.Is(err, ErrTeamspaceNotFound) {
+				return nil, ErrForbidden
+			}
+			return nil, err
+		}
+	}
+	if patch.Visibility != nil && role != RoleAdmin {
 		return nil, ErrForbidden
 	}
 	if patch.TeamspaceID.Set && patch.TeamspaceID.Value != nil {
@@ -582,24 +674,11 @@ func ListStates(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	if err != nil {
 		return nil, err
 	}
-	wsID, _, err := workspaceIDForActor(pool.QueryRow(ctx,
-		`SELECT w.id::text, m.role
-		 FROM workspaces w
-		 JOIN workspace_members m ON m.workspace_id = w.id
-		 WHERE w.slug = $1 AND m.user_id = $2::uuid`,
-		wsSlug, actorID))
+	// C92T0: states are a project read surface, so they route through
+	// effective access — a private project the caller cannot reach is
+	// ErrNotFound, exactly like GetProject.
+	_, projectID, _, err := resolveIssueProject(ctx, pool, wsSlug, ident, actorID)
 	if err != nil {
-		return nil, err
-	}
-
-	var projectID string
-	if err := pool.QueryRow(ctx,
-		`SELECT p.id::text FROM projects p
-		 WHERE p.workspace_id = $1::uuid AND p.identifier = $2`,
-		wsID, ident).Scan(&projectID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrProjectNotFound
-		}
 		return nil, err
 	}
 
@@ -660,7 +739,7 @@ func ArchiveProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 	}
 	defer tx.Rollback(ctx)
 
-	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
+	wsID, wsRole, err := workspaceIDForActor(tx.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
@@ -668,9 +747,6 @@ func ArchiveProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 		wsSlug, actorID))
 	if err != nil {
 		return nil, err
-	}
-	if role != RoleAdmin {
-		return nil, ErrForbidden
 	}
 
 	var projectID string
@@ -684,6 +760,19 @@ func ArchiveProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 			return nil, ErrProjectNotFound
 		}
 		return nil, err
+	}
+	// C92T0: archive/restore needs EFFECTIVE Admin (20) — workspace
+	// Admin or direct project Admin. A private project the caller
+	// cannot reach is ErrNotFound (no oracle), not 403.
+	role, err := effectiveAccessForProject(ctx, tx, wsID, wsRole, projectID, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if role < 0 {
+		return nil, ErrNotFound
+	}
+	if role != RoleAdmin {
+		return nil, ErrForbidden
 	}
 
 	isArchived := prevArchivedAt != nil
@@ -789,7 +878,7 @@ func DeleteProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	}
 	defer tx.Rollback(ctx)
 
-	wsID, role, err := workspaceIDForActor(tx.QueryRow(ctx,
+	wsID, wsRole, err := workspaceIDForActor(tx.QueryRow(ctx,
 		`SELECT w.id::text, m.role
 		 FROM workspaces w
 		 JOIN workspace_members m ON m.workspace_id = w.id
@@ -797,14 +886,6 @@ func DeleteProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 		wsSlug, actorID))
 	if err != nil {
 		return err
-	}
-	if role != RoleAdmin {
-		return ErrForbidden
-	}
-
-	confirmIdent, err := normalizeIdentifier(confirm)
-	if err != nil || confirmIdent != ident {
-		return ErrConfirmMismatch
 	}
 
 	var projectID string
@@ -817,6 +898,25 @@ func DeleteProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 			return ErrProjectNotFound
 		}
 		return err
+	}
+	// C92T0: delete needs EFFECTIVE Admin (20) — workspace Admin or
+	// direct project Admin. Authz still runs before the confirm
+	// interlock, so a non-admin learns nothing beyond 403; a private
+	// project the caller cannot reach is ErrNotFound (no oracle).
+	role, err := effectiveAccessForProject(ctx, tx, wsID, wsRole, projectID, actorID)
+	if err != nil {
+		return err
+	}
+	if role < 0 {
+		return ErrNotFound
+	}
+	if role != RoleAdmin {
+		return ErrForbidden
+	}
+
+	confirmIdent, err := normalizeIdentifier(confirm)
+	if err != nil || confirmIdent != ident {
+		return ErrConfirmMismatch
 	}
 
 	var live int

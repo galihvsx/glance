@@ -108,6 +108,14 @@ var (
 	// bad_request (the caller supplied an invalid target for this
 	// operation; the workspace and teamspace are both confirmed).
 	ErrTeamspaceTargetNotMember = errors.New("service: target user is not a workspace member")
+	// ErrTeamspaceLeadNotMember is returned by SetTeamspaceLead when
+	// the target user_id is not a teamspace member — including when
+	// it matches no user at all or is malformed. Same one-error
+	// shape as ErrTeamspaceTargetNotMember: the Lead MUST be a
+	// teamspace member (C92T0 design rule 4), and the caller never
+	// learns whether an arbitrary user id exists. The handler maps
+	// it to 400 bad_request.
+	ErrTeamspaceLeadNotMember = errors.New("service: target user is not a teamspace member")
 )
 
 // TeamspaceMember is one teamspace member with their user identity,
@@ -122,13 +130,20 @@ type TeamspaceMember struct {
 
 // Teamspace is one workspace-scoped project group.
 type Teamspace struct {
-	ID           string    `json:"id"`
-	WorkspaceID  string    `json:"workspace_id"`
-	Name         string    `json:"name"`
-	ProjectCount int64     `json:"project_count"`
-	MemberCount  int64     `json:"member_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string `json:"id"`
+	WorkspaceID  string `json:"workspace_id"`
+	Name         string `json:"name"`
+	ProjectCount int64  `json:"project_count"`
+	MemberCount  int64  `json:"member_count"`
+	// LeadUserID is the teamspace Lead (C92T0, migration 000078):
+	// NULL = no Lead. Always present in JSON (null, never omitted)
+	// so clients can render the Lead picker state without guessing
+	// whether the field was populated. One Lead per teamspace; the
+	// Lead MUST be a teamspace member (enforced at write; removing
+	// the Lead's membership clears this in the same transaction).
+	LeadUserID *string   `json:"lead_user_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // TeamspacePatch is a partial teamspace update: nil fields are
@@ -160,7 +175,7 @@ func resolveTeamspaceWorkspace(ctx context.Context, q queryRower, wsSlug, actorI
 // teamspaceColumns is the shared SELECT list; the counted variant adds
 // the live project count (archived projects excluded — see the package
 // doc) and the member count, both from the same query, never N+1.
-const teamspaceColumns = `id::text, workspace_id::text, name, created_at, updated_at`
+const teamspaceColumns = `id::text, workspace_id::text, name, lead_user_id::text, created_at, updated_at`
 
 const teamspaceColumnsCounted = teamspaceColumns + `,
 	(SELECT COUNT(*) FROM projects p WHERE p.teamspace_id = teamspaces.id AND p.archived_at IS NULL),
@@ -169,11 +184,29 @@ const teamspaceColumnsCounted = teamspaceColumns + `,
 func scanTeamspaceCounted(row pgx.Row) (Teamspace, error) {
 	var ts Teamspace
 	err := row.Scan(
-		&ts.ID, &ts.WorkspaceID, &ts.Name, &ts.CreatedAt, &ts.UpdatedAt, &ts.ProjectCount, &ts.MemberCount)
+		&ts.ID, &ts.WorkspaceID, &ts.Name, &ts.LeadUserID, &ts.CreatedAt, &ts.UpdatedAt, &ts.ProjectCount, &ts.MemberCount)
 	if err != nil {
 		return Teamspace{}, err
 	}
 	return ts, nil
+}
+
+// isTeamspaceLead reports whether userID is the Lead of the teamspace
+// (workspace-scoped: the teamspace must belong to wsID, so a Lead id
+// from another workspace can never pass a gate here).
+func isTeamspaceLead(ctx context.Context, q queryRower, wsID, teamspaceID, userID string) (bool, error) {
+	var lead *string
+	err := q.QueryRow(ctx,
+		`SELECT lead_user_id::text FROM teamspaces
+		  WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+		teamspaceID, wsID).Scan(&lead)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrTeamspaceNotFound
+		}
+		return false, err
+	}
+	return lead != nil && *lead == userID, nil
 }
 
 // resolveTeamspace loads a teamspace of the workspace. Malformed ids
@@ -287,15 +320,31 @@ func isTeamspaceMember(ctx context.Context, q queryRower, teamspaceID, userID st
 	return exists, err
 }
 
-// resolveTeamspaceMemberWorkspace resolves (workspaceID, role) for an
-// Admin-only membership mutation: the tenancy boundary first
-// (bad slug / non-member → ErrNotFound), then the Admin gate.
-func resolveTeamspaceMemberWorkspace(ctx context.Context, q queryRower, wsSlug, actorID string) (string, error) {
+// resolveTeamspaceMemberWorkspace resolves the workspaceID for a
+// membership mutation: the tenancy boundary first (bad slug /
+// non-member → ErrNotFound), then the management gate — workspace
+// Admin (20) OR the teamspace's Lead (C92T0 design rule 4,
+// Lead-scoped ONLY: the Lead gains no workspace-level powers, and
+// this gate is per-teamspace, so the Lead of teamspace A cannot
+// manage teamspace B). A bad teamspace id is ErrTeamspaceNotFound
+// via resolveTeamspace, checked before the gate so a Lead probing
+// another workspace's teamspace learns nothing beyond 404.
+func resolveTeamspaceMemberWorkspace(ctx context.Context, q queryRower, wsSlug, actorID, teamspaceID string) (string, error) {
 	wsID, role, err := resolveTeamspaceWorkspace(ctx, q, wsSlug, actorID, false)
 	if err != nil {
 		return "", err
 	}
-	if role != RoleAdmin {
+	if role == RoleAdmin {
+		return wsID, nil
+	}
+	if _, err := resolveTeamspace(ctx, q, wsID, teamspaceID); err != nil {
+		return "", err
+	}
+	lead, err := isTeamspaceLead(ctx, q, wsID, teamspaceID, actorID)
+	if err != nil {
+		return "", err
+	}
+	if !lead {
 		return "", ErrForbidden
 	}
 	return wsID, nil
@@ -309,7 +358,7 @@ func resolveTeamspaceMemberWorkspace(ctx context.Context, q queryRower, wsSlug, 
 // row (the workspace upsertMember precedent, not a 409). A
 // foreign-workspace teamspace id is ErrTeamspaceNotFound.
 func AddTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspaceID, actorID, targetUserID string) (*TeamspaceMember, error) {
-	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID)
+	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID, teamspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -351,11 +400,16 @@ func AddTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspa
 }
 
 // RemoveTeamspaceMember removes the target user from the teamspace.
-// Admin (20) only. Removing a non-member is idempotent OK: a DELETE
-// that touches zero rows is still a success, so a stale roster row
-// never 404s the remove button.
+// Workspace Admin (20) or the teamspace's Lead. Removing a
+// non-member is idempotent OK: a DELETE that touches zero rows is
+// still a success, so a stale roster row never 404s the remove
+// button. Removing the Lead's membership clears lead_user_id in the
+// SAME transaction (C92T0 design rule 4) — a Lead who is no longer
+// a member cannot keep Lead powers. A Lead removing themselves
+// therefore also clears the designation; re-adding them does not
+// restore it (an Admin must set it again).
 func RemoveTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, teamspaceID, actorID, targetUserID string) error {
-	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID)
+	wsID, err := resolveTeamspaceMemberWorkspace(ctx, pool, wsSlug, actorID, teamspaceID)
 	if err != nil {
 		return err
 	}
@@ -365,11 +419,66 @@ func RemoveTeamspaceMember(ctx context.Context, pool *pgxpool.Pool, wsSlug, team
 	if !isUUIDFormat(targetUserID) {
 		return ErrTeamspaceTargetNotMember
 	}
-	_, err = pool.Exec(ctx,
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx,
 		`DELETE FROM teamspace_members
 		 WHERE teamspace_id = $1::uuid AND user_id = $2::uuid`,
-		teamspaceID, targetUserID)
-	return err
+		teamspaceID, targetUserID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE teamspaces SET lead_user_id = NULL, updated_at = now()
+		  WHERE id = $1::uuid AND lead_user_id = $2::uuid`,
+		teamspaceID, targetUserID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SetTeamspaceLead sets (leadUserID != nil) or clears (leadUserID ==
+// nil) the teamspace's Lead. Workspace Admin (20) ONLY — the Lead
+// cannot designate their own successor. Setting a new Lead replaces
+// the old one (single UPDATE, no prior-clear step needed). The set
+// target MUST be a teamspace member (else ErrTeamspaceLeadNotMember,
+// the same one-error shape as the add-target error, so no existence
+// oracle); clearing needs no membership check. A malformed target id
+// is ErrTeamspaceLeadNotMember, never a ::uuid 500.
+func SetTeamspaceLead(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, teamspaceID string, leadUserID *string) (*Teamspace, error) {
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
+	if err != nil {
+		return nil, err
+	}
+	if role != RoleAdmin {
+		return nil, ErrForbidden
+	}
+	if _, err := resolveTeamspace(ctx, pool, wsID, teamspaceID); err != nil {
+		return nil, err
+	}
+	if leadUserID != nil {
+		if !isUUIDFormat(*leadUserID) {
+			return nil, ErrTeamspaceLeadNotMember
+		}
+		member, err := isTeamspaceMember(ctx, pool, teamspaceID, *leadUserID)
+		if err != nil {
+			return nil, err
+		}
+		if !member {
+			return nil, ErrTeamspaceLeadNotMember
+		}
+	}
+	ts, err := scanTeamspaceCounted(pool.QueryRow(ctx,
+		`UPDATE teamspaces SET lead_user_id = $1::uuid, updated_at = now()
+		  WHERE id = $2::uuid AND workspace_id = $3::uuid
+		  RETURNING `+teamspaceColumnsCounted,
+		leadUserID, teamspaceID, wsID))
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
 }
 
 // ListTeamspaceMembers returns the teamspace's roster ordered by user
@@ -416,18 +525,29 @@ func ListTeamspaceMembers(ctx context.Context, pool *pgxpool.Pool, wsSlug, teams
 	return out, rows.Err()
 }
 
-// UpdateTeamspace applies a partial teamspace update. Member (15)+.
+// UpdateTeamspace applies a partial teamspace update. Member (15)+,
+// OR the teamspace's Lead regardless of workspace role (C92T0 design
+// rule 4: a guest-role Lead still edits their teamspace's settings).
 // Renaming to the same name is a no-op success returning the existing
 // row; renaming to an existing name is ErrTeamspaceConflict; an empty
 // patch is ErrNothingToUpdate.
 func UpdateTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, teamspaceID string, patch TeamspacePatch) (*Teamspace, error) {
-	wsID, _, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return nil, err
 	}
 	old, err := resolveTeamspace(ctx, pool, wsID, teamspaceID)
 	if err != nil {
 		return nil, err
+	}
+	if role < RoleMember {
+		lead, err := isTeamspaceLead(ctx, pool, wsID, teamspaceID, actorID)
+		if err != nil {
+			return nil, err
+		}
+		if !lead {
+			return nil, ErrForbidden
+		}
 	}
 	if patch.Name == nil {
 		return nil, ErrNothingToUpdate
@@ -456,15 +576,25 @@ func UpdateTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, t
 // DeleteTeamspace deletes the teamspace row only. The FK ON DELETE SET
 // NULL ungroups its projects — projects are never deleted — and the
 // returned count is exactly the number of projects ungrouped
-// (including archived ones). Member (15)+. Never 500 when the
-// teamspace has projects.
+// (including archived ones). Member (15)+, OR the teamspace's Lead
+// regardless of workspace role (C92T0 design rule 4). Never 500 when
+// the teamspace has projects.
 func DeleteTeamspace(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, teamspaceID string) (int64, error) {
-	wsID, _, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, true)
+	wsID, role, err := resolveTeamspaceWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
 		return 0, err
 	}
 	if _, err := resolveTeamspace(ctx, pool, wsID, teamspaceID); err != nil {
 		return 0, err
+	}
+	if role < RoleMember {
+		lead, err := isTeamspaceLead(ctx, pool, wsID, teamspaceID, actorID)
+		if err != nil {
+			return 0, err
+		}
+		if !lead {
+			return 0, ErrForbidden
+		}
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
