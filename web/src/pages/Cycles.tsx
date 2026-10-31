@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { pqlHasLimit } from "../lib/pql";
 import type {
   Cycle,
   CycleBurndown,
@@ -710,6 +711,20 @@ function CycleDetail({
     queryKey: ["cycle-issues-pql", slug, identifier, cycle.id, appliedQuery],
     enabled: pqlMode && appliedQuery.trim() !== "",
     queryFn: async () => {
+      // C98T1: a LIMIT query is a single page (the server always
+      // returns next_cursor null), so skip the cursor loop and
+      // fetch once.
+      if (pqlHasLimit(appliedQuery)) {
+        const p = new URLSearchParams({
+          cycle: cycle.id,
+          pql: appliedQuery.trim(),
+          per_page: "100",
+        });
+        const page = await api.get<IssueListResult>(
+          `${base}/issues?${p.toString()}`,
+        );
+        return page.results;
+      }
       const all: Issue[] = [];
       let cursor: string | undefined;
       do {

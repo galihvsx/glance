@@ -25,6 +25,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { api, ApiError } from "../lib/api";
+import { pqlHasLimit } from "../lib/pql";
 import { dropSortOrder } from "../lib/sortOrder";
 import { stateDotClass } from "../lib/stateDot";
 import {
@@ -572,11 +573,24 @@ export default function Board() {
   // Committed PQL query: same fetch shape as the visual board
   // (order_by sort_order, per_page 100, cursor loop) but pql-only
   // params — visual filters never combine with a PQL query.
+  // C98T1: a LIMIT query is a single page (the server always returns
+  // next_cursor null), so skip the cursor loop and fetch once.
   const pqlIssuesKey = ["board-issues-pql", slug, identifier, appliedQuery] as const;
   const pqlIssuesQuery = useQuery({
     queryKey: pqlIssuesKey,
     enabled: pqlMode && appliedQuery.trim() !== "",
     queryFn: async () => {
+      if (pqlHasLimit(appliedQuery)) {
+        const p = new URLSearchParams({
+          pql: appliedQuery.trim(),
+          order_by: "sort_order",
+          per_page: "100",
+        });
+        const page = await api.get<IssueListResult>(
+          `${base}/issues?${p.toString()}`,
+        );
+        return page.results;
+      }
       const all: Issue[] = [];
       let cursor: string | undefined;
       do {

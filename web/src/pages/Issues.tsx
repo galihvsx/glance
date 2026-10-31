@@ -85,7 +85,7 @@ import {
   useIssueFilters,
   type IssueFilters,
 } from "../lib/filters";
-import { buildPqlRequestParams } from "../lib/pql";
+import { buildPqlRequestParams, pqlHasLimit } from "../lib/pql";
 import {
   buildExportUrl,
   downloadExport,
@@ -456,7 +456,12 @@ export default function Issues() {
       api.get<IssueListResult>(
         buildIssuePath(slug, identifier, filters, settings.orderBy, pageParam),
       ),
-    getNextPageParam: (last) => last.next_cursor || undefined,
+    // C98T1: a LIMIT query is a single page — never fetch a next
+    // page for it, even if a cursor were ever returned (the server
+    // already nulls next_cursor under LIMIT; this is the client-side
+    // half of the single-fetch contract).
+    getNextPageParam: (last) =>
+      pqlHasLimit(filters.pql ?? "") ? undefined : last.next_cursor || undefined,
     initialPageParam: undefined as string | undefined,
   });
 

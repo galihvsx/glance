@@ -24,6 +24,11 @@ export interface PqlCheatEntry {
  * updated_at, created_at, sequence_id, sort_order, or priority, with
  * an optional ASC/DESC direction (default ASC); it wins over the
  * order_by param, and a second key or unknown sort field is a 400.
+ * A trailing LIMIT clause (C98T1, after ORDER BY or standalone)
+ * caps the page to at most min(per_page, n) rows with next_cursor
+ * always null (single page); a cursor combined with LIMIT, a second
+ * LIMIT, LIMIT before ORDER BY, or an out-of-range/non-integer LIMIT
+ * is a 400.
  */
 export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   { example: "state = Todo", meaning: "State by name (project-scoped)" },
@@ -117,7 +122,33 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
     example: "state = Todo ORDER BY created_at",
     meaning: "Direction defaults to ASC when omitted (also ORDER BY updated_at DESC)",
   },
+  {
+    example: "state = Todo LIMIT 10",
+    meaning:
+      "At most 10 rows, single page (next_cursor is always null; a cursor cannot be combined with LIMIT)",
+  },
+  {
+    example: "priority >= 3 ORDER BY priority DESC LIMIT 10",
+    meaning:
+      "LIMIT composes after ORDER BY; without ORDER BY it uses the default order (1–100, no clamping)",
+  },
 ];
+
+/**
+ * Whether the applied PQL query carries a LIMIT clause (C98T1).
+ * LIMIT is always the trailing clause, so the check is "LIMIT
+ * <integer>" at the end of the query, with quoted literals blanked
+ * first so a value like "LIMIT 10" never matches (and a bare
+ * limit-like value without a number, e.g. label = limit, does not
+ * either). The PQL modes use this — the one place that knows the
+ * language — to skip their cursor loop and fetch a single page
+ * instead; the server remains authoritative (an invalid LIMIT still
+ * 400s on the first fetch, and next_cursor null stops any loop).
+ */
+export function pqlHasLimit(query: string): boolean {
+  const unquoted = query.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, '""');
+  return /\bLIMIT\s+\d+$/i.test(unquoted.trim());
+}
 
 /** The applied PQL query carried by IssueFilters, normalized: "" when
  *  the filters carry no query (old views predate PQL and have none). */
