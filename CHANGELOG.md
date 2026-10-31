@@ -5,6 +5,54 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Project ACL via teamspace membership + teamspace Lead designation (cycle 92)**
+
+- Projects gain membership-based access control (Plane parity):
+  new `project_members` table (admin/member/guest mirroring the
+  workspace ladder) and a `projects.visibility` of `public` /
+  `private`; every existing project backfills to `public`, so
+  current visibility is preserved exactly. Effective access is
+  checked in this order: workspace Admin, direct project
+  membership, membership of the project's linked teamspace
+  (Member-level Contributor access), public fallback to the
+  workspace role, and private + none of the above yields the
+  shared 404 (no existence oracle). Moving a project to another
+  teamspace changes derived access immediately, following the
+  live link.
+- Teamspace Lead designation: one Lead per teamspace
+  (`teamspaces.lead_user_id`, must be a member, set/cleared by
+  workspace Admin only, cleared automatically when the Lead's
+  membership is removed). The Lead gains teamspace-scoped admin
+  powers only — manage members, edit settings, delete the
+  teamspace, link/unlink projects — and no workspace-level
+  powers.
+- Backend enforcement runs through a single
+  `EffectiveProjectAccess` resolver at the shared chokepoints
+  (`resolveIssueProject`, project list/get/update/delete/
+  archive, states, automation/schedule/epic/initiative/label
+  routes) plus a verification sweep over MyWork, search, page
+  search, favorites, workload, activity, initiative lists and
+  rollups, issue views, risk reports, dashboard widgets,
+  notifications (in-app, unread count, digest and reminder/stale
+  emails), and OKR issue links — each with negative tests
+  proving private-project invisibility (404 or empty list, no
+  data leak), teamspace-derived Contributor access, and direct
+  guest read-only. OpenAPI pinned.
+- Frontend: Project Settings gains a Members tab (direct roster
+  with role edit, add/remove, last-direct-admin guard,
+  teamspace-derived read-only rows) and a visibility toggle
+  (public/private, Admin-gated); the teamspace manage dialog
+  gains a Lead picker (Admin-gated) and Lead affordances. A
+  direct URL to a private project renders the same not-found
+  state as a missing project. No ACL is enforced client-side
+  only — every denied state is server-list-verbatim.
+- Honest boundary, documented rather than claimed complete:
+  OKR key-result progress aggregate counts still include linked
+  issues of private projects (titles/IDs are filtered in detail
+  views); public share links are bearer capabilities by design,
+  so a link minted while reachable stays valid after the
+  project goes private (revocation is the control).
+
 **PQL: Plane Query Language for work-item filtering (cycle 91)**
 
 - The issue list gains a PQL mode (Plane parity): a text query
