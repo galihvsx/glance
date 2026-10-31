@@ -71,6 +71,20 @@ func RegisterDashboardRoutes(e *echo.Echo, h *DashboardHandler) {
 // invalid …: <detail>"); the prefix is stripped so the message stays
 // client-shaped.
 func dashboardError(c *echo.Context, err error) error {
+	// C100T0: a PQL failure is a client error with message +
+	// position, never a 500 — the same mapping the issue list uses.
+	// It fires both at write time (a syntactically bad stored query,
+	// wrapped in ErrInvalidWidgetConfig by parseWidgetConfig) and at
+	// data time (a stored query whose names no longer resolve after a
+	// rename), so it precedes the ErrInvalidWidgetConfig case.
+	var pqlErr *service.PQLQueryError
+	if errors.As(err, &pqlErr) {
+		var details any
+		if pqlErr.Pos > 0 {
+			details = map[string]any{"position": pqlErr.Pos}
+		}
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, pqlErr.Msg, details)
+	}
 	switch {
 	case errors.Is(err, service.ErrDashboardNotFound):
 		return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "dashboard not found", nil)
@@ -79,7 +93,7 @@ func dashboardError(c *echo.Context, err error) error {
 	case errors.Is(err, service.ErrInvalidVisibility):
 		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, `invalid visibility: want "public" or "private"`, nil)
 	case errors.Is(err, service.ErrInvalidWidgetType):
-		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number|smart_counter|smart_gauge|table_2d|intake_breakdown|work_items_table|assigned_to_me", nil)
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid widget_type: want one of bar|line|area|donut|pie|number|smart_counter|smart_gauge|table_2d|intake_breakdown|work_items_table|assigned_to_me|pql_table", nil)
 	case errors.Is(err, service.ErrInvalidDrilldownGroup):
 		msg := strings.TrimPrefix(err.Error(), "service: invalid drill-down group: ")
 		msg = strings.TrimPrefix(msg, "service: invalid drill-down group")
@@ -420,6 +434,16 @@ func (h *DashboardHandler) deleteWidget(c *echo.Context) error {
 //     is always returned — the configured columns only decide what the
 //     frontend renders; assigned_to_me forces assignee = the caller at
 //     compute time)
+//   - pql_table: the same rows shape, for the rows matching the
+//     stored PQL query against the exactly-one pinned project: the
+//     query's ORDER BY (multi-key) wins over the config sort, and the
+//     query's LIMIT caps the TOTAL rows across pages (total is the
+//     capped count). A stored query whose names no longer resolve
+//     (a renamed state/epic/label) is a per-widget 400 on this route
+//     with the PQL message + position in details — the rest of the
+//     dashboard still loads. The config itself rejects a blank query,
+//     a bad parse at write time, 0 or 2+ pinned projects, and any
+//     filters key (PQL is the filter).
 //
 // The paginated types take ?page= (default 1, must be >= 1).
 // Read authZ = the dashboard's viewer rule (member 15+; a private
@@ -506,7 +530,8 @@ func (h *DashboardHandler) getWidgetData(c *echo.Context) error {
 //     ignored params, matching the C85 group/metric ignores).
 //
 // Types without any drill-down (number, work_items_table,
-// assigned_to_me) are 400 — drill-down is not available for them.
+// assigned_to_me, pql_table — the rows already ARE the list) are 400
+// — drill-down is not available for them.
 // Read authZ = the widget read rule (a shared-view member may drill;
 // a private dashboard of another creator without a share is 404).
 func (h *DashboardHandler) getWidgetDrilldown(c *echo.Context) error {
@@ -618,7 +643,9 @@ func (h *DashboardHandler) getWidgetTrend(c *echo.Context) error {
 // key,label,value (charts, smart_counter, table_2d);
 // key,label,completed,total,percentage (smart_gauge);
 // metric,value (intake_breakdown aggregate); value (number); the configured
-// columns in order (work_items_table, assigned_to_me). For
+// columns in order (work_items_table, assigned_to_me, pql_table —
+// for pql_table a query LIMIT caps the export rows exactly as it
+// caps the data pages). For
 // intake_breakdown widgets, ?metric=<metric> dumps the drill-down row
 // set instead (id,issue_id,title,project,status,status_name,source,
 // snoozed_till,duplicate_to_id,created_at — same predicate and order

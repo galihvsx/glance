@@ -1,9 +1,10 @@
 package service
 
-// Customizable dashboards, phases 1+2+3 (C81T0, C83T0, C84T0):
-// workspace-scoped data canvases à la Plane Dashboards — a 12-column
-// grid of widgets, each independently configured (chart type, grouping,
-// filters, project scope) and recomputed live from work-item data.
+// Customizable dashboards, phases 1+2+3 (C81T0, C83T0, C84T0) plus the
+// C100T0 PQL widget: workspace-scoped data canvases à la Plane
+// Dashboards — a 12-column grid of widgets, each independently
+// configured (chart type, grouping, filters, project scope) and
+// recomputed live from work-item data.
 //
 // Phase 2 adds Plane's newer widget types (smart_counter, smart_gauge,
 // table_2d, intake_breakdown), intake source tracking (in_app|form|
@@ -17,6 +18,24 @@ package service
 // drill-down endpoint (GET /api/v1/widgets/:id/drilldown): clicking a
 // chart segment opens the filtered item list behind it — the industry
 // drill-down contract (Wrike, Acumatica, Sunbird DCIM).
+//
+// C100T0 adds pql_table: a row-list widget driven by a PQL query
+// string (the PQL arc's last deferred surface — dashboards filtered
+// only through the visual FilterPicker until now). PQL is the filter
+// for this type, so a visual filters key is rejected, not silently
+// ignored (C91's "PQL wins over visual filters" rule, applied at the
+// config surface); group_by/metric are accepted-but-ignored (row-list
+// precedent). The PQL translator is single-project-scoped, so
+// project_ids must contain exactly one project (anything else is a
+// 400 at write time); multi-project PQL widgets are a follow-up, not
+// a silent scope widening. Compute reuses the existing translator
+// against the pinned project: the query's ORDER BY (multi-key, C99)
+// wins over the config sort, its LIMIT caps the TOTAL rows across
+// pages (max_rows stays the page size), and name resolution happens
+// at compute — a stored query naming a renamed state/epic/label
+// surfaces as a per-widget 400 on the data route, never a
+// dashboard-wide 500. Drill-down is unavailable (the rows already ARE
+// the list, like the other row-list types).
 //
 // AuthZ:
 //   - Reads (list/get/widget data/export.csv/drilldown): workspace
@@ -43,7 +62,7 @@ package service
 // Config validation (honest 400s at write time):
 //   - widget_type ∈ bar|line|area|donut|pie|number|smart_counter|
 //     smart_gauge|table_2d|intake_breakdown|work_items_table|
-//     assigned_to_me (also a DB CHECK).
+//     assigned_to_me|pql_table (also a DB CHECK).
 //   - group_by ∈ state|priority|assignee|label|state_group|project|
 //     created_by — required for the chart and phase-2 grouped types,
 //     optional and ignored for number; ignored (not required) for
@@ -72,6 +91,18 @@ package service
 //     assignee filter is FORCED to the caller at compute time — a
 //     filters.assignees entry is silently overridden (documented, not
 //     a lie: the type's contract is "assigned to you").
+//   - pql_table: the row-list shape above, driven by a PQL query
+//     instead of visual filters. query is required and non-blank
+//     (parse + semantic validation at write time, 400 with position
+//     on failure — name resolution stays a compute-time concern, so a
+//     renamed state/epic/label surfaces per-widget at data time);
+//     project_ids must contain exactly one project (the translator's
+//     single-project scope); filters is REJECTED (PQL is the filter —
+//     a silently-ignored filters key would be a lie); group_by/metric
+//     accepted-but-ignored (row-list precedent). Query ORDER BY wins
+//     over sort_by/sort_dir (fallback sort only, with the usual id
+//     tiebreak); query LIMIT caps the total rows across pages and in
+//     the CSV export (max_rows stays the page size).
 //   - filters.{assignees,states,labels} are UUID arrays;
 //     filters.priorities are ints 0..4; unknown keys are rejected.
 //   - project_ids is a UUID array; unknown keys are rejected. Keys that
@@ -141,6 +172,10 @@ const (
 	// assignee = the caller at compute time.
 	WidgetTypeWorkItemsTable = "work_items_table"
 	WidgetTypeAssignedToMe   = "assigned_to_me"
+	// C100T0: PQL-driven row list. Same row shape, columns, and
+	// pagination as work_items_table, filtered by a PQL query string
+	// against exactly one pinned project instead of visual filters.
+	WidgetTypePQLTable = "pql_table"
 )
 
 // Widget group-by dimensions.
@@ -188,7 +223,7 @@ var (
 	// private dashboard the caller may not see.
 	ErrWidgetNotFound = errors.New("service: widget not found")
 	// ErrInvalidWidgetType is returned when widget_type is not one of
-	// the twelve widget types. The handler maps it to 400 bad_request.
+	// the thirteen widget types. The handler maps it to 400 bad_request.
 	ErrInvalidWidgetType = errors.New("service: invalid widget_type")
 	// ErrInvalidDrilldownGroup is returned when the drill-down group's
 	// key is missing or does not resolve to a group of the widget (400
@@ -215,7 +250,8 @@ var (
 	// trend params).
 	ErrInvalidDrilldownBucket = errors.New("service: invalid drill-down bucket")
 	// ErrDrilldownUnavailable is returned when the widget's type has
-	// no drill-down at all (number, work_items_table, assigned_to_me).
+	// no drill-down at all (number, work_items_table, assigned_to_me,
+	// pql_table — the rows already ARE the list).
 	// intake_breakdown drills via a metric instead of a group (see
 	// GetIntakeDrilldown); calling GetWidgetDrilldown on it returns
 	// ErrInvalidDrilldownMetric, not this sentinel. The handler maps
@@ -522,8 +558,8 @@ type WidgetData struct {
 	TotalGroups *int              `json:"total_groups,omitempty"`
 	Intake      *IntakeBreakdown  `json:"intake,omitempty"`
 	// Rows carries the requested page for the phase-3 row-list types
-	// (absent when the page is empty, like the phase-2 groups
-	// convention).
+	// and pql_table (absent when the page is empty, like the phase-2
+	// groups convention).
 	Rows  []WidgetRowItem `json:"rows,omitempty"`
 	Total *int            `json:"total,omitempty"`
 }
@@ -535,14 +571,15 @@ type dashboardRow struct {
 	role      int
 }
 
-// validWidgetType reports whether t is one of the twelve widget types.
+// validWidgetType reports whether t is one of the thirteen widget types.
 func validWidgetType(t string) bool {
 	switch t {
 	case WidgetTypeBar, WidgetTypeLine, WidgetTypeArea,
 		WidgetTypeDonut, WidgetTypePie, WidgetTypeNumber,
 		WidgetTypeSmartCounter, WidgetTypeSmartGauge,
 		WidgetTypeTable2D, WidgetTypeIntake,
-		WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+		WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe,
+		WidgetTypePQLTable:
 		return true
 	}
 	return false
@@ -599,10 +636,15 @@ type widgetConfig struct {
 	gaugeColor     string
 	showPercentage bool
 	view           string
-	// Phase-3 row-list fields (work_items_table | assigned_to_me).
+	// Phase-3 row-list fields (work_items_table | assigned_to_me |
+	// pql_table).
 	columns []string
 	sortBy  string
 	sortDir string
+	// C100T0 PQL field (pql_table only): the query string, stored
+	// verbatim; parsed + semantically validated at write time, and
+	// translated against the pinned project at compute time.
+	query string
 }
 
 // hexColor reports whether s is a #rrggbb hex color.
@@ -636,7 +678,7 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		switch k {
 		case "group_by", "metric", "filters", "project_ids",
 			"max_rows", "visualization", "gauge_color", "show_percentage", "view",
-			"columns", "sort_by", "sort_dir":
+			"columns", "sort_by", "sort_dir", "query":
 		default:
 			return nil, fmt.Errorf("%w: unknown config key %q", ErrInvalidWidgetConfig, k)
 		}
@@ -666,7 +708,7 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 	charts := []string{WidgetTypeBar, WidgetTypeLine, WidgetTypeArea, WidgetTypeDonut, WidgetTypePie}
 	grouped := append(append([]string{}, charts...),
 		WidgetTypeSmartCounter, WidgetTypeSmartGauge, WidgetTypeTable2D)
-	rowList := []string{WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe}
+	rowList := []string{WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe, WidgetTypePQLTable}
 	// metric is a known key on every type: charts/number/counter/gauge
 	// validate its value; table_2d, intake_breakdown, and the phase-3
 	// row-list types accept and ignore it (their metric is fixed/
@@ -677,10 +719,21 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		rowList...)
 	for k := range top {
 		switch k {
-		case "group_by", "filters", "project_ids":
+		case "group_by", "project_ids":
 			// Accepted on every type; group_by is ignored (not
 			// required) for number, intake_breakdown, and the
 			// phase-3 row-list types (a row list has no grouping).
+		case "filters":
+			// Accepted on every type EXCEPT pql_table: PQL is the
+			// filter there, so a filters key would either lie
+			// (silently ignored) or contradict the query — 400.
+			if widgetType == WidgetTypePQLTable {
+				return nil, fmt.Errorf("%w: %q is not supported for %q widgets: PQL is the filter", ErrInvalidWidgetConfig, k, widgetType)
+			}
+		case "query":
+			if err := allow(k, WidgetTypePQLTable); err != nil {
+				return nil, err
+			}
 		case "metric":
 			if err := allow(k, metricTypes...); err != nil {
 				return nil, err
@@ -727,7 +780,8 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 			}
 			cfg.metric = m
 		case WidgetTypeTable2D, WidgetTypeIntake,
-			WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+			WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe,
+			WidgetTypePQLTable:
 			// Fixed to count (table_2d) / meaningless (intake) /
 			// fixed to item rows (the phase-3 row-list types):
 			// accepted and ignored with a note, like phase 1's
@@ -873,6 +927,13 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		}
 		cfg.view = v
 	}
+	if rawQ, ok := top["query"]; ok {
+		var q string
+		if err := json.Unmarshal(rawQ, &q); err != nil {
+			return nil, fmt.Errorf("%w: query must be a string", ErrInvalidWidgetConfig)
+		}
+		cfg.query = q
+	}
 
 	switch widgetType {
 	case WidgetTypeNumber:
@@ -886,6 +947,44 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		// table_2d). sort_by must sit inside the configured columns —
 		// sorting a column the table does not render is a 400.
 		cfg.groupBy = ""
+		inCols := false
+		for _, c := range cfg.columns {
+			if c == cfg.sortBy {
+				inCols = true
+				break
+			}
+		}
+		if !inCols {
+			return nil, fmt.Errorf("%w: sort_by %q is not one of the configured columns", ErrInvalidWidgetConfig, cfg.sortBy)
+		}
+	case WidgetTypePQLTable:
+		// A row list has no grouping (same accepted-but-ignored rule
+		// as the phase-3 types) and the same sort_by-in-columns rule.
+		// Plus the PQL contract: query required and non-blank,
+		// parse + semantic validation at write time (name resolution
+		// stays compute-time — a renamed state/epic/label must still
+		// surface per-widget at data time), and exactly one pinned
+		// project (the translator takes one projectID; a
+		// workspace-wide query would need per-project translation
+		// plus merged ordering, a follow-up design, not a flag).
+		cfg.groupBy = ""
+		if strings.TrimSpace(cfg.query) == "" {
+			return nil, fmt.Errorf("%w: query is required for %q widgets and must not be blank", ErrInvalidWidgetConfig, widgetType)
+		}
+		parsed, err := ParsePQLWithOrder(cfg.query)
+		if err != nil {
+			// Double-wrapped so both sentinels survive: the handler
+			// maps the PQL error to 400 with its position, and any
+			// caller checking only ErrInvalidWidgetConfig still
+			// sees a config 400.
+			return nil, fmt.Errorf("%w: %w", ErrInvalidWidgetConfig, err)
+		}
+		if err := ValidatePQL(parsed.Predicate); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidWidgetConfig, err)
+		}
+		if len(cfg.projectIDs) != 1 {
+			return nil, fmt.Errorf("%w: project_ids must contain exactly one project for %q widgets", ErrInvalidWidgetConfig, widgetType)
+		}
 		inCols := false
 		for _, c := range cfg.columns {
 			if c == cfg.sortBy {
@@ -1743,9 +1842,17 @@ func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, act
 // the phase-3 row-list widgets (work_items_table, assigned_to_me)
 // return {rows, page, max_rows, total} with rows holding the canonical
 // WidgetRowItem rows in the config's sort order (assigned_to_me forces
-// assignee = the caller at compute time). Viewer role: any member
-// (15)+ may read; a private dashboard of another creator without a
-// share reads as a missing widget.
+// assignee = the caller at compute time). The C100T0 pql_table widget
+// returns the same rows shape: the rows matching the stored PQL query
+// against the pinned project, in the query's ORDER BY when present
+// (else the config sort + id tiebreak), with the query's LIMIT
+// capping the TOTAL rows across pages (total is the capped count, so
+// pages past the cap are empty rather than a lie about more rows).
+// A stored query naming a renamed state/epic/label fails name
+// resolution here and surfaces as that widget's 400 (the PQL error,
+// with position) — the rest of the dashboard still loads. Viewer
+// role: any member (15)+ may read; a private dashboard of another
+// creator without a share reads as a missing widget.
 func GetWidgetData(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID string, page int) (*WidgetData, error) {
 	if page < 1 {
 		return nil, ErrInvalidWidgetPage
@@ -1782,6 +1889,8 @@ func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetComput
 		return &WidgetData{Intake: bd}, nil
 	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
 		return computeRowItems(ctx, pool, wc, actorID, page, paginate)
+	case WidgetTypePQLTable:
+		return computePQLRowItems(ctx, pool, wc, actorID, page, paginate)
 	}
 
 	groups, err := computeGrouped(ctx, pool, cfg, where, args)
@@ -1991,6 +2100,122 @@ func computeRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute,
 	return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
 }
 
+// pqlWidgetOrderBy renders a pql_table widget's ORDER BY fragment:
+// the query's ORDER BY (multi-key, C99) when present — each key
+// resolved through the listOrders whitelist, so no query text ever
+// reaches SQL as a column name — with a stable id tiebreak in the
+// last key's direction; otherwise the config sort + id tiebreak
+// (the rowListOrderBy fallback). The parse validated every key
+// against pqlSortableFields (the same field set as listOrders), so a
+// whitelist miss here is unreachable; the fallback keeps it honest
+// rather than panicking.
+func pqlWidgetOrderBy(parsed *pqlParsedQuery, cfg *widgetConfig) string {
+	if parsed.OrderBy == nil {
+		return rowListOrderBy(cfg)
+	}
+	parts := make([]string, 0, len(parsed.OrderBy.Keys)+1)
+	lastDir := "ASC"
+	for _, k := range parsed.OrderBy.Keys {
+		key := k.Field
+		if k.Desc {
+			key = "-" + key
+		}
+		ord, ok := listOrders[key]
+		if !ok {
+			return rowListOrderBy(cfg)
+		}
+		dir := "ASC"
+		if ord.desc {
+			dir = "DESC"
+		}
+		lastDir = dir
+		parts = append(parts, ord.column+" "+dir)
+	}
+	parts = append(parts, "i.id "+lastDir)
+	return strings.Join(parts, ", ")
+}
+
+// computePQLRowItems runs the pql_table recompute: the stored query
+// re-parsed (parse-only at write time, so a re-parse here is cheap
+// and keeps the translator's input fresh), its predicate translated
+// against the pinned project via the existing translator (no forked
+// PQL semantics — state/epic/estimate/parent names resolve within
+// that project, unknown names are the PQL error with position), and
+// rows fetched through the shared row-list SELECT. The base WHERE is
+// the widget's project scope (the pinned project intersected with
+// the actor's effective access, C92T2 — an unreachable pinned project
+// silently yields zero rows, like every other widget) plus live-issue
+// liveness, ANDed with the PQL predicate. Query ORDER BY wins over
+// the config sort (C98 precedence); query LIMIT caps the TOTAL rows
+// (total is the capped count; paginate slices pages out of at most
+// LIMIT rows, and the CSV path — paginate=false — fetches at most
+// LIMIT rows, so the export honors the same cap).
+func computePQLRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
+	cfg := wc.cfg
+	if len(cfg.projectIDs) != 1 {
+		// Unreachable through validated writes (parseWidgetConfig
+		// enforces exactly one), but a corrupt stored config must
+		// fail as a config 400, never translate against a guessed
+		// project.
+		return nil, fmt.Errorf("%w: project_ids must contain exactly one project for %q widgets", ErrInvalidWidgetConfig, wc.widget.WidgetType)
+	}
+	parsed, err := ParsePQLWithOrder(cfg.query)
+	if err != nil {
+		return nil, err
+	}
+	var args []any
+	where := widgetIssueFilter(cfg, wc.projectIDs, &args)
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	pred, err := translatePQL(ctx, pool, wc.dr.Dashboard.WorkspaceID, cfg.projectIDs[0], actorID, parsed.Predicate, arg)
+	if err != nil {
+		return nil, err
+	}
+	where += " AND " + pred
+	var total int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) `+rowItemsFrom+` WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	limitCap := -1
+	if parsed.Limit != nil {
+		limitCap = parsed.Limit.Value
+		if total > limitCap {
+			total = limitCap
+		}
+	}
+	maxRows := cfg.maxRows
+	if maxRows < 1 {
+		maxRows = 10
+	}
+	orderBy := pqlWidgetOrderBy(parsed, cfg)
+	var items []WidgetRowItem
+	switch {
+	case !paginate:
+		items, err = queryRowItems(ctx, pool, where, args, cfg, nil, orderBy, limitCap, 0)
+		if err != nil {
+			return nil, err
+		}
+	case limitCap >= 0 && (page-1)*maxRows >= limitCap:
+		// Past the cap: an empty page (total already reports the
+		// capped count, so no phantom pages exist).
+		items = []WidgetRowItem{}
+	default:
+		limit := maxRows
+		offset := (page - 1) * maxRows
+		if limitCap >= 0 && offset+limit > limitCap {
+			limit = limitCap - offset
+		}
+		items, err = queryRowItems(ctx, pool, where, args, cfg, nil, orderBy, limit, offset)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &WidgetData{Rows: items, Page: &page, MaxRows: &maxRows, Total: &total}, nil
+}
+
 // drilldownDimFilter maps a matched group's raw key back to the
 // dimension's filter value — the EXACT inverse of the data-compute
 // resolution (groupDimFor + labelGroup + the synthetic buckets). It is
@@ -2069,7 +2294,8 @@ const drilldownOrderBy = `i.updated_at DESC, i.id DESC`
 // Label getWidgetData returns — "Group keys are the human labels").
 // The item set is the widget's base filters (project scope + dashboard
 // filters + widget filters) ANDed with the segment's group filter.
-// Types without groups (number, work_items_table, assigned_to_me)
+// Types without groups (number, work_items_table, assigned_to_me,
+// pql_table — the rows already ARE the list)
 // are ErrDrilldownUnavailable; intake_breakdown drills by metric, not
 // group (see GetIntakeDrilldown — calling this function on it is an
 // ErrInvalidDrilldownMetric, and the handler never does); a missing
@@ -3144,7 +3370,9 @@ func intakeDrilldownCSVRecord(item IntakeDrilldownItem) []string {
 // duplicate_to_id,created_at — the drill-down row set, same order and
 // predicate, capped at csvExportCap with X-Result-Truncated);
 // value (number); the configured columns in order
-// (work_items_table, assigned_to_me). A metric on a non-intake widget
+// (work_items_table, assigned_to_me, pql_table — for pql_table the
+// full recompute is the PQL query, and a query LIMIT caps the export
+// rows exactly as it caps the data pages). A metric on a non-intake widget
 // is ignored; for intake widgets an avg_decide or unknown metric is
 // 400 (the same validation as the drill-down). Proper CSV quoting
 // via encoding/csv. Read authZ = the widget read rule (a shared-view
@@ -3232,7 +3460,7 @@ func ExportWidgetCSV(ctx context.Context, pool *pgxpool.Pool, widgetID, actorID,
 	}
 	var rows [][]string
 	switch wc.widget.WidgetType {
-	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe:
+	case WidgetTypeWorkItemsTable, WidgetTypeAssignedToMe, WidgetTypePQLTable:
 		rows = append(rows, append([]string{}, wc.cfg.columns...))
 		for _, item := range full.Rows {
 			rows = append(rows, rowItemCSVRecord(wc.cfg.columns, item))
