@@ -126,6 +126,12 @@ func remindOneIssue(ctx context.Context, pool *pgxpool.Pool, c reminderCandidate
 	if err != nil {
 		return err
 	}
+	// C92T2: system-job recipients are filtered by effective project
+	// access at creation time (see filterIssueRecipientsByAccess).
+	recipients, err = filterIssueRecipientsByAccess(ctx, tx, c.issueID, recipients)
+	if err != nil {
+		return err
+	}
 	displayID := fmt.Sprintf("%s-%d", c.identifier, c.sequenceID)
 
 	var eventType, title string

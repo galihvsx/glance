@@ -84,7 +84,7 @@ func (h *RiskHandler) getRisk(c *echo.Context) error {
 	if !ok {
 		return nil
 	}
-	rep, err := service.GetRiskReport(c.Request().Context(), h.Pool, wsID)
+	rep, err := service.GetRiskReport(c.Request().Context(), h.Pool, wsID, CurrentUser(c).ID)
 	if err != nil {
 		return riskError(c, err)
 	}

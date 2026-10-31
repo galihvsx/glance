@@ -31,12 +31,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -118,29 +120,35 @@ func riskLevelOf(score int) string {
 }
 
 // GetRiskReport returns the project risk report for a workspace:
-// every project of the workspace (ordered by identifier) with its
-// risk score, level, and contributing factors. Projects with zero
-// open issues score 0 (healthy) with empty factors. A missing
-// workspace is ErrNotFound.
-func GetRiskReport(ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID) (*RiskReport, error) {
+// every project the actor can effectively reach (ordered by
+// identifier) with its risk score, level, and contributing factors.
+// Projects with zero open issues score 0 (healthy) with empty
+// factors. A missing workspace, or a workspace the actor is not a
+// member of, is ErrNotFound. C92T2: the per-project rows are
+// filtered by effective project access — a private project the
+// actor cannot reach contributes neither its name nor its score,
+// exactly like ListProjects vanishing it; the overload share reuses
+// the actor-scoped GetWorkload for the same reason.
+func GetRiskReport(ctx context.Context, pool *pgxpool.Pool, workspaceID uuid.UUID, actorID string) (*RiskReport, error) {
 	wsID := workspaceID.String()
 
-	var exists bool
 	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = $1::uuid)`, wsID).Scan(&exists); err != nil {
+		`SELECT 1 FROM workspace_members m
+		  WHERE m.workspace_id = $1::uuid AND m.user_id = $2::uuid`,
+		wsID, actorID).Scan(new(int)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-	if !exists {
-		return nil, ErrNotFound
-	}
 
-	stats, err := riskProjectRows(ctx, pool, wsID)
+	stats, err := riskProjectRows(ctx, pool, wsID, actorID)
 	if err != nil {
 		return nil, err
 	}
 	// Reuse the c29 overload flags read-only; never re-implement them.
 	overloadShare := 0.0
-	workload, err := GetWorkload(ctx, pool, workspaceID, nil)
+	workload, err := GetWorkload(ctx, pool, workspaceID, actorID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +255,7 @@ type riskProjectStat struct {
 // counts. Staleness keys off the issue_activities audit log with
 // issues.updated_at as the fallback for activity-less issues. One
 // query for the whole workspace — no N+1.
-func riskProjectRows(ctx context.Context, pool *pgxpool.Pool, wsID string) ([]riskProjectStat, error) {
+func riskProjectRows(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string) ([]riskProjectStat, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT p.id::text, p.identifier, p.name,
 		        COUNT(i.id) FILTER (WHERE `+riskOpenCond+`) AS open_count,
@@ -264,9 +272,10 @@ func riskProjectRows(ctx context.Context, pool *pgxpool.Pool, wsID string) ([]ri
 		                      AND i.deleted_at IS NULL AND i.archived_at IS NULL
 		   LEFT JOIN states ds ON ds.id = i.state_id AND ds."group" = ANY($2)
 		  WHERE p.workspace_id = $1::uuid
+		    AND `+projectAccessibleSQL("p", "$4::uuid")+`
 		  GROUP BY p.id, p.identifier, p.name
 		  ORDER BY p.identifier`,
-		wsID, doneStateGroups, riskStaleDays)
+		wsID, doneStateGroups, riskStaleDays, actorID)
 	if err != nil {
 		return nil, err
 	}

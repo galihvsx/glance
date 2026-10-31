@@ -1080,8 +1080,11 @@ func loadKeyResults(ctx context.Context, q *pgxpool.Pool, objectiveID string) ([
 
 // loadLinkedIssues loads live linked issues for an objective's issue
 // KRs, grouped by KR id. Soft-deleted issues are excluded (they no
-// longer count toward progress either).
-func loadLinkedIssues(ctx context.Context, q *pgxpool.Pool, objectiveID string) (map[string][]LinkedIssue, error) {
+// longer count toward progress either). C92T2: linked issues of
+// private projects the actor cannot reach are omitted — the link
+// gate above stops new links, but links made while the project was
+// reachable must not keep disclosing titles after it goes private.
+func loadLinkedIssues(ctx context.Context, q *pgxpool.Pool, objectiveID, actorID string) (map[string][]LinkedIssue, error) {
 	rows, err := q.Query(ctx,
 		`SELECT kri.key_result_id::text, i.id::text,
 			(p.identifier || '-' || i.sequence_id), i.name,
@@ -1092,8 +1095,9 @@ func loadLinkedIssues(ctx context.Context, q *pgxpool.Pool, objectiveID string) 
 		 JOIN projects p ON p.id = i.project_id
 		 LEFT JOIN states s ON s.id = i.state_id
 		 WHERE kr.objective_id = $1::uuid
+		   AND `+projectAccessibleSQL("p", "$2::uuid")+`
 		 ORDER BY kri.key_result_id, (p.identifier || '-' || i.sequence_id)`,
-		objectiveID)
+		objectiveID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -1226,7 +1230,7 @@ func GetObjective(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, obje
 	if err != nil {
 		return nil, err
 	}
-	linked, err := loadLinkedIssues(ctx, pool, ob.ID)
+	linked, err := loadLinkedIssues(ctx, pool, ob.ID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -1694,6 +1698,22 @@ func LinkIssueToKeyResult(ctx context.Context, pool *pgxpool.Pool, wsSlug, actor
 	}
 	if err := resolveLinkIssue(ctx, pool, wsID, issueID); err != nil {
 		return err
+	}
+	// C92T2: linking is a project-scoped write in effect — the
+	// issue's project must be effectively reachable at member+
+	// (the initiative-link precedent), so a private project's issues
+	// cannot be pulled into a workspace-visible objective by a
+	// caller who cannot reach that project. An unreachable private
+	// project surfaces as ErrNotFound, never a leak.
+	var issueProjectID string
+	if err := pool.QueryRow(ctx,
+		`SELECT project_id::text FROM issues WHERE id = $1::uuid`, issueID).Scan(&issueProjectID); err != nil {
+		return err
+	}
+	if _, effRole, err := effectiveRoleForProjectID(ctx, pool, wsID, issueProjectID, actorID); err != nil {
+		return err
+	} else if effRole < RoleMember {
+		return ErrForbidden
 	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO key_result_issues (key_result_id, issue_id)

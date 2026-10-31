@@ -254,13 +254,18 @@ func digestOneUser(ctx context.Context, pool *pgxpool.Pool, u digestRecipient, n
 	// Weekly digests aggregate capacity-overload alerts as well (C29T2);
 	// daily digests keep the three per-event types only.
 	eventTypes := digestEventsFor(u.schedule.Frequency)
+	// C92T2: the digest reuses notification rows, so it applies the
+	// same read-time filter as ListNotifications — titles of issues
+	// in private projects the recipient cannot reach must not arrive
+	// by email either.
 	rows, err := pool.Query(ctx,
-		`SELECT type, title FROM notifications
-		  WHERE user_id = $1::uuid
+		`SELECT type, title FROM notifications `+notificationProjectJoins()+`
+		  WHERE notifications.user_id = $1::uuid
 		    AND type = ANY($2)
-		    AND created_at > $3
-		    AND created_at <= $4
-		  ORDER BY created_at`,
+		    AND notifications.created_at > $3
+		    AND notifications.created_at <= $4
+		    AND `+notificationProjectFilter("$1::uuid")+`
+		  ORDER BY notifications.created_at`,
 		u.id, eventTypes, since, now)
 	if err != nil {
 		return err
