@@ -11,6 +11,13 @@
 // paginated data envelope.
 // C85T1: intake_breakdown tiles drill into the intake drill-down modal
 // (eight row-set metrics; avg-time-to-decide stays plain text).
+// C100T1: pql_table joins the row-list renderers (WorkItemsTable +
+// pagination via isRowListType) with two PQL-specific states: the
+// empty state ("No issues match this query") and the per-widget query
+// error state (the data route's PQL message verbatim + an Edit
+// affordance) — a bad stored query breaks only its own card, never
+// the dashboard. The card also shows the stored query under the
+// header so the widget is self-explanatory (prototype-as-spec).
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1326,11 +1333,13 @@ export default function WidgetCard({
   const paginated = isPaginatedType(widget.widget_type);
   const isRowList = isRowListType(widget.widget_type);
   const isIntake = widget.widget_type === "intake_breakdown";
+  const isPql = widget.widget_type === "pql_table";
   const [page, setPage] = useState(1);
   const {
     data,
     isPending,
     isError,
+    error,
     refetch,
   } = useQuery({
     queryKey: widgetDataKey(widget.id, paginated || isRowList ? page : 1),
@@ -1432,7 +1441,32 @@ export default function WidgetCard({
       </div>
     );
   } else if (isError) {
-    body = (
+    // C100T1: a pql_table data-route 400 is a per-widget query error
+    // (a renamed state/epic/label in the stored query) — show the
+    // server's PQL message verbatim with an Edit affordance so the
+    // query can be fixed in place. Every other type keeps the generic
+    // error state byte-for-byte.
+    body = isPql ? (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
+        <p className="text-sm text-destructive">
+          {`Query error: ${error instanceof Error ? error.message : "Couldn't load this widget."}`}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          The query may name something that was renamed. Edit the
+          widget to fix the query.
+        </p>
+        <div className="flex gap-2">
+          {canEdit && (
+            <Button type="button" size="sm" onClick={onEdit}>
+              Edit widget
+            </Button>
+          )}
+          <Button type="button" variant="outline" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      </div>
+    ) : (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
         <p className="text-sm text-destructive">Couldn't load this widget.</p>
         <Button type="button" variant="outline" size="sm" onClick={() => refetch()}>
@@ -1444,7 +1478,9 @@ export default function WidgetCard({
     body = (
       <div className="flex h-full items-center justify-center p-4">
         <p className="text-sm text-muted-foreground">
-          No data matches these filters.
+          {isPql
+            ? "No issues match this query."
+            : "No data matches these filters."}
         </p>
       </div>
     );
@@ -1633,6 +1669,19 @@ export default function WidgetCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {/* C100T1: the stored query under the header (prototype-as-spec)
+          so a PQL widget is self-explanatory. */}
+      {isPql && widget.config.query && (
+        <div
+          className="shrink-0 truncate border-b border-border/60 px-3 py-1 text-xs text-muted-foreground"
+          title={widget.config.query}
+        >
+          <span className="font-medium text-primary">PQL</span>
+          <code className="ml-2 rounded bg-muted px-1 py-0.5">
+            {widget.config.query}
+          </code>
+        </div>
+      )}
       <div className="min-h-0 flex-1">{body}</div>
       {(paginated || isRowList) && !isPending && !isError && (
         <PaginationControls

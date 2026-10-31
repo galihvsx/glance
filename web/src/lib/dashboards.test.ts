@@ -114,7 +114,7 @@ describe("layoutPatchBody", () => {
 });
 
 describe("isChartType / WIDGET_TYPES", () => {
-  it("lists all twelve widget types", () => {
+  it("lists all thirteen widget types", () => {
     expect(WIDGET_TYPES).toEqual([
       "bar",
       "line",
@@ -128,6 +128,7 @@ describe("isChartType / WIDGET_TYPES", () => {
       "intake_breakdown",
       "work_items_table",
       "assigned_to_me",
+      "pql_table",
     ]);
   });
 
