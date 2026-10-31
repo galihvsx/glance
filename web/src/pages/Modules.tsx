@@ -35,6 +35,8 @@ import {
 } from "../components/ui/native-select";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { stateDotClass } from "../lib/stateDot";
+import { buildPqlRequestParams } from "../lib/pql";
+import PqlEditor from "../components/issue/PqlEditor";
 import {
   OrgCard,
   OrgDetailHeader,
@@ -384,6 +386,7 @@ export default function Modules() {
             </div>
           ) : selected ? (
             <ModuleDetail
+              key={selected.id}
               module={selected}
               states={states}
               issues={moduleIssuesQuery.data ?? []}
@@ -693,6 +696,20 @@ function ModuleDetail({
   slug: string;
   identifier: string;
 }) {
+  // C95T2 PQL mode on the module detail list. Default mode is unchanged:
+  // the parent's /modules/{id}/issues membership list. PQL mode fetches
+  // the main endpoint with scope + pql (cursor loop, same shape) for
+  // DISPLAY ONLY — progress counts below always come from the
+  // unfiltered membership list (plan decision 5), never from the
+  // filtered query. The editor is probe-first (PqlEditor contract):
+  // a 400 rejects before any state commits, so the list is untouched
+  // on error. Leaving PQL mode clears the filtered list and restores
+  // the full membership list. No visual filter bar, no save-as-view
+  // on this page (both out of this cycle).
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [pqlIssues, setPqlIssues] = useState<Issue[] | null>(null);
+
   const counts = progressCounts(issues, states);
   const lead = members.find((m) => m.id === module.lead_id);
   const stateById = useMemo(
@@ -700,10 +717,60 @@ function ModuleDetail({
     [states],
   );
 
+  const displayedIssues =
+    pqlMode && appliedQuery && pqlIssues !== null ? pqlIssues : issues;
+
+  async function fetchPqlIssues(query: string): Promise<Issue[]> {
+    const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+    const all: Issue[] = [];
+    let cursor: string | undefined;
+    do {
+      // Scope param first-class: the module scope survives PQL mode
+      // (C95T0 contract) and ANDs with the predicate server-side.
+      const p = buildPqlRequestParams(query, {
+        orderBy: "sort_order",
+        perPage: 100,
+        cursor,
+      });
+      p.set("module", module.id);
+      const page = await api.get<{
+        results: Issue[];
+        next_cursor?: string;
+      }>(`${base}/issues?${p.toString()}`);
+      all.push(...page.results);
+      cursor = page.next_cursor;
+    } while (cursor);
+    return all;
+  }
+
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      setPqlIssues(null);
+      return;
+    }
+    // Probe-first: fetch throws on a 400 before anything commits.
+    const results = await fetchPqlIssues(q);
+    setAppliedQuery(q);
+    setPqlIssues(results);
+  }
+
+  function handlePqlClear() {
+    setAppliedQuery("");
+    setPqlIssues(null);
+  }
+
+  function exitPqlMode() {
+    setPqlMode(false);
+    setAppliedQuery("");
+    setPqlIssues(null);
+  }
+
   const grouped = useMemo(() => {
     const groupOf = new Map(states.map((s) => [s.id, s.group]));
     const buckets = new Map<string, Issue[]>();
-    for (const i of issues) {
+    for (const i of displayedIssues) {
       const g = groupOf.get(i.state_id) ?? "unstarted";
       const arr = buckets.get(g) ?? [];
       arr.push(i);
@@ -714,7 +781,7 @@ function ModuleDetail({
       label: g.charAt(0).toUpperCase() + g.slice(1),
       issues: buckets.get(g) ?? [],
     })).filter((b) => b.issues.length > 0);
-  }, [issues, states]);
+  }, [displayedIssues, states]);
 
   const properties: { label: string; value: React.ReactNode }[] = [];
   if (lead) {
@@ -781,15 +848,64 @@ function ModuleDetail({
       </div>
 
       <div className="mt-6">
-        <OrgSectionHead title="Issues in this module" count={issues.length} />
+        <div
+          role="group"
+          aria-label="Issue list mode"
+          className="mb-2 flex rounded-md border p-0.5"
+        >
+          <button
+            type="button"
+            aria-pressed={!pqlMode}
+            onClick={exitPqlMode}
+            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+              !pqlMode ? "bg-primary text-primary-foreground" : ""
+            }`}
+          >
+            All issues
+          </button>
+          <button
+            type="button"
+            aria-pressed={!!pqlMode}
+            onClick={() => setPqlMode(true)}
+            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+              pqlMode ? "bg-primary text-primary-foreground" : ""
+            }`}
+          >
+            PQL
+          </button>
+        </div>
+        {pqlMode && (
+          <div className="mb-2 rounded-md border">
+            <PqlEditor
+              appliedQuery={appliedQuery}
+              onApply={handlePqlApply}
+              onClear={handlePqlClear}
+            />
+          </div>
+        )}
+        {pqlMode && appliedQuery && (
+          <p className="mb-2 text-xs text-muted-foreground">
+            PQL filter active — progress above counts the full module.
+          </p>
+        )}
+        <OrgSectionHead
+          title="Issues in this module"
+          count={displayedIssues.length}
+        />
         {issuesLoading ? (
           <div className="space-y-2 pt-2">
             <Skeleton className="h-[47px] w-full" />
             <Skeleton className="h-[47px] w-full" />
           </div>
-        ) : issues.length === 0 ? (
+        ) : displayedIssues.length === 0 ? (
           <div className="pt-3">
-            <OrgEmpty title="No issues assigned to this module yet" />
+            <OrgEmpty
+              title={
+                pqlMode && appliedQuery
+                  ? "No issues in this module match this query"
+                  : "No issues assigned to this module yet"
+              }
+            />
           </div>
         ) : (
           <div>
