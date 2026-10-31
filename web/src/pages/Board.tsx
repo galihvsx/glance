@@ -1175,6 +1175,7 @@ export default function Board() {
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
             onClear={() => setAppliedQuery("")}
+            showSaveHint={false}
           />
         )}
       </div>

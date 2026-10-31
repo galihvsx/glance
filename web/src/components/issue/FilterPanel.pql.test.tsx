@@ -119,6 +119,13 @@ describe("FilterPanel PQL mode (C91T1)", () => {
     expect(screen.queryByText("No due date")).toBeNull();
   });
 
+  it("shows the save hint by default (Issues page save path exists)", () => {
+    renderPanel({ pqlMode: true });
+    expect(
+      screen.getByText(/To save this query, use Views/),
+    ).toBeInTheDocument();
+  });
+
   it("Apply sends the draft query and closes on success", async () => {
     const { onPqlApply } = renderPanel({ pqlMode: true });
     fireEvent.change(screen.getByLabelText("PQL query"), {

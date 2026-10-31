@@ -880,6 +880,7 @@ function ModuleDetail({
               appliedQuery={appliedQuery}
               onApply={handlePqlApply}
               onClear={handlePqlClear}
+              showSaveHint={false}
             />
           </div>
         )}

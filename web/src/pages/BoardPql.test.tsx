@@ -257,6 +257,14 @@ describe("board PQL mode (C96T0)", () => {
     expect(pqlCalls.some((qs) => qs.get("cursor") === "c1")).toBe(true);
   });
 
+  it("PQL editor on the board hides the save hint (C96T1: board Views save visual filters only, not PQL)", async () => {
+    renderBoard();
+    await openBoard();
+    fireEvent.click(screen.getByRole("button", { name: "PQL" }));
+    await screen.findByLabelText("PQL query");
+    expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
+  });
+
   it("probe-first rejection shows the editor inline error and leaves the board untouched", async () => {
     const { get } = renderBoard();
     await openBoard();

@@ -157,6 +157,13 @@ describe("module detail PQL mode (C95T2)", () => {
     expect(params.get("pql")).toBe("priority = High");
   });
 
+  it("module detail PQL editor hides the save hint (C96T1: no Views menu on detail pages)", async () => {
+    renderPage();
+    await openDetail();
+    await enterPqlMode();
+    expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
+  });
+
   it("progress counts stay on the unfiltered membership list in PQL mode", async () => {
     renderPage();
     await openDetail();
