@@ -11,7 +11,7 @@ package service
 //	andExpr    := notExpr (AND notExpr)*
 //	notExpr    := NOT notExpr | primary
 //	primary    := '(' expr ')' | function | comparison
-//	function   := hasNoAssignee() | hasAssignee()
+//	function   := hasNoAssignee() | hasAssignee() | hasParent() | hasChildren()
 //	comparison := field op value | field IN '(' value (',' value)* ')'
 //	op         := '=' | '!=' | '<>' (alias for !=) | '<' | '>' | '<=' | '>='
 //
@@ -30,6 +30,15 @@ package service
 //	epic             epic_issues       epic name (project-scoped) or `none`
 //	estimate         i.estimate_point_id  estimate-point key within the project's
 //	                                     estimate system, or `none`
+//	parent           i.parent_id       parent issue key
+//	                                     {IDENTIFIER}-{sequence_id} (e.g. ENG-123,
+//	                                     project-scoped) or `none` (top-level issues)
+//
+// Functions: hasNoAssignee() (no assignees), hasAssignee() (at least
+// one assignee), hasParent() (parent_id IS NOT NULL), hasChildren()
+// (at least one live child: child.parent_id = i.id with the list
+// query's default liveness — not deleted, not archived, not a draft —
+// so archived/deleted/draft children never count).
 //	due, due_date,   i.target_date     YYYY-MM-DD or RFC3339 (date part)
 //	  target_date
 //	start,           i.start_date      YYYY-MM-DD or RFC3339 (date part)
@@ -66,10 +75,9 @@ package service
 // OUT of scope (documented, not silently cut): ORDER BY / LIMIT
 // clauses (existing order_by + cursor pagination cover them), AI
 // text-to-PQL generation, and PQL on dashboards lists.
-// hasChildren()-style functions are deferred: they need joins
-// beyond the existing list shapes. Cycle/module detail lists are
-// queryable through the scope params: ?cycle= / ?module= survive
-// PQL mode (this contract); the detail-page PQL UI lands separately.
+// Cycle/module detail lists are queryable through the scope params:
+// ?cycle= / ?module= survive PQL mode (this contract); the
+// detail-page PQL UI lands separately.
 
 import (
 	"context"
@@ -78,6 +86,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -433,7 +442,7 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField pqlFieldKind = iota // state, assignee, label, epic, estimate
+	pqlNameField pqlFieldKind = iota // state, assignee, label, epic, estimate, parent
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
 	pqlTsField   // created_at / updated_at (timestamptz columns)
@@ -446,6 +455,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"label":       pqlNameField,
 	"epic":        pqlNameField,
 	"estimate":    pqlNameField,
+	"parent":      pqlNameField,
 	"due":         pqlDateField,
 	"due_date":    pqlDateField,
 	"target_date": pqlDateField,
@@ -457,7 +467,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, epic, estimate, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, label, epic, estimate, parent, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -536,10 +546,12 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 	case pqlNot:
 		return ValidatePQL(n.Left)
 	case pqlFunc:
-		if n.Func != "hasnoassignee" && n.Func != "hasassignee" {
-			return pqlErr(n.Pos, "unknown function %q() (want hasNoAssignee() or hasAssignee())", n.Func)
+		switch n.Func {
+		case "hasnoassignee", "hasassignee", "hasparent", "haschildren":
+			return nil
+		default:
+			return pqlErr(n.Pos, "unknown function %q() (want hasNoAssignee(), hasAssignee(), hasParent(), or hasChildren())", n.Func)
 		}
-		return nil
 	case pqlCmp:
 		kind, ok := pqlFieldKinds[n.Field]
 		if !ok {
@@ -651,10 +663,26 @@ func translatePQLNode(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, 
 		}
 		return "(NOT " + c + ")", nil
 	case pqlFunc:
-		if n.Func == "hasnoassignee" {
+		switch n.Func {
+		case "hasnoassignee":
 			return "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)", nil
+		case "hasassignee":
+			return "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)", nil
+		case "hasparent":
+			return "i.parent_id IS NOT NULL", nil
+		case "haschildren":
+			// Live-child liveness mirrors the list query's default
+			// mode (issueListConds: deleted_at IS NULL, and
+			// archived_at IS NULL unless the archived list mode is
+			// on, plus is_draft = FALSE unless draft mode is on).
+			// The PQL translator has no archived/draft mode flag,
+			// so hasChildren() always counts default-list-visible
+			// children: archived, deleted, and draft children never
+			// count, even when the outer list runs archived=1.
+			return "EXISTS (SELECT 1 FROM issues c WHERE c.parent_id = i.id AND c.deleted_at IS NULL AND c.archived_at IS NULL AND c.is_draft = FALSE)", nil
+		default:
+			return "", pqlErr(n.Pos, "unknown function %q()", n.Func)
 		}
-		return "EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id)", nil
 	case pqlCmp:
 		return translatePQLCmp(ctx, pool, wsID, projectID, actorID, n, arg)
 	default:
@@ -674,6 +702,8 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 			return translatePQLEpic(ctx, pool, projectID, n, arg)
 		case "estimate":
 			return translatePQLEstimate(ctx, pool, projectID, n, arg)
+		case "parent":
+			return translatePQLParent(ctx, pool, projectID, n, arg)
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
 		}
@@ -1042,6 +1072,97 @@ func translatePQLEstimate(ctx context.Context, pool *pgxpool.Pool, projectID str
 		}
 		if wantNone {
 			parts = append(parts, "i.estimate_point_id IS NULL")
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// resolvePQLParentKey maps one parent value token to the parent issue
+// id. The key is the computed display id {IDENTIFIER}-{sequence_id}
+// (e.g. ENG-123, never stored — same derivation as Issue.DisplayID
+// and the activity.go identifier + sequence_id shape). Resolution is
+// confined to the queried project by project_id AND by the project's
+// own identifier, so a key from another project resolves to nothing:
+// a 400 "unknown parent", never a cross-project leak and never a
+// silent empty list. A deleted parent is unknown too; an archived
+// parent still resolves (archived issues are real issues, only
+// hidden from the default list). A malformed key (no dash, bad
+// identifier, non-numeric sequence) is a 400, not a lookup miss.
+func resolvePQLParentKey(ctx context.Context, pool *pgxpool.Pool, projectID string, v pqlValue) (string, error) {
+	dash := strings.LastIndex(v.Text, "-")
+	if dash <= 0 || dash == len(v.Text)-1 {
+		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	identPart, seqPart := v.Text[:dash], v.Text[dash+1:]
+	if len(identPart) > 12 {
+		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	for i := 0; i < len(identPart); i++ {
+		c := identPart[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+		}
+	}
+	seq, err := atoiStrict(seqPart)
+	if err != nil || seq <= 0 {
+		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	var id string
+	err = pool.QueryRow(ctx,
+		`SELECT i.id::text FROM issues i JOIN projects p ON p.id = i.project_id
+		  WHERE i.project_id = $1::uuid AND lower(p.identifier) = lower($2)
+		    AND i.sequence_id = $3 AND i.deleted_at IS NULL`,
+		projectID, identPart, seq).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", pqlErr(v.Pos, "unknown parent %q in this project", v.Text)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+// translatePQLParent resolves parent keys project-scoped (see
+// resolvePQLParentKey). The `none` sentinel matches top-level issues
+// (parent_id IS NULL), mirroring the C75 visual filter. != against a
+// named parent uses IS DISTINCT FROM, so top-level (NULL) issues
+// count as "not this parent" — the same inclusive-!= convention as
+// estimate != (a plain <> would silently drop NULL rows).
+func translatePQLParent(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		id, err := resolvePQLParentKey(ctx, pool, projectID, v)
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named parent, or none.
+		if wantNone {
+			return "i.parent_id IS NULL", nil
+		}
+		return "i.parent_id = " + arg(ids[0]) + "::uuid", nil
+	case "!=":
+		// Single value: not that parent (NULL counts as not it), or
+		// "has any parent".
+		if wantNone {
+			return "i.parent_id IS NOT NULL", nil
+		}
+		return "i.parent_id IS DISTINCT FROM " + arg(ids[0]) + "::uuid", nil
+	default: // in: parent matches OR top-level, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.parent_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.parent_id IS NULL")
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", nil
 	}

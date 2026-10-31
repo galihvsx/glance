@@ -119,6 +119,7 @@ describe("PQL_CHEAT_SHEET (documented field table)", () => {
       "label",
       "epic",
       "estimate",
+      "parent",
       "due",
       "start",
       "created",
@@ -128,6 +129,8 @@ describe("PQL_CHEAT_SHEET (documented field table)", () => {
     }
     expect(text).toContain("hasNoAssignee()");
     expect(text).toContain("hasAssignee()");
+    expect(text).toContain("hasParent()");
+    expect(text).toContain("hasChildren()");
     expect(text).toContain("AND");
     expect(text).toContain("OR");
     expect(text).toContain("NOT");
