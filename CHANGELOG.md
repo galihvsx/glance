@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Dependency cycle guard for issue links (cycle 94)**
+
+- Creating a `blocks` link that would close a dependency cycle is
+  now rejected: the guard walks reachability from the target over
+  `blocks` edges (same project, live + unarchived endpoints only)
+  and answers 409 with code `issue_link_cycle`, carrying the full
+  cycle path as display IDs (e.g. `ENG-12 → ENG-7 → ENG-12`).
+  Previously the code admitted "There is NO cycle detection —
+  A→B→C→A is accepted"; a cycle could deadlock the open-blocker
+  guard, since every member is blocked by another member and none
+  can complete. `relates_to` and `duplicates` rings stay allowed —
+  they are not ordering edges — and archived/deleted intermediaries
+  break the path. Duplicate edges still report conflict first.
+- New read-only project endpoint lists pre-existing `blocks`
+  cycles already stored for the project (closed, deduped
+  display-ID rings; empty list when clean). It never deletes or
+  modifies links — breaking a cycle stays a manual per-link
+  delete, since deletion changes dependency meaning.
+- Frontend: the add-link dialog renders the 409 cycle path
+  verbatim through its existing error path, and the links section
+  shows a compact read-only notice listing the project's
+  pre-existing cycles with links to the member issues (clean
+  project or failed report → no notice, no new chrome).
+
 **ACL hardening: close the cycle 92 residuals (cycle 93)**
 
 - Workspace removal now ends everything derived from that
