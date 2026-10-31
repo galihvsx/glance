@@ -1628,12 +1628,19 @@ func DeleteDashboard(ctx context.Context, pool *pgxpool.Pool, wsSlug, dashboardI
 // widgetProjectScope resolves the widget's project scope to the IDs of
 // live (non-archived) projects of the workspace: the widget's
 // project_ids intersected with the workspace when set, every
-// non-archived workspace project when empty.
-func widgetProjectScope(ctx context.Context, pool *pgxpool.Pool, wsID string, projectIDs []string) ([]string, error) {
+// non-archived workspace project when empty. C92T2: the scope is
+// further intersected with the actor's effective access — a widget
+// on a shared dashboard must not aggregate (or count) issues of a
+// private project the viewer cannot reach, and an explicitly listed
+// unreachable project silently drops out of the scope rather than
+// erroring (the widget config is the dashboard owner's, not the
+// viewer's probe).
+func widgetProjectScope(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, projectIDs []string) ([]string, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT p.id::text FROM projects p
-		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL`,
-		wsID)
+		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL
+		    AND `+projectAccessibleSQL("p", "$2::uuid"),
+		wsID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -1720,7 +1727,7 @@ func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, act
 		// wrong numbers.
 		return nil, err
 	}
-	projectIDs, err := widgetProjectScope(ctx, pool, dr.Dashboard.WorkspaceID, cfg.projectIDs)
+	projectIDs, err := widgetProjectScope(ctx, pool, dr.Dashboard.WorkspaceID, actorID, cfg.projectIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1768,7 +1775,7 @@ func computeWidgetData(ctx context.Context, pool *pgxpool.Pool, wc *widgetComput
 		}
 		return &WidgetData{Value: &n}, nil
 	case WidgetTypeIntake:
-		bd, err := computeIntakeBreakdown(ctx, pool, wc.dr.Dashboard.WorkspaceID)
+		bd, err := computeIntakeBreakdown(ctx, pool, wc.dr.Dashboard.WorkspaceID, actorID)
 		if err != nil {
 			return nil, err
 		}
@@ -2872,7 +2879,11 @@ const intakeStillSnoozedSQL = `(ii.status = $3 AND (ii.snoozed_till IS NULL OR i
 // those rows, in seconds (0 when nothing is decided yet). The funnel
 // counts (duplicate, pending, snoozed) use the same row set, so the
 // drill-down totals reconcile with the widget numbers exactly.
-func computeIntakeBreakdown(ctx context.Context, pool *pgxpool.Pool, wsID string) (*IntakeBreakdown, error) {
+// C92T2: the workspace scope is every non-archived project the actor
+// can effectively reach — intake issues of a private project the
+// viewer cannot reach must not inflate the counts on a shared
+// dashboard.
+func computeIntakeBreakdown(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string) (*IntakeBreakdown, error) {
 	var b IntakeBreakdown
 	var avg *float64
 	err := pool.QueryRow(ctx,
@@ -2887,8 +2898,9 @@ func computeIntakeBreakdown(ctx context.Context, pool *pgxpool.Pool, wsID string
 		   FROM intake_issues ii
 		   JOIN intake it ON it.id = ii.intake_id
 		   JOIN projects p ON p.id = it.project_id
-		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL`,
-		wsID, IntakePending, IntakeSnoozed, IntakeAccepted, IntakeRejected, IntakeDuplicate).
+		  WHERE p.workspace_id = $1::uuid AND p.archived_at IS NULL
+		    AND `+projectAccessibleSQL("p", "$7::uuid"),
+		wsID, IntakePending, IntakeSnoozed, IntakeAccepted, IntakeRejected, IntakeDuplicate, actorID).
 		Scan(&b.InAppVolume, &b.FormVolume, &b.TotalAccepted, &b.TotalRejected, &avg,
 			&b.TotalDuplicate, &b.Pending, &b.Snoozed)
 	if err != nil {

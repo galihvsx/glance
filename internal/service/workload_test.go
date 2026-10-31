@@ -162,7 +162,7 @@ func findMember(t *testing.T, members []WorkloadMember, userID string) WorkloadM
 func TestGetWorkloadAggregation(t *testing.T) {
 	fx := seedWorkloadFixture(t)
 
-	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, nil)
+	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, nil)
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestGetWorkloadProjectFilter(t *testing.T) {
 	fx := seedWorkloadFixture(t)
 	p1 := uuid.MustParse(fx.proj1.ID)
 
-	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, []uuid.UUID{p1, p1}) // dupes deduped
+	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, []uuid.UUID{p1, p1}) // dupes deduped
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestGetWorkloadTenancy(t *testing.T) {
 	fx := seedWorkloadFixture(t)
 
 	// Unknown workspace → ErrNotFound.
-	if _, err := GetWorkload(fx.ctx, fx.pool, uuid.New(), nil); !errors.Is(err, ErrNotFound) {
+	if _, err := GetWorkload(fx.ctx, fx.pool, uuid.New(), fx.admin, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown workspace err = %v, want ErrNotFound", err)
 	}
 
@@ -282,12 +282,12 @@ func TestGetWorkloadTenancy(t *testing.T) {
 	createTestWorkspace(t, fx.pool, "Other Co", otherSlug, otherAdmin)
 	otherProj := createTestProject(t, fx.pool, otherSlug, otherAdmin, "Other", uniqueTestIdentifier())
 	otherPID := uuid.MustParse(otherProj.ID)
-	if _, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, []uuid.UUID{otherPID}); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, []uuid.UUID{otherPID}); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("foreign project err = %v, want ErrProjectNotFound", err)
 	}
 
 	// The other workspace's report contains none of this workspace's members.
-	rep, err := GetWorkload(fx.ctx, fx.pool, uuid.MustParse(otherProj.WorkspaceID), nil)
+	rep, err := GetWorkload(fx.ctx, fx.pool, uuid.MustParse(otherProj.WorkspaceID), otherAdmin, nil)
 	if err != nil {
 		t.Fatalf("other GetWorkload: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestSetMemberCapacity(t *testing.T) {
 	if err := SetMemberCapacity(fx.ctx, fx.pool, fx.wsID, uuid.MustParse(fx.dev1), &cap); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, nil)
+	rep, err := GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, nil)
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestSetMemberCapacity(t *testing.T) {
 	if err := SetMemberCapacity(fx.ctx, fx.pool, fx.wsID, uuid.MustParse(fx.dev1), &tight); err != nil {
 		t.Fatalf("tighten: %v", err)
 	}
-	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, nil)
+	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, nil)
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestSetMemberCapacity(t *testing.T) {
 	if err := SetMemberCapacity(fx.ctx, fx.pool, fx.wsID, uuid.MustParse(fx.dev1), &zero); err != nil {
 		t.Fatalf("zero: %v", err)
 	}
-	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, nil)
+	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, nil)
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestSetMemberCapacity(t *testing.T) {
 	if err := SetMemberCapacity(fx.ctx, fx.pool, fx.wsID, uuid.MustParse(fx.dev1), nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, nil)
+	rep, err = GetWorkload(fx.ctx, fx.pool, fx.wsID, fx.admin, nil)
 	if err != nil {
 		t.Fatalf("GetWorkload: %v", err)
 	}

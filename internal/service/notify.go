@@ -299,6 +299,74 @@ func workspaceIDForProjectTx(ctx context.Context, tx pgx.Tx, projectID string) (
 
 // ListNotifications returns the user's notifications, newest first, plus
 // the unread count. limit is clamped to 1..100 (default 25).
+// filterIssueRecipientsByAccess drops recipients who cannot
+// effectively reach the issue's project (C92T2). System jobs
+// (reminders, stale nudges) notify watchers + assignees, and a
+// watcher who lost access — or a project that went private — must
+// not keep receiving issue titles by email. The in-app list filter
+// above covers rows already written; this covers rows not yet
+// created. Only private-unreachable recipients drop: public-project
+// behavior is unchanged (a non-member watcher on a public project
+// keeps receiving, exactly as today — the filter is about private
+// projects, not about re-litigating the subscription model). An
+// empty result is not an error — the job simply has nobody left to
+// notify for that issue.
+func filterIssueRecipientsByAccess(ctx context.Context, q queryQuerier, issueID string, recipients []string) ([]string, error) {
+	if len(recipients) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx,
+		`SELECT u::text FROM unnest($2::uuid[]) AS u
+		  WHERE EXISTS(SELECT 1 FROM issues i
+		                JOIN projects p ON p.id = i.project_id
+		               WHERE i.id = $1::uuid AND i.deleted_at IS NULL
+		                 AND NOT (p.visibility = 'private' AND NOT (`+projectAccessibleSQL("p", "u")+`)))`,
+		issueID, recipients)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// notificationProjectJoins resolves the project a notification row
+// refers to, for the C92T2 read-time filter below: directly via the
+// payload's project_id (issue notifications), or indirectly via the
+// payload's issue_id (reminder/stale system notifications, which
+// carry no project_id). The UUID-shape guard keeps a malformed
+// payload from turning the ::uuid cast into a 500 — an unresolvable
+// row simply has no project and passes the filter unchanged.
+func notificationProjectJoins() string {
+	return `LEFT JOIN projects np ON np.id = CASE
+			WHEN notifications.payload->>'project_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+			THEN (notifications.payload->>'project_id')::uuid END
+		  LEFT JOIN issues ni ON ni.id = CASE
+			WHEN notifications.payload->>'issue_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+			THEN (notifications.payload->>'issue_id')::uuid END
+		  LEFT JOIN projects ip ON ip.id = ni.project_id`
+}
+
+// notificationProjectFilter drops rows whose project is private and
+// unreachable to the recipient: a notification created while the
+// recipient could reach the project must not keep leaking its title
+// after the project goes private (or the recipient loses access).
+// Rows with no resolvable project (workspace-level alerts, deleted
+// projects) are unchanged, and public projects always pass — the
+// predicate only ever removes private-unreachable rows.
+func notificationProjectFilter(actorExpr string) string {
+	return `NOT (np.id IS NOT NULL AND np.visibility = 'private' AND NOT (` +
+		projectAccessibleSQL("np", actorExpr) + `)) AND NOT (ip.id IS NOT NULL AND ip.visibility = 'private' AND NOT (` +
+		projectAccessibleSQL("ip", actorExpr) + `))`
+}
+
 func ListNotifications(ctx context.Context, pool *pgxpool.Pool, userID string, unreadOnly bool, limit int) ([]*Notification, int, error) {
 	if limit <= 0 {
 		limit = 25
@@ -311,10 +379,11 @@ func ListNotifications(ctx context.Context, pool *pgxpool.Pool, userID string, u
 		filter = "AND read_at IS NULL"
 	}
 	rows, err := pool.Query(ctx,
-		`SELECT id::text, user_id::text, type, title, payload, read_at, created_at
-		   FROM notifications
-		  WHERE user_id = $1::uuid `+filter+`
-		  ORDER BY created_at DESC
+		`SELECT notifications.id::text, notifications.user_id::text, notifications.type, notifications.title, notifications.payload, notifications.read_at, notifications.created_at
+		   FROM notifications `+notificationProjectJoins()+`
+		  WHERE notifications.user_id = $1::uuid `+filter+`
+		    AND `+notificationProjectFilter("$1::uuid")+`
+		  ORDER BY notifications.created_at DESC
 		  LIMIT $2`,
 		userID, limit)
 	if err != nil {
@@ -334,7 +403,9 @@ func ListNotifications(ctx context.Context, pool *pgxpool.Pool, userID string, u
 	}
 	var unread int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM notifications WHERE user_id = $1::uuid AND read_at IS NULL`,
+		`SELECT count(*) FROM notifications `+notificationProjectJoins()+`
+		  WHERE notifications.user_id = $1::uuid AND read_at IS NULL
+		    AND `+notificationProjectFilter("$1::uuid"),
 		userID).Scan(&unread); err != nil {
 		return nil, 0, err
 	}

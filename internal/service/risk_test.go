@@ -136,7 +136,7 @@ func TestRiskReportFormula(t *testing.T) {
 		t.Fatalf("SetMemberCapacity: %v", err)
 	}
 
-	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID)
+	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID, fx.admin)
 	if err != nil {
 		t.Fatalf("GetRiskReport: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRiskHealthyProject(t *testing.T) {
 	riskIssue(t, fx, "fresh-1", fx.dev, 2, started, "", &tomorrow)
 	riskIssue(t, fx, "fresh-2", fx.admin, 2, started, "", &tomorrow)
 
-	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID)
+	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID, fx.admin)
 	if err != nil {
 		t.Fatalf("GetRiskReport: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestRiskHealthyProject(t *testing.T) {
 func TestRiskTenancy(t *testing.T) {
 	fx := seedRiskFixture(t, newTestPool(t))
 
-	if _, err := GetRiskReport(fx.ctx, fx.pool, uuid.New()); !errors.Is(err, ErrNotFound) {
+	if _, err := GetRiskReport(fx.ctx, fx.pool, uuid.New(), fx.admin); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown workspace: err = %v, want ErrNotFound", err)
 	}
 
@@ -273,7 +273,7 @@ func TestRiskTenancy(t *testing.T) {
 		t.Fatalf("seed foreign state: %v", err)
 	}
 
-	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID)
+	rep, err := GetRiskReport(fx.ctx, fx.pool, fx.wsID, fx.admin)
 	if err != nil {
 		t.Fatalf("GetRiskReport: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRiskNoNPlusOne(t *testing.T) {
 	}
 
 	counter.n.Store(0)
-	rep, err := GetRiskReport(context.Background(), pool, fx.wsID)
+	rep, err := GetRiskReport(context.Background(), pool, fx.wsID, fx.admin)
 	if err != nil {
 		t.Fatalf("GetRiskReport: %v", err)
 	}

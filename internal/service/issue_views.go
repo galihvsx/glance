@@ -124,24 +124,44 @@ func cleanViewFilters(raw json.RawMessage) (json.RawMessage, error) {
 }
 
 // memberProject resolves the project UUID for the actor and returns the
-// actor's workspace role alongside it. The project must exist and the
-// actor must be a member of its workspace. Anything else is
-// ErrViewProjectNotFound.
-func memberProject(ctx context.Context, q queryRower, projectID, actorID string) (pid string, role int, err error) {
+// actor's EFFECTIVE project role alongside it, plus the workspace role
+// (the DeleteIssueView moderation branch stays workspace-Admin-only —
+// a direct project Admin does not inherit that override). The project
+// must exist and be effectively accessible to the actor: a private
+// project the actor cannot reach (no direct row, no linked-teamspace
+// seat, not a workspace Admin) reads exactly like a missing project.
+// Anything else is ErrViewProjectNotFound, preserving this surface's
+// single-404 convention (no existence leak through the UUID path).
+//
+// C92T2: this was the UUID-addressed path the cycle-92 audit flagged
+// as workspace-membership-only. Views themselves carry no issue data,
+// but listing/creating a view on a private project would confirm the
+// project exists and anchor later enumeration, so the gate is the
+// full effective-access order, not the old workspace check. A direct
+// guest (5) still passes here — view creation was already open to
+// workspace guests before, and the callers that gate writes keep
+// their own role checks on the effective role.
+func memberProject(ctx context.Context, q queryRower, projectID, actorID string) (pid string, role int, wsRole int, err error) {
+	var wsID string
 	err = q.QueryRow(ctx,
-		`SELECT p.id::text, m.role
+		`SELECT p.id::text, p.workspace_id::text
 		 FROM projects p
-		 JOIN workspaces w ON w.id = p.workspace_id
-		 JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
 		 WHERE p.id = $1::uuid`,
-		projectID, actorID).Scan(&pid, &role)
+		projectID).Scan(&pid, &wsID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
-			return "", 0, ErrViewProjectNotFound
+			return "", 0, 0, ErrViewProjectNotFound
 		}
-		return "", 0, err
+		return "", 0, 0, err
 	}
-	return pid, role, nil
+	wsRole, role, err = effectiveRoleForProjectID(ctx, q, wsID, pid, actorID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrProjectNotFound) {
+			return "", 0, 0, ErrViewProjectNotFound
+		}
+		return "", 0, 0, err
+	}
+	return pid, role, wsRole, nil
 }
 
 // issueViewColumns is the SELECT list shared by every read path, in
@@ -178,7 +198,7 @@ func getIssueView(ctx context.Context, q queryRower, viewID string) (*IssueView,
 // The slice is never nil — the frontend renders an honest empty state off
 // the length.
 func ListIssueViews(ctx context.Context, pool *pgxpool.Pool, actorID, projectID string) ([]IssueView, error) {
-	pid, _, err := memberProject(ctx, pool, projectID, actorID)
+	pid, _, _, err := memberProject(ctx, pool, projectID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +238,7 @@ func CreateIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID
 	if err != nil {
 		return nil, err
 	}
-	pid, _, err := memberProject(ctx, pool, projectID, actorID)
+	pid, _, _, err := memberProject(ctx, pool, projectID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +274,7 @@ func CreateIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID
 // so 403 is honest); a non-owner touching a PRIVATE view of another user
 // gets ErrViewNotFound (no existence leak).
 func UpdateIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID, viewID string, patch IssueViewPatch) (*IssueView, error) {
-	pid, _, err := memberProject(ctx, pool, projectID, actorID)
+	pid, _, _, err := memberProject(ctx, pool, projectID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +372,7 @@ func UpdateIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID
 // shared view they do not own gets ErrForbidden — the view is visible to
 // them in the list, so 403 is honest.
 func DeleteIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID, viewID string) error {
-	pid, role, err := memberProject(ctx, pool, projectID, actorID)
+	pid, _, wsRole, err := memberProject(ctx, pool, projectID, actorID)
 	if err != nil {
 		return err
 	}
@@ -371,7 +391,7 @@ func DeleteIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID
 	switch {
 	case ownerID == actorID:
 		// Owner: always allowed (shared or private).
-	case shared && role == RoleAdmin:
+	case shared && wsRole == RoleAdmin:
 		// Moderation override: workspace admin deleting a shared view.
 	case shared:
 		return ErrForbidden

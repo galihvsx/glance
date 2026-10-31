@@ -117,7 +117,7 @@ func (h *WorkloadHandler) getWorkload(c *echo.Context) error {
 		}
 		projectIDs = append(projectIDs, id)
 	}
-	rep, err := service.GetWorkload(c.Request().Context(), h.Pool, wsID, projectIDs)
+	rep, err := service.GetWorkload(c.Request().Context(), h.Pool, wsID, CurrentUser(c).ID, projectIDs)
 	if err != nil {
 		return workloadError(c, err)
 	}

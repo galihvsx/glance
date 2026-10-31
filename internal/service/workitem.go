@@ -67,10 +67,16 @@ func GetIssueByDisplayID(ctx context.Context, pool *pgxpool.Pool, actorID, displ
 		return nil, err
 	}
 
+	// C92T2: the candidate set is projects the actor can effectively
+	// reach. A private project the actor cannot reach is not a
+	// candidate at all, so it can neither resolve nor make an
+	// identifier ambiguous — it is invisible here exactly as in
+	// ListProjects.
 	rows, err := pool.Query(ctx,
 		`SELECT p.id::text, p.identifier FROM projects p
 		 JOIN workspace_members m ON m.workspace_id = p.workspace_id
-		 WHERE m.user_id = $1::uuid AND p.identifier = $2`,
+		 WHERE m.user_id = $1::uuid AND p.identifier = $2
+		   AND `+projectAccessibleSQL("p", "$1::uuid"),
 		actorID, ident)
 	if err != nil {
 		return nil, err
@@ -162,7 +168,9 @@ func SearchIssues(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor st
 	// C18T3: hits whose project is archived are skipped — see
 	// archivedProjectsFilter for the defensive column probe. Filtering
 	// in SQL (not post-hoc) keeps the keyset pagination page sizes
-	// correct.
+	// correct. C92T2: hits in private projects the actor cannot reach
+	// are filtered the same way (effective access, not just workspace
+	// membership).
 	archivedFilter, err := archivedProjectsFilter(ctx, pool, "p")
 	if err != nil {
 		return nil, err
@@ -175,7 +183,8 @@ func SearchIssues(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor st
 		JOIN workspaces w ON w.id = p.workspace_id
 		JOIN workspace_members m ON m.workspace_id = w.id AND m.user_id = $2::uuid
 		CROSS JOIN q
-		WHERE i.deleted_at IS NULL AND i.search @@ q.tsq` + archivedFilter
+		WHERE i.deleted_at IS NULL AND i.search @@ q.tsq` + archivedFilter +
+		` AND ` + projectAccessibleSQL("p", "$2::uuid")
 	args := []any{q, actorID}
 	if cur != nil {
 		query += ` AND (ts_rank(i.search, q.tsq) < $3::float8

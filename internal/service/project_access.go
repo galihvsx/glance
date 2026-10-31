@@ -221,3 +221,35 @@ func effectiveRoleForProjectID(ctx context.Context, q queryRower, wsID, projectI
 	}
 	return wsRole, effRole, nil
 }
+
+// projectAccessibleSQL is the C92T2 sweep's shared list-surface
+// predicate: the SQL spelling of the effective-access order for
+// cross-project reads that cannot call EffectiveProjectAccess once
+// per row (MyWork, global search, favorites, workload, activity feed,
+// dashboard widgets, initiative rollups, notifications). A project
+// passes when it is public, OR the actor is a workspace Admin (20 —
+// the rule-2 override, checked here so admin callers are not filtered
+// out of their own workspace's lists), OR the actor holds a direct
+// project_members row, OR the actor is a member of the project's
+// linked teamspace. alias is the projects-table alias in the
+// caller's query; actorExpr is the SQL expression yielding the
+// actor's UUID (e.g. "$2::uuid" or a bare uuid column like f.user_id).
+// Callers must ALSO establish workspace membership (a join or a
+// prior resolution): on its own this predicate would pass a public
+// project to a non-member, and the predicate is only ever ANDed onto
+// a query that already scopes to the actor's workspaces. Private
+// projects the actor cannot reach fail closed: they simply do not
+// match, so list surfaces return empty rows for them, never an error
+// naming the project.
+func projectAccessibleSQL(alias, actorExpr string) string {
+	return `(` + alias + `.visibility = 'public'` +
+		` OR EXISTS(SELECT 1 FROM workspace_members wm` +
+		` WHERE wm.workspace_id = ` + alias + `.workspace_id` +
+		` AND wm.user_id = ` + actorExpr + ` AND wm.role = 20)` +
+		` OR EXISTS(SELECT 1 FROM project_members pm` +
+		` WHERE pm.project_id = ` + alias + `.id` +
+		` AND pm.user_id = ` + actorExpr + `)` +
+		` OR EXISTS(SELECT 1 FROM teamspace_members tm` +
+		` WHERE tm.teamspace_id = ` + alias + `.teamspace_id` +
+		` AND tm.user_id = ` + actorExpr + `))`
+}

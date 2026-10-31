@@ -569,7 +569,11 @@ func RemoveInitiativeProject(ctx context.Context, pool *pgxpool.Pool, wsSlug, ac
 }
 
 // ListInitiativeProjects returns the initiative's member projects
-// ordered by addition. Any role may read.
+// ordered by addition. Any role may read. C92T2: linked projects the
+// actor cannot effectively reach (private, no direct row, no
+// linked-teamspace seat, not a workspace Admin) are omitted —
+// linking a private project to a workspace-visible initiative must
+// not disclose its name through this list.
 func ListInitiativeProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID, initiativeID string) ([]InitiativeProject, error) {
 	wsID, _, err := resolveInitiativeWorkspace(ctx, pool, wsSlug, actorID, false)
 	if err != nil {
@@ -583,7 +587,8 @@ func ListInitiativeProjects(ctx context.Context, pool *pgxpool.Pool, wsSlug, act
 		 FROM initiative_projects ip
 		 JOIN projects p ON p.id = ip.project_id
 		 WHERE ip.initiative_id = $1::uuid
-		 ORDER BY ip.added_at`, initiativeID)
+		   AND `+projectAccessibleSQL("p", "$2::uuid")+`
+		 ORDER BY ip.added_at`, initiativeID, actorID)
 	if err != nil {
 		return nil, err
 	}
@@ -622,6 +627,9 @@ func GetInitiativeRollup(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorI
 	for _, g := range doneStateGroups {
 		done[g] = true
 	}
+	// C92T2: same filter as ListInitiativeProjects — the rollup's
+	// per-project breakdown and its totals must not count issues of
+	// linked private projects the actor cannot reach.
 	rows, err := pool.Query(ctx,
 		`SELECT p.id::text, p.name, s."group", COUNT(i.id)
 		 FROM initiative_projects ip
@@ -629,8 +637,9 @@ func GetInitiativeRollup(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorI
 		 LEFT JOIN issues i ON i.project_id = p.id AND i.deleted_at IS NULL
 		 LEFT JOIN states s ON s.id = i.state_id
 		 WHERE ip.initiative_id = $1::uuid
+		   AND `+projectAccessibleSQL("p", "$2::uuid")+`
 		 GROUP BY p.id, p.name, s."group"
-		 ORDER BY p.name, s."group"`, initiativeID)
+		 ORDER BY p.name, s."group"`, initiativeID, actorID)
 	if err != nil {
 		return nil, err
 	}
