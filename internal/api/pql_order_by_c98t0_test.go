@@ -120,10 +120,10 @@ func TestIssueListHTTPPQLOrderBy(t *testing.T) {
 		t.Fatalf("param order + PQL-order cursor: status = %d, want 400 (body: %s)", code, body)
 	}
 
-	// Unknown sort field and multi-key are 400 with message + position.
+	// Unknown sort field is 400 with message + position. (Multi-key
+	// ORDER BY is valid since C99T0; see pql_multi_order_c99t0_test.go.)
 	for _, q := range []string{
 		"priority >= 0 ORDER BY bogus",
-		"priority >= 0 ORDER BY priority, created_at",
 	} {
 		rec := getAuthed(t, e, http.MethodGet, base+"?"+pql(q), cookie)
 		if rec.Code != http.StatusBadRequest {

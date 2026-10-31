@@ -7,7 +7,8 @@ package service
 // Grammar:
 //
 //	query      := expr [orderBy] [limit]
-//	orderBy    := ORDER BY sortField [ASC | DESC]
+//	orderBy    := ORDER BY sortKey (',' sortKey)*
+//	sortKey    := sortField [ASC | DESC]
 //	limit      := LIMIT int (1..100)
 //	sortField  := updated_at | created_at | sequence_id | sort_order | priority
 //	expr       := orExpr
@@ -24,15 +25,17 @@ package service
 // single- or double-quoted ('' / "" escape the quote); bare values are
 // unquoted words (names, numbers, YYYY-MM-DD dates, RFC3339 datetimes).
 //
-// ORDER BY (C98T0) is a result-shape clause, not a filter: it sorts
-// the list by exactly ONE key (the list query sorts by one key + id
-// tiebreak and its cursor is minted for one order_by), defaulting to
-// ASC when the direction is omitted. The sort fields map onto the
+// ORDER BY (C98T0, multi-key C99T0) is a result-shape clause, not a
+// filter: it sorts the list by one or more keys, each with its own
+// optional ASC/DESC direction (default ASC per key). The list query
+// sorts by those keys plus an id tiebreak in the LAST key's direction,
+// and its cursor is minted for the composite order (comma-joined keys,
+// e.g. priority,-updated_at). The sort fields map onto the
 // existing listOrders whitelist in issue.go — the same five names,
 // no aliases (created/updated are predicate aliases, not sort keys).
-// An unknown sort field, or a second sort key (comma or a bare second
-// field), is a PQLQueryError (400) with position, never a silently
-// dropped key. Precedence: a PQL ORDER BY wins over the ?order_by=
+// An unknown sort field, a duplicate sort field, a trailing comma, or
+// a missing field after a comma is a PQLQueryError (400) with position,
+// never a silently dropped key. Precedence: a PQL ORDER BY wins over the ?order_by=
 // param (the query is self-contained); without one, ?order_by=
 // applies exactly as today. The EFFECTIVE order (PQL ORDER BY if
 // present, else the param) is what cursors are validated and minted
@@ -305,23 +308,40 @@ func (p *pqlParser) isKeyword(t pqlToken, kw string) bool {
 	return t.kind == pqlWord && strings.EqualFold(t.text, kw)
 }
 
-// pqlOrderBy is a parsed ORDER BY clause (C98T0): exactly one sort
-// key. Field is a bare listOrders name (no "-" prefix); Desc selects
-// the "-" order key. Pos is the 1-based column of the sort-field token.
-type pqlOrderBy struct {
+// pqlOrderKey is one key of a parsed ORDER BY clause: Field is a bare
+// listOrders name (no "-" prefix); Desc selects the "-" order key.
+// Pos is the 1-based column of the sort-field token.
+type pqlOrderKey struct {
 	Field string
 	Desc  bool
 	Pos   int
 }
 
-// OrderKey renders the order_by key the list query understands:
-// the bare field for ASC, "-" + field for DESC — the same keys as
-// the listOrders whitelist in issue.go.
+// pqlOrderBy is a parsed ORDER BY clause (C98T0 single-key, C99T0
+// multi-key): one or more sort keys in clause order. Pos is the
+// 1-based column of the first sort-field token.
+type pqlOrderBy struct {
+	Keys []pqlOrderKey
+	Pos  int
+}
+
+// OrderKey renders the composite order_by key the list query
+// understands: the per-key keys comma-joined, each the bare field for
+// ASC or "-" + field for DESC — the same keys as the listOrders
+// whitelist in issue.go. A single key renders exactly as before
+// ("-priority"), so single-key queries and their cursors are
+// unchanged, and a cursor minted under one key list is never honored
+// under another (the composite string differs).
 func (o *pqlOrderBy) OrderKey() string {
-	if o.Desc {
-		return "-" + o.Field
+	parts := make([]string, 0, len(o.Keys))
+	for _, k := range o.Keys {
+		if k.Desc {
+			parts = append(parts, "-"+k.Field)
+		} else {
+			parts = append(parts, k.Field)
+		}
 	}
-	return o.Field
+	return strings.Join(parts, ",")
 }
 
 // pqlLimit is a parsed LIMIT clause (C98T1): the row cap n (1..100,
@@ -368,11 +388,11 @@ func ParsePQL(q string) (*pqlNode, error) {
 
 // ParsePQLWithOrder parses a PQL query into its predicate plus its
 // optional ORDER BY and LIMIT clauses. The clauses are validated here
-// (unknown sort field, missing BY/field/direction, a second sort key,
-// a non-integer or out-of-range LIMIT, a second LIMIT, or LIMIT
-// before ORDER BY are all *PQLQueryError with position) so a bad
-// clause never reaches the list query, where it could otherwise be
-// mistaken for a param.
+// (unknown sort field, duplicate sort field, trailing comma, missing
+// BY/field/direction, a non-integer or out-of-range LIMIT, a second
+// LIMIT, or LIMIT before ORDER BY are all *PQLQueryError with position)
+// so a bad clause never reaches the list query, where it could
+// otherwise be mistaken for a param.
 func ParsePQLWithOrder(q string) (*pqlParsedQuery, error) {
 	if strings.TrimSpace(q) == "" {
 		return nil, pqlErr(1, "empty query")
@@ -413,8 +433,11 @@ func ParsePQLWithOrder(q string) (*pqlParsedQuery, error) {
 
 // parseOrderBy consumes an optional trailing ORDER BY clause after the
 // boolean expression, returning nil when the next token is not ORDER.
-// Single key only: a comma or any further token after the (optional)
-// direction is a 400, never a silently dropped second key — except a
+// Multi-key (C99T0): comma-separated sort keys, each <field>
+// [ASC|DESC] with ASC the per-key default. A duplicate field (any
+// direction, case-insensitive), a trailing comma, a missing field
+// after a comma, or any token after the clause other than LIMIT/EOF
+// is a 400 with position, never a silently dropped key — except a
 // LIMIT keyword, which terminates the clause for parseLimit (C98T1).
 func (p *pqlParser) parseOrderBy() (*pqlOrderBy, error) {
 	if !p.isKeyword(p.peek(), "ORDER") {
@@ -425,36 +448,56 @@ func (p *pqlParser) parseOrderBy() (*pqlOrderBy, error) {
 		return nil, pqlErr(p.peek().pos, "expected BY after ORDER")
 	}
 	p.next() // BY
-	fieldTok := p.peek()
-	if fieldTok.kind != pqlWord {
-		return nil, pqlErr(fieldTok.pos, "expected a sort field after ORDER BY (sortable fields: %s)", pqlKnownSortFields)
-	}
-	p.next()
-	field := strings.ToLower(fieldTok.text)
-	if !pqlSortableFields[field] {
-		return nil, pqlErr(fieldTok.pos, "unknown sort field %q (sortable fields: %s)", fieldTok.text, pqlKnownSortFields)
-	}
-	orderBy := &pqlOrderBy{Field: field, Pos: fieldTok.pos}
-	if p.isKeyword(p.peek(), "DESC") {
-		orderBy.Desc = true
+	orderBy := &pqlOrderBy{}
+	seen := map[string]bool{}
+	for i := 0; ; i++ {
+		fieldTok := p.peek()
+		if fieldTok.kind != pqlWord || p.isKeyword(fieldTok, "LIMIT") {
+			if i == 0 {
+				return nil, pqlErr(fieldTok.pos, "expected a sort field after ORDER BY (sortable fields: %s)", pqlKnownSortFields)
+			}
+			return nil, pqlErr(fieldTok.pos, "expected a sort field after ',' in ORDER BY (sortable fields: %s)", pqlKnownSortFields)
+		}
 		p.next()
-	} else if p.isKeyword(p.peek(), "ASC") {
-		p.next()
+		field := strings.ToLower(fieldTok.text)
+		if !pqlSortableFields[field] {
+			return nil, pqlErr(fieldTok.pos, "unknown sort field %q (sortable fields: %s)", fieldTok.text, pqlKnownSortFields)
+		}
+		if seen[field] {
+			return nil, pqlErr(fieldTok.pos, "duplicate sort field %q in ORDER BY", fieldTok.text)
+		}
+		seen[field] = true
+		key := pqlOrderKey{Field: field, Pos: fieldTok.pos}
+		if i == 0 {
+			orderBy.Pos = fieldTok.pos
+		}
+		if p.isKeyword(p.peek(), "DESC") {
+			key.Desc = true
+			p.next()
+		} else if p.isKeyword(p.peek(), "ASC") {
+			p.next()
+		}
+		orderBy.Keys = append(orderBy.Keys, key)
+		if p.peek().kind != pqlComma {
+			break
+		}
+		p.next() // ',': the next loop iteration requires a field,
+		// so a trailing comma (EOF, LIMIT, or another comma next)
+		// is a 400 with the next token's position.
 	}
-	// Anything left is either a second sort key or trailing junk —
-	// both are 400 here (not the generic trailing-token error) so the
-	// message names the single-key rule. A LIMIT keyword is the one
-	// exception: it terminates the ORDER BY clause and is consumed by
-	// parseLimit (LIMIT composes after ORDER BY, C98T1).
+	// A LIMIT keyword terminates the clause for parseLimit; EOF ends
+	// the query. Anything else is trailing junk (a bare second field
+	// without a comma, an unknown direction word, ...), a 400 here
+	// (not the generic trailing-token error) so the message names
+	// the ORDER BY clause.
 	switch t := p.peek(); {
-	case t.kind == pqlComma:
-		return nil, pqlErr(t.pos, "multiple sort keys are not supported (only one ORDER BY key; got a second key after comma)")
 	case p.isKeyword(t, "LIMIT"):
 		return orderBy, nil
-	case t.kind != pqlEOF:
-		return nil, pqlErr(t.pos, "unexpected %q after ORDER BY clause (only a single sort key is supported)", t.text)
+	case t.kind == pqlEOF:
+		return orderBy, nil
+	default:
+		return nil, pqlErr(t.pos, "unexpected %q after ORDER BY clause", t.text)
 	}
-	return orderBy, nil
 }
 
 // parseLimit consumes an optional trailing LIMIT clause after the

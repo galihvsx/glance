@@ -20,10 +20,12 @@ export interface PqlCheatEntry {
  * priority and dates accept all comparison operators plus in.
  * Keywords (AND/OR/NOT/IN), field names, priority names, and
  * function names are case-insensitive. Quote names containing spaces.
- * A trailing ORDER BY clause (C98T0) sorts by exactly one key from
- * updated_at, created_at, sequence_id, sort_order, or priority, with
- * an optional ASC/DESC direction (default ASC); it wins over the
- * order_by param, and a second key or unknown sort field is a 400.
+ * A trailing ORDER BY clause (C98T0, multi-key C99T0) sorts by one or
+ * more comma-separated keys from updated_at, created_at, sequence_id,
+ * sort_order, or priority, each with an optional ASC/DESC direction
+ * (default ASC per key); it wins over the order_by param, and an
+ * unknown or duplicate sort field, a trailing comma, or a missing
+ * field after a comma is a 400. (Multi-key examples land in C99T1.)
  * A trailing LIMIT clause (C98T1, after ORDER BY or standalone)
  * caps the page to at most min(per_page, n) rows with next_cursor
  * always null (single page); a cursor combined with LIMIT, a second
