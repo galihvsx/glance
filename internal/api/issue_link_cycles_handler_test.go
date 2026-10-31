@@ -7,6 +7,7 @@ package api
 // Real test database, no skips.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"reflect"
@@ -59,16 +60,18 @@ func TestIssueLinkCyclesHTTP(t *testing.T) {
 		t.Fatalf("clean cycles body = %s, want {\"cycles\":[]}", rec.Body.String())
 	}
 
-	// Build a 3-cycle A → B → C → A via the link endpoint (this
-	// worktree predates the C94T0 guard, so the cycle stores).
+	// Build a 3-cycle A → B → C → A via direct INSERTs (coordinator
+	// fixup on rebase over C94T0: the guard would reject the closing
+	// edge via the link endpoint; these rows simulate pre-existing data).
 	issA := createIssueHTTP(t, e, cookie, issueBase, "A")
 	issB := createIssueHTTP(t, e, cookie, issueBase, "B")
 	issC := createIssueHTTP(t, e, cookie, issueBase, "C")
+	ctx := context.Background()
 	for _, link := range [][2]string{{issA, issB}, {issB, issC}, {issC, issA}} {
-		rec = postAuthedJSON(t, e, http.MethodPost, issueBase+"/"+link[0]+"/links", cookie,
-			`{"target_issue_id":"`+link[1]+`","kind":"blocks"}`)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("create link %s->%s: status = %d (body: %s)", link[0], link[1], rec.Code, rec.Body.String())
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO issue_links (issue_id, target_issue_id, kind)
+			 VALUES ($1::uuid, $2::uuid, 'blocks')`, link[0], link[1]); err != nil {
+			t.Fatalf("insert link %s->%s: %v", link[0], link[1], err)
 		}
 	}
 

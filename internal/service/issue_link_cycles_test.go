@@ -1,10 +1,11 @@
 package service
 
 // Pre-existing blocks-cycle report (C94T1): service-level tests for
-// ListIssueLinkCycles. Fixtures create cycles through CreateIssueLink
-// (this worktree predates the C94T0 guard, which only rejects NEW
-// cycle-closing edges — stored cycles are exactly what the report
-// must surface).
+// ListIssueLinkCycles. Fixtures insert links DIRECTLY into issue_links
+// (coordinator fixup on rebase over C94T0): the guard rejects NEW
+// cycle-closing edges via CreateIssueLink, and stored cycles are
+// exactly what the report must surface — so fixtures simulate
+// pre-existing data, bypassing the guard the way a legacy row would.
 
 import (
 	"context"
@@ -17,8 +18,12 @@ import (
 
 func linkCycle(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slug, ident, actor, from, to, kind string) {
 	t.Helper()
-	if _, err := CreateIssueLink(ctx, pool, slug, ident, from, actor, to, kind); err != nil {
-		t.Fatalf("CreateIssueLink %s -> %s (%s): %v", from, to, kind, err)
+	// Direct INSERT, not CreateIssueLink: the C94T0 guard rejects
+	// cycle-closing edges, and these fixtures ARE pre-existing cycles.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO issue_links (issue_id, target_issue_id, kind)
+		 VALUES ($1::uuid, $2::uuid, $3)`, from, to, kind); err != nil {
+		t.Fatalf("insert link %s -> %s (%s): %v", from, to, kind, err)
 	}
 }
 
