@@ -112,6 +112,15 @@ export function useScheduleMutation(
       for (const key of keys) {
         void queryClient.invalidateQueries({ queryKey: key });
       }
+      // C109T1: the PQL window sets use "due-pql" / "start-pql" /
+      // "undated-pql" as element 4, so they are NOT a prefix match for the
+      // base keys above. Invalidating the shared ["calendar", slug,
+      // identifier] prefix covers both the base keys and the *-pql keys,
+      // so a drag while in PQL mode refetches the filtered sets instead
+      // of leaving the dragged chip stale.
+      void queryClient.invalidateQueries({
+        queryKey: ["calendar", slug, identifier],
+      });
     },
   });
 }

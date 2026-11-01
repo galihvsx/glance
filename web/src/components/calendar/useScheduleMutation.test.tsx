@@ -297,4 +297,45 @@ describe("useScheduleMutation", () => {
     // Chip leaves the undated cache (it reappears in the day cell on refetch).
     expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(0);
   });
+
+  it("invalidates the PQL window sets on settle so a drag in PQL mode refetches", async () => {
+    const client = freshClient();
+    const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
+    // PQL keys (see Calendar.tsx): element 4 is "due-pql" / "start-pql" /
+    // "undated-pql", so they are NOT a prefix match for the base keys.
+    const pqlDueKey = ["calendar", "acme", "ENG", "due-pql", RANGE.start, "state:open"];
+    const pqlStartKey = ["calendar", "acme", "ENG", "start-pql", RANGE.start, "state:open"];
+    const pqlUndatedKey = ["calendar", "acme", "ENG", "undated-pql", "state:open"];
+    client.setQueryData(pqlDueKey, [issue]);
+    client.setQueryData(pqlStartKey, []);
+    client.setQueryData(pqlUndatedKey, []);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const { result } = renderHook(
+      () => useScheduleMutation("acme", "ENG", RANGE),
+      { wrapper: wrapper(client) },
+    );
+
+    mockPatch.mockResolvedValueOnce({ ...issue, target_date: "2026-10-14T00:00:00Z" });
+    await act(async () => {
+      await result.current.mutateAsync({
+        uuid: "i1",
+        dates: { target_date: "2026-10-14" },
+      });
+    });
+
+    // The settle invalidation must cover the shared prefix, which is the
+    // only key shape that prefix-matches both base and *-pql keys.
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["calendar", "acme", "ENG"],
+    });
+    // And that prefix must actually match all three PQL keys in the cache.
+    const matched = client
+      .getQueryCache()
+      .findAll({ queryKey: ["calendar", "acme", "ENG"] })
+      .map((q) => q.queryKey);
+    expect(matched).toEqual(
+      expect.arrayContaining([pqlDueKey, pqlStartKey, pqlUndatedKey]),
+    );
+    invalidateSpy.mockRestore();
+  });
 });
