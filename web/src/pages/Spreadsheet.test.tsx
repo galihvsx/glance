@@ -14,7 +14,12 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useSearchParams,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Spreadsheet from "./Spreadsheet";
 import { EMPTY_FILTERS } from "../lib/filters";
@@ -94,6 +99,9 @@ const members = [{ id: "u2", name: "Ada", email: "ada@example.com", role: 1 }];
 
 const BASE = "/api/v1/workspaces/acme/projects/ENG";
 
+// C106T1: per-test views served by the /views branch.
+const mockViews = vi.hoisted(() => ({ views: [] as IssueViewRow[] }));
+
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((path: string) => {
@@ -113,7 +121,7 @@ vi.mock("../lib/api", () => ({
         return Promise.resolve({ custom_fields: [] });
       }
       if (path.includes("/views")) {
-        return Promise.resolve({ views: [] });
+        return Promise.resolve({ views: mockViews.views });
       }
       if (path.includes("/issues")) {
         // C21T2: the list carries project_structure batched on every row —
@@ -160,6 +168,28 @@ vi.mock("../lib/auth", () => ({
   }),
 }));
 
+/** Echoes the router search string so tests can assert the URL a
+ *  default-view application writes (BoardPql.test.tsx pattern). */
+function SearchProbe() {
+  const [sp] = useSearchParams();
+  return <span data-testid="search">{sp.toString()}</span>;
+}
+
+function searchParam(name: string): string | null {
+  return new URLSearchParams(
+    screen.getByTestId("search").textContent ?? "",
+  ).get(name);
+}
+
+async function listCalls(): Promise<URLSearchParams[]> {
+  const { api } = await import("../lib/api");
+  const getMock = api.get as ReturnType<typeof vi.fn>;
+  return getMock.mock.calls
+    .map((args: unknown[]) => args[0] as string)
+    .filter((p) => p.includes("/issues?"))
+    .map((p) => new URLSearchParams(p.split("?")[1] ?? ""));
+}
+
 function renderSpreadsheet(
   initialEntry = "/w/acme/p/ENG/spreadsheet",
 ) {
@@ -172,7 +202,12 @@ function renderSpreadsheet(
         <Routes>
           <Route
             path="/w/:slug/p/:identifier/spreadsheet"
-            element={<Spreadsheet />}
+            element={
+              <>
+                <Spreadsheet />
+                <SearchProbe />
+              </>
+            }
           />
         </Routes>
       </QueryClientProvider>
@@ -190,6 +225,7 @@ function rowLabels(): string[] {
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
+  mockViews.views = [];
 });
 
 describe("Spreadsheet Cycle/Module/Release columns", () => {
@@ -751,10 +787,10 @@ describe("Spreadsheet PQL saved views (C105T1)", () => {
   // Same routing as the C104 helper, plus the views list and a
   // create-view echo on api.post so a save settles instead of
   // resolving undefined. Views here are never default-flagged on
-  // purpose: the SavedViewsMenu default-view auto-apply race (the
-  // once-flag burning while projectId is still "") is a known
-  // shared-component defect carried as a C106 candidate, out of this
-  // task's scope — these tests do not exercise it.
+  // purpose: at C105 time the SavedViewsMenu default-view
+  // auto-apply race (the once-flag burning while projectId was still
+  // "") was still open. C106T0 fixed it and the C106T1 describe
+  // below covers the auto-apply path on this page.
   async function renderSavedReady(
     pqlResults: Issue[],
     opts: { initialEntry?: string; views?: IssueViewRow[] } = {},
@@ -1039,5 +1075,119 @@ describe("Spreadsheet PQL saved views (C105T1)", () => {
     };
     expect(body.filters.q).toBe("hello");
     expect(body.filters.pql ?? "").toBe("");
+  });
+});
+
+describe("default view auto-apply on mount (C106T1)", () => {
+  // Same mount sequence as Board/List: the spreadsheet mounts with
+  // the project query pending (menu gets projectId ""), the project
+  // resolves, the views load, and only then may the default apply.
+  // The auth stub's user is "u1", so the default must be owned by
+  // "u1" to be eligible (only own views auto-apply). The grid stub
+  // ignores q for row selection, so the URL + the grid's own fetch
+  // params are the observables; the Board PQL test proves visible
+  // filtering for the shared menu path.
+  function makeViewRow(
+    name: string,
+    filters: IssueViewRow["filters"],
+    isDefault = false,
+  ): IssueViewRow {
+    return {
+      id: `v-${name}`,
+      name,
+      filters,
+      display: null,
+      is_default: isDefault,
+      shared: false,
+      owner_id: "u1",
+      owner_name: "",
+      created_at: "",
+    };
+  }
+
+  // The C104/C105 helpers replace api.get with mockImplementation,
+  // which vi.clearAllMocks() does NOT undo — by the time this
+  // describe runs, the factory routing is gone and /views answers
+  // the last C105 test's (empty) list. So these tests install their
+  // own routing first (same pattern as C105T1), with /views served
+  // from mockViews.views at call time.
+  async function installGetMock() {
+    const { api } = await import("../lib/api");
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path.includes("/states")) {
+          return Promise.resolve({ states });
+        }
+        if (path.includes("/members")) {
+          return Promise.resolve({ members });
+        }
+        if (path.includes("/labels")) {
+          return Promise.resolve({ labels: [] });
+        }
+        if (path.includes("/estimates")) {
+          return Promise.resolve({ estimates: [] });
+        }
+        if (path.includes("/custom-fields")) {
+          return Promise.resolve({ custom_fields: [] });
+        }
+        if (path.includes("/views")) {
+          return Promise.resolve({ views: mockViews.views });
+        }
+        if (path.includes("/epics")) {
+          return Promise.resolve({ epics: [] });
+        }
+        if (path.includes("/issues")) {
+          return Promise.resolve({
+            results: issues.map((i) => ({
+              ...i,
+              project_structure: structures[i.id],
+            })),
+            next_cursor: undefined,
+          });
+        }
+        if (path === BASE) {
+          return Promise.resolve({
+            id: "proj-1",
+            identifier: "ENG",
+            name: "Eng",
+          });
+        }
+        return Promise.reject(new Error("unexpected path: " + path));
+      },
+    );
+  }
+
+  it("visual default auto-applies on mount and the grid refetches with its filters", async () => {
+    mockViews.views = [
+      makeViewRow("Default login", { ...EMPTY_FILTERS, q: "login" }, true),
+    ];
+    await installGetMock();
+    renderSpreadsheet();
+    await screen.findByTitle("Sprint 1");
+    await waitFor(() => expect(searchParam("q")).toBe("login"));
+    expect(searchParam("pql")).toBeNull();
+    // The grid's own fetch path carries the default's filters (plus
+    // its batched project-structure flag).
+    const calls = await listCalls();
+    const qCall = calls.find((qs) => qs.get("q") === "login");
+    expect(qCall).toBeDefined();
+    expect(qCall?.get("include_project_structure")).toBe("1");
+  });
+
+  it("default does NOT apply when the URL already carries filter params", async () => {
+    mockViews.views = [
+      makeViewRow("Default login", { ...EMPTY_FILTERS, q: "login" }, true),
+    ];
+    await installGetMock();
+    renderSpreadsheet("/w/acme/p/ENG/spreadsheet?q=checkout");
+    await screen.findByTitle("Sprint 1");
+    // Opening the menu proves the views loaded — the effect has had
+    // its chance — so the URL below is a settled non-apply.
+    fireEvent.click(screen.getByRole("button", { name: "Saved views" }));
+    await screen.findByText("Default login");
+    expect(searchParam("q")).toBe("checkout");
+    expect(searchParam("pql")).toBeNull();
+    const calls = await listCalls();
+    expect(calls.some((qs) => qs.get("q") === "login")).toBe(false);
   });
 });

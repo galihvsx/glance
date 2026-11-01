@@ -129,6 +129,9 @@ function makeViewRow(
 function renderBoard(opts: {
   initialEntry?: string;
   views?: IssueViewRow[];
+  /** Per-project views, keyed by the project id in the views path
+   *  (e.g. "p-eng") — for the project-switch remount test. */
+  viewsForProjectId?: (projectId: string) => IssueViewRow[];
 } = {}) {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces/acme")
@@ -144,8 +147,14 @@ function renderBoard(opts: {
     if (path.endsWith("/labels")) return Promise.resolve({ labels: [] });
     if (path.endsWith("/estimates")) return Promise.resolve({ estimates: [] });
     if (path.includes("/epics?")) return Promise.resolve({ epics: [] });
-    if (path.includes("/projects/") && path.endsWith("/views"))
-      return Promise.resolve({ views: opts.views ?? [] });
+    if (path.includes("/projects/") && path.endsWith("/views")) {
+      const projectId = path.split("/projects/")[1]?.split("/")[0] ?? "";
+      return Promise.resolve({
+        views: opts.viewsForProjectId
+          ? opts.viewsForProjectId(projectId)
+          : (opts.views ?? []),
+      });
+    }
     if (path.startsWith(`${OTHER}/issues`))
       return Promise.resolve({ results: [issueC], next_cursor: null });
     if (path.startsWith(`${ENG}/issues`)) {
@@ -613,13 +622,12 @@ describe("board PQL saved views (C105T0)", () => {
 
   // Default-flagged views apply exactly like any other view through
   // the menu (the isDefault flag changes nothing about apply). The
-  // menu's auto-apply-on-mount path is NOT covered here: its effect
-  // burns its once-flag on mount while projectId is still "" (the
-  // views query is disabled, so viewsLoading is false and views is
-  // []), before the project — and its views — ever load. That is a
-  // pre-existing SavedViewsMenu race shared by every page, not a
-  // Board/C105 behavior, so it is reported separately rather than
-  // fixed or papered over in this task's scope.
+  // menu's auto-apply-on-mount path was a pre-existing SavedViewsMenu
+  // race shared by every page (the effect burned its once-flag on
+  // mount while projectId was still ""); C106T0 gated it on
+  // viewsReady, and the C106T1 describe below proves the fix in the
+  // real Board mount sequence (project query pending → resolves →
+  // views load → default applies).
   it("default visual view applies visually when chosen (regression)", async () => {
     const def = makeViewRow(
       "Default bugs",
@@ -658,5 +666,136 @@ describe("board PQL saved views (C105T0)", () => {
     expect(
       (screen.getByLabelText("PQL query") as HTMLInputElement).value,
     ).toBe("priority = High");
+  });
+});
+
+describe("default view auto-apply on mount (C106T1)", () => {
+  // The mount sequence under test is the real one, not a mocked
+  // projectId flip: Board mounts with the project query pending
+  // (SavedViewsMenu gets projectId "" and its views query stays
+  // disabled), the project resolves, the views load, and only then
+  // may the default apply. Pre-C106T0 the menu's effect burned its
+  // once-flag on the empty first mount and the default never applied;
+  // these tests fail without the viewsReady gate and pass with it.
+  // No test below touches the Views menu — the apply must happen
+  // on its own.
+
+  it("PQL default auto-applies on mount and enters PQL mode visibly", async () => {
+    const { get } = renderBoard({
+      views: [
+        makeViewRow(
+          "Default high",
+          { ...EMPTY_FILTERS, pql: "priority = High" },
+          true,
+        ),
+      ],
+    });
+    // The URL is the first observable: the menu writes ?pql= before
+    // the board refetches under it.
+    await waitFor(() => expect(searchParam("pql")).toBe("priority = High"));
+    expect(
+      screen.getByRole("button", { name: "PQL" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLInputElement).value,
+    ).toBe("priority = High");
+    // The board itself reflects the default: only the PQL match
+    // remains (the stub returns just issueB for PQL fetches). The
+    // waitFor retries past the transient visual board and the pending
+    // PQL fetch — both cards, or neither, until the PQL result lands.
+    await waitFor(() => {
+      expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    const pqlCalls = issueCalls(get).filter((qs) => qs.get("pql") !== null);
+    expect(pqlCalls.length).toBeGreaterThan(0);
+    for (const qs of pqlCalls) {
+      expect(qs.get("pql")).toBe("priority = High");
+    }
+  });
+
+  it("visual default auto-applies on mount and the board refetches with its filters", async () => {
+    const { get } = renderBoard({
+      views: [
+        makeViewRow(
+          "Default login",
+          { ...EMPTY_FILTERS, q: "login" },
+          true,
+        ),
+      ],
+    });
+    await openBoard();
+    await waitFor(() => expect(searchParam("q")).toBe("login"));
+    expect(searchParam("pql")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "All issues" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    // The board's own fetch path carries the default's filters (the
+    // stub ignores q for row selection, so the URL + fetch params are
+    // the observable — the PQL test above proves visible filtering).
+    const qCalls = issueCalls(get).filter((qs) => qs.get("q") === "login");
+    expect(qCalls.length).toBeGreaterThan(0);
+  });
+
+  it("default does NOT apply when the URL already carries filter params", async () => {
+    const { get } = renderBoard({
+      views: [
+        makeViewRow(
+          "Default login",
+          { ...EMPTY_FILTERS, q: "login" },
+          true,
+        ),
+      ],
+      initialEntry: "/w/acme/p/ENG/board?q=checkout",
+    });
+    await openBoard();
+    // Opening the menu proves the views loaded — the effect has had
+    // its chance — so the URL below is a settled non-apply, not a
+    // race between the assertion and the fetch.
+    await openViewsMenu();
+    await screen.findByText("Default login");
+    expect(searchParam("q")).toBe("checkout");
+    expect(searchParam("pql")).toBeNull();
+    expect(
+      issueCalls(get).some((qs) => qs.get("q") === "login"),
+    ).toBe(false);
+  });
+
+  it("project switch remounts the menu and applies the new project's default fresh (inv 8)", async () => {
+    const { get } = renderBoard({
+      viewsForProjectId: (projectId) =>
+        projectId === "p-other"
+          ? [
+              makeViewRow(
+                "Other default",
+                { ...EMPTY_FILTERS, q: "other-search" },
+                true,
+              ),
+            ]
+          : [
+              makeViewRow(
+                "Default high",
+                { ...EMPTY_FILTERS, pql: "priority = High" },
+                true,
+              ),
+            ],
+    });
+    await openBoard();
+    // ENG's default applied on the first mount.
+    await waitFor(() => expect(searchParam("pql")).toBe("priority = High"));
+    fireEvent.click(screen.getByRole("button", { name: "Go other" }));
+    await screen.findByText("Other project task");
+    // The menu remounts (keyed by slug:identifier), so its once-flag
+    // is fresh and OTHER's own default applies — it must not inherit
+    // ENG's spent flag or ENG's PQL query.
+    await waitFor(() => expect(searchParam("q")).toBe("other-search"));
+    expect(searchParam("pql")).toBeNull();
+    const otherCalls = get.mock.calls
+      .map((c) => c[0] as string)
+      .filter((p) => p.startsWith(`${OTHER}/issues`))
+      .map((p) => new URLSearchParams(p.split("?")[1] ?? ""));
+    expect(otherCalls.some((qs) => qs.get("q") === "other-search")).toBe(
+      true,
+    );
   });
 });
