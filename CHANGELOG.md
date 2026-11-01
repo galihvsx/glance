@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Workspace-scoped saved views on MyWork (cycle 113)**
+
+- MyWork — the only PQL surface without a Views menu — now
+  has one: the detail-mode menu beside the All work / PQL
+  toggle saves the current PQL query as a named view and
+  re-applies it, with rename / delete / share / set-default
+  like every other surface. Views are stored workspace-scoped:
+  migration 000081 adds a nullable `workspace_id` to
+  `issue_views` with an exactly-one-scope CHECK, so every row
+  is project-scoped or workspace-scoped, never both; name
+  uniqueness is per (user, workspace) via a partial unique
+  index, and the API group
+  `/api/v1/workspaces/:slug/views` mirrors the project
+  group's rules (own + shared visibility, owner-only
+  mutation, admin-may-delete-shared, single 404 for missing
+  and non-member workspaces). The menu lists PQL views only,
+  never writes to the URL, and never auto-applies a default
+  on mount (the C107 detail shape); applying a view never
+  switches the Assigned / Created / Watched tab — the tab
+  is orthogonal scope and the query re-runs under it. The
+  staged "no Views save path yet" hint is replaced with
+  the detail-shape wording.
+
 **PQL mode on MyWork — workspace-scoped PQL (cycle 112)**
 
 - MyWork — the last issue list without PQL mode, and the
