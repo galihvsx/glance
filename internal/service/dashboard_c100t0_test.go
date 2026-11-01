@@ -67,10 +67,9 @@ func TestC100PQLRejects(t *testing.T) {
 		{"blank query", `{"query":"   ","project_ids":["` + c100ProjA + `"]}`},
 		{"empty query", `{"query":"","project_ids":["` + c100ProjA + `"]}`},
 		{"non-string query", `{"query":42,"project_ids":["` + c100ProjA + `"]}`},
-		{"no projects", `{"query":"priority >= 0","project_ids":[]}`},
-		{"missing projects", `{"query":"priority >= 0"}`},
-		// C101T0: two projects are now ACCEPTED (see
-		// dashboard_c101t0_test.go); the exactly-one pin is gone.
+		// C102T0: empty/missing project_ids are now ACCEPTED
+		// (empty-means-all — see dashboard_c102t0_test.go); the
+		// 1..N pin is gone.
 		{"filters key", `{"query":"priority >= 0","project_ids":["` + c100ProjA + `"],"filters":{"states":["` + c100ProjA + `"]}}`},
 		{"empty filters key", `{"query":"priority >= 0","project_ids":["` + c100ProjA + `"],"filters":{}}`},
 		{"visualization key", `{"query":"priority >= 0","project_ids":["` + c100ProjA + `"],"visualization":"table"}`},
