@@ -5,6 +5,20 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Saved-views default auto-apply race fixed (cycle 106)**
+
+- A user's default saved view now actually auto-applies on
+  project page load (List, Board, Spreadsheet). Previously the
+  menu burned its once-flag on mount while the project was
+  still resolving (views query disabled, empty list), so the
+  default never applied on any page. The effect now waits
+  until the views for the current project have genuinely been
+  fetched, and a fetch error no longer burns the flag either —
+  a later successful load still applies. Page-level regression
+  tests cover the real mount sequence on all three surfaces,
+  including a project-switch remount applying the new
+  project's default fresh.
+
 **PQL saved views on Board + Spreadsheet (cycle 105)**
 
 - Board and Spreadsheet now wire the full PQL save/apply contract
