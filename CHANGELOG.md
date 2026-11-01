@@ -5,6 +5,25 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL-mode staleness on cycle/module detail lists (cycle 103)**
+
+- A membership edit while a PQL query is committed on a cycle or
+  module detail page now re-runs that exact query in place: on
+  cycle detail, adding issues to the cycle (or ending it, which
+  changes membership via rollover) prefix-invalidates the
+  `cycle-issues-pql` query; on module detail, both the add-issues
+  dialog and the row-level Remove do the same via the shared
+  invalidation, after the module PQL fetch was converted from
+  local state to a React Query on the Cycles/Board pattern. The
+  displayed filtered list updates without leaving PQL mode or
+  re-applying, and the committed query text never changes.
+  Progress counts still come from the unfiltered membership
+  list, probe-first apply still rejects a 400 before committing,
+  and default (non-PQL) mode behavior is unchanged. Previously
+  the filtered list went stale until re-apply — the
+  C95-documented edge. Board and the issue list already
+  refetched correctly and are untouched.
+
 **Empty-means-all project scope for `pql_table` (cycle 102)**
 
 - `pql_table` dashboard widgets no longer require a pinned project
