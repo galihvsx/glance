@@ -5,6 +5,22 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL mode on the Spreadsheet view + filter params survive view switches (cycle 104)**
+
+- The Spreadsheet (Table) view now has PQL mode like List and Board:
+  the mode toggle (Filters / PQL), PQL editor, and applied-query
+  display, wired through the existing FilterPanel pattern. Previously
+  a pasted `?pql=` link filtered the spreadsheet silently while the
+  UI showed visual filter chips the backend was ignoring.
+- Switching views via the page header now preserves filter params:
+  exactly the filter-param set survives a switch (multi-value params
+  kept in order), while peek/create params are dropped.
+- Spreadsheet mutations in PQL mode now refetch the displayed list:
+  create, cell edit, and assignee toggle invalidate the
+  displayed-issues query (PQL key while a query is committed, visual
+  prefix otherwise), closing the PQL-view staleness gap on the last
+  canonical issue view of the C91–C103 arc.
+
 **PQL-mode staleness on cycle/module detail lists (cycle 103)**
 
 - A membership edit while a PQL query is committed on a cycle or
