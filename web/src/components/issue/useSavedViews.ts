@@ -262,6 +262,20 @@ export function useSavedViews(projectId: string) {
     // id, so the menu must not render (or auto-apply a default) before
     // it resolves.
     viewsLoading: query.isLoading || authLoading,
+    // C106T0 readiness signal: "not loading" is NOT "loaded". A disabled
+    // query (projectId === "", the normal first mount on every page
+    // before the project resolves) reports isLoading === false with
+    // views === [], so viewsLoading alone cannot gate the default-view
+    // effect — it would burn its once-flag on the empty first mount.
+    // viewsReady is true only once the query has actually settled
+    // (success or error) for a real, non-empty projectId. On error the
+    // effect must still not burn its flag (see viewsError), so a later
+    // successful load can apply the default.
+    viewsReady: projectId !== "" && (query.isSuccess || query.isError),
+    /** True when the views fetch for this project failed. The hook
+     *  already toasts this honestly; the menu treats it as "not ready
+     *  to decide", never as "no default exists". */
+    viewsError: query.isError,
     createView,
     renameView,
     deleteView,

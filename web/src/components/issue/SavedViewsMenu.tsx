@@ -68,6 +68,8 @@ export default function SavedViewsMenu({
     ownViews,
     sharedViews,
     viewsLoading,
+    viewsReady,
+    viewsError,
     createView,
     renameView,
     deleteView,
@@ -110,11 +112,23 @@ export default function SavedViewsMenu({
   // Default view: applied once per mount when the URL carries no explicit
   // filter params. Only the caller's OWN views are eligible — a default
   // set by another member on their shared view must never auto-apply.
-  // Waits for the views to load first (the menu is keyed by project in
-  // each page, so a project switch remounts and re-runs this).
+  // Readiness gate (C106T0): the once-flag must NOT burn until the views
+  // for the current project have actually been fetched. Every page mounts
+  // this menu with projectId "" first (the project resolves after mount)
+  // and the disabled query reports isLoading === false with views === [],
+  // so gating on !viewsLoading alone spends the flag on the empty first
+  // mount and the default then never applies. viewsReady is false until
+  // the query settles for a real projectId, so the effect retries once
+  // the views arrive. A fetch error likewise must not burn the flag —
+  // the load-failure toast is the honest behavior there, and a later
+  // successful load must still apply. The menu is keyed by project in
+  // each page, so a project switch remounts and re-runs this fresh.
   const defaultApplied = useRef(false);
   useEffect(() => {
-    if (defaultApplied.current || viewsLoading) return;
+    if (defaultApplied.current || !viewsReady || viewsLoading) return;
+    // Fetch failed: no data to decide from. Return WITHOUT burning the
+    // flag so a later successful load retries the apply.
+    if (viewsError) return;
     defaultApplied.current = true;
     let hasFilterParams = false;
     for (const k of searchParams.keys()) {
@@ -139,7 +153,7 @@ export default function SavedViewsMenu({
       onApplyDisplay(def.display);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewsLoading, views]);
+  }, [viewsLoading, views, viewsReady, viewsError]);
 
   const currentQuery = serializeFilters(filters).toString();
   const activeView = views.find(
