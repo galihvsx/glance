@@ -319,6 +319,23 @@ export default function Spreadsheet() {
     },
   });
 
+  // C104T1: displayKey-style settle targeting (Board pattern): while
+  // a query is committed, mutations re-run that committed query so a
+  // row whose new values no longer match leaves the grid on refetch
+  // instead of going stale (the C104T0 carry-over — optimistic cell
+  // edits patch only the visual cache, which is not displayed while
+  // a query is committed). Outside PQL mode the invalidation is
+  // byte-for-byte the pre-existing visual prefix invalidation.
+  function invalidateDisplayedIssues() {
+    if (pqlActive) {
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    } else {
+      void queryClient.invalidateQueries({
+        queryKey: ["issues", slug, identifier],
+      });
+    }
+  }
+
   // C104T0: PQL mode handlers (List pattern verbatim — see the
   // mode-restore note at the pqlMode state above).
   function handlePqlModeChange(mode: "visual" | "pql") {
@@ -410,9 +427,7 @@ export default function Spreadsheet() {
       setNewPriority(0);
       setNewStateId("");
       setFormError(null);
-      void queryClient.invalidateQueries({
-        queryKey: ["issues", slug, identifier],
-      });
+      invalidateDisplayedIssues();
     },
     onError: (e) => {
       setFormError(
@@ -510,9 +525,7 @@ export default function Spreadsheet() {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["issues", slug, identifier],
-      });
+      invalidateDisplayedIssues();
     },
   });
 
@@ -539,9 +552,7 @@ export default function Spreadsheet() {
     const req = currently ? api.del(url) : api.post(url);
     req.then(
       () => {
-        void queryClient.invalidateQueries({
-          queryKey: ["issues", slug, identifier],
-        });
+        invalidateDisplayedIssues();
       },
       (e: unknown) => {
         if (prev) queryClient.setQueryData(issuesKey, prev);
