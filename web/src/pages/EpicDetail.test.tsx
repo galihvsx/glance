@@ -20,6 +20,13 @@ import type {
 } from "../lib/types";
 import { makeQueryClient } from "../components/shell/test-utils";
 
+// C108T3 fix-up: EpicDetail renders SavedViewsMenu → useAuth; the real
+// provider needs a session — stub the auth context (C107T1 precedent
+// in Cycles.test.tsx, same shape).
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
+
 const states: IssueState[] = [
   { id: "s-backlog", name: "Backlog", group: "backlog" },
   { id: "s-started", name: "In Progress", group: "started" },
@@ -63,6 +70,23 @@ const epic: Epic = {
   updated_at: "2026-10-10T00:00:00Z",
 };
 
+// C108T3 fix-up: the detail-mode SavedViewsMenu needs the shared
+// ["project", slug, identifier] query (its project UUID feeds the
+// menu's views query); seed it plus the empty views list, following
+// the C107T1 project query + /api/v1/projects/.../views handling in
+// Cycles.test.tsx, adapted to this file's seeded query client.
+const project = {
+  id: "p1",
+  workspace_id: "w1",
+  identifier: "ENG",
+  name: "ENG",
+  description: "",
+  parallel_cycles: false,
+  labels: [],
+  created_at: "",
+  updated_at: "",
+};
+
 const initiative: Initiative = {
   id: "init-1",
   workspace_id: "w1",
@@ -88,6 +112,8 @@ function renderDetail(opts: {
   const initiatives = opts.initiatives ?? [initiative];
   const linked = opts.linked ?? [initiative];
   const seeds: [readonly unknown[], unknown][] = [
+    [["project", "acme", "ENG"], project],
+    [["saved-views", "p1"], []],
     [["epic-detail", "acme", "ENG", "epic-1"], epicData],
     [["epic-issues", "acme", "ENG", "epic-1"], issues],
     [["states", "acme", "ENG"], states],
