@@ -5,6 +5,19 @@
 // row language: display-id mono 10px muted, title 12px ink, state dot +
 // 10px label, priority bars + 10px label. Group bars use the prototype
 // "Recently updated" row language (35px, bottom hairline, 12px/600).
+//
+// C112: PQL mode, copying the Cycles-detail shape verbatim (local
+// appliedQuery state, probe-first apply, no URL writes, no default
+// auto-apply) with the toggle beside the filter tabs. WORKSPACE
+// SCOPE SEMANTICS (the C112 backend decision, documented here so
+// nobody adds a per-project filter later): state / epic / estimate
+// names match ACROSS projects — a name resolves to the SET of ids
+// bearing it in the actor's accessible projects, not to one
+// project's id — so "state = Todo" means "issues in a Todo-like
+// state" workspace-wide. The filter tabs are orthogonal scope, not
+// a project filter: switching tabs in PQL mode re-runs the same
+// query under the new filter, and the PQL predicate always ANDs
+// with the tab's filter predicate.
 
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -24,6 +37,7 @@ import { priorityLabel } from "../lib/types";
 import { relativeTime } from "../lib/relativeTime";
 import { stateDotClass } from "../lib/stateDot";
 import PageHeader from "../components/shell/PageHeader";
+import PqlEditor from "../components/issue/PqlEditor";
 import PriorityBars from "../components/issue/PriorityBars";
 import EmptyState from "../components/personal/EmptyState";
 import { SectionBar, StatBand } from "../components/personal/SectionBar";
@@ -38,11 +52,46 @@ export default function MyWork() {
   const { slug = "" } = useParams<{ slug: string }>();
   const [filter, setFilter] = useState<MyWorkFilter>("assigned");
 
+  // C112: detail-mode PQL state. The query key includes filter +
+  // appliedQuery, so switching tabs in PQL mode re-runs the same
+  // query under the new filter, and leaving PQL mode (which clears
+  // appliedQuery) restores the cached unfiltered set for the tab.
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+
   const itemsQuery = useQuery({
-    queryKey: [...myWorkKeys(slug).all, filter],
-    queryFn: () => fetchMyWork(slug, filter),
+    queryKey: [...myWorkKeys(slug).all, filter, appliedQuery],
+    queryFn: () => fetchMyWork(slug, filter, 100, appliedQuery),
     enabled: slug !== "",
   });
+
+  // Probe-first apply (Cycles-detail pattern): fetch one page with
+  // filter + pql and commit only on success. A 400 rejects, so
+  // PqlEditor shows it inline and the displayed list is untouched
+  // (appliedQuery — and therefore the displayed list — never
+  // changes). Empty query = no filter: stays in PQL mode, shows
+  // the full set for the current tab.
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    await fetchMyWork(slug, filter, 100, q);
+    setAppliedQuery(q);
+  }
+
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the unfiltered
+    // set for the current tab (already cached) is restored
+    // immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
 
   const items = itemsQuery.data ?? [];
   const grouped = groupMyWorkByState(items);
@@ -65,15 +114,71 @@ export default function MyWork() {
         showAnalytics={false}
       />
       <div className="mx-auto w-full max-w-5xl space-y-4 p-6">
-        <Tabs value={filter} onValueChange={(v) => setFilter(v as MyWorkFilter)}>
-          <TabsList>
-            {MY_WORK_FILTERS.map((f) => (
-              <TabsTrigger key={f} value={f}>
-                {filterLabel(f)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* C112: All-work / PQL toggle beside the filter tabs
+            (Cycles-detail toggle pattern, adapted labels: this page
+            is "My work", so the verbatim "All issues" label from
+            detail pages would reference a list that does not exist
+            here). No Views menu here: saved views on MyWork are the
+            next cycle (project-scoped issue_views storage is a
+            separate design question) — the editor below carries the
+            staged "no save path yet" hint text so the views cycle
+            flips it with a boolean change, not a wording decision. */}
+        <div className="flex items-center gap-2">
+          <Tabs value={filter} onValueChange={(v) => setFilter(v as MyWorkFilter)}>
+            <TabsList>
+              {MY_WORK_FILTERS.map((f) => (
+                <TabsTrigger key={f} value={f}>
+                  {filterLabel(f)}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          <div
+            role="group"
+            aria-label="Work list mode"
+            className="flex shrink-0 rounded-md border p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => handlePqlModeChange("all")}
+              className={`h-7 rounded-sm px-3 text-xs font-medium ${
+                !pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              All work
+            </button>
+            <button
+              type="button"
+              aria-pressed={pqlMode}
+              onClick={() => handlePqlModeChange("pql")}
+              className={`h-7 rounded-sm px-3 text-xs font-medium ${
+                pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              PQL
+            </button>
+          </div>
+        </div>
+        {pqlMode && (
+          // Keyed by the applied query: PqlEditor's draft is
+          // initial-value-only, so the editor re-seeds on re-apply.
+          <PqlEditor
+            key={appliedQuery}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => {
+              setAppliedQuery("");
+            }}
+            showSaveHint={false}
+            // No Views save path on this page yet (the views cycle
+            // wires the menu and flips showSaveHint to true with
+            // the corrected C108T1 hint text). The text is staged
+            // here so the flip is a boolean change, not a wording
+            // decision.
+            saveHintText="There is no Views save path for this query on this page yet."
+          />
+        )}
 
         {itemsQuery.isLoading ? (
           <div className="space-y-2">
@@ -91,14 +196,21 @@ export default function MyWork() {
           <EmptyState
             icon={Inbox}
             title={
-              filter === "assigned"
-                ? "Nothing assigned to you"
-                : filter === "created"
-                  ? "You haven't created any issues here yet"
-                  : "You're not watching any issues here yet"
+              // A valid query that matches nothing is a real empty
+              // result, not an empty tab — say so, so the empty
+              // state never masquerades as "nothing assigned".
+              pqlMode && appliedQuery.trim() !== ""
+                ? "No issues match this PQL query"
+                : filter === "assigned"
+                  ? "Nothing assigned to you"
+                  : filter === "created"
+                    ? "You haven't created any issues here yet"
+                    : "You're not watching any issues here yet"
             }
           >
-            {filter === "assigned" && "Enjoy the quiet."}
+            {filter === "assigned" &&
+              appliedQuery.trim() === "" &&
+              "Enjoy the quiet."}
           </EmptyState>
         ) : (
           <>
