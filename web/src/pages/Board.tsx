@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   useMutation,
@@ -513,9 +513,14 @@ export default function Board() {
   // behavior: the boardQuery below is untouched. In PQL mode the
   // displayed list comes from the PQL query instead; grouping and the
   // header count follow the displayed list because they derive from
-  // displayedIssues. No save-as-view for PQL (SavedViewsMenu is
-  // unchanged and saves visual filters only) and no URL persistence
-  // of the mode (C95 precedent).
+  // displayedIssues. C105T0 wires the List (C91) saved-view contract
+  // onto SavedViewsMenu below: saving in PQL mode stores only the
+  // query, applying a view settles the mode. Board never parks the
+  // visual filters (unlike List/Spreadsheet): entering PQL mode leaves
+  // them untouched and exiting restores the visual board automatically.
+  // The mode itself is local state (appliedQuery), not the URL — the
+  // URL ?pql= is only a backstop entry point (pasted links, view
+  // applies), never the source of truth.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
   // A query must never leak across projects: reset synchronously
@@ -636,7 +641,53 @@ export default function Board() {
     // board (already cached) is restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    // C105T0 invariant: exiting PQL mode must leave no non-blank
+    // ?pql= in the URL, or the backstop below re-enters immediately.
+    // Patch-merge: other params are untouched. In the normal local-PQL
+    // flow the URL carries no pql, so this is a no-op.
+    setFilters({ pql: "" });
   }
+
+  // C105T0: saved-view application (List C91 pattern, adapted to
+  // Board's local PQL state). The menu already wrote the view's
+  // filters to the URL; this only settles the mode + committed query.
+  // A PQL view enters PQL mode with that query; a visual view leaves
+  // PQL mode and clears the query, so the visual board returns. This
+  // also covers the menu's default-view auto-apply, which calls
+  // onViewApplied too. Visual filters are never parked or cleared:
+  // Board never parks, so exiting restores the visual board as-is.
+  function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery !== null) {
+      setPqlMode(true);
+      setAppliedQuery(pqlQuery);
+      return;
+    }
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+
+  // C105T0 backstop (List/Spreadsheet pattern, adapted to Board's
+  // local state): a non-blank ?pql= in the URL while not in PQL mode
+  // means PQL mode — covers pasted ?pql= links. Idempotent with
+  // handleSavedViewApplied: the menu sets the URL then calls the
+  // handler, so by the time this effect runs the mode is already
+  // settled and the guard below is a no-op. Mode is never auto-cleared
+  // here — leaving PQL mode happens only via the toggle above or a
+  // visual view apply, both of which clear ?pql= from the URL first.
+  // Deps are [filters.pql] ONLY, exactly like List/Spreadsheet: the
+  // guard reads the pqlMode from the render in which the URL last
+  // changed. Depending on pqlMode too would re-run this effect on
+  // every mode toggle while the URL clear is still in flight (React
+  // Router navigations commit separately from the toggle's urgent
+  // state), re-entering PQL mode with the stale query on exit — the
+  // very fight the invariant above exists to prevent.
+  useEffect(() => {
+    if (!pqlMode && filters.pql?.trim()) {
+      setPqlMode(true);
+      setAppliedQuery(filters.pql.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.pql]);
 
   const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
 
@@ -1148,6 +1199,9 @@ export default function Board() {
             display={settings}
             onApplyDisplay={update}
             triggerClassName={pageHeaderControlClass}
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
           />
         }
       />
