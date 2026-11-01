@@ -2996,9 +2996,11 @@ type ListIssuesInput struct {
 	// list (see pql.go). When non-blank, ListIssues ignores every
 	// visual filter on this input (withoutVisualFilters) and appends
 	// the translated PQL condition instead — EXCEPT the scope
-	// containers Cycle, Module (C95T0), and Epics (C108T0), which
-	// survive and AND with the PQL predicate, so a query run inside
-	// a cycle/module/epic stays inside it. Sort/pagination still
+	// containers Cycle, Module (C95T0), and Epics (C108T0), and the
+	// date windows DueAfter/DueBefore/StartAfter/StartBefore/Undated
+	// (C109T0: view windows, not filter dimensions), which survive
+	// and AND with the PQL predicate, so a query run inside
+	// a cycle/module/epic/window stays inside it. Sort/pagination still
 	// apply, with one C98T0
 	// precedence rule: a PQL ORDER BY clause wins over OrderBy (the
 	// query is self-contained); without one, OrderBy applies exactly

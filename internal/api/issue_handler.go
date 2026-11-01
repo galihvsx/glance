@@ -573,9 +573,19 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 // C108T0 adds ?epic= to that exception, same shape: the scope
 // container is parsed here (repeat-ID list, same UUID/"none"
 // validation and honest 400s as the visual path) and survives PQL
-// mode — so /issues?epic=<uuid>&pql=... stays inside the epic. A blank
-// ?pql= never reaches this function: listIssues treats it as absent
-// and parses the visual filters instead.
+// mode — so /issues?epic=<uuid>&pql=... stays inside the epic.
+// C109T0 adds the date windows ?due_after/?due_before,
+// ?start_after/?start_before, and ?undated= to that exception, same
+// shape: they are view windows, not filter dimensions, parsed here
+// (same RFC3339 parsing/validation and honest 400s as the visual
+// path; ?undated= takes "1"/"true" as there) and preserved through
+// withoutVisualFilters — so /issues?due_after=A&due_before=B&pql=...
+// returns only in-window issues matching the predicate. ?due_date_empty=
+// is NOT parsed here: it is a visual filter dimension, not a window,
+// so in PQL mode it is ignored (and the visual path's
+// due_date_empty + due_after/due_before 400 rule does not fire).
+// A blank ?pql= never reaches this function: listIssues treats it as
+// absent and parses the visual filters instead.
 func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
 	common, err := parseIssueListCommon(qp)
 	if err != nil {
@@ -585,11 +595,43 @@ func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	parseTime := func(name string) (*time.Time, error) {
+		s := qp.Get(name)
+		if s == "" {
+			return nil, nil
+		}
+		tm, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return nil, err
+		}
+		return &tm, nil
+	}
+	var dueAfter, dueBefore, startAfter, startBefore *time.Time
+	for _, tc := range []struct {
+		name string
+		dst  **time.Time
+	}{
+		{"due_after", &dueAfter},
+		{"due_before", &dueBefore},
+		{"start_after", &startAfter},
+		{"start_before", &startBefore},
+	} {
+		tm, err := parseTime(tc.name)
+		if err != nil {
+			return service.ListIssuesInput{}, errors.New("invalid " + tc.name + ": want RFC3339")
+		}
+		*tc.dst = tm
+	}
 	return service.ListIssuesInput{
 		PQL:                     strings.TrimSpace(qp.Get("pql")),
 		Epics:                   epics,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
+		DueAfter:                dueAfter,
+		DueBefore:               dueBefore,
+		StartAfter:              startAfter,
+		StartBefore:             startBefore,
+		Undated:                 qp.Get("undated") == "true" || qp.Get("undated") == "1",
 		OrderBy:                 common.OrderBy,
 		Cursor:                  common.Cursor,
 		PerPage:                 common.PerPage,
