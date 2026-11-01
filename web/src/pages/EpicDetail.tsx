@@ -10,9 +10,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { api, ApiError } from "../lib/api";
-import { pqlHasLimit } from "../lib/pql";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError, pqlHasLimit } from "../lib/pql";
 import { toast } from "../components/ui/toast";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import type {
   Epic,
   Initiative,
@@ -20,6 +22,7 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
+  Project,
 } from "../lib/types";
 import EpicForm from "../components/epics/EpicForm";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
@@ -122,8 +125,22 @@ export default function EpicDetail() {
   // remove-from-epic actions. The PQL fetch goes through the
   // project issues list with the epic scope container (?epic=, the
   // C108T0 contract) ANDed server-side with the predicate.
+  // C108T3: same ["project", slug, identifier] query Cycles/Modules
+  // use — the detail-mode SavedViewsMenu below needs a project
+  // UUID, and the shared key is cache-warm whenever the user came
+  // from another project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(projectBase),
+  });
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C108T3: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled (Cycles C107T1).
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlIssuesQuery = useQuery({
     queryKey: ["epic-issues-pql", slug, identifier, epicID, appliedQuery],
     enabled: pqlMode && appliedQuery.trim() !== "",
@@ -178,6 +195,32 @@ export default function EpicDetail() {
     });
     await api.get<IssueListResult>(`${projectBase}/issues?${p.toString()}`);
     setAppliedQuery(q);
+    setSavedViewError(null);
+  }
+  // C108T3: applying a saved PQL view from the detail-mode menu.
+  // Probe FIRST, then enter PQL mode: the probe commits appliedQuery
+  // while still in membership mode (displayedIssues is unaffected
+  // until pqlMode flips), so the editor mounts seeded with the
+  // applied query. A 400 leaves appliedQuery untouched — the list
+  // never changes — and the error surfaces in the detail-level alert
+  // (the editor cannot show it: it mounts fresh with an empty draft).
+  // The menu ignores this handler's return value, so the catch here
+  // is load-bearing: without it the rejected probe would be an
+  // unhandled rejection. Null is unreachable from the detail-mode
+  // menu (PQL views only) and mirrors Cycles: leave PQL mode.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
   function handlePqlModeChange(mode: "all" | "pql") {
     if (mode === "pql") {
@@ -188,6 +231,7 @@ export default function EpicDetail() {
     // list (already cached) is restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
   }
   // While a committed PQL query is still loading, keep showing the
   // membership list rather than blanking it — the filtered list
@@ -558,8 +602,12 @@ export default function EpicDetail() {
         {/* C108T2: All issues / PQL toggle + editor, above the issue
             list (Cycles detail pattern: the modes are "full
             membership list" vs "PQL query"). The section count
-            above still reads the unfiltered membership list. No
-            SavedViewsMenu here — that is C108T3. */}
+            above still reads the unfiltered membership list.
+            C108T3: detail toolbar — the All-issues / PQL toggle
+            plus the detail-mode SavedViewsMenu beside it. Detail
+            mode guarantees no URL writes and no default auto-apply,
+            so the page settles PQL state through onViewApplied
+            only. */}
         <div className="mb-2 mt-3 flex items-center gap-2">
           <div
             role="group"
@@ -587,25 +635,40 @@ export default function EpicDetail() {
               PQL
             </button>
           </div>
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            detailMode
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+          />
         </div>
+        {savedViewError && (
+          <Alert variant="destructive" className="mb-2">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so without this a re-apply while
           // already in PQL mode would leave the editor showing the
           // previous draft instead of the applied query (C107
-          // lesson).
-          // No save hint yet: there is no Views save path on this
-          // page until C108T3 wires the detail-mode SavedViewsMenu
-          // (PqlEditor contract: pass false where no save path
-          // exists, so the hint is never wrong).
+          // lesson). C108T3: the detail-mode SavedViewsMenu above
+          // is the save path, so the corrected C108T1 hint is
+          // accurate here too.
           <PqlEditor
             key={appliedQuery}
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
             onClear={() => {
               setAppliedQuery("");
+              setSavedViewError(null);
             }}
-            showSaveHint={false}
+            showSaveHint={true}
+            saveHintText="To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened."
           />
         )}
         {issuesQuery.isPending ? (
