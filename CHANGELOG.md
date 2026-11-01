@@ -5,6 +5,24 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL mode + saved views on Archived and Drafts (cycle 111)**
+
+- Archived and Drafts — the last project-scoped issue lists
+  without PQL — now have the All-archived / All-drafts / PQL
+  toggle, probe-first apply, and the keyed PQL editor from
+  the detail-page pattern, plus the detail-mode Views menu
+  beside the toggle with the corrected save hint. A PQL
+  query on Archived still shows archived issues only
+  (`archived=1` includes, so the page keeps its client-side
+  archived-only filter); a query on Drafts still shows
+  drafts only (draft mode selects `is_draft = TRUE`
+  server-side). A failed view probe surfaces in a
+  detail-level alert with the displayed set untouched. The
+  backend needed no change: HTTP tests now prove PQL ANDs
+  with both list modes. PQL on Goal / Initiative detail
+  pages was answered NO this cycle — neither page has a
+  single issue list for a predicate to filter.
+
 **Saved views on the date views (cycle 110)**
 
 - Calendar, Gantt, and Roadmap now have the detail-mode
