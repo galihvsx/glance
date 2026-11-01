@@ -23,12 +23,11 @@ import {
   type IssueFilters,
 } from "../../lib/filters";
 import { ApiError } from "../../lib/api";
+import type { SavedViewScope } from "../../lib/savedViews";
 import type { DisplaySettings } from "./useDisplaySettings";
 import { useSavedViews, type SavedView } from "./useSavedViews";
 
-interface SavedViewsMenuProps {
-  /** Project UUID; views are fetched per project once this is known. */
-  projectId: string;
+interface SavedViewsMenuBaseProps {
   filters: IssueFilters;
   /** Null on pages without display settings (spreadsheet): views saved and
    *  applied there carry filters only. */
@@ -64,13 +63,27 @@ interface SavedViewsMenuProps {
   detailMode?: boolean;
 }
 
-/** Per-project saved views: named filter + display presets, persisted
- *  server-side (C9T2). Mounted in the project nav (via ProjectNav's
- *  `trailing` slot) on the list, board, and spreadsheet pages. Views the
- *  owner shares with the project (C10T1) render under a "Shared" section
- *  as read-only rows; the share/unshare toggle is owner-only. */
+/** The scope the menu operates in (C113T1). Exactly one of the two:
+ *  a project UUID (the pre-C113 shape — existing call sites pass
+ *  `projectId` unchanged) or a workspace slug (MyWork). The union
+ *  keeps both call shapes compiling while sharing every line of
+ *  list/save/rename/delete/share/default logic below. */
+export type SavedViewsMenuProps = SavedViewsMenuBaseProps &
+  (
+    | { projectId: string; workspaceSlug?: never }
+    | { workspaceSlug: string; projectId?: never }
+  );
+
+/** Saved views: named filter + display presets, persisted
+ *  server-side (C9T2 project scope, C113T1 workspace scope). Mounted
+ *  in the project nav (via ProjectNav's `trailing` slot) on the list,
+ *  board, and spreadsheet pages, and beside the All work / PQL toggle
+ *  on MyWork. Views the owner shares with the scope (C10T1 project,
+ *  C113T1 workspace) render under a "Shared" section as read-only
+ *  rows; the share/unshare toggle is owner-only. */
 export default function SavedViewsMenu({
   projectId,
+  workspaceSlug,
   filters,
   display,
   onApplyDisplay,
@@ -80,6 +93,17 @@ export default function SavedViewsMenu({
   onViewApplied,
   detailMode = false,
 }: SavedViewsMenuProps) {
+  // Exactly one scope prop is present (the union enforces it); the
+  // workspace form is checked first so a workspace slug can never be
+  // mistaken for a project UUID.
+  const scope: SavedViewScope =
+    workspaceSlug !== undefined
+      ? { workspaceSlug }
+      : { projectId: projectId ?? "" };
+  // Sharing copy adapts to the scope (C113T1): "shared with the
+  // workspace" in workspace scope, "shared with the project" in
+  // project scope. No other copy changes.
+  const scopeLabel = workspaceSlug !== undefined ? "workspace" : "project";
   const {
     views,
     ownViews,
@@ -92,7 +116,7 @@ export default function SavedViewsMenu({
     deleteView,
     setDefaultView,
     setViewShared,
-  } = useSavedViews(projectId);
+  } = useSavedViews(scope);
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -458,8 +482,8 @@ export default function SavedViewsMenu({
                     className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
                     title={
                       view.shared
-                        ? `Stop sharing “${view.name}” with the project`
-                        : `Share “${view.name}” with the project`
+                        ? `Stop sharing “${view.name}” with the ${scopeLabel}`
+                        : `Share “${view.name}” with the ${scopeLabel}`
                     }
                     onClick={() => handleToggleShared(view)}
                   >
