@@ -6,6 +6,8 @@ import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { usePeekParam } from "../components/issue/usePeek";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { IssueChip } from "../components/calendar/IssueChip";
@@ -20,13 +22,15 @@ import {
 } from "../components/calendar/DroppableUnscheduledStrip";
 import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
 import { api, ApiError } from "../lib/api";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError } from "../lib/pql";
 import {
   createFeedToken,
   fetchFeedTokenStatus,
   projectFeedURL,
 } from "../lib/calendarFeed";
 import { resolveScheduleDrop, resolveUnscheduleDrop } from "../lib/calendar-dnd";
-import type { Issue, IssueListResult, IssueState, Workspace } from "../lib/types";
+import type { Issue, IssueListResult, IssueState, Project, Workspace } from "../lib/types";
 import {
   bucketIssuesByDay,
   dayKey,
@@ -208,6 +212,20 @@ export default function Calendar() {
   // query and the already-cached unfiltered window sets return.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C110T1: same ["project", slug, identifier] query Issues/Board use
+  // — the detail-mode SavedViewsMenu needs a project UUID, and the
+  // shared key is cache-warm whenever the user came from another
+  // project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(base),
+  });
+  // C110T1: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled.
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlActive = pqlMode && appliedQuery.trim() !== "";
   const pqlDueQuery = useQuery({
     queryKey: ["calendar", slug, identifier, "due-pql", start, appliedQuery],
@@ -265,6 +283,31 @@ export default function Calendar() {
     // window sets (already cached) are restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+  // C110T1: applying a saved PQL view from the detail-mode menu.
+  // Probe FIRST, then enter PQL mode: the probe commits appliedQuery
+  // while still in unfiltered mode, so the editor mounts seeded with
+  // the view's query (C107 key lesson). The window anchor
+  // (month/week navigation state) is NEVER touched by a view apply:
+  // a saved query ANDs with the current window (C109 semantics), it
+  // never moves it. A saved view whose PQL names dates outside the
+  // current window therefore shows an empty view until the user
+  // moves the window — that is the honest AND, not a bug, so do
+  // not "fix" this into a window jump.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
   // While a committed PQL query is still loading, keep showing the
   // unfiltered window sets rather than blanking — the filtered sets
@@ -660,6 +703,22 @@ export default function Calendar() {
               PQL
             </button>
           </div>
+          {/* C110T1: detail-mode SavedViewsMenu beside the toggle
+              (CycleDetail/EpicDetail detail toolbar verbatim).
+              Detail mode guarantees no URL writes and no default
+              auto-apply, so the page settles PQL state through
+              onViewApplied only — and a view apply never moves the
+              window anchor (see handleSavedViewApplied). */}
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+            detailMode
+          />
           <button
             type="button"
             onClick={copyICalURL}
@@ -674,19 +733,27 @@ export default function Calendar() {
           </span>
         </div>
 
+        {savedViewError && (
+          <Alert variant="destructive" className="mb-2">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
+
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so without this a re-apply while
           // already in PQL mode would leave the editor showing the
           // previous draft instead of the applied query (C107
-          // lesson). showSaveHint={false}: no Views save path on
-          // this page yet (Board precedent).
+          // lesson). showSaveHint={true}: the detail-mode Views
+          // menu beside the toggle is now the save path (C108T1
+          // corrected hint text).
           <PqlEditor
             key={appliedQuery}
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
             onClear={() => setAppliedQuery("")}
-            showSaveHint={false}
+            showSaveHint={true}
+            saveHintText="To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened."
           />
         )}
 

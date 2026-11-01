@@ -17,6 +17,33 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Calendar from "./Calendar";
 import { api, ApiError } from "../lib/api";
+
+// C110T1 fix-up: Calendar now renders the detail-mode SavedViewsMenu
+// → useSavedViews/useAuth; mock the hook (EpicDetailPql pattern) so
+// these pre-menu tests render the menu's empty state untouched.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
+vi.mock("../components/issue/useSavedViews", () => ({
+  useSavedViews: vi.fn(),
+}));
+import { useSavedViews } from "../components/issue/useSavedViews";
+const mockUseSavedViews = vi.mocked(useSavedViews);
+function emptyViews() {
+  mockUseSavedViews.mockReturnValue({
+    views: [],
+    ownViews: [],
+    sharedViews: [],
+    viewsLoading: false,
+    viewsReady: true,
+    viewsError: false,
+    createView: vi.fn(),
+    renameView: vi.fn(),
+    deleteView: vi.fn(),
+    setDefaultView: vi.fn(),
+    setViewShared: vi.fn(),
+  } as ReturnType<typeof useSavedViews>);
+}
 import { dayKey, firstOfMonth, shiftMonth } from "../lib/calendar";
 import type { Issue } from "../lib/types";
 import {
@@ -162,6 +189,7 @@ function editorValue(): string {
 beforeEach(() => {
   stubMatchMedia(false);
   localStorage.clear();
+  emptyViews();
 });
 
 afterEach(() => {
@@ -300,11 +328,15 @@ describe("calendar PQL mode (C109T1)", () => {
     expect(editorValue()).toBe("priority = High");
   });
 
-  it("editor passes no Views save hint (no save path on this page)", async () => {
+  it("editor shows the corrected save hint now that the menu is the save path", async () => {
     renderPage();
     await waitForInitial();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
     await screen.findByLabelText("PQL query");
-    expect(screen.queryByText(/Save current view/)).toBeNull();
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeTruthy();
   });
 });

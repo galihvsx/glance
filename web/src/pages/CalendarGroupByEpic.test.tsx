@@ -6,6 +6,33 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Calendar from "./Calendar";
 import { dayKey } from "../lib/calendar";
+
+// C110T1 fix-up: Calendar now renders the detail-mode SavedViewsMenu
+// → useSavedViews/useAuth; mock the hook (EpicDetailPql pattern) so
+// these pre-menu tests render the menu's empty state untouched.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
+vi.mock("../components/issue/useSavedViews", () => ({
+  useSavedViews: vi.fn(),
+}));
+import { useSavedViews } from "../components/issue/useSavedViews";
+const mockUseSavedViews = vi.mocked(useSavedViews);
+function emptyViews() {
+  mockUseSavedViews.mockReturnValue({
+    views: [],
+    ownViews: [],
+    sharedViews: [],
+    viewsLoading: false,
+    viewsReady: true,
+    viewsError: false,
+    createView: vi.fn(),
+    renameView: vi.fn(),
+    deleteView: vi.fn(),
+    setDefaultView: vi.fn(),
+    setViewShared: vi.fn(),
+  } as ReturnType<typeof useSavedViews>);
+}
 import type { EpicRef, Issue, IssueState } from "../lib/types";
 
 // jsdom has no PointerEvent — the dnd-kit sensors need isPrimary/clientX.
@@ -245,6 +272,7 @@ function laneKeys() {
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
+  emptyViews();
   mockCal.role = 15;
   mockCal.dated = dated;
   mockCal.undated = undated;
