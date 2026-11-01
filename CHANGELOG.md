@@ -5,6 +5,33 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Empty-means-all project scope for `pql_table` (cycle 102)**
+
+- `pql_table` dashboard widgets no longer require a pinned project
+  list: an empty `project_ids` now means every non-archived
+  project of the workspace the viewer can reach — the same rule
+  the other row-list widgets already used. Previously the empty
+  scope was a 400 (the cycle 101 pin); a widget spanning all
+  projects had to enumerate every project by hand and be re-edited
+  whenever a project was added. Compute now dispatches on the
+  resolved scope: no live projects → an empty widget (total 0,
+  not an error), one → the cycle 100 single-project path
+  verbatim, several → the cycle 101 UNION ALL path with global
+  ORDER BY and LIMIT as a total cap, on every page and in the
+  CSV export. A project the viewer cannot access contributes zero
+  rows, not an error, and a name that no longer resolves in any
+  resolved project still surfaces as a per-widget error naming
+  that project, with the rest of the dashboard still loading.
+  Existing pinned widgets behave exactly as before; only the
+  previously-rejected empty config becomes valid.
+- The widget dialog's PQL panel now shows "All projects" when no
+  project is picked, and save requires only a non-blank query
+  (the "select at least one project" block is gone). The card is
+  unchanged: rows already carry the `project` column, and the
+  cycle 100 error state already renders the data route's message
+  verbatim. AI text-to-PQL and the PQL-mode staleness edge stay
+  deferred.
+
 **Multi-project PQL widgets (cycle 101)**
 
 - `pql_table` dashboard widgets now accept one or more projects
