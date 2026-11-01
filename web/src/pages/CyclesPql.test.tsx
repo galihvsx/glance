@@ -236,3 +236,137 @@ describe("cycle detail PQL mode (C95T1)", () => {
     expect(screen.getByLabelText("PQL query")).toBeTruthy();
   });
 });
+
+describe("cycle detail PQL refetch on membership mutation (C103T0)", () => {
+  const issueC = makeIssue("i-c", "ENG-3", "New urgent task");
+
+  function renderPageC103() {
+    // Stateful mock: membership and the PQL-filtered result change
+    // only after a membership mutation, so a refetch is observable
+    // as a new PQL GET carrying the same query text plus a new list.
+    let added = false;
+    let ended = false;
+    const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+      if (path === "/api/v1/workspaces/acme")
+        return Promise.resolve({ role: 15 });
+      if (path === `${BASE}/states`) return Promise.resolve({ states: [] });
+      if (path === `${BASE}/cycles`)
+        return Promise.resolve({ cycles: [cycle] });
+      if (path.includes("/issues")) {
+        const qs = new URLSearchParams(path.split("?")[1] ?? "");
+        if (qs.get("pql") !== null) {
+          if (ended) return Promise.resolve({ results: [], next_cursor: null });
+          return Promise.resolve({
+            results: added ? [issueB, issueC] : [issueB],
+            next_cursor: null,
+          });
+        }
+        if (qs.get("cycle") !== null) {
+          return Promise.resolve({
+            results: ended
+              ? [issueA]
+              : added
+                ? [issueA, issueB, issueC]
+                : [issueA, issueB],
+            next_cursor: null,
+          });
+        }
+        // Board-issues fetch for the add dialog: all project issues.
+        return Promise.resolve({
+          results: [issueA, issueB, issueC],
+          next_cursor: null,
+        });
+      }
+      if (path.includes("/burndown"))
+        return Promise.resolve({ total_scope: 0, days: [] });
+      return Promise.reject(new Error(`unexpected GET ${path}`));
+    });
+    const post = vi.spyOn(api, "post").mockImplementation((path: string) => {
+      if (path === `${BASE}/cycles/cyc-1/issues`) {
+        added = true;
+        return Promise.resolve({});
+      }
+      if (path === `${BASE}/cycles/cyc-1/end`) {
+        ended = true;
+        return Promise.resolve({ ...cycle, status: "completed" });
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const qc = makeQueryClient();
+    render(
+      <MemoryRouter initialEntries={["/w/acme/p/ENG/cycles"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/w/:slug/p/:identifier/cycles" element={<Cycles />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return { get, post };
+  }
+
+  function pqlCalls(get: ReturnType<typeof renderPageC103>["get"]) {
+    return issueCalls(get).filter((qs) => qs.get("pql") !== null);
+  }
+
+  it("adding issues re-runs the same committed PQL query and updates the filtered list", async () => {
+    const { get } = renderPageC103();
+    await openDetail();
+    await applyPql("priority = High");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+    expect(screen.queryByText("New urgent task")).toBeNull();
+    const before = pqlCalls(get).length;
+    expect(before).toBeGreaterThan(0);
+
+    // Add issueC via the dialog (ENG-1/ENG-2 are already in-cycle).
+    fireEvent.click(screen.getByRole("button", { name: "Add issues" }));
+    const checkbox = await screen.findByRole("checkbox", { name: /ENG-3/ });
+    fireEvent.click(checkbox);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add 1 issue" }),
+    );
+
+    // Same query text, re-fetched: the newly added matching issue appears.
+    await screen.findByText("New urgent task");
+    const after = pqlCalls(get);
+    expect(after.length).toBeGreaterThan(before);
+    for (const qs of after) {
+      expect(qs.get("cycle")).toBe("cyc-1");
+      expect(qs.get("pql")).toBe("priority = High");
+    }
+    // Still in PQL mode: the non-matching membership issue stays hidden.
+    expect(screen.queryByText("Fix login redirect")).toBeNull();
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+
+  it("ending the cycle re-runs the same committed PQL query and updates the filtered list", async () => {
+    const { get } = renderPageC103();
+    await openDetail();
+    await applyPql("priority = High");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    const before = pqlCalls(get).length;
+    expect(before).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "End now" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "End cycle" }),
+    );
+
+    // Rollover empties the filtered result; the refetch surfaces it
+    // in place without leaving PQL mode.
+    await screen.findByText("No issues match this PQL query");
+    const after = pqlCalls(get);
+    expect(after.length).toBeGreaterThan(before);
+    for (const qs of after) {
+      expect(qs.get("cycle")).toBe("cyc-1");
+      expect(qs.get("pql")).toBe("priority = High");
+    }
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+});
+

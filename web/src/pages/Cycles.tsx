@@ -328,6 +328,14 @@ export default function Cycles() {
       void queryClient.invalidateQueries({
         queryKey: ["cycle-issues", slug, identifier, selectedId],
       });
+      // C103T0: the displayed cycle's PQL-filtered list is a separate
+      // query key — prefix-invalidate it too (Board pattern), so a
+      // committed PQL query re-runs in place after membership
+      // changes. Harmless when PQL mode is inactive: that query is
+      // disabled and only refetches on next enable.
+      void queryClient.invalidateQueries({
+        queryKey: ["cycle-issues-pql", slug, identifier, selectedId],
+      });
       void queryClient.invalidateQueries({ queryKey: cyclesKey });
     },
     onError: (e) => {
@@ -366,6 +374,12 @@ export default function Cycles() {
       void queryClient.invalidateQueries({ queryKey: cyclesKey });
       void queryClient.invalidateQueries({
         queryKey: ["cycle-issues", slug, identifier, id],
+      });
+      // C103T0: ending a cycle changes membership via rollover, so
+      // the displayed cycle's PQL-filtered list must re-run too
+      // (same Board-pattern prefix invalidation as addIssues).
+      void queryClient.invalidateQueries({
+        queryKey: ["cycle-issues-pql", slug, identifier, id],
       });
       void queryClient.invalidateQueries({
         queryKey: ["cycle-burndown", slug, identifier, id],
