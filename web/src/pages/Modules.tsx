@@ -990,7 +990,8 @@ function ModuleDetail({
               appliedQuery={appliedQuery}
               onApply={handlePqlApply}
               onClear={handlePqlClear}
-              showSaveHint={false}
+              showSaveHint={true}
+              saveHintText="To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened."
             />
           </div>
         )}

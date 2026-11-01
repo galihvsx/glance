@@ -1,21 +1,32 @@
 // @vitest-environment jsdom
 // PqlEditor save-hint prop (C96T1): the "Views → Save current view"
 // hint is shown by default (the Issues page, where that save path
-// exists) and hidden when showSaveHint is false (Board, cycle
-// detail, module detail — no Views save path for PQL there).
-// Hiding the hint must not remove anything else from the editor.
+// exists) and hidden when showSaveHint is false (Board — its Views
+// menu saves visual filters only). Hiding the hint must not remove
+// anything else from the editor.
+// C108T1: saveHintText customizes the hint wording (cycle/module
+// detail editors point at the All issues / PQL toggle, not the page
+// header); the default stays the Issues-page wording byte-for-byte.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import PqlEditor from "./PqlEditor";
 
-function renderEditor(showSaveHint?: boolean) {
+const DEFAULT_HINT =
+  "To save this query, use Views → Save current view in the page header; it re-applies when the view is opened.";
+const DETAIL_HINT =
+  "To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened.";
+
+function renderEditor(opts: {
+  showSaveHint?: boolean;
+  saveHintText?: string;
+} = {}) {
   render(
     <PqlEditor
       appliedQuery=""
       onApply={vi.fn().mockResolvedValue(undefined)}
       onClear={vi.fn()}
-      {...(showSaveHint === undefined ? {} : { showSaveHint })}
+      {...opts}
     />,
   );
 }
@@ -33,14 +44,14 @@ describe("PqlEditor save hint (C96T1)", () => {
   });
 
   it("shows the save hint when showSaveHint is true", () => {
-    renderEditor(true);
+    renderEditor({ showSaveHint: true });
     expect(
       screen.getByText(/To save this query, use Views/),
     ).toBeInTheDocument();
   });
 
   it("hides the save hint when showSaveHint is false, keeping the rest of the editor", () => {
-    renderEditor(false);
+    renderEditor({ showSaveHint: false });
     expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
     // Everything else survives: editor, Apply/Clear, cheat-sheet.
     expect(screen.getByLabelText("PQL query")).toBeInTheDocument();
@@ -51,5 +62,23 @@ describe("PqlEditor save hint (C96T1)", () => {
       screen.getByRole("button", { name: "Clear" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Fields & operators")).toBeInTheDocument();
+  });
+});
+
+describe("PqlEditor custom save hint (C108T1)", () => {
+  it("renders the default text byte-for-byte when no hint is passed", () => {
+    renderEditor();
+    expect(screen.getByText(DEFAULT_HINT)).toBeInTheDocument();
+  });
+
+  it("renders custom hint text when passed", () => {
+    renderEditor({ showSaveHint: true, saveHintText: DETAIL_HINT });
+    expect(screen.getByText(DETAIL_HINT)).toBeInTheDocument();
+    expect(screen.queryByText(DEFAULT_HINT)).toBeNull();
+  });
+
+  it("hides a custom hint when showSaveHint is false", () => {
+    renderEditor({ showSaveHint: false, saveHintText: DETAIL_HINT });
+    expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
   });
 });

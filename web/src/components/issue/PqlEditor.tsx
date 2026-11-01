@@ -30,11 +30,20 @@ interface PqlEditorProps {
    * Show the "Views → Save current view" hint. Default true (the
    * Issues page, where that save path exists). Pass false on
    * surfaces with no Views save path for PQL — Board (its Views
-   * menu saves visual filters only), cycle detail, and module
-   * detail (no Views menu at all) — so the hint is not wrong
-   * there (C96T1).
+   * menu saves visual filters only) — so the hint is not wrong
+   * there (C96T1). Cycle and module detail pages pass true with
+   * a corrected saveHintText (C108T1): their detail-mode Views
+   * menu sits next to the All issues / PQL toggle, not in the
+   * page header, so the default wording would be wrong there.
    */
   showSaveHint?: boolean;
+  /**
+   * Text of the save hint. Defaults to the Issues-page wording
+   * (its Views menu IS in the page header), byte-for-byte, so
+   * callers that pass nothing are untouched. Detail pages pass
+   * the corrected wording pointing at the toggle instead.
+   */
+  saveHintText?: string;
 }
 
 export default function PqlEditor({
@@ -43,6 +52,7 @@ export default function PqlEditor({
   onClear,
   onApplied,
   showSaveHint = true,
+  saveHintText = "To save this query, use Views → Save current view in the page header; it re-applies when the view is opened.",
 }: PqlEditorProps) {
   const [draft, setDraft] = useState(appliedQuery);
   const [error, setError] = useState<string | null>(null);
@@ -115,10 +125,7 @@ export default function PqlEditor({
           </span>
         </div>
         {showSaveHint && (
-          <p className="text-xs text-muted-foreground">
-            To save this query, use Views → Save current view in the page
-            header; it re-applies when the view is opened.
-          </p>
+          <p className="text-xs text-muted-foreground">{saveHintText}</p>
         )}
       </div>
 
