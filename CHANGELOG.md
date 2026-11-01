@@ -5,6 +5,24 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Saved views on the date views (cycle 110)**
+
+- Calendar, Gantt, and Roadmap now have the detail-mode
+  Views menu beside the All-issues / PQL toggle (the
+  cycle/module/epic detail toolbar, copied verbatim):
+  applying a saved view sets the applied PQL query and
+  enters PQL mode through each page's probe-first apply,
+  and the editors now show the corrected save hint ("use
+  Views → Save current view next to the toggle") instead
+  of hiding it. Applying a view never moves the window —
+  the saved query ANDs with the current window (C109
+  semantics), so a view naming dates outside the window
+  honestly shows empty until the window moves. Roadmap
+  has no window; its buckets and Unscheduled lane simply
+  recompute from the filtered set. A failed view probe
+  surfaces in a detail-level alert with the displayed set
+  untouched.
+
 **PQL mode on the date views (cycle 109)**
 
 - Calendar, Gantt, and Roadmap now have the All-issues / PQL
