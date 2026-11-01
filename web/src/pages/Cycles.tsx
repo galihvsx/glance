@@ -975,7 +975,12 @@ function CycleDetail({
           </Alert>
         )}
         {pqlMode && (
+          // Keyed by the applied query: PqlEditor's draft is
+          // initial-value-only, so without this a view applied
+          // from the menu would leave the editor showing the
+          // previous draft instead of the applied query.
           <PqlEditor
+            key={appliedQuery}
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
             onClear={() => {

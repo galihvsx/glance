@@ -100,6 +100,12 @@ function renderPage(opts: { views?: IssueViewRow[] } = {}) {
             }),
           );
         }
+        // Distinct scoped result for a second saved view, so a
+        // re-apply while already in PQL mode is observable in the
+        // list as well as in the editor draft.
+        if (pql.includes("Low")) {
+          return Promise.resolve({ results: [issueA], next_cursor: null });
+        }
         return Promise.resolve({ results: [issueB], next_cursor: null });
       }
       return Promise.resolve({
@@ -514,5 +520,41 @@ describe("cycle detail saved views (C107T1)", () => {
     expect(screen.getByText("Shared high")).toBeTruthy();
     expect(screen.queryByText("My bugs")).toBeNull();
     expect(screen.queryByText("Shared bugs")).toBeNull();
+  });
+
+  it("applying a second saved view while already in PQL mode re-seeds the editor", async () => {
+    renderPage({
+      views: [
+        makeViewRow("High priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = High",
+        }),
+        makeViewRow("Low priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = Low",
+        }),
+      ],
+    });
+    await openDetail();
+    await applyViewNamed("High priority");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = High");
+    // Already in PQL mode: the editor is mounted, so without the
+    // applied-query key its draft would stay on view A's query.
+    await applyViewNamed("Low priority");
+    // While the re-scoped query loads, the list falls back to the
+    // full membership list (both issues) — wait for the refetch to
+    // land, not just for the new result to appear.
+    await waitFor(() => {
+      expect(screen.queryByText("Urgent checkout bug")).toBeNull();
+    });
+    expect(screen.getByText("Fix login redirect")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = Low");
   });
 });
