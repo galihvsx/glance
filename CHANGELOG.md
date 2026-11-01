@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL mode on MyWork — workspace-scoped PQL (cycle 112)**
+
+- MyWork — the last issue list without PQL mode, and the
+  first workspace-scoped one — now has the All-work / PQL
+  toggle beside the Assigned / Created / Watched tabs,
+  the probe-first PQL editor from the detail-page
+  pattern, and `pql=` on the `/my-issues` endpoint. A
+  query ANDs with the tab's filter predicate, and
+  switching tabs in PQL mode re-runs the same query
+  under the new filter. Per-project names resolve
+  workspace-wide with multi-match set semantics: `state
+  = "Todo"` matches the Todo states of every accessible
+  project in the workspace (never an ambiguity error),
+  parent keys resolve by project identifier across the
+  workspace, and names existing only in a private
+  project the actor cannot reach resolve to unknown
+  (400) rather than leaking taxonomy. Saved views on
+  MyWork are the known next step — `issue_views` is
+  project-scoped storage, so the editor ships with the
+  staged "no Views save path yet" hint until the views
+  cycle wires the menu.
+
 **PQL mode + saved views on Archived and Drafts (cycle 111)**
 
 - Archived and Drafts — the last project-scoped issue lists
