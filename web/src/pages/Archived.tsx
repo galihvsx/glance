@@ -18,10 +18,13 @@ import {
   isArchived,
   unarchiveIssue,
 } from "../lib/archived";
-import type { IssueListResult } from "../lib/types";
+import { formatPqlError } from "../lib/pql";
+import type { IssueListResult, Project } from "../lib/types";
 import { relativeTime } from "../lib/relativeTime";
 import PageHeader from "../components/shell/PageHeader";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import { EMPTY_FILTERS } from "../lib/filters";
 import EmptyState from "../components/personal/EmptyState";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -56,8 +59,22 @@ export default function Archived() {
   // The PQL-mode list is a single page (per_page=100), matching the
   // unfiltered archived fetch — no cursor loop, unlike Cycles.
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+  // C111T3: same ["project", slug, identifier] query Cycles uses —
+  // the detail-mode SavedViewsMenu below needs a project UUID, and
+  // the shared key is cache-warm whenever the user came from
+  // another project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(base),
+  });
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C111T3: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled (Cycles C107T1).
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlArchivedQuery = useQuery({
     queryKey: ["archived-pql", slug, identifier, appliedQuery],
     enabled: pqlMode && appliedQuery.trim() !== "",
@@ -90,6 +107,7 @@ export default function Archived() {
     });
     await api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
     setAppliedQuery(q);
+    setSavedViewError(null);
   }
   function handlePqlModeChange(mode: "all" | "pql") {
     if (mode === "pql") {
@@ -100,6 +118,38 @@ export default function Archived() {
     // archived list (already cached) is restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+  // C111T3: applying a saved PQL view from the detail-mode menu,
+  // copying the Cycles shape verbatim. Probe FIRST, then enter PQL
+  // mode: the probe commits appliedQuery while still in all-archived
+  // mode (displayed is unaffected until pqlMode flips), so the
+  // editor mounts seeded with the applied query. A 400 leaves
+  // appliedQuery untouched — the list never changes — and the error
+  // surfaces in the detail-level alert (the editor cannot show it:
+  // it mounts fresh with an empty draft). The menu ignores this
+  // handler's return value, so the catch here is load-bearing:
+  // without it the rejected probe would be an unhandled rejection.
+  // Null is unreachable from the detail-mode menu (PQL views only)
+  // and mirrors Cycles: leave PQL mode.
+  // A view apply never shows working-set issues: it goes through
+  // handlePqlApply above, which already carries archived=1 plus the
+  // client-side archived_at != null filter on results — the
+  // archived-only filter applies to view applies exactly as to
+  // typed queries.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
   // While a committed PQL query is still loading, keep showing the
   // unfiltered archived list rather than blanking it — the filtered
@@ -148,9 +198,11 @@ export default function Archived() {
       />
       <div className="mx-auto w-full max-w-5xl space-y-4 p-4">
         {/* C111T1: All-archived / PQL toggle + editor, above the list
-            (Cycles-detail toggle pattern). No SavedViewsMenu here:
-            there is no Views save path on this page yet — wave 2
-            wires the menu and flips the editor's save hint. */}
+            (Cycles-detail toggle pattern). C111T3: detail toolbar —
+            the toggle plus the detail-mode SavedViewsMenu beside it.
+            Detail mode guarantees no URL writes and no default
+            auto-apply, so the page settles PQL state through
+            onViewApplied only, and lists PQL views only. */}
         <div className="flex items-center gap-2">
           <div
             role="group"
@@ -178,7 +230,22 @@ export default function Archived() {
               PQL
             </button>
           </div>
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            detailMode
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+          />
         </div>
+        {savedViewError && (
+          <Alert variant="destructive">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so the editor re-seeds on re-apply.
@@ -188,13 +255,13 @@ export default function Archived() {
             onApply={handlePqlApply}
             onClear={() => {
               setAppliedQuery("");
+              setSavedViewError(null);
             }}
-            showSaveHint={false}
-            // No Views save path on this page yet (wave 2 wires the
-            // menu and flips showSaveHint to true with the corrected
-            // C108T1 hint text). The text is staged here so the flip
-            // is a boolean change, not a wording decision.
-            saveHintText="There is no Views save path for this query on this page yet."
+            showSaveHint={true}
+            // C111T3: the detail-mode menu above is now the save
+            // path — the corrected C108T1 hint text, with this
+            // page's toggle name (All archived / PQL).
+            saveHintText="To save this query, use Views → Save current view next to the All archived / PQL toggle; it re-applies when the view is opened."
           />
         )}
 

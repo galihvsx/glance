@@ -26,6 +26,35 @@ import {
   stubMatchMedia,
 } from "../components/shell/test-utils";
 
+// C111T3 fix-up: Archived now renders the detail-mode SavedViewsMenu
+// → useSavedViews/useAuth; mock the hook (Calendar C110T1 pattern)
+// so these pre-menu tests render the menu's empty state untouched.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
+vi.mock("../components/issue/useSavedViews", () => ({
+  useSavedViews: vi.fn(),
+}));
+import { useSavedViews } from "../components/issue/useSavedViews";
+const mockUseSavedViews = vi.mocked(useSavedViews);
+function emptyViews() {
+  mockUseSavedViews.mockReturnValue({
+    views: [],
+    ownViews: [],
+    sharedViews: [],
+    viewsLoading: false,
+    viewsReady: true,
+    viewsError: false,
+    createView: vi.fn(),
+    renameView: vi.fn(),
+    deleteView: vi.fn(),
+    setDefaultView: vi.fn(),
+    setViewShared: vi.fn(),
+  } as ReturnType<typeof useSavedViews>);
+}
+
+const BASE = "/api/v1/workspaces/acme/projects/ENG";
+
 function makeIssue(
   id: string,
   displayId: string,
@@ -78,6 +107,8 @@ function renderPage() {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces")
       return Promise.resolve({ workspaces: [{ slug: "acme", name: "Acme" }] });
+    // Shared ["project", slug, identifier] query feeding the menu.
+    if (path === BASE) return Promise.resolve({ id: "p-eng" });
     if (path.includes("/issues")) {
       const qs = new URLSearchParams(path.split("?")[1] ?? "");
       const pql = qs.get("pql");
@@ -156,6 +187,7 @@ function editorValue(): string {
 }
 
 beforeEach(() => {
+  emptyViews();
   stubMatchMedia(false);
   localStorage.clear();
 });
@@ -285,11 +317,15 @@ describe("archived PQL mode (C111T1)", () => {
     expect(pqlCallsAfter).toBeGreaterThan(pqlCallsBefore);
   });
 
-  it("editor hides the save hint: no Views save path on this page yet", async () => {
+  it("editor shows the corrected save hint now that the menu is the save path (C111T3 supersedes the staged C111T1 text)", async () => {
     renderPage();
     await waitForInitial();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
     await screen.findByLabelText("PQL query");
-    expect(screen.queryByText(/Save current view/)).toBeNull();
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All archived / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeTruthy();
   });
 });
