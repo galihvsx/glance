@@ -38,6 +38,9 @@ import { relativeTime } from "../lib/relativeTime";
 import { stateDotClass } from "../lib/stateDot";
 import PageHeader from "../components/shell/PageHeader";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError } from "../lib/pql";
 import PriorityBars from "../components/issue/PriorityBars";
 import EmptyState from "../components/personal/EmptyState";
 import { SectionBar, StatBand } from "../components/personal/SectionBar";
@@ -58,6 +61,12 @@ export default function MyWork() {
   // appliedQuery) restores the cached unfiltered set for the tab.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C113: a saved view whose query fails its probe has no editor
+  // inline error to land in (the editor only reports failures from
+  // its own Apply button, and it mounts fresh for a menu apply).
+  // The failure surfaces in the detail-level alert below, mirroring
+  // the Cycles detail shape.
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
 
   const itemsQuery = useQuery({
     queryKey: [...myWorkKeys(slug).all, filter, appliedQuery],
@@ -91,6 +100,33 @@ export default function MyWork() {
     // immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+
+  // C113: applying a saved view from the detail-mode menu, in the
+  // Cycles handleSavedViewApplied idiom. Probe FIRST, then enter PQL
+  // mode: a 400 leaves appliedQuery untouched — the list never
+  // changes — and the error surfaces in the detail-level alert (the
+  // editor cannot show it: it mounts fresh with the applied query).
+  // The menu ignores this handler's return value, so the catch here
+  // is load-bearing: without it the rejected probe would be an
+  // unhandled rejection. Null leaves PQL mode (mirroring Cycles);
+  // unreachable from the detail-mode menu (PQL views only), which
+  // always passes a non-empty query. The filter tab is deliberately
+  // untouched here — see TAB ORTHOGONALITY above.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
 
   const items = itemsQuery.data ?? [];
@@ -118,11 +154,16 @@ export default function MyWork() {
             (Cycles-detail toggle pattern, adapted labels: this page
             is "My work", so the verbatim "All issues" label from
             detail pages would reference a list that does not exist
-            here). No Views menu here: saved views on MyWork are the
-            next cycle (project-scoped issue_views storage is a
-            separate design question) — the editor below carries the
-            staged "no save path yet" hint text so the views cycle
-            flips it with a boolean change, not a wording decision. */}
+            here). C113: the detail-mode SavedViewsMenu beside the
+            toggle (PQL views only, no URL writes, no default
+            auto-apply — the C107 detail shape verbatim).
+            TAB ORTHOGONALITY (C112 precedent, C113 decision):
+            the filter tab is orthogonal scope, not view state. A
+            saved MyWork view stores the PQL query only, so applying
+            a view NEVER switches the Assigned / Created / Watched
+            tab: the tab stays where the user left it and the query
+            re-runs under it (the items query key includes filter +
+            appliedQuery). Do not "fix" this into tab-switching. */}
         <div className="flex items-center gap-2">
           <Tabs value={filter} onValueChange={(v) => setFilter(v as MyWorkFilter)}>
             <TabsList>
@@ -159,7 +200,22 @@ export default function MyWork() {
               PQL
             </button>
           </div>
+          <SavedViewsMenu
+            workspaceSlug={slug}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+            detailMode
+          />
         </div>
+        {savedViewError && (
+          <Alert variant="destructive">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so the editor re-seeds on re-apply.
@@ -169,14 +225,14 @@ export default function MyWork() {
             onApply={handlePqlApply}
             onClear={() => {
               setAppliedQuery("");
+              setSavedViewError(null);
             }}
-            showSaveHint={false}
-            // No Views save path on this page yet (the views cycle
-            // wires the menu and flips showSaveHint to true with
-            // the corrected C108T1 hint text). The text is staged
-            // here so the flip is a boolean change, not a wording
-            // decision.
-            saveHintText="There is no Views save path for this query on this page yet."
+            showSaveHint={true}
+            // C113: detail-shape hint wording with the adapted
+            // label ("All work", not "All issues" — this page is
+            // "My work"). The staged "no Views save path" text is
+            // deleted, not kept as a fallback.
+            saveHintText="To save this query, use Views → Save current view next to the All work / PQL toggle; it re-applies when the view is opened."
           />
         )}
 

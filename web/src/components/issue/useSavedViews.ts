@@ -8,21 +8,24 @@ import {
 } from "./useDisplaySettings";
 import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
 import {
+  isWorkspaceScope,
+  scopeId,
   useCreateIssueView,
   useDeleteIssueView,
   useIssueViews,
   useUpdateIssueView,
   type IssueViewRow,
+  type SavedViewScope,
 } from "../../lib/savedViews";
 import { toast } from "../ui/toast";
 
 import { useAuth } from "../../lib/auth";
 
-/** A named per-project saved view: an IssueFilters object plus the
- *  display preset that was active when it was saved. Persisted
- *  server-side (C9T2) so views roam across devices. A view may be
- *  shared with the project by its owner (C10T1): shared rows are
- *  read-only for everyone but the owner. */
+/** A named saved view: an IssueFilters object plus the display preset
+ *  that was active when it was saved. Persisted server-side (C9T2)
+ *  so views roam across devices. A view may be shared with the
+ *  project (C10T1) or workspace (C113T1) by its owner: shared rows
+ *  are read-only for everyone but the owner. */
 export interface SavedView {
   id: string;
   name: string;
@@ -31,7 +34,7 @@ export interface SavedView {
   /** Null when saved from a page without display settings (spreadsheet). */
   display: DisplaySettings | null;
   isDefault: boolean;
-  /** True once the owner shares the view with the project. */
+  /** True once the owner shares the view with the project or workspace. */
   shared: boolean;
   /** Owner user id — owner-only actions gate on this. */
   ownerId: string;
@@ -121,20 +124,35 @@ function toSavedView(row: IssueViewRow): SavedView | null {
   return sanitizeView(row);
 }
 
-/** Per-project saved views, persisted to the backend (C9T2).
+/** Saved views in one scope, persisted to the backend (C9T2, C113T1).
+ *  The argument is either a scope object — `{projectId}` or
+ *  `{workspaceSlug}` — or, for pre-C113 call sites, a bare project
+ *  UUID (identical to `{projectId}`). All list/save/rename/delete/
+ *  share/default logic is shared across scopes: there is deliberately
+ *  no workspace-only fork of this hook.
  *
  *  On API failure the hook shows an honest error toast — there is no
  *  silent fallback (the old localStorage path was dropped entirely).
  *  Validation behavior is kept from the localStorage implementation:
  *  blank names are rejected inline, the 50-view cap is enforced
  *  client-side, and duplicate names surface as the backend's 409. */
-export function useSavedViews(projectId: string) {
+export function useSavedViews(projectIdOrScope: string | SavedViewScope) {
+  // Normalize once: every check below keys on the scope identity
+  // (project UUID or workspace slug), never on the argument shape.
+  const scope: SavedViewScope =
+    typeof projectIdOrScope === "string"
+      ? { projectId: projectIdOrScope }
+      : projectIdOrScope;
+  const id = scopeId(scope);
+  // Stable scope-kind flag for callback deps: the scope literal itself
+  // is rebuilt every render, so it must never appear in a dep array.
+  const isWorkspace = isWorkspaceScope(scope);
   const { user, loading: authLoading } = useAuth();
   const currentUserId = user?.id ?? "";
-  const query = useIssueViews(projectId);
-  const createMutation = useCreateIssueView(projectId);
-  const updateMutation = useUpdateIssueView(projectId);
-  const deleteMutation = useDeleteIssueView(projectId);
+  const query = useIssueViews(scope);
+  const createMutation = useCreateIssueView(scope);
+  const updateMutation = useUpdateIssueView(scope);
+  const deleteMutation = useDeleteIssueView(scope);
 
   // Honest error toast on load failure — exactly once per failure, reset
   // when the query recovers.
@@ -165,7 +183,7 @@ export function useSavedViews(projectId: string) {
     () => views.filter((v) => v.ownerId === currentUserId),
     [views, currentUserId],
   );
-  /** Views shared by other project members — read-only for this user. */
+  /** Views shared by other scope members — read-only for this user. */
   const sharedViews = useMemo(
     () =>
       views.filter((v) => v.shared && v.ownerId !== currentUserId),
@@ -173,7 +191,7 @@ export function useSavedViews(projectId: string) {
   );
 
   /** Creates a view; returns it, or null when the name is blank or the
-   *  per-project cap is reached. Throws ApiError on request failure
+   *  per-scope cap is reached. Throws ApiError on request failure
    *  (409 = duplicate name) so the caller can show an honest error. */
   const createView = useCallback(
     async (
@@ -183,7 +201,12 @@ export function useSavedViews(projectId: string) {
     ): Promise<SavedView | null> => {
       const clean = name.trim().slice(0, MAX_NAME_LEN);
       if (!clean || views.length >= MAX_VIEWS) return null;
-      if (!projectId) throw new Error("project not loaded yet");
+      if (!id)
+        throw new Error(
+          isWorkspaceScope(scope)
+            ? "workspace not loaded yet"
+            : "project not loaded yet",
+        );
       const row = await createMutation.mutateAsync({
         name: clean,
         filters,
@@ -191,7 +214,7 @@ export function useSavedViews(projectId: string) {
       });
       return toSavedView(row);
     },
-    [views, projectId, createMutation],
+    [views, id, isWorkspace, createMutation],
   );
 
   /** Renames a view; returns false when the name is blank. Throws
@@ -201,27 +224,42 @@ export function useSavedViews(projectId: string) {
       const clean = name.trim().slice(0, MAX_NAME_LEN);
       if (!clean) return false;
       if (!views.some((v) => v.id === id)) return false;
-      if (!projectId) throw new Error("project not loaded yet");
+      if (!id)
+        throw new Error(
+          isWorkspaceScope(scope)
+            ? "workspace not loaded yet"
+            : "project not loaded yet",
+        );
       await updateMutation.mutateAsync({ viewId: id, patch: { name: clean } });
       return true;
     },
-    [views, projectId, updateMutation],
+    [views, id, isWorkspace, updateMutation],
   );
 
   /** Deletes a view. Throws ApiError on request failure. */
   const deleteView = useCallback(
     async (id: string): Promise<void> => {
-      if (!projectId) throw new Error("project not loaded yet");
+      if (!id)
+        throw new Error(
+          isWorkspaceScope(scope)
+            ? "workspace not loaded yet"
+            : "project not loaded yet",
+        );
       await deleteMutation.mutateAsync(id);
     },
-    [projectId, deleteMutation],
+    [id, isWorkspace, deleteMutation],
   );
 
   /** Sets (or clears, with null) the default view. Throws ApiError on
    *  request failure. */
   const setDefaultView = useCallback(
     async (id: string | null): Promise<void> => {
-      if (!projectId) throw new Error("project not loaded yet");
+      if (!id)
+        throw new Error(
+          isWorkspaceScope(scope)
+            ? "workspace not loaded yet"
+            : "project not loaded yet",
+        );
       if (id === null) {
         const current = views.find((v) => v.isDefault);
         if (!current) return;
@@ -236,7 +274,7 @@ export function useSavedViews(projectId: string) {
         patch: { is_default: true },
       });
     },
-    [views, projectId, updateMutation],
+    [views, id, isWorkspace, updateMutation],
   );
 
   /** Toggles project-wide sharing for an owned view (C10T1). Throws
@@ -244,35 +282,40 @@ export function useSavedViews(projectId: string) {
    *  show an honest error. */
   const setViewShared = useCallback(
     async (id: string, shared: boolean): Promise<void> => {
-      if (!projectId) throw new Error("project not loaded yet");
+      if (!id)
+        throw new Error(
+          isWorkspaceScope(scope)
+            ? "workspace not loaded yet"
+            : "project not loaded yet",
+        );
       if (!ownViews.some((v) => v.id === id))
         throw new Error("only the view owner can change sharing");
       await updateMutation.mutateAsync({ viewId: id, patch: { shared } });
     },
-    [ownViews, projectId, updateMutation],
+    [ownViews, id, isWorkspace, updateMutation],
   );
 
   return {
     views,
     /** Views owned by the current user (private or shared). */
     ownViews,
-    /** Views shared by other members — read-only for this user. */
+    /** Views shared by other scope members — read-only for this user. */
     sharedViews,
     // Gated on auth too: the own/shared split keys on the current user
     // id, so the menu must not render (or auto-apply a default) before
     // it resolves.
     viewsLoading: query.isLoading || authLoading,
     // C106T0 readiness signal: "not loading" is NOT "loaded". A disabled
-    // query (projectId === "", the normal first mount on every page
-    // before the project resolves) reports isLoading === false with
+    // query (scope id === "", the normal first mount on every page
+    // before the scope resolves) reports isLoading === false with
     // views === [], so viewsLoading alone cannot gate the default-view
     // effect — it would burn its once-flag on the empty first mount.
     // viewsReady is true only once the query has actually settled
-    // (success or error) for a real, non-empty projectId. On error the
+    // (success or error) for a real, non-empty scope id. On error the
     // effect must still not burn its flag (see viewsError), so a later
     // successful load can apply the default.
-    viewsReady: projectId !== "" && (query.isSuccess || query.isError),
-    /** True when the views fetch for this project failed. The hook
+    viewsReady: id !== "" && (query.isSuccess || query.isError),
+    /** True when the views fetch for this scope failed. The hook
      *  already toasts this honestly; the menu treats it as "not ready
      *  to decide", never as "no default exists". */
     viewsError: query.isError,

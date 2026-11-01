@@ -21,6 +21,13 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import MyWork from "./MyWork";
 import { api, ApiError } from "../lib/api";
+
+// C113T1: MyWork mounts the detail-mode SavedViewsMenu, which reads
+// auth through useSavedViews — stub auth so these PQL tests keep
+// their focus, and serve an empty views list from the spy below.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 import type { MyWorkItem } from "../lib/mywork";
 import {
   makeQueryClient,
@@ -103,6 +110,10 @@ function renderPage() {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces")
       return Promise.resolve({ workspaces: [{ slug: "acme", name: "Acme" }] });
+    // C113T1: the Views menu's list query (empty here — these tests
+    // never open the menu).
+    if (path === "/api/v1/workspaces/acme/views")
+      return Promise.resolve({ views: [] });
     if (path.includes("/my-issues")) {
       const qs = new URLSearchParams(path.split("?")[1] ?? "");
       const pql = qs.get("pql");
@@ -276,15 +287,18 @@ describe("mywork PQL mode (C112T1)", () => {
     expect(screen.queryByText("Created checkout bug")).toBeNull();
   });
 
-  it("editor stages the no-save-path-yet hint text for the views cycle (showSaveHint stays false, so no hint renders)", async () => {
+  it("editor shows the adapted Views save hint (C113T1: the views cycle flipped showSaveHint to true)", async () => {
     renderPage();
     await waitForInitial();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
     await screen.findByLabelText("PQL query");
-    // The staged text is not rendered while showSaveHint is false —
-    // the views cycle flips the boolean; assert the absence so a
-    // premature hint (promising a save path that does not exist)
-    // cannot slip in unnoticed.
+    // The C112 staged "no save path" text is deleted, not kept as a
+    // fallback: the hint now points at the menu beside the toggle.
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All work / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeTruthy();
     expect(
       screen.queryByText(
         "There is no Views save path for this query on this page yet.",
