@@ -82,6 +82,19 @@ describe("PageHeader", () => {
     expect(lastPath).toBe("/w/acme/p/ENG/gantt");
   });
 
+  it("carries filter params (including pql) across view switches and drops peek/create", () => {
+    renderHeader(
+      "/w/acme/p/ENG?state=started&pql=priority+%3D+High&peek=abc&create=1",
+      { viewName: "Work items", showViews: true },
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Table" }));
+    expect(lastPath).toBe(
+      "/w/acme/p/ENG/spreadsheet?state=started&pql=priority+%3D+High",
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "List" }));
+    expect(lastPath).toBe("/w/acme/p/ENG?state=started&pql=priority+%3D+High");
+  });
+
   it("renders filter/display/extra slots in the header", () => {
     renderHeader("/w/acme/p/ENG", {
       viewName: "Work items",

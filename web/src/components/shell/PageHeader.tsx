@@ -31,6 +31,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useWorkspaces } from "../../lib/useWorkspaces";
+import { isFilterParam } from "../../lib/filters";
 import { cn } from "../../lib/utils";
 import {
   DropdownMenu,
@@ -138,6 +139,20 @@ export default function PageHeader({
   const workspaceName =
     workspaces?.find((w) => w.slug === slug)?.name ?? slug;
 
+  // C104T1: view switches carry the current filter params — exactly the
+  // isFilterParam set from lib/filters.ts — and drop everything else:
+  // ?peek= is per-view and ?create= is consumed by the list page, so
+  // neither survives a switch. This also fixes visual filters being
+  // dropped on every view switch (the committed ?pql= included).
+  const filterSearch = (() => {
+    const kept = new URLSearchParams();
+    for (const [k, v] of new URLSearchParams(location.search)) {
+      if (isFilterParam(k)) kept.append(k, v);
+    }
+    const s = kept.toString();
+    return s ? `?${s}` : "";
+  })();
+
   const handleAdd = () => {
     if (addButton) {
       addButton.onClick();
@@ -191,7 +206,11 @@ export default function PageHeader({
                   role="tab"
                   aria-selected={active}
                   onClick={() =>
-                    navigate(seg.path ? `${base}/${seg.path}` : base)
+                    navigate(
+                      seg.path
+                        ? `${base}/${seg.path}${filterSearch}`
+                        : `${base}${filterSearch}`,
+                    )
                   }
                   className={cn(
                     "h-[24px] rounded px-2 text-[10px] font-medium transition-colors",

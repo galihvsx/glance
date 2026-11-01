@@ -647,4 +647,100 @@ describe("Spreadsheet PQL mode (C104T0)", () => {
       "priority = High",
     );
   });
+
+  describe("PQL-mode staleness (C104T1)", () => {
+    // The committed PQL fetch is per_page=100; the visual list fetch
+    // is per_page=25 — that split tells a PQL re-run apart from a
+    // visual refetch after a mutation settles.
+    async function applyCommittedQuery(
+      user: ReturnType<typeof userEvent.setup>,
+    ) {
+      const editor = await openPqlEditor(user);
+      await user.type(editor, "priority = High");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await screen.findByRole("link", { name: /Open issue ENG-2/ });
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+        ).toBeNull();
+      });
+    }
+
+    // PQL fetches are the per_page=100 ones (probe + committed query);
+    // visual list fetches are per_page=25, even though they also carry
+    // pql= once the query is committed (the visual query still runs
+    // with the URL filters).
+    function countPqlFetches(calls: string[]) {
+      return calls.filter(
+        (p) => p.includes("/issues") && p.includes("per_page=100"),
+      ).length;
+    }
+
+    it("a cell edit while a query is committed re-runs the same committed query", async () => {
+      const user = await renderPqlReady([issues[1]]);
+      await applyCommittedQuery(user);
+
+      const before = await getCalls();
+      const pqlBefore = countPqlFetches(before);
+      const visualBefore = before.filter((p) =>
+        p.includes("per_page=25"),
+      ).length;
+      expect(pqlBefore).toBeGreaterThanOrEqual(1);
+
+      const { api } = await import("../lib/api");
+      (api.patch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ...issues[1],
+        state_id: "s2",
+      });
+      const row = screen.getByRole("link", { name: /Open issue ENG-2/ });
+      await user.click(within(row).getByTitle("Click to edit state"));
+      await user.selectOptions(
+        screen.getByLabelText("Edit state for ENG-2"),
+        "s2",
+      );
+
+      // Settle invalidates the PQL key (not the visual key): the
+      // committed query re-runs with the same pql param, and the
+      // visual list does not refetch.
+      await waitFor(async () => {
+        const calls = await getCalls();
+        expect(countPqlFetches(calls)).toBeGreaterThan(pqlBefore);
+      });
+      const after = await getCalls();
+      expect(
+        after.filter((p) => p.includes("per_page=25")).length,
+      ).toBe(visualBefore);
+      const pqlFetches = after.filter(
+        (p) => p.includes("pql=") && p.includes("per_page=100"),
+      );
+      expect(pqlFetches[pqlFetches.length - 1]).toContain("pql=priority");
+    });
+
+    it("an inline create while a query is committed re-runs the committed query", async () => {
+      const user = await renderPqlReady([issues[1]]);
+      await applyCommittedQuery(user);
+
+      const before = await getCalls();
+      const pqlBefore = countPqlFetches(before);
+      expect(pqlBefore).toBeGreaterThanOrEqual(1);
+
+      const { api } = await import("../lib/api");
+      (api.post as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        ...issues[1],
+        id: "i4",
+        display_id: "ENG-4",
+        name: "Brand new",
+      });
+      await user.click(
+        screen.getByRole("button", { name: "Add work item" }),
+      );
+      await user.type(screen.getByLabelText("Title"), "Brand new");
+      await user.click(screen.getByRole("button", { name: "Create issue" }));
+
+      await waitFor(async () => {
+        const calls = await getCalls();
+        expect(countPqlFetches(calls)).toBeGreaterThan(pqlBefore);
+      });
+    });
+  });
 });
