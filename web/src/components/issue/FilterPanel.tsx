@@ -168,6 +168,7 @@ export default function FilterPanel({
   onPqlModeChange,
   onPqlApply,
   onPqlClear,
+  pqlShowSaveHint,
 }: {
   slug: string;
   identifier: string;
@@ -194,6 +195,14 @@ export default function FilterPanel({
   onPqlApply?: (query: string) => Promise<void>;
   /** Commit an empty query (no filter) for the editor's Clear. */
   onPqlClear?: () => void;
+  /**
+   * C104T0: forwarded to the editor's save hint. Default true (the
+   * Issues page, where Views saves PQL queries). Pages whose Views
+   * menu saves visual filters only (spreadsheet — Board/C96T1
+   * precedent) pass false so the editor never promises a save path
+   * that does not exist there.
+   */
+  pqlShowSaveHint?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
@@ -404,6 +413,7 @@ export default function FilterPanel({
             onApply={onPqlApply}
             onClear={() => onPqlClear?.()}
             onApplied={() => setOpen(false)}
+            showSaveHint={pqlShowSaveHint ?? true}
           />
         ) : (
           <>
