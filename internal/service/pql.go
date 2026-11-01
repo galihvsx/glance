@@ -97,18 +97,23 @@ package service
 // user input is never interpolated into SQL; only the operator and
 // column (both from fixed whitelists) appear literally.
 //
-// Scope-survives contract (C95T0, extended C108T0): Cycle, Module,
-// and Epics are scope containers, not filter dimensions. When PQL is
+// Scope-survives contract (C95T0, extended C108T0, C109T0): Cycle,
+// Module, and Epics are scope containers, not filter dimensions, and
+// the date windows (DueAfter, DueBefore, StartAfter, StartBefore,
+// Undated) are view windows, not filter dimensions. When PQL is
 // present, withoutVisualFilters zeroes every visual filter dimension
-// (state, labels, assignees, priorities, dates, parents, text) but
-// leaves Cycle, Module, and Epics untouched, so the translated PQL
-// predicate ANDs with the scope condition: a query run inside a cycle,
-// module, or epic stays inside it. A foreign cycle/module/epic UUID
+// (state, labels, assignees, priorities, created/updated dates,
+// parents, text, due_date_empty) but leaves Cycle, Module, Epics,
+// and the date windows untouched, so the translated PQL predicate
+// ANDs with the scope/window conditions: a query run inside a cycle,
+// module, or epic stays inside it, and a query run inside a date
+// window stays inside it. A foreign cycle/module/epic UUID
 // therefore yields an empty list by construction (the project
 // predicate in the list query confines the scope, same as the cycle
 // scope today). In PQL mode the ?epic= scope is addressed by UUID,
 // while a PQL `epic = "Name"` predicate resolves by name — the two
-// AND, they do not conflict.
+// AND, they do not conflict; likewise a PQL date predicate ANDs with
+// the window, it does not replace it.
 //
 // OUT of scope (documented, not silently cut): AI text-to-PQL
 // generation, and PQL on dashboards lists.
@@ -832,9 +837,20 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 // param is a scope container addressed by UUID, while a PQL
 // `epic = "Name"` predicate resolves by name — the two AND, they do
 // not conflict, so a predicate naming a different epic than the scope
-// param yields an empty list by construction. Sort, pagination,
-// fieldset, and list-mode flags (archived, draft, sequence lookup)
-// are kept.
+// param yields an empty list by construction. C109T0 semantic: the
+// date windows (DueAfter, DueBefore, StartAfter, StartBefore,
+// Undated) are view windows, not filter dimensions, so they are NOT
+// zeroed either — they survive PQL mode exactly like the scope
+// containers and AND with the predicate. A PQL date predicate
+// (`due`, `start`, ...) ANDs with the window; it does not replace
+// it, so a predicate date outside the window yields an empty list
+// by construction. DueDateEmpty stays zeroed: it is a visual filter
+// dimension ("target_date IS NULL"), not a window, so in PQL mode a
+// ?due_date_empty= param is ignored, consistent with the "visual
+// filters ignored" contract — and the visual path's
+// due_date_empty + due_after/due_before 400 rule does not fire in
+// PQL mode. Sort, pagination, fieldset, and list-mode flags
+// (archived, draft, sequence lookup) are kept.
 func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.State = ""
 	in.Q = ""
@@ -848,11 +864,10 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
 	in.UpdatedBefore = nil
-	in.DueAfter = nil
-	in.DueBefore = nil
-	in.StartAfter = nil
-	in.StartBefore = nil
-	in.Undated = false
+	// Date windows deliberately NOT zeroed (C109T0): view windows,
+	// see above. The query builder (issueListConds) already applies
+	// these fields, so no builder change is needed — preservation
+	// here is the whole fix.
 	in.DueDateEmpty = false
 	in.Subscribed = false
 	return in
