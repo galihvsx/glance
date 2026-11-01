@@ -15,9 +15,12 @@
 // reuses the cheat-sheet data + error wording instead; parse
 // validation is the server's at save time, surfaced via serverError),
 // and the row-list columns/sort/max-rows controls. C101T1: the
-// picker became a multi-project picker (1..N — the backend
+// picker became a multi-project picker (the backend
 // translates the same query once per picked project and unions the
-// rows; save is blocked at 0 projects). Config keys mirror
+// rows). C102T1: an empty selection means all live, accessible
+// workspace projects (the backend resolves empty project_ids to
+// every non-archived, actor-accessible project); save requires
+// only a non-blank query. Config keys mirror
 // the backend's per-type allow-list (parseWidgetConfig): a key
 // meaningless for the type is a 400, so each type sends exactly its
 // own key set — pql_table sends query/columns/sort_by/sort_dir/
@@ -504,13 +507,13 @@ export default function WidgetDialog({
   );
 
   const trimmed = title.trim();
-  // pql_table additionally requires a non-blank query and at least
-  // one picked project — the dialog must not submit with 0 projects.
+  // pql_table additionally requires a non-blank query; an empty
+  // project selection is valid and means all live, accessible
+  // workspace projects (C102T1), so it does not block save.
   const canSave =
     trimmed.length > 0 &&
     !pending &&
-    (widgetType !== "pql_table" ||
-      (query.trim().length > 0 && projectIds.length >= 1));
+    (widgetType !== "pql_table" || query.trim().length > 0);
 
   const summary = filterSummary(
     { project_ids: projectIds, filters: prunedFilters },
@@ -534,10 +537,11 @@ export default function WidgetDialog({
       // The backend 400s when sort_by is not one of the configured
       // columns, so a sort column dropped from the chips falls back
       // to the first kept column instead of surfacing a 400.
-      // Exactly the C101T0 allow-list: query, columns, sort_by,
-      // sort_dir, max_rows, project_ids (1..N) — NEVER filters (PQL is the
+      // Exactly the C102T0 allow-list: query, columns, sort_by,
+      // sort_dir, max_rows, project_ids — NEVER filters (PQL is the
       // filter); group_by/metric are accepted-but-ignored server-side
-      // and are not sent.
+      // and are not sent. An empty project_ids means all live,
+      // accessible workspace projects.
       const kept = columns.length > 0 ? columns : [...ROW_COLUMNS];
       config.query = query.trim();
       config.columns = kept;
@@ -649,9 +653,9 @@ export default function WidgetDialog({
               for intake_breakdown — the backend ignores project_ids
               there (dashboard scope only). pql_table replaces the
               generic section with its own multi-project picker below:
-              the query is translated once per picked project and the
-              rows unioned, so the widget needs 1..N projects and save
-              is blocked at 0 (empty does NOT mean all here). */}
+              the query is translated once per in-scope project and the
+              rows unioned; an empty selection means all live,
+              accessible workspace projects (C102T1). */}
           {!isIntake && !isPql && (
           <div className="flex flex-col gap-1.5">
             <UiLabel>Projects</UiLabel>
@@ -697,16 +701,10 @@ export default function WidgetDialog({
               emptyText="No projects in this workspace."
               triggerLabel={
                 projectIds.length === 0
-                  ? "Select projects…"
+                  ? "All projects"
                   : `${projectIds.length} project${projectIds.length > 1 ? "s" : ""} selected`
               }
             />
-            {projectIds.length === 0 && (
-              <p className="text-xs text-destructive">
-                Select at least one project — the query runs against
-                each picked project and the rows are merged.
-              </p>
-            )}
           </div>
           )}
 
@@ -825,7 +823,7 @@ export default function WidgetDialog({
               ) : (
                 <p className="text-xs text-muted-foreground">
                   Query ORDER BY wins over the sort below; LIMIT caps
-                  total rows across all picked projects.
+                  total rows across all in-scope projects.
                 </p>
               )}
               <div>
