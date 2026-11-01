@@ -46,6 +46,22 @@ interface SavedViewsMenuProps {
   pqlMode?: boolean;
   pqlQuery?: string;
   onViewApplied?: (pqlQuery: string | null) => void;
+  /**
+   * C107T0 detail-page mode (cycle/module detail pages). Detail pages
+   * do not read URL filter params (PQL mode is local state by the C95
+   * decision), have no visual filter bar, and must not silently narrow
+   * the membership list to a project-level default on mount. So in
+   * this mode the menu: (a) never writes to the URL — applyView and
+   * the default-view effect skip setSearchParams entirely, the page
+   * settles state through onViewApplied only; (b) never auto-applies
+   * a default view — the default-view effect does not run at all;
+   * (c) lists PQL views only — a view without a non-empty
+   * filters.pql cannot be represented on a surface with no visual
+   * filter bar. Rename / delete / share / set-default on a listed
+   * PQL view keep working (project-level operations). Default false
+   * preserves List / Board / Spreadsheet behavior exactly.
+   */
+  detailMode?: boolean;
 }
 
 /** Per-project saved views: named filter + display presets, persisted
@@ -62,6 +78,7 @@ export default function SavedViewsMenu({
   pqlMode,
   pqlQuery,
   onViewApplied,
+  detailMode = false,
 }: SavedViewsMenuProps) {
   const {
     views,
@@ -89,19 +106,24 @@ export default function SavedViewsMenu({
   );
 
   function applyView(view: SavedView) {
-    const next = new URLSearchParams();
-    // Preserve non-filter params (e.g. ?peek=); replace filter params with
-    // the view's stored filters. serializeFilters writes `pql` for PQL
-    // views and omits it for visual ones, so the URL mode follows the
-    // view; the page still needs the explicit mode signal below because
-    // PQL mode with an empty query is not visible in the URL.
-    for (const [k, v] of searchParams) {
-      if (!isFilterParam(k)) next.set(k, v);
+    // C107T0: in detail mode the page owns its state (local PQL mode,
+    // no URL filter params) — applying a view must not write anything
+    // to the URL; the page settles through onViewApplied only.
+    if (!detailMode) {
+      const next = new URLSearchParams();
+      // Preserve non-filter params (e.g. ?peek=); replace filter params with
+      // the view's stored filters. serializeFilters writes `pql` for PQL
+      // views and omits it for visual ones, so the URL mode follows the
+      // view; the page still needs the explicit mode signal below because
+      // PQL mode with an empty query is not visible in the URL.
+      for (const [k, v] of searchParams) {
+        if (!isFilterParam(k)) next.set(k, v);
+      }
+      for (const [k, v] of serializeFilters(view.filters)) {
+        next.set(k, v);
+      }
+      setSearchParams(next, { replace: true });
     }
-    for (const [k, v] of serializeFilters(view.filters)) {
-      next.set(k, v);
-    }
-    setSearchParams(next, { replace: true });
     onViewApplied?.(view.filters.pql?.trim() ? view.filters.pql.trim() : null);
     if (view.display && onApplyDisplay) {
       onApplyDisplay(view.display);
@@ -125,6 +147,11 @@ export default function SavedViewsMenu({
   // each page, so a project switch remounts and re-runs this fresh.
   const defaultApplied = useRef(false);
   useEffect(() => {
+    // C107T0: detail pages never auto-apply a default — mounting must
+    // show the unfiltered membership list. Return before burning the
+    // flag (the mode is fixed per mount, but not burning keeps the
+    // effect a pure no-op here).
+    if (detailMode) return;
     if (defaultApplied.current || !viewsReady || viewsLoading) return;
     // Fetch failed: no data to decide from. Return WITHOUT burning the
     // flag so a later successful load retries the apply.
@@ -153,10 +180,24 @@ export default function SavedViewsMenu({
       onApplyDisplay(def.display);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewsLoading, views, viewsReady, viewsError]);
+  }, [detailMode, viewsLoading, views, viewsReady, viewsError]);
+
+  // C107T0: detail mode lists PQL views only, in both sections. A
+  // view with a blank/absent pql cannot be represented on a surface
+  // with no visual filter bar, so it renders nowhere in this mode —
+  // not even as the trigger's active-view label (hence activeView
+  // below also searches only the listed views in detail mode).
+  const isPqlView = (v: SavedView) => !!v.filters.pql?.trim();
+  const listedOwnViews = detailMode ? ownViews.filter(isPqlView) : ownViews;
+  const listedSharedViews = detailMode
+    ? sharedViews.filter(isPqlView)
+    : sharedViews;
 
   const currentQuery = serializeFilters(filters).toString();
-  const activeView = views.find(
+  const activeView = (detailMode
+    ? [...listedOwnViews, ...listedSharedViews]
+    : views
+  ).find(
     (v) =>
       serializeFilters(v.filters).toString() === currentQuery &&
       JSON.stringify(v.display) === JSON.stringify(display),
@@ -173,12 +214,16 @@ export default function SavedViewsMenu({
       // query saves as a plain unfiltered view. Visual mode is
       // unchanged. Old views without a pql key still load as before
       // (sanitizeFilters merges over EMPTY_FILTERS).
-      const filtersToSave = pqlMode
-        ? {
-            ...EMPTY_FILTERS,
-            ...(pqlQuery?.trim() ? { pql: pqlQuery.trim() } : {}),
-          }
-        : filters;
+      // C107T0: detail mode saves the same PQL-only shape even when
+      // the caller did not pass pqlMode — a detail page has no visual
+      // filter bar, so a save from its menu is always a query save.
+      const filtersToSave =
+        pqlMode || detailMode
+          ? {
+              ...EMPTY_FILTERS,
+              ...(pqlQuery?.trim() ? { pql: pqlQuery.trim() } : {}),
+            }
+          : filters;
       const created = await createView(
         saveName,
         filtersToSave,
@@ -276,13 +321,13 @@ export default function SavedViewsMenu({
           <p className="px-2 py-3 text-sm text-muted-foreground">
             Loading views…
           </p>
-        ) : ownViews.length === 0 && sharedViews.length === 0 ? (
+        ) : listedOwnViews.length === 0 && listedSharedViews.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">
             No saved views yet. Set your filters, then save the current view.
           </p>
         ) : (
           <div className="flex flex-col">
-            {ownViews.map((view) => {
+            {listedOwnViews.map((view) => {
               const active = activeView?.id === view.id;
               if (renamingId === view.id) {
                 return (
@@ -440,13 +485,13 @@ export default function SavedViewsMenu({
             {/* Shared views (C10T1): other members' views, read-only.
                 Apply + owner attribution only — no rename/default/share/
                 delete controls for non-owners. */}
-            {sharedViews.length > 0 && (
+            {listedSharedViews.length > 0 && (
               <>
                 <Separator className="my-2" />
                 <p className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   Shared
                 </p>
-                {sharedViews.map((view) => {
+                {listedSharedViews.map((view) => {
                   const active = activeView?.id === view.id;
                   return (
                     <div
