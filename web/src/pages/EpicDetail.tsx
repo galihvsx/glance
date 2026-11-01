@@ -10,12 +10,15 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { pqlHasLimit } from "../lib/pql";
 import { toast } from "../components/ui/toast";
+import PqlEditor from "../components/issue/PqlEditor";
 import type {
   Epic,
   Initiative,
   InitiativeEpic,
   Issue,
+  IssueListResult,
   IssueState,
 } from "../lib/types";
 import EpicForm from "../components/epics/EpicForm";
@@ -85,6 +88,7 @@ export default function EpicDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const base = epicBase(slug, identifier);
+  const projectBase = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const listPath = `/w/${encodeURIComponent(slug)}/p/${encodeURIComponent(identifier)}/epics`;
 
   const [editOpen, setEditOpen] = useState(false);
@@ -110,6 +114,88 @@ export default function EpicDetail() {
         .get<{ issues: Issue[] }>(`${base}/${epicID}/issues`)
         .then((d) => d.issues),
   });
+  // C108T2: PQL mode on the epic member-issues list, copying the
+  // Cycles detail pattern verbatim (C95T1/C107T1). PQL mode changes
+  // ONLY the displayed issue list: the membership fetch above is
+  // untouched and still feeds the section count, the progress card /
+  // issue_count, the add-issues dialog's in-epic set, and the
+  // remove-from-epic actions. The PQL fetch goes through the
+  // project issues list with the epic scope container (?epic=, the
+  // C108T0 contract) ANDed server-side with the predicate.
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const pqlIssuesQuery = useQuery({
+    queryKey: ["epic-issues-pql", slug, identifier, epicID, appliedQuery],
+    enabled: pqlMode && appliedQuery.trim() !== "",
+    queryFn: async () => {
+      // C98T1: a LIMIT query is a single page (the server always
+      // returns next_cursor null), so skip the cursor loop and
+      // fetch once.
+      if (pqlHasLimit(appliedQuery)) {
+        const p = new URLSearchParams({
+          epic: epicID,
+          pql: appliedQuery.trim(),
+          per_page: "100",
+        });
+        const page = await api.get<IssueListResult>(
+          `${projectBase}/issues?${p.toString()}`,
+        );
+        return page.results;
+      }
+      const all: Issue[] = [];
+      let cursor: string | undefined;
+      do {
+        const p = new URLSearchParams({
+          epic: epicID,
+          pql: appliedQuery.trim(),
+          per_page: "100",
+        });
+        if (cursor) p.set("cursor", cursor);
+        const page = await api.get<IssueListResult>(
+          `${projectBase}/issues?${p.toString()}`,
+        );
+        all.push(...page.results);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return all;
+    },
+  });
+  // Probe-first apply (Cycles pattern): fetch one page with epic +
+  // pql and commit only on success. A 400 rejects, so PqlEditor
+  // shows it inline and the displayed list is untouched
+  // (appliedQuery — and therefore displayedIssues — never changes).
+  // Empty query = no filter: stays in PQL mode, shows the full list.
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    const p = new URLSearchParams({
+      epic: epicID,
+      pql: q,
+      per_page: "100",
+    });
+    await api.get<IssueListResult>(`${projectBase}/issues?${p.toString()}`);
+    setAppliedQuery(q);
+  }
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the membership
+    // list (already cached) is restored immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+  // While a committed PQL query is still loading, keep showing the
+  // membership list rather than blanking it — the filtered list
+  // replaces it as soon as it arrives.
+  const displayedIssues =
+    pqlMode && appliedQuery.trim() !== ""
+      ? (pqlIssuesQuery.data ?? issuesQuery.data ?? [])
+      : (issuesQuery.data ?? []);
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
     queryFn: () =>
@@ -173,6 +259,13 @@ export default function EpicDetail() {
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["epic-detail", slug, identifier, epicID] });
     void queryClient.invalidateQueries({ queryKey: ["epic-issues", slug, identifier, epicID] });
+    // C108T2: the displayed PQL-filtered list is a separate query
+    // key — prefix-invalidate it too (Cycles C103T0 pattern), so a
+    // membership change (add, and in particular remove) re-runs the
+    // committed query in place and neither list shows a stale row.
+    // Harmless when PQL mode is inactive: that query is disabled
+    // and only refetches on next enable.
+    void queryClient.invalidateQueries({ queryKey: ["epic-issues-pql", slug, identifier, epicID] });
     void queryClient.invalidateQueries({ queryKey: ["epics", slug, identifier] });
     void queryClient.invalidateQueries({ queryKey: ["epic-linked-initiatives", slug, epicID] });
   };
@@ -462,6 +555,59 @@ export default function EpicDetail() {
             </OrgHeaderButton>
           }
         />
+        {/* C108T2: All issues / PQL toggle + editor, above the issue
+            list (Cycles detail pattern: the modes are "full
+            membership list" vs "PQL query"). The section count
+            above still reads the unfiltered membership list. No
+            SavedViewsMenu here — that is C108T3. */}
+        <div className="mb-2 mt-3 flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Issue list mode"
+            className="flex flex-1 rounded-md border p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => handlePqlModeChange("all")}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                !pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              All issues
+            </button>
+            <button
+              type="button"
+              aria-pressed={pqlMode}
+              onClick={() => handlePqlModeChange("pql")}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              PQL
+            </button>
+          </div>
+        </div>
+        {pqlMode && (
+          // Keyed by the applied query: PqlEditor's draft is
+          // initial-value-only, so without this a re-apply while
+          // already in PQL mode would leave the editor showing the
+          // previous draft instead of the applied query (C107
+          // lesson).
+          // No save hint yet: there is no Views save path on this
+          // page until C108T3 wires the detail-mode SavedViewsMenu
+          // (PqlEditor contract: pass false where no save path
+          // exists, so the hint is never wrong).
+          <PqlEditor
+            key={appliedQuery}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => {
+              setAppliedQuery("");
+            }}
+            showSaveHint={false}
+          />
+        )}
         {issuesQuery.isPending ? (
           <div className="mt-3 space-y-2">
             <Skeleton className="h-[47px] w-full" />
@@ -477,15 +623,24 @@ export default function EpicDetail() {
               </AlertDescription>
             </Alert>
           </div>
-        ) : (issuesQuery.data ?? []).length === 0 ? (
+        ) : displayedIssues.length === 0 ? (
           <div className="mt-3">
-            <OrgEmpty title="No issues in this epic yet">
-              Attach issues to start tracking progress.
-            </OrgEmpty>
+            {/* A valid query that matches nothing is a real empty
+                result, not "no issues in epic" — say so, so the
+                empty state never masquerades as membership. */}
+            {pqlMode &&
+            appliedQuery.trim() !== "" &&
+            pqlIssuesQuery.data !== undefined ? (
+              <OrgEmpty title="No issues match this PQL query" />
+            ) : (
+              <OrgEmpty title="No issues in this epic yet">
+                Attach issues to start tracking progress.
+              </OrgEmpty>
+            )}
           </div>
         ) : (
           <div className="mt-1">
-            {(issuesQuery.data ?? []).map((i) => (
+            {displayedIssues.map((i) => (
               <OrgIssueRow
                 key={i.id}
                 issue={i}
