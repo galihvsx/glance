@@ -762,6 +762,12 @@ export default function Spreadsheet() {
             filters={filters}
             display={null}
             onApplyDisplay={null}
+            // C105T1: List (C91) PQL save contract — saving in PQL mode
+            // stores only the query ({...EMPTY_FILTERS, pql}) instead
+            // of the verbatim filters, and the save hint says so. The
+            // apply path is unchanged (C104 already settles the mode).
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
             onViewApplied={handleSavedViewApplied}
             triggerClassName={pageHeaderControlClass}
           />

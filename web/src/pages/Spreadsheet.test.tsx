@@ -17,6 +17,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Spreadsheet from "./Spreadsheet";
+import { EMPTY_FILTERS } from "../lib/filters";
+import type { IssueViewRow } from "../lib/savedViews";
 import type { Issue, IssueProjectStructure } from "../lib/types";
 
 function mkIssue(over: Partial<Issue> & { id: string }): Issue {
@@ -742,5 +744,300 @@ describe("Spreadsheet PQL mode (C104T0)", () => {
         expect(countPqlFetches(calls)).toBeGreaterThan(pqlBefore);
       });
     });
+  });
+});
+
+describe("Spreadsheet PQL saved views (C105T1)", () => {
+  // Same routing as the C104 helper, plus the views list and a
+  // create-view echo on api.post so a save settles instead of
+  // resolving undefined. Views here are never default-flagged on
+  // purpose: the SavedViewsMenu default-view auto-apply race (the
+  // once-flag burning while projectId is still "") is a known
+  // shared-component defect carried as a C106 candidate, out of this
+  // task's scope — these tests do not exercise it.
+  async function renderSavedReady(
+    pqlResults: Issue[],
+    opts: { initialEntry?: string; views?: IssueViewRow[] } = {},
+  ) {
+    const { api } = await import("../lib/api");
+    const { stubMatchMedia } = await import("../components/shell/test-utils");
+    stubMatchMedia(false);
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path.includes("/states")) {
+          return Promise.resolve({ states });
+        }
+        if (path.includes("/members")) {
+          return Promise.resolve({ members });
+        }
+        if (path.includes("/labels")) {
+          return Promise.resolve({ labels: [] });
+        }
+        if (path.includes("/estimates")) {
+          return Promise.resolve({ estimates: [] });
+        }
+        if (path.includes("/custom-fields")) {
+          return Promise.resolve({ custom_fields: [] });
+        }
+        if (path.includes("/views")) {
+          return Promise.resolve({ views: opts.views ?? [] });
+        }
+        if (path.includes("/epics")) {
+          return Promise.resolve({ epics: [] });
+        }
+        if (path.includes("/issues")) {
+          if (path.includes("pql=")) {
+            return Promise.resolve({
+              results: pqlResults.map((i) => ({
+                ...i,
+                project_structure: structures[i.id],
+              })),
+              next_cursor: undefined,
+            });
+          }
+          return Promise.resolve({
+            results: issues.map((i) => ({
+              ...i,
+              project_structure: structures[i.id],
+            })),
+            next_cursor: undefined,
+          });
+        }
+        if (path === BASE) {
+          return Promise.resolve({
+            id: "proj-1",
+            identifier: "ENG",
+            name: "Eng",
+          });
+        }
+        return Promise.reject(new Error("unexpected path: " + path));
+      },
+    );
+    (api.post as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string, body: unknown) => {
+        if (path.endsWith("/views")) {
+          const b = body as {
+            name: string;
+            filters: IssueViewRow["filters"];
+            display: IssueViewRow["display"];
+          };
+          return Promise.resolve({
+            id: "v-new",
+            name: b.name,
+            filters: b.filters,
+            display: b.display,
+            is_default: false,
+            shared: false,
+            owner_id: "u1",
+            owner_name: "",
+            created_at: "",
+          });
+        }
+        return Promise.reject(new Error("unexpected POST: " + path));
+      },
+    );
+    renderSpreadsheet(opts.initialEntry);
+    await screen.findByRole("button", { name: "Sort by Cycle" });
+    return userEvent.setup();
+  }
+
+  async function postCalls(): Promise<unknown[][]> {
+    const { api } = await import("../lib/api");
+    return (api.post as ReturnType<typeof vi.fn>).mock.calls;
+  }
+
+  async function openPqlEditor(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    await user.click(screen.getByRole("button", { name: "PQL" }));
+    return screen.getByLabelText("PQL query");
+  }
+
+  async function applyCommittedQuery(
+    user: ReturnType<typeof userEvent.setup>,
+    query: string,
+  ) {
+    const editor = await openPqlEditor(user);
+    await user.type(editor, query);
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await screen.findByRole("link", { name: /Open issue ENG-2/ });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+      ).toBeNull();
+    });
+  }
+
+  async function openViewsMenu(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Saved views" }));
+    await screen.findByRole("button", { name: "Save current view" });
+  }
+
+  async function openSaveForm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Save current view" }));
+    await screen.findByPlaceholderText("View name…");
+  }
+
+  async function saveViewAs(
+    user: ReturnType<typeof userEvent.setup>,
+    name: string,
+  ) {
+    await user.type(screen.getByPlaceholderText("View name…"), name);
+    await user.click(screen.getByRole("button", { name: "Save view" }));
+  }
+
+  function makeViewRow(
+    name: string,
+    filters: IssueViewRow["filters"],
+  ): IssueViewRow {
+    return {
+      id: `v-${name}`,
+      name,
+      filters,
+      display: null,
+      is_default: false,
+      shared: false,
+      owner_id: "u1",
+      owner_name: "",
+      created_at: "",
+    };
+  }
+
+  it("saving in PQL mode POSTs the EMPTY + pql shape (parked visual selection NOT saved)", async () => {
+    const user = await renderSavedReady([issues[1]], {
+      initialEntry: "/w/acme/p/ENG/spreadsheet?q=hello",
+    });
+    await applyCommittedQuery(user, "priority = High");
+    await openViewsMenu(user);
+    await openSaveForm(user);
+    expect(
+      screen.getByText("Saves the current PQL query."),
+    ).toBeInTheDocument();
+    await saveViewAs(user, "PQL saved");
+    await waitFor(async () => {
+      expect((await postCalls()).length).toBeGreaterThanOrEqual(1);
+    });
+    const calls = await postCalls();
+    const viewCall = calls.find((c) =>
+      (c[0] as string).endsWith("/views"),
+    );
+    expect(viewCall).toBeDefined();
+    const body = viewCall![1] as {
+      name: string;
+      filters: typeof EMPTY_FILTERS;
+      display: unknown;
+    };
+    expect(body.name).toBe("PQL saved");
+    // The parked ?q=hello selection must not leak into the saved view.
+    expect(body.filters).toEqual({
+      ...EMPTY_FILTERS,
+      pql: "priority = High",
+    });
+    expect(body.display).toBeNull();
+  });
+
+  it("saving with an empty query in PQL mode saves a plain unfiltered view", async () => {
+    const user = await renderSavedReady(issues, {
+      initialEntry: "/w/acme/p/ENG/spreadsheet?q=hello",
+    });
+    // Enter PQL mode without applying: the parked ?q=hello is dropped
+    // from the URL and the applied query is empty.
+    await openPqlEditor(user);
+    await openViewsMenu(user);
+    await openSaveForm(user);
+    expect(
+      screen.getByText("Saves the current PQL query."),
+    ).toBeInTheDocument();
+    await saveViewAs(user, "Empty PQL");
+    await waitFor(async () => {
+      expect((await postCalls()).length).toBeGreaterThanOrEqual(1);
+    });
+    const calls = await postCalls();
+    const viewCall = calls.find((c) =>
+      (c[0] as string).endsWith("/views"),
+    );
+    const body = viewCall![1] as {
+      filters: typeof EMPTY_FILTERS;
+    };
+    expect(body.filters).toEqual(EMPTY_FILTERS);
+  });
+
+  it("applying a PQL view still enters PQL mode (C104)", async () => {
+    const pqlView = makeViewRow("High priority", {
+      ...EMPTY_FILTERS,
+      pql: "priority = High",
+    });
+    const user = await renderSavedReady([issues[1]], {
+      views: [pqlView],
+    });
+    await openViewsMenu(user);
+    await screen.findByText("High priority");
+    await user.click(
+      screen.getByTitle("Apply view “High priority”"),
+    );
+    // Grid shows the PQL subset, and the editor holds the view's query.
+    await screen.findByRole("link", { name: /Open issue ENG-2/ });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+      ).toBeNull();
+    });
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getByRole("button", { name: "PQL" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("PQL query")).toHaveValue(
+      "priority = High",
+    );
+  });
+
+  it("applying a visual view mid-PQL still settles the mode (C104)", async () => {
+    const visualView = makeViewRow("My bugs", EMPTY_FILTERS);
+    const user = await renderSavedReady([issues[1]], {
+      initialEntry:
+        "/w/acme/p/ENG/spreadsheet?pql=priority+%3D+High",
+      views: [visualView],
+    });
+    // Backstop opened the page in PQL mode with the subset grid.
+    await screen.findByRole("link", { name: /Open issue ENG-2/ });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+      ).toBeNull();
+    });
+    await openViewsMenu(user);
+    await screen.findByText("My bugs");
+    await user.click(screen.getByTitle("Apply view “My bugs”"));
+    // Visual grid returns and the mode toggle settles back to Filters.
+    await screen.findByRole("link", { name: /Open issue ENG-1/ });
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getByRole("button", { name: "Filters" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("visual-mode save is unchanged", async () => {
+    const user = await renderSavedReady(issues, {
+      initialEntry: "/w/acme/p/ENG/spreadsheet?q=hello",
+    });
+    await openViewsMenu(user);
+    await openSaveForm(user);
+    expect(
+      screen.getByText("Saves the current filters."),
+    ).toBeInTheDocument();
+    await saveViewAs(user, "Visual saved");
+    await waitFor(async () => {
+      expect((await postCalls()).length).toBeGreaterThanOrEqual(1);
+    });
+    const calls = await postCalls();
+    const viewCall = calls.find((c) =>
+      (c[0] as string).endsWith("/views"),
+    );
+    const body = viewCall![1] as {
+      filters: typeof EMPTY_FILTERS;
+    };
+    expect(body.filters.q).toBe("hello");
+    expect(body.filters.pql ?? "").toBe("");
   });
 });
