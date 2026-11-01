@@ -53,6 +53,11 @@ var (
 	// workspace they are not a member of. Deliberately one sentinel for
 	// both so 404s never leak existence across workspaces.
 	ErrViewProjectNotFound = errors.New("service: project not found or not visible")
+	// ErrViewWorkspaceNotFound is the workspace-scope twin of
+	// ErrViewProjectNotFound (C113T0): the slug matches nothing the
+	// actor is a member of — a missing workspace or one they do not
+	// belong to. One sentinel for both so 404s never leak existence.
+	ErrViewWorkspaceNotFound = errors.New("service: workspace not found or not visible")
 	// ErrViewNotFound is returned when the view id matches nothing of the
 	// caller's on the project — including when the view exists but belongs
 	// to a different user.
@@ -403,5 +408,260 @@ func DeleteIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, projectID
 		`DELETE FROM issue_views
 		 WHERE id = $1::uuid AND project_id = $2::uuid`,
 		viewID, pid)
+	return err
+}
+
+// ---- Workspace-scoped views (C113T0) ------------------------------------
+//
+// The MyWork Views menu needs views scoped to a workspace, not a
+// project. These ops mirror the project-scope ops above rule for rule,
+// with the scope column swapped (workspace_id in place of project_id)
+// and tenancy resolved from the workspace slug instead of a project
+// UUID. The shared validation helpers (cleanViewName,
+// cleanViewFilters, display normalization) and the IssueView /
+// IssueViewInput / IssueViewPatch shapes are reused unchanged, and
+// the project-scope functions above are untouched, so project-scope
+// behavior stays byte-for-byte today's.
+//
+// Rules, mirrored:
+//   - Tenancy: memberWorkspace resolves (workspace id, role) from the
+//     slug through the workspace_members join — a non-member (or an
+//     unknown slug) surfaces ErrViewWorkspaceNotFound, one sentinel
+//     for missing and non-member alike.
+//   - Visibility: list returns the caller's own workspace views plus
+//     the workspace's shared views. A private view of another user
+//     reads as ErrViewNotFound on mutation (never a leak); a shared
+//     view mutated by a non-owner reads as ErrForbidden.
+//   - Name uniqueness is case-insensitive per (user, workspace)
+//     (partial unique index WHERE workspace_id IS NOT NULL); a clash
+//     is ErrViewNameTaken — the same 409 sentinel as project scope.
+//   - Setting is_default=true clears the caller's other defaults on
+//     the same workspace in the same transaction — at most one
+//     default per (user, workspace), independent of any project
+//     defaults the caller holds.
+//   - Roles: any workspace member (guest 5+) may manage their own
+//     views and see the workspace's shared views. Only the owner may
+//     rename, re-share, set-default, or delete their own views —
+//     with the same moderation exception: a workspace admin (role
+//     20) may delete any SHARED view.
+
+// memberWorkspace resolves the workspace id and the actor's workspace
+// role from the slug. The join is the tenancy boundary: no membership
+// row means ErrViewWorkspaceNotFound, whether the slug is unknown or
+// merely belongs to a workspace the actor is not a member of.
+func memberWorkspace(ctx context.Context, q queryRower, wsSlug, actorID string) (wsID string, wsRole int, err error) {
+	wsID, wsRole, err = workspaceIDForActor(q.QueryRow(ctx,
+		`SELECT w.id::text, m.role
+		   FROM workspaces w
+		   JOIN workspace_members m ON m.workspace_id = w.id
+		  WHERE w.slug = $1 AND m.user_id = $2::uuid`,
+		wsSlug, actorID))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return "", 0, ErrViewWorkspaceNotFound
+		}
+		return "", 0, err
+	}
+	return wsID, wsRole, nil
+}
+
+// ListWorkspaceIssueViews returns the caller's own views on the
+// workspace plus the workspace's shared views, oldest first. The slice
+// is never nil.
+func ListWorkspaceIssueViews(ctx context.Context, pool *pgxpool.Pool, actorID, wsSlug string) ([]IssueView, error) {
+	wsID, _, err := memberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx,
+		`SELECT `+issueViewColumns+`
+		 `+issueViewFrom+`
+		 WHERE v.workspace_id = $2::uuid AND (v.user_id = $1::uuid OR v.shared = TRUE)
+		 ORDER BY v.created_at ASC`,
+		actorID, wsID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []IssueView{}
+	for rows.Next() {
+		v, err := scanIssueView(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateWorkspaceIssueView saves a view for the caller on the
+// workspace. A duplicate (case-insensitive) name is ErrViewNameTaken.
+// New views are private (shared=false); sharing with the workspace is
+// an explicit PATCH toggle. filters stays opaque JSON (validated as
+// an object, never interpreted) — a MyWork view's filters carry pql.
+func CreateWorkspaceIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, wsSlug string, in IssueViewInput) (*IssueView, error) {
+	name, err := cleanViewName(in.Name)
+	if err != nil {
+		return nil, err
+	}
+	filters, err := cleanViewFilters(in.Filters)
+	if err != nil {
+		return nil, err
+	}
+	wsID, _, err := memberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	display := in.Display
+	if len(display) == 0 || string(display) == "null" {
+		display = nil
+	}
+	var id string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO issue_views (user_id, workspace_id, name, filters, display)
+		 VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5::jsonb)
+		 RETURNING id::text`,
+		actorID, wsID, name, filters, display).Scan(&id); err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrViewNameTaken
+		}
+		return nil, err
+	}
+	return getIssueView(ctx, pool, id)
+}
+
+// UpdateWorkspaceIssueView renames a workspace view, flips its default
+// flag, and/or toggles its shared flag. Setting is_default=true clears
+// the caller's other defaults on the same workspace in the same
+// transaction. Ownership mirrors project scope: only the owner may
+// PATCH; a non-owner touching a SHARED view gets ErrForbidden, a
+// non-owner touching a PRIVATE view gets ErrViewNotFound.
+func UpdateWorkspaceIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, wsSlug, viewID string, patch IssueViewPatch) (*IssueView, error) {
+	wsID, _, err := memberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return nil, err
+	}
+	var name *string
+	if patch.Name != nil {
+		clean, err := cleanViewName(*patch.Name)
+		if err != nil {
+			return nil, err
+		}
+		name = &clean
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var ownerID string
+	var shared bool
+	err = tx.QueryRow(ctx,
+		`SELECT user_id::text, shared FROM issue_views
+		 WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+		viewID, wsID).Scan(&ownerID, &shared)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil, ErrViewNotFound
+		}
+		return nil, err
+	}
+	if ownerID != actorID {
+		if shared {
+			return nil, ErrForbidden
+		}
+		return nil, ErrViewNotFound
+	}
+
+	if name != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE issue_views SET name = $1
+			 WHERE id = $2::uuid AND user_id = $3::uuid AND workspace_id = $4::uuid`,
+			*name, viewID, actorID, wsID); err != nil {
+			if isUniqueViolation(err) {
+				return nil, ErrViewNameTaken
+			}
+			return nil, err
+		}
+	}
+	if patch.Shared != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE issue_views SET shared = $1
+			 WHERE id = $2::uuid AND user_id = $3::uuid AND workspace_id = $4::uuid`,
+			*patch.Shared, viewID, actorID, wsID); err != nil {
+			return nil, err
+		}
+	}
+	if patch.IsDefault != nil && *patch.IsDefault {
+		if _, err := tx.Exec(ctx,
+			`UPDATE issue_views SET is_default = FALSE
+			 WHERE user_id = $1::uuid AND workspace_id = $2::uuid AND id <> $3::uuid`,
+			actorID, wsID, viewID); err != nil {
+			return nil, err
+		}
+	}
+	if patch.IsDefault != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE issue_views SET is_default = $1
+			 WHERE id = $2::uuid AND user_id = $3::uuid AND workspace_id = $4::uuid`,
+			*patch.IsDefault, viewID, actorID, wsID); err != nil {
+			return nil, err
+		}
+	}
+
+	v, err := getIssueView(ctx, tx, viewID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// DeleteWorkspaceIssueView removes a workspace view.
+//
+// Deletion is owner-only, with the same moderation exception as
+// project scope: a workspace admin (role 20) may delete any SHARED
+// view. A non-admin member deleting a shared view they do not own
+// gets ErrForbidden; deleting another user's private view (or an
+// unknown id) is a silent no-op — idempotent, never an existence leak.
+func DeleteWorkspaceIssueView(ctx context.Context, pool *pgxpool.Pool, actorID, wsSlug, viewID string) error {
+	wsID, wsRole, err := memberWorkspace(ctx, pool, wsSlug, actorID)
+	if err != nil {
+		return err
+	}
+	var ownerID string
+	var shared bool
+	err = pool.QueryRow(ctx,
+		`SELECT user_id::text, shared FROM issue_views
+		 WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+		viewID, wsID).Scan(&ownerID, &shared)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return nil // unknown or malformed view id: nothing could match, no-op
+		}
+		return err
+	}
+	switch {
+	case ownerID == actorID:
+		// Owner: always allowed (shared or private).
+	case shared && wsRole == RoleAdmin:
+		// Moderation override: workspace admin deleting a shared view.
+	case shared:
+		return ErrForbidden
+	default:
+		// Another user's private view: silent no-op, as before.
+		return nil
+	}
+	_, err = pool.Exec(ctx,
+		`DELETE FROM issue_views
+		 WHERE id = $1::uuid AND workspace_id = $2::uuid`,
+		viewID, wsID)
 	return err
 }
