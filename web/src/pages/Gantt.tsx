@@ -4,6 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError } from "../lib/pql";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Button } from "../components/ui/button";
@@ -19,12 +22,14 @@ import {
 } from "../components/ui/alert-dialog";
 import { Kbd } from "../components/ui/kbd";
 import { toast } from "../components/ui/toast";
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { api } from "../lib/api";
 import { stateDotClass } from "../lib/stateDot";
 import type {  Issue,
   IssueLink,
   IssueListResult,
   IssueState,
+  Project,
   Workspace,
 } from "../lib/types";
 import {
@@ -104,6 +109,14 @@ export default function Gantt() {
     identifier: string;
   }>();
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+  // C110T2: same ["project", slug, identifier] query Cycles/EpicDetail
+  // use — the detail-mode SavedViewsMenu below needs a project UUID,
+  // and the shared key is cache-warm whenever the user came from
+  // another project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(base),
+  });
   const { peekUuid, openPeek, closePeek } = usePeekParam();
   const queryClient = useQueryClient();
 
@@ -135,6 +148,12 @@ export default function Gantt() {
   // fetchAllIssues cursor loop stops after one page.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C110T2: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled (Cycles C107T1).
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const activePql = pqlMode ? appliedQuery.trim() : "";
   const pqlSuffix = activePql ? `&pql=${encodeURIComponent(activePql)}` : "";
   const pqlKey = pqlMode ? "pql" : "all";
@@ -165,6 +184,7 @@ export default function Gantt() {
       probe({ undated: "1" }),
     ]);
     setAppliedQuery(q);
+    setSavedViewError(null);
   }
   function handlePqlModeChange(mode: "all" | "pql") {
     if (mode === "pql") {
@@ -175,6 +195,40 @@ export default function Gantt() {
     // window sets (already cached) are restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+  // C110T2: applying a saved PQL view from the detail-mode menu,
+  // copying the Cycles handleSavedViewApplied shape verbatim.
+  // Probe FIRST, then enter PQL mode: the probe commits appliedQuery
+  // while still in visual mode (the bars are unaffected until
+  // pqlMode flips), so the editor mounts seeded with the applied
+  // query. A 400 leaves appliedQuery untouched — the bars never
+  // change — and the error surfaces in the detail-level alert (the
+  // editor cannot show it: it mounts fresh with an empty draft).
+  // The menu ignores this handler's return value, so the catch here
+  // is load-bearing: without it the rejected probe would be an
+  // unhandled rejection. Null is unreachable from the detail-mode
+  // menu (PQL views only) and mirrors Cycles: leave PQL mode.
+  // C110 window rule: a view apply NEVER touches the year/month
+  // window state below (year/month are not read or written here).
+  // A saved query ANDs with the current window (C109 semantics) —
+  // it never moves it. A view naming dates outside the current
+  // window therefore shows an empty view until the user moves the
+  // window; that is the honest AND, not a bug, and must not be
+  // "fixed" into a window jump later.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
 
   // Three bounded queries (same pattern as the calendar view), each with
@@ -549,11 +603,18 @@ export default function Gantt() {
           )}
         </div>
         {/* C109T2: All-issues / PQL toggle + editor, above the
-            timeline (Cycles detail pattern). No Views save path on
-            this page yet — Board precedent — so showSaveHint is
-            false. The editor is keyed by the applied query:
-            PqlEditor's draft is initial-value-only, so without the
-            key a re-apply would leave a stale draft (C107 lesson). */}
+            timeline (Cycles detail pattern). C110T2: detail
+            toolbar — the All-issues / PQL toggle plus the
+            detail-mode SavedViewsMenu beside it. Detail mode
+            guarantees no URL writes and no default auto-apply, so
+            the page settles PQL state through onViewApplied only.
+            A view apply never touches the year/month window state:
+            the saved query ANDs with the current window (C109
+            semantics), it never moves it (see
+            handleSavedViewApplied). The editor is keyed by the
+            applied query: PqlEditor's draft is initial-value-only,
+            so without the key a re-apply would leave a stale draft
+            (C107 lesson). */}
         <div className="flex items-center gap-2">
           <div
             role="group"
@@ -581,7 +642,22 @@ export default function Gantt() {
               PQL
             </button>
           </div>
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            detailMode
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+          />
         </div>
+        {savedViewError && (
+          <Alert variant="destructive">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
         {pqlMode && (
           <PqlEditor
             key={appliedQuery}
@@ -589,8 +665,10 @@ export default function Gantt() {
             onApply={handlePqlApply}
             onClear={() => {
               setAppliedQuery("");
+              setSavedViewError(null);
             }}
-            showSaveHint={false}
+            showSaveHint={true}
+            saveHintText="To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened."
           />
         )}
         {linkUi.linkMode && canEdit && (
