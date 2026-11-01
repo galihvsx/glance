@@ -17,6 +17,15 @@ import {
 } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+// C110T2: Gantt now mounts the detail-mode SavedViewsMenu, whose
+// useSavedViews hook reads useAuth; the real provider needs a
+// session — stub the auth context (CyclesPql.test.tsx pattern).
+// The menu itself is untested here (projectId stays "" — this
+// file's mock has no project endpoint — so its views query stays
+// disabled); GanttSavedViews.test.tsx covers the menu path.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 import Gantt from "./Gantt";
 import { api, ApiError } from "../lib/api";
 import type { Issue, IssueState } from "../lib/types";
@@ -254,8 +263,13 @@ describe("Gantt PQL mode (C109T2)", () => {
       ),
     ).toBe(true);
     expect(pqlCalls.some((qs) => qs.get("undated") === "1")).toBe(true);
-    // No Views save hint on this page (Board precedent).
-    expect(screen.queryByText(/Save current view/)).toBeNull();
+    // C110T2: the detail-mode Views menu beside the toggle is now
+    // the save path, so the corrected save hint is shown.
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeTruthy();
   });
 
   it("leaving PQL mode restores the unfiltered bars + lane and closes the editor", async () => {
