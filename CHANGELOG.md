@@ -5,6 +5,26 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL mode + saved views on the Epic detail page (cycle 108)**
+
+- The Epic detail page now has the same PQL story as cycle and
+  module detail pages: an All-issues / PQL toggle above the
+  member-issues list, probe-first apply through the project
+  issues list, and the detail-mode saved-views menu next to
+  the toggle. The backend gap behind it is closed too: the
+  `epic` scope now survives PQL mode (`?epic=<uuid>&pql=...`
+  ANDs server-side, like the cycle/module scope), where it
+  was previously silently ignored. Applying a saved view goes
+  probe-first, so a bad saved query fails honestly with the
+  list untouched; progress counts keep reading the unfiltered
+  membership list, and the editor re-seeds on every apply.
+- The PQL editor's save hint is now accurate on detail pages:
+  cycle, module, and epic detail editors point at "Views →
+  Save current view next to the All issues / PQL toggle"
+  instead of hiding the hint (the old "page header" wording
+  was wrong there). The Issues page keeps its original text
+  and Board keeps the hint hidden, both untouched.
+
 **Saved views on cycle/module detail pages (cycle 107)**
 
 - Cycle and module detail pages now offer the saved-views menu
