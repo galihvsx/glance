@@ -8,9 +8,9 @@
 // is_draft = TRUE server-side, so a PQL query on Drafts never
 // leaks published issues into the view — the mock models that
 // server-side selection (the draft endpoint never returns the
-// published issue, whatever the predicate). No Views save path on
-// this page yet (Board precedent), so the editor passes
-// showSaveHint={false}; wave 2 wires the menu and flips it.
+// published issue, whatever the predicate). C111T4 wired the
+// detail-mode Views menu beside the toggle, so the editor passes
+// showSaveHint={true} with the corrected hint text.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -22,6 +22,15 @@ import {
 } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+// C111T4: Drafts now mounts the detail-mode SavedViewsMenu, whose
+// useSavedViews hook reads useAuth; the real provider needs a
+// session — stub the auth context (GanttPql.test.tsx pattern).
+// The menu itself is untested here (projectId stays "" — this
+// file's mock has no project endpoint — so its views query stays
+// disabled); DraftsSavedViews.test.tsx covers the menu path.
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 import Drafts from "./Drafts";
 import { api, ApiError } from "../lib/api";
 import type { Issue } from "../lib/types";
@@ -247,21 +256,17 @@ describe("drafts PQL mode (C111T2)", () => {
     expect(pqlCallsAfter).toBeGreaterThan(pqlCallsBefore);
   });
 
-  it("the PQL editor shows no save hint — no Views save path on this page yet", async () => {
+  it("the PQL editor shows the corrected save hint — the detail-mode menu is now the save path", async () => {
     renderPage();
     await waitForDrafts();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
     await screen.findByLabelText("PQL query");
-    // Wave 2 wires the detail-mode menu and flips showSaveHint.
+    // C111T4: the detail-mode Views menu beside the toggle is now
+    // the save path, so the corrected save hint is shown.
     expect(
-      screen.queryByText(
-        "To save this query, use Views → Save current view in the page header; it re-applies when the view is opened.",
-      ),
-    ).toBeNull();
-    expect(
-      screen.queryByText(
+      screen.getByText(
         "To save this query, use Views → Save current view next to the All drafts / PQL toggle; it re-applies when the view is opened.",
       ),
-    ).toBeNull();
+    ).toBeTruthy();
   });
 });
