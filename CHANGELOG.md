@@ -5,6 +5,26 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL mode on the date views (cycle 109)**
+
+- Calendar, Gantt, and Roadmap now have the All-issues / PQL
+  toggle, probe-first apply, and the keyed PQL editor from
+  the detail-page pattern: a PQL query narrows the bars,
+  cells, buckets, and the undated/unscheduled lanes, and
+  leaving PQL mode restores the unfiltered view. The backend
+  gap behind it is closed too: the date window now survives
+  PQL mode (`?due_after/before`, `?start_after/before`, and
+  `?undated=1` AND server-side with the predicate, like the
+  cycle/module/epic scope containers), where it was
+  previously silently dropped. A PQL date predicate ANDs
+  with the window instead of replacing it; `due_date_empty`
+  stays a zeroed visual filter in PQL mode. Drag-reschedule
+  keeps working in PQL mode on both Calendar and Gantt
+  (mutations target the issue; the filtered sets refetch on
+  settle). The editors hide the save hint (Board precedent —
+  no Views save path on these pages yet); saved-views wiring
+  on the date views is the next cycle's design question.
+
 **PQL mode + saved views on the Epic detail page (cycle 108)**
 
 - The Epic detail page now has the same PQL story as cycle and
