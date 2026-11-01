@@ -2946,7 +2946,9 @@ type ListIssuesInput struct {
 	Parents []string
 	// Epics filters on the epic_issues junction (C75T0): epic UUIDs,
 	// OR-matched; the sentinel "none" matches issues in no epic
-	// (NOT EXISTS on the junction).
+	// (NOT EXISTS on the junction). C108T0: Epics is also a scope
+	// container like Cycle/Module — it survives PQL mode
+	// (withoutVisualFilters) and ANDs with the PQL predicate.
 	Epics []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
@@ -2994,9 +2996,10 @@ type ListIssuesInput struct {
 	// list (see pql.go). When non-blank, ListIssues ignores every
 	// visual filter on this input (withoutVisualFilters) and appends
 	// the translated PQL condition instead — EXCEPT the scope
-	// containers Cycle and Module (C95T0), which survive and AND
-	// with the PQL predicate, so a query run inside a cycle/module
-	// stays inside it. Sort/pagination still apply, with one C98T0
+	// containers Cycle, Module (C95T0), and Epics (C108T0), which
+	// survive and AND with the PQL predicate, so a query run inside
+	// a cycle/module/epic stays inside it. Sort/pagination still
+	// apply, with one C98T0
 	// precedence rule: a PQL ORDER BY clause wins over OrderBy (the
 	// query is self-contained); without one, OrderBy applies exactly
 	// as today. The EFFECTIVE order (PQL ORDER BY if present, else
@@ -3412,9 +3415,12 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	// a silent AND of two filter modes. C95T0: the scope containers
 	// Cycle and Module are the exception — they survive
 	// withoutVisualFilters and AND with the PQL predicate, so a
-	// query run inside a cycle/module stays inside it. The zeroing
-	// happens before validation so a stale invalid visual value
-	// cannot 400 a PQL request either.
+	// query run inside a cycle/module stays inside it. C108T0 adds
+	// Epics to that exception, same shape: a query run inside an
+	// epic stays inside it. The zeroing happens before validation
+	// so a stale invalid visual value cannot 400 a PQL request
+	// either — but a scope value itself is still validated (a bad
+	// epic UUID 400s, never silently empties the list).
 	if strings.TrimSpace(in.PQL) != "" {
 		in = in.withoutVisualFilters()
 	}

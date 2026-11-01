@@ -97,20 +97,23 @@ package service
 // user input is never interpolated into SQL; only the operator and
 // column (both from fixed whitelists) appear literally.
 //
-// Scope-survives contract (C95T0): Cycle and Module are scope
-// containers, not filter dimensions. When PQL is present,
-// withoutVisualFilters zeroes every visual filter dimension (state,
-// labels, assignees, priorities, dates, epics, parents, text) but
-// leaves Cycle and Module untouched, so the translated PQL predicate
-// ANDs with the scope condition: a query run inside a cycle or
-// module stays inside it. A foreign cycle/module UUID therefore
-// yields an empty list by construction (the project predicate in the
-// list query confines the scope, same as the cycle scope today).
+// Scope-survives contract (C95T0, extended C108T0): Cycle, Module,
+// and Epics are scope containers, not filter dimensions. When PQL is
+// present, withoutVisualFilters zeroes every visual filter dimension
+// (state, labels, assignees, priorities, dates, parents, text) but
+// leaves Cycle, Module, and Epics untouched, so the translated PQL
+// predicate ANDs with the scope condition: a query run inside a cycle,
+// module, or epic stays inside it. A foreign cycle/module/epic UUID
+// therefore yields an empty list by construction (the project
+// predicate in the list query confines the scope, same as the cycle
+// scope today). In PQL mode the ?epic= scope is addressed by UUID,
+// while a PQL `epic = "Name"` predicate resolves by name — the two
+// AND, they do not conflict.
 //
 // OUT of scope (documented, not silently cut): AI text-to-PQL
 // generation, and PQL on dashboards lists.
-// Cycle/module detail lists are queryable through the scope params:
-// ?cycle= / ?module= survive PQL mode (this contract); the
+// Cycle/module/epic detail lists are queryable through the scope params:
+// ?cycle= / ?module= / ?epic= survive PQL mode (this contract); the
 // detail-page PQL UI lands separately.
 
 import (
@@ -823,10 +826,15 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 // filter zeroed. ListIssues applies it whenever PQL is present so the
 // "PQL wins, visual filters ignored" contract holds for direct service
 // callers too, not just the HTTP handler. Scope containers (Cycle,
-// Module) are NOT zeroed — they survive PQL mode and AND with the
-// PQL predicate (C95T0 scope-survives contract, see the package
-// header). Sort, pagination, fieldset, and list-mode flags
-// (archived, draft, sequence lookup) are kept.
+// Module, and — C108T0 — Epics) are NOT zeroed — they survive PQL
+// mode and AND with the PQL predicate (C95T0 scope-survives contract,
+// see the package header). Semantic (C108T0): in PQL mode the ?epic=
+// param is a scope container addressed by UUID, while a PQL
+// `epic = "Name"` predicate resolves by name — the two AND, they do
+// not conflict, so a predicate naming a different epic than the scope
+// param yields an empty list by construction. Sort, pagination,
+// fieldset, and list-mode flags (archived, draft, sequence lookup)
+// are kept.
 func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.State = ""
 	in.Q = ""
@@ -835,7 +843,7 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.Assignees = nil
 	in.EstimatePoints = nil
 	in.Parents = nil
-	in.Epics = nil
+	// Epics deliberately NOT zeroed (C108T0): scope container, see above.
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
