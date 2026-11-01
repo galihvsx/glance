@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Link2 } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
+import PqlEditor from "../components/issue/PqlEditor";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Button } from "../components/ui/button";
@@ -122,25 +123,82 @@ export default function Gantt() {
   const months = useMemo(() => ganttMonths(days), [days]);
   const rfc = (day: string) => `${day}T00:00:00Z`;
 
+  // C109T2: PQL mode on the Gantt view (Cycles detail pattern). PQL
+  // mode changes ONLY which issues render: the same three window
+  // queries run with &pql= appended, the window navigation below
+  // keeps the applied query (windowStart is in every key), and
+  // leaving PQL mode clears the query so the unfiltered sets —
+  // already cached under the visual keys — come back at once.
+  // Query keys carry the mode + applied query, so PQL and visual
+  // caches never cross-contaminate. A LIMIT query needs no
+  // special-casing: the server returns next_cursor null, so the
+  // fetchAllIssues cursor loop stops after one page.
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const activePql = pqlMode ? appliedQuery.trim() : "";
+  const pqlSuffix = activePql ? `&pql=${encodeURIComponent(activePql)}` : "";
+  const pqlKey = pqlMode ? "pql" : "all";
+
+  // Probe-first apply (Cycles pattern): fetch one page of each
+  // window query with the candidate query and commit only on
+  // success. A 400 rejects, so PqlEditor shows it inline and the
+  // displayed bars are untouched (appliedQuery — and therefore
+  // every query key — never changes).
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    const probe = (params: Record<string, string>) => {
+      const p = new URLSearchParams({
+        ...params,
+        pql: q,
+        per_page: "100",
+        include_links: "1",
+      });
+      return api.get(`${base}/issues?${p.toString()}`);
+    };
+    await Promise.all([
+      probe({ due_after: rfc(windowStart), due_before: rfc(windowEnd) }),
+      probe({ start_after: rfc(windowStart), start_before: rfc(windowEnd) }),
+      probe({ undated: "1" }),
+    ]);
+    setAppliedQuery(q);
+  }
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the unfiltered
+    // window sets (already cached) are restored immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+
   // Three bounded queries (same pattern as the calendar view), each with
   // ?include_links=1 so dependency edges arrive in one shot — no N+1.
+  // In PQL mode each also carries &pql=, so the filtered set carries
+  // its edges; an edge to an issue outside the filtered set simply
+  // does not render, same as today's out-of-window endpoint behavior.
   const dueQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "due", windowStart],
+    queryKey: ["gantt", slug, identifier, "due", windowStart, pqlKey, activePql],
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?due_after=${rfc(windowStart)}&due_before=${rfc(windowEnd)}`,
+        `${base}/issues?due_after=${rfc(windowStart)}&due_before=${rfc(windowEnd)}${pqlSuffix}`,
       ),
   });
   const startQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "start", windowStart],
+    queryKey: ["gantt", slug, identifier, "start", windowStart, pqlKey, activePql],
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?start_after=${rfc(windowStart)}&start_before=${rfc(windowEnd)}`,
+        `${base}/issues?start_after=${rfc(windowStart)}&start_before=${rfc(windowEnd)}${pqlSuffix}`,
       ),
   });
   const undatedQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "undated"],
-    queryFn: () => fetchAllIssues(`${base}/issues?undated=1`),
+    queryKey: ["gantt", slug, identifier, "undated", pqlKey, activePql],
+    queryFn: () => fetchAllIssues(`${base}/issues?undated=1${pqlSuffix}`),
   });
 
   const statesQuery = useQuery({
@@ -315,6 +373,10 @@ export default function Gantt() {
         target_date: end,
       }),
     onSuccess: () => {
+      // C109T2: the drag targets the issue, not the query, so it
+      // works on visible bars in PQL mode too. The ["gantt"]
+      // prefix covers BOTH the visual keys (..."all",...) and the
+      // PQL keys (..."pql", query), so neither shows a stale bar.
       void queryClient.invalidateQueries({ queryKey: ["gantt"] });
     },
   });
@@ -486,6 +548,51 @@ export default function Gantt() {
             </span>
           )}
         </div>
+        {/* C109T2: All-issues / PQL toggle + editor, above the
+            timeline (Cycles detail pattern). No Views save path on
+            this page yet — Board precedent — so showSaveHint is
+            false. The editor is keyed by the applied query:
+            PqlEditor's draft is initial-value-only, so without the
+            key a re-apply would leave a stale draft (C107 lesson). */}
+        <div className="flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Issue list mode"
+            className="flex flex-1 rounded-md border p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => handlePqlModeChange("all")}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                !pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              All issues
+            </button>
+            <button
+              type="button"
+              aria-pressed={pqlMode}
+              onClick={() => handlePqlModeChange("pql")}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              PQL
+            </button>
+          </div>
+        </div>
+        {pqlMode && (
+          <PqlEditor
+            key={appliedQuery}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => {
+              setAppliedQuery("");
+            }}
+            showSaveHint={false}
+          />
+        )}
         {linkUi.linkMode && canEdit && (
           <div className="flex items-center gap-2 text-[11px] text-ink-muted">
             <span>
