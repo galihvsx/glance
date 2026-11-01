@@ -151,10 +151,15 @@ describe("module detail PQL mode (C95T2)", () => {
       expect(screen.getByText("Started work")).toBeTruthy();
       expect(screen.queryByText("Done work")).toBeNull();
     });
-    expect(pqlCalls).toHaveLength(1);
-    const params = new URLSearchParams(pqlCalls[0].split("?")[1]);
-    expect(params.get("module")).toBe(MODULE_ID);
-    expect(params.get("pql")).toBe("priority = High");
+    // C103T1: apply is probe-first (one single-page probe) plus the
+    // React Query fetch, so exactly two PQL GETs — both carrying
+    // module + pql.
+    expect(pqlCalls).toHaveLength(2);
+    for (const call of pqlCalls) {
+      const params = new URLSearchParams(call.split("?")[1]);
+      expect(params.get("module")).toBe(MODULE_ID);
+      expect(params.get("pql")).toBe("priority = High");
+    }
   });
 
   it("module detail PQL editor hides the save hint (C96T1: no Views menu on detail pages)", async () => {
@@ -195,6 +200,23 @@ describe("module detail PQL mode (C95T2)", () => {
     expect(screen.getByText("Done work")).toBeTruthy();
   });
 
+  it("clear in PQL mode restores the full list without leaving the mode", async () => {
+    renderPage();
+    await openDetail();
+    await enterPqlMode();
+    await applyQuery("priority = High");
+    await waitFor(() => {
+      expect(screen.queryByText("Open work")).toBeNull();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => {
+      expect(screen.getByText("Open work")).toBeTruthy();
+      expect(screen.getByText("Done work")).toBeTruthy();
+    });
+    // Still in PQL mode: the editor is still rendered.
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+
   it("leaving PQL mode restores the full list", async () => {
     renderPage();
     await openDetail();
@@ -210,5 +232,138 @@ describe("module detail PQL mode (C95T2)", () => {
       expect(screen.getByText("Done work")).toBeTruthy();
     });
     expect(screen.queryByLabelText("PQL query")).toBeNull();
+  });
+});
+
+describe("module detail PQL refetch on membership mutation (C103T1)", () => {
+  const candidate = issue("i-new", "ENG-5", "New urgent work", "st-started");
+
+  function renderPageC103() {
+    // Stateful mock: membership and the PQL-filtered result change
+    // only after a membership mutation, so a refetch is observable
+    // as a new PQL GET carrying the same query text plus a new list.
+    stubMatchMedia(false);
+    let added = false;
+    let removed = false;
+    const pqlCalls: string[] = [];
+    const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+      if (path === "/api/v1/workspaces") return Promise.resolve({ workspaces: [] });
+      if (path === "/api/v1/workspaces/acme") return Promise.resolve({ role: 5 });
+      if (path === "/api/v1/workspaces/acme/members") return Promise.resolve({ members: [] });
+      if (path === `${BASE}/states`) return Promise.resolve({ states });
+      if (path === `${BASE}/modules`) return Promise.resolve({ modules: [moduleRow] });
+      if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
+        let list = membership;
+        if (removed) list = list.filter((i) => i.id !== "i-started");
+        if (added) list = [...list, candidate];
+        return Promise.resolve({ issues: list });
+      }
+      if (path.startsWith(`${BASE}/issues?`)) {
+        const params = new URLSearchParams(path.split("?")[1]);
+        if (params.get("pql") !== null) {
+          pqlCalls.push(path);
+          if (removed) return Promise.resolve({ results: [], next_cursor: undefined });
+          if (added) {
+            return Promise.resolve({
+              results: [membership.find((i) => i.id === "i-started")!, candidate],
+              next_cursor: undefined,
+            });
+          }
+          // PQL fetch returns only the started issue (as if it matched).
+          return Promise.resolve({ results: [membership.find((i) => i.id === "i-started")!], next_cursor: undefined });
+        }
+        // Board-issues fetch for the add dialog: all project issues.
+        return Promise.resolve({ results: [...membership, candidate], next_cursor: undefined });
+      }
+      return Promise.reject(new Error(`unexpected GET ${path}`));
+    });
+    const post = vi.spyOn(api, "post").mockImplementation((path: string) => {
+      if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
+        added = true;
+        return Promise.resolve({});
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const del = vi.spyOn(api, "del").mockImplementation((path: string) => {
+      if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
+        removed = true;
+        return Promise.resolve(undefined);
+      }
+      return Promise.reject(new Error(`unexpected DELETE ${path}`));
+    });
+    const qc = makeQueryClient();
+    render(
+      <MemoryRouter initialEntries={["/w/acme/p/ENG/modules"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/w/:slug/p/:identifier/modules" element={<Modules />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return { get, post, del, pqlCalls };
+  }
+
+  function pqlParams(calls: string[]) {
+    return calls.map((c) => new URLSearchParams(c.split("?")[1]));
+  }
+
+  it("removing an issue re-runs the same committed PQL query and updates the filtered list", async () => {
+    const { pqlCalls } = renderPageC103();
+    await openDetail();
+    await enterPqlMode();
+    await applyQuery("priority = High");
+    await waitFor(() => {
+      expect(screen.queryByText("Open work")).toBeNull();
+      expect(screen.getByText("Started work")).toBeTruthy();
+    });
+    const before = pqlCalls.length;
+    expect(before).toBeGreaterThan(0);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove ENG-2 from module" }),
+    );
+
+    // Same query text, re-fetched: the removed issue leaves the
+    // filtered list in place, without leaving PQL mode.
+    await screen.findByText("No issues in this module match this query");
+    expect(pqlCalls.length).toBeGreaterThan(before);
+    for (const params of pqlParams(pqlCalls)) {
+      expect(params.get("module")).toBe(MODULE_ID);
+      expect(params.get("pql")).toBe("priority = High");
+    }
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+
+  it("adding issues re-runs the same committed PQL query and updates the filtered list", async () => {
+    const { pqlCalls } = renderPageC103();
+    await openDetail();
+    await enterPqlMode();
+    await applyQuery("priority = High");
+    await waitFor(() => {
+      expect(screen.queryByText("Open work")).toBeNull();
+      expect(screen.getByText("Started work")).toBeTruthy();
+    });
+    expect(screen.queryByText("New urgent work")).toBeNull();
+    const before = pqlCalls.length;
+    expect(before).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add issues" }));
+    const checkbox = await screen.findByRole("checkbox", { name: /ENG-5/ });
+    fireEvent.click(checkbox);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add 1 issue" }),
+    );
+
+    // Same query text, re-fetched: the newly added matching issue
+    // appears, and the non-matching membership issue stays hidden.
+    await screen.findByText("New urgent work");
+    expect(pqlCalls.length).toBeGreaterThan(before);
+    for (const params of pqlParams(pqlCalls)) {
+      expect(params.get("module")).toBe(MODULE_ID);
+      expect(params.get("pql")).toBe("priority = High");
+    }
+    expect(screen.queryByText("Open work")).toBeNull();
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
   });
 });
