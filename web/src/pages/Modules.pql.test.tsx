@@ -198,11 +198,18 @@ describe("module detail PQL mode (C95T2)", () => {
     }
   });
 
-  it("module detail PQL editor hides the save hint (C96T1: no Views menu on detail pages)", async () => {
+  it("module detail PQL editor shows the corrected save hint (C108T1)", async () => {
     renderPage();
     await openDetail();
     await enterPqlMode();
-    expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
+    // Corrected wording: the detail-mode Views menu sits next to
+    // the All issues / PQL toggle (C107), not in the page header.
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/in the page header/)).toBeNull();
   });
 
   it("progress counts stay on the unfiltered membership list in PQL mode", async () => {
