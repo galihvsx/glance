@@ -18,6 +18,9 @@ import {
 } from "../lib/drafts";
 import type { IssueListResult } from "../lib/types";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError } from "../lib/pql";
 import { relativeTime } from "../lib/relativeTime";
 import PageHeader from "../components/shell/PageHeader";
 import EmptyState from "../components/personal/EmptyState";
@@ -56,13 +59,30 @@ export default function Drafts() {
   // draft mode selects is_draft = TRUE server-side, so a PQL query
   // on Drafts never leaks published issues into the view (contrast
   // Archived, where archived=1 only includes and the page keeps a
-  // client-side archived_at != null filter). No Views save path on
-  // this page yet (Board precedent), so the editor passes
-  // showSaveHint={false}; wave 2 wires the detail-mode menu and
-  // flips it — do not add the menu here.
+  // client-side archived_at != null filter). C111T4: the detail-mode
+  // SavedViewsMenu below is now the Views save path, so the editor
+  // passes showSaveHint={true} with the corrected C108T1 hint text.
+  // A view apply never shows published issues — draft mode is the
+  // scope, same as a typed query: handleSavedViewApplied probes
+  // through handlePqlApply, which already carries draft=true, so
+  // the server-side is_draft selection applies to view applies
+  // exactly as to typed queries.
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C111T4: same ["project", slug, identifier] query Issues/Board
+  // use — the menu needs a project UUID, and the shared key is
+  // cache-warm whenever the user came from another project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<{ id: string }>(base),
+  });
+  // C111T4: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled.
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlDraftsQuery = useQuery({
     queryKey: ["drafts-pql", slug, identifier, appliedQuery],
     enabled:
@@ -92,6 +112,7 @@ export default function Drafts() {
     });
     await api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
     setAppliedQuery(q);
+    setSavedViewError(null);
   }
   function handlePqlModeChange(mode: "all" | "pql") {
     if (mode === "pql") {
@@ -102,6 +123,34 @@ export default function Drafts() {
     // draft list (already cached) is restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+  // C111T4: applying a saved PQL view from the detail-mode menu,
+  // copying the Cycles shape verbatim. Probe FIRST, then enter PQL
+  // mode: the probe commits appliedQuery while still in all-drafts
+  // mode (displayedDrafts is unaffected until pqlMode flips), so the
+  // editor mounts seeded with the applied query. A 400 leaves
+  // appliedQuery untouched — the list never changes — and the error
+  // surfaces in the detail-level alert (the editor cannot show it:
+  // it mounts fresh with an empty draft). The menu ignores this
+  // handler's return value, so the catch here is load-bearing:
+  // without it the rejected probe would be an unhandled rejection.
+  // Null is unreachable from the detail-mode menu (PQL views only)
+  // and mirrors Cycles: leave PQL mode. No URL writes, no default
+  // auto-apply, PQL views only.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
   // While a committed PQL query is still loading, keep showing the
   // unfiltered list rather than blanking it — the filtered list
@@ -155,7 +204,11 @@ export default function Drafts() {
         {/* C111T2: All-drafts / PQL toggle + editor, above the draft
             list (Cycles detail pattern verbatim). PQL mode changes
             ONLY the displayed list; Publish / Discard work on the
-            displayed rows and re-run the list in place. */}
+            displayed rows and re-run the list in place. C111T4:
+            detail toolbar — the toggle plus the detail-mode
+            SavedViewsMenu beside it. Detail mode guarantees no URL
+            writes and no default auto-apply, so the page settles
+            PQL state through onViewApplied only. */}
         <div className="flex items-center gap-2">
           <div
             role="group"
@@ -183,7 +236,22 @@ export default function Drafts() {
               PQL
             </button>
           </div>
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+            detailMode
+          />
         </div>
+        {savedViewError && (
+          <Alert variant="destructive">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so without this a re-apply would
@@ -196,7 +264,8 @@ export default function Drafts() {
             onClear={() => {
               setAppliedQuery("");
             }}
-            showSaveHint={false}
+            showSaveHint={true}
+            saveHintText="To save this query, use Views → Save current view next to the All drafts / PQL toggle; it re-applies when the view is opened."
           />
         )}
 
