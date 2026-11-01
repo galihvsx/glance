@@ -29,7 +29,10 @@ func RegisterMyWorkRoutes(e *echo.Echo, h *MyWorkHandler) {
 
 // listMyIssues implements GET /api/v1/workspaces/{slug}/my-issues.
 // ?filter=assigned|created|watched (default assigned), ?limit=1..200
-// (default 100).
+// (default 100), ?pql= (C112T0: workspace-scoped PQL, ANDed with the
+// filter + base predicates; blank degrades to the unfiltered filter
+// list; a probe failure 400s with message + position, the C91
+// contract, so the PQL editor can underline the offending token).
 func (h *MyWorkHandler) listMyIssues(c *echo.Context) error {
 	u := CurrentUser(c)
 	if u == nil {
@@ -44,9 +47,17 @@ func (h *MyWorkHandler) listMyIssues(c *echo.Context) error {
 		}
 		limit = n
 	}
-	items, err := service.ListMyWork(c.Request().Context(), h.Pool,
-		c.Param("slug"), u.ID, filter, limit)
+	items, err := service.ListMyWorkPQL(c.Request().Context(), h.Pool,
+		c.Param("slug"), u.ID, filter, limit, c.QueryParam("pql"))
 	if err != nil {
+		var pqlErr *service.PQLQueryError
+		if errors.As(err, &pqlErr) {
+			var details any
+			if pqlErr.Pos > 0 {
+				details = map[string]any{"position": pqlErr.Pos}
+			}
+			return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, pqlErr.Msg, details)
+		}
 		switch {
 		case errors.Is(err, service.ErrNotFound):
 			return WriteError(c, http.StatusNotFound, ErrCodeNotFound, "workspace not found", nil)
