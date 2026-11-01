@@ -238,6 +238,15 @@ export default function Modules() {
     void queryClient.invalidateQueries({
       queryKey: ["module-issues", slug, identifier, selectedId],
     });
+    // C103T1: the displayed module's PQL-filtered list is a separate
+    // query key — prefix-invalidate it too (Board/Cycles pattern),
+    // so a committed PQL query re-runs in place after either
+    // membership mutation (add-issues dialog or row-level Remove).
+    // Harmless when PQL mode is inactive: that query is disabled
+    // and only refetches on next enable.
+    void queryClient.invalidateQueries({
+      queryKey: ["module-issues-pql", slug, identifier, selectedId],
+    });
   };
 
   const errMsg = (e: unknown, fallback: string) =>
@@ -706,9 +715,53 @@ function ModuleDetail({
   // on error. Leaving PQL mode clears the filtered list and restores
   // the full membership list. No visual filter bar, no save-as-view
   // on this page (both out of this cycle).
+  // C103T1: the PQL fetch is a React Query (Cycles/Board pattern)
+  // keyed ["module-issues-pql", slug, identifier, module.id,
+  // appliedQuery], so the parent's shared invalidate() re-runs the
+  // committed query in place after a membership mutation.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
-  const [pqlIssues, setPqlIssues] = useState<Issue[] | null>(null);
+  const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+  const pqlIssuesQuery = useQuery({
+    queryKey: ["module-issues-pql", slug, identifier, module.id, appliedQuery],
+    enabled: pqlMode && appliedQuery.trim() !== "",
+    queryFn: async () => {
+      // C98T1: a LIMIT query is a single page (the server always
+      // returns next_cursor null), so skip the cursor loop and fetch
+      // once.
+      if (pqlHasLimit(appliedQuery)) {
+        const p = buildPqlRequestParams(appliedQuery, {
+          orderBy: "sort_order",
+          perPage: 100,
+        });
+        p.set("module", module.id);
+        const page = await api.get<{
+          results: Issue[];
+          next_cursor?: string;
+        }>(`${base}/issues?${p.toString()}`);
+        return page.results;
+      }
+      const all: Issue[] = [];
+      let cursor: string | undefined;
+      do {
+        // Scope param first-class: the module scope survives PQL mode
+        // (C95T0 contract) and ANDs with the predicate server-side.
+        const p = buildPqlRequestParams(appliedQuery, {
+          orderBy: "sort_order",
+          perPage: 100,
+          cursor,
+        });
+        p.set("module", module.id);
+        const page = await api.get<{
+          results: Issue[];
+          next_cursor?: string;
+        }>(`${base}/issues?${p.toString()}`);
+        all.push(...page.results);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return all;
+    },
+  });
 
   const counts = progressCounts(issues, states);
   const lead = members.find((m) => m.id === module.lead_id);
@@ -717,70 +770,44 @@ function ModuleDetail({
     [states],
   );
 
+  // While a committed PQL query is still loading, keep showing the
+  // membership list rather than blanking it — the filtered list
+  // replaces it as soon as it arrives (Cycles pattern).
   const displayedIssues =
-    pqlMode && appliedQuery && pqlIssues !== null ? pqlIssues : issues;
+    pqlMode && appliedQuery.trim() !== ""
+      ? (pqlIssuesQuery.data ?? issues)
+      : issues;
 
-  async function fetchPqlIssues(query: string): Promise<Issue[]> {
-    const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
-    // C98T1: a LIMIT query is a single page (the server always
-    // returns next_cursor null), so skip the cursor loop and fetch
-    // once. This also covers the probe-first apply, which shares
-    // this fetch.
-    if (pqlHasLimit(query)) {
-      const p = buildPqlRequestParams(query, {
-        orderBy: "sort_order",
-        perPage: 100,
-      });
-      p.set("module", module.id);
-      const page = await api.get<{
-        results: Issue[];
-        next_cursor?: string;
-      }>(`${base}/issues?${p.toString()}`);
-      return page.results;
-    }
-    const all: Issue[] = [];
-    let cursor: string | undefined;
-    do {
-      // Scope param first-class: the module scope survives PQL mode
-      // (C95T0 contract) and ANDs with the predicate server-side.
-      const p = buildPqlRequestParams(query, {
-        orderBy: "sort_order",
-        perPage: 100,
-        cursor,
-      });
-      p.set("module", module.id);
-      const page = await api.get<{
-        results: Issue[];
-        next_cursor?: string;
-      }>(`${base}/issues?${p.toString()}`);
-      all.push(...page.results);
-      cursor = page.next_cursor;
-    } while (cursor);
-    return all;
-  }
-
+  // Probe-first apply (Cycles pattern): fetch one page with module
+  // + pql and commit only on success. A 400 rejects, so PqlEditor
+  // shows it inline and the displayed list is untouched
+  // (appliedQuery — and therefore displayedIssues — never changes).
+  // Empty query = no filter: stays in PQL mode, shows the full list.
   async function handlePqlApply(query: string): Promise<void> {
     const q = query.trim();
     if (!q) {
       setAppliedQuery("");
-      setPqlIssues(null);
       return;
     }
-    // Probe-first: fetch throws on a 400 before anything commits.
-    const results = await fetchPqlIssues(q);
+    const p = buildPqlRequestParams(q, {
+      orderBy: "sort_order",
+      perPage: 100,
+    });
+    p.set("module", module.id);
+    await api.get<{
+      results: Issue[];
+      next_cursor?: string;
+    }>(`${base}/issues?${p.toString()}`);
     setAppliedQuery(q);
-    setPqlIssues(results);
   }
 
   function handlePqlClear() {
     setAppliedQuery("");
-    setPqlIssues(null);
   }
 
   function exitPqlMode() {
     setPqlMode(false);
     setAppliedQuery("");
-    setPqlIssues(null);
   }
 
   const grouped = useMemo(() => {
