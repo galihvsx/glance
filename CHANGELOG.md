@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Multi-project PQL widgets (cycle 101)**
+
+- `pql_table` dashboard widgets now accept one or more projects
+  (previously pinned to exactly one): the stored query is
+  translated once per picked project — names resolve within each
+  project, as the PQL translator is single-project-scoped — and
+  the rows are a UNION ALL across projects. Ordering is global
+  over the union (the query's ORDER BY wins over the widget
+  sort, else the config sort + id tiebreak), and the query's
+  LIMIT caps the total rows across all projects, on every page
+  and in the CSV export. Empty `project_ids` is a 400; visual
+  `filters` are still rejected (PQL is the filter), and
+  drill-down is still unavailable. A widget configured with
+  exactly one project behaves exactly as in cycle 100.
+- A name that no longer resolves in one project surfaces as a
+  per-widget error naming that project (e.g. `in project
+  "Mobile App": ...`), with the rest of the dashboard still
+  loading; a project the viewer cannot access contributes zero
+  rows, not an error. The widget dialog's PQL panel now uses a
+  multi-project picker (save blocked with no project picked),
+  and the card shows the merged rows with the `project` column.
+  Empty-means-all project scope and AI text-to-PQL stay
+  deferred.
+
 **Dashboard PQL widget (cycle 100)**
 
 - Dashboards gain a thirteenth widget type, `pql_table`: a row list
