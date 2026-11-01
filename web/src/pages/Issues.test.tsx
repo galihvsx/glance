@@ -3,12 +3,24 @@
 // when navigated to with location.state { newIssue: true,
 // newIssueTargetDate }, and creating invalidates the calendar caches so the
 // new chip appears on its day.
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useSearchParams,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Issues from "./Issues";
+import { EMPTY_FILTERS } from "../lib/filters";
+import type { IssueViewRow } from "../lib/savedViews";
 import type { Issue } from "../lib/types";
 
 const BASE = "/api/v1/workspaces/acme/projects/ENG";
@@ -35,18 +47,25 @@ function mkIssue(over: Partial<Issue> & { id: string }): Issue {
 const mockState = vi.hoisted(() => ({
   posted: [] as { path: string; body: unknown }[],
   toastAdd: vi.fn(),
+  // C106T1: per-test views + a record of GET paths, so the
+  // default-view tests can serve a default and assert the list
+  // refetched under its filters.
+  views: [] as unknown[],
+  getPaths: [] as string[],
 }));
 
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((path: string) => {
+      mockState.getPaths.push(path);
       if (path.includes("/states")) return Promise.resolve({ states: [] });
       if (path.includes("/templates")) return Promise.resolve({ templates: [] });
       if (path.includes("/estimates")) return Promise.resolve({ estimates: [] });
       if (path.includes("/labels")) return Promise.resolve({ labels: [] });
       if (path.includes("/custom-fields"))
         return Promise.resolve({ custom_fields: [] });
-      if (path.includes("/views")) return Promise.resolve({ views: [] });
+      if (path.includes("/views"))
+        return Promise.resolve({ views: mockState.views });
       if (path.includes("/members")) return Promise.resolve({ members: [] });
       if (path.includes("/issues/similar")) return Promise.resolve([]);
       if (path.includes("/issues"))
@@ -88,20 +107,48 @@ vi.mock("../lib/auth", () => ({
   useAuth: () => ({ user: { id: "u", email: "u@x.com" }, loading: false }),
 }));
 
-function renderIssues(locationState?: unknown) {
+/** Echoes the router search string so tests can assert the URL a
+ *  default-view application writes (BoardPql.test.tsx pattern). */
+function SearchProbe() {
+  const [sp] = useSearchParams();
+  return <span data-testid="search">{sp.toString()}</span>;
+}
+
+function searchParam(name: string): string | null {
+  return new URLSearchParams(
+    screen.getByTestId("search").textContent ?? "",
+  ).get(name);
+}
+
+function listCalls(): URLSearchParams[] {
+  return mockState.getPaths
+    .filter((p) => p.includes("/issues?"))
+    .map((p) => new URLSearchParams(p.split("?")[1] ?? ""));
+}
+
+function renderIssues(
+  locationState?: unknown,
+  initialEntry = "/w/acme/p/ENG",
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const invalidateSpy = vi.spyOn(client, "invalidateQueries");
   render(
     <MemoryRouter
-      initialEntries={[
-        { pathname: "/w/acme/p/ENG", state: locationState ?? null },
-      ]}
+      initialEntries={[{ pathname: initialEntry.split("?")[0], search: initialEntry.includes("?") ? initialEntry.slice(initialEntry.indexOf("?")) : "", state: locationState ?? null }]}
     >
       <QueryClientProvider client={client}>
         <Routes>
-          <Route path="/w/:slug/p/:identifier" element={<Issues />} />
+          <Route
+            path="/w/:slug/p/:identifier"
+            element={
+              <>
+                <Issues />
+                <SearchProbe />
+              </>
+            }
+          />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -112,6 +159,8 @@ function renderIssues(locationState?: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockState.posted = [];
+  mockState.views = [];
+  mockState.getPaths = [];
 });
 
 describe("Issues create dialog date prefill (C26T3)", () => {
@@ -159,5 +208,56 @@ describe("Issues create dialog date prefill (C26T3)", () => {
     await waitFor(() => expect(mockState.posted).toHaveLength(1));
     expect(mockState.posted[0].body).toMatchObject({ name: "Undated issue" });
     expect(mockState.posted[0].body).not.toHaveProperty("target_date");
+  });
+});
+
+describe("default view auto-apply on mount (C106T1)", () => {
+  // Same mount sequence as Board: Issues mounts with the project
+  // query pending (menu gets projectId ""), the project resolves,
+  // the views load, and only then may the default apply. The auth
+  // stub's user is "u", so the default must be owned by "u" to be
+  // eligible (only own views auto-apply). No test touches the menu
+  // except the negative, where opening it proves the views loaded.
+  function makeViewRow(
+    name: string,
+    filters: IssueViewRow["filters"],
+    isDefault = false,
+  ): IssueViewRow {
+    return {
+      id: `v-${name}`,
+      name,
+      filters,
+      display: null,
+      is_default: isDefault,
+      shared: false,
+      owner_id: "u",
+      owner_name: "",
+      created_at: "",
+    };
+  }
+
+  it("visual default auto-applies on mount and the list refetches with its filters", async () => {
+    mockState.views = [
+      makeViewRow("Default login", { ...EMPTY_FILTERS, q: "login" }, true),
+    ];
+    renderIssues();
+    await waitFor(() => expect(searchParam("q")).toBe("login"));
+    expect(searchParam("pql")).toBeNull();
+    // The list's own fetch path carries the default's filters.
+    expect(listCalls().some((qs) => qs.get("q") === "login")).toBe(true);
+  });
+
+  it("default does NOT apply when the URL already carries filter params", async () => {
+    mockState.views = [
+      makeViewRow("Default login", { ...EMPTY_FILTERS, q: "login" }, true),
+    ];
+    renderIssues(null, "/w/acme/p/ENG?q=checkout");
+    // Opening the menu proves the views loaded — the effect has had
+    // its chance — so the URL below is a settled non-apply.
+    fireEvent.click(screen.getByRole("button", { name: "Saved views" }));
+    await screen.findByText("Default login");
+    expect(searchParam("q")).toBe("checkout");
+    expect(searchParam("pql")).toBeNull();
+    expect(listCalls().some((qs) => qs.get("q") === "login")).toBe(false);
   });
 });
