@@ -73,7 +73,7 @@ async function waitForProjectOptions() {
   // The PQL picker is the shared multi-select popover (C101T1):
   // open it and wait for the project rows to render.
   fireEvent.click(
-    screen.getByRole("button", { name: /Select projects|projects? selected/ }),
+    screen.getByRole("button", { name: /All projects|Select projects|projects? selected/ }),
   );
   await waitFor(() =>
     expect(screen.getByRole("checkbox", { name: "ENG" })).toBeInTheDocument(),
@@ -82,7 +82,7 @@ async function waitForProjectOptions() {
 
 function projectPickerTrigger() {
   return screen.getByRole("button", {
-    name: /Select projects|projects? selected/,
+    name: /All projects|Select projects|projects? selected/,
   });
 }
 
@@ -174,7 +174,7 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     expect(screen.getByText("state = Todo")).toBeInTheDocument();
   });
 
-  it("does not submit with 0 projects or a blank query", async () => {
+  it("does not submit with a blank query, but submits with 0 projects (all-projects scope, C102T1)", async () => {
     const { onSubmit } = renderDialog();
     selectType(/PQL table/);
     await waitForProjectOptions();
@@ -182,11 +182,15 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     const save = screen.getByRole("button", { name: /Add widget/ });
     // Blank query + no project: disabled.
     expect(save).toBeDisabled();
-    fillQuery('state = "In Progress"');
-    // Query filled but still no project: disabled.
-    expect(save).toBeDisabled();
     fireEvent.click(save);
     expect(onSubmit).not.toHaveBeenCalled();
+    fillQuery('state = "In Progress"');
+    // Query filled and no project picked: enabled — empty means all
+    // live, accessible workspace projects.
+    expect(save).not.toBeDisabled();
+    expect(projectPickerTrigger()).toHaveTextContent("All projects");
+    const form = await submit(onSubmit);
+    expect(form.config.project_ids).toEqual([]);
   });
 
   it("submits with 2 projects carried over from another type", async () => {
@@ -201,7 +205,7 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     await waitForProjectOptions();
     fillTitle("Open bugs");
     fillQuery('state = "In Progress"');
-    // Two projects carried over stay picked (C101T1: 1..N) and save
+    // Two projects carried over stay picked and save
     // is enabled; both land in the submitted config.
     expect(projectPickerTrigger()).toHaveTextContent("2 projects selected");
     expect(

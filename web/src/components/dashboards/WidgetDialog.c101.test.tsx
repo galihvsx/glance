@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-// C101T1: WidgetDialog PQL panel — multi-project picker (1..N):
-// picking two projects submits both, deselecting back to zero
-// blocks save again, and edit mode prefills two picked projects.
-// The config key set is otherwise exactly the C101T0 allow-list
+// C101T1: WidgetDialog PQL panel — multi-project picker:
+// picking two projects submits both, and edit mode prefills two
+// picked projects. The config key set is exactly the allow-list
 // (query, columns, sort_by, sort_dir, max_rows, project_ids —
-// never filters).
+// never filters). C102T1 updated the deselect-to-zero case: empty
+// now means all projects and keeps save enabled (see
+// WidgetDialog.c102.test.tsx for the full all-projects suite).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
@@ -78,7 +79,7 @@ function fillQuery(v: string) {
 
 function projectPickerTrigger() {
   return screen.getByRole("button", {
-    name: /Select projects|projects? selected/,
+    name: /All projects|Select projects|projects? selected/,
   });
 }
 
@@ -152,7 +153,7 @@ describe("WidgetDialog PQL panel multi-project picker (C101T1)", () => {
     expect(form.config.filters).toBeUndefined();
   });
 
-  it("blocks save again after deselecting back to zero projects", async () => {
+  it("keeps save enabled after deselecting back to zero projects (all-projects scope, C102T1)", async () => {
     const { onSubmit } = renderDialog();
     selectType(/PQL table/);
     await openProjectPicker();
@@ -164,14 +165,15 @@ describe("WidgetDialog PQL panel multi-project picker (C101T1)", () => {
       screen.getByRole("button", { name: /Add widget/ }),
     ).not.toBeDisabled();
     toggleProject("ENG");
-    expect(projectPickerTrigger()).toHaveTextContent("Select projects…");
+    expect(projectPickerTrigger()).toHaveTextContent("All projects");
     expect(
-      screen.getByText(/Select at least one project/),
-    ).toBeInTheDocument();
-    const save = screen.getByRole("button", { name: /Add widget/ });
-    expect(save).toBeDisabled();
-    fireEvent.click(save);
-    expect(onSubmit).not.toHaveBeenCalled();
+      screen.queryByText(/Select at least one project/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Add widget/ }),
+    ).not.toBeDisabled();
+    const form = await submit(onSubmit);
+    expect(form.config.project_ids).toEqual([]);
   });
 
   it("prefills two picked projects in edit mode and keeps save enabled", async () => {
