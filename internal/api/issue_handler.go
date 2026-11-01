@@ -408,6 +408,32 @@ func parseIssueListCommon(qp url.Values) (issueListCommon, error) {
 	}, nil
 }
 
+// parseRepeatIDList parses a repeatable AND comma-separated ID param
+// (C75T0: parent=/epic=). "none" is the top-level / no-epic sentinel
+// (the "none" convention of assignee=/estimate=); every other value
+// must be a UUID — garbage is 400 naming the bad value, never silently
+// ignored. The service re-validates (validateListFilterValues) as
+// defense-in-depth for direct internal callers. Shared by the visual
+// path and the PQL path (C108T0), so both validate ?epic= identically.
+func parseRepeatIDList(qp url.Values, name string) ([]string, error) {
+	var out []string
+	for _, raw := range qp[name] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if part != "none" {
+				if _, err := uuid.Parse(part); err != nil {
+					return nil, fmt.Errorf("invalid %s: %q is not a UUID or \"none\"", name, part)
+				}
+			}
+			out = append(out, part)
+		}
+	}
+	return out, nil
+}
+
 // parseIssueListInput parses the query params shared by the issue list
 // and the export endpoint (C8T3), so both honor identical filter
 // semantics. Pagination/sort params and list-mode flags come from
@@ -447,36 +473,11 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	labels := parseIDList("label")
 	assignees := parseIDList("assignee")
 	estimatePoints := parseIDList("estimate")
-	// C75T0: parent=/epic= take repeatable AND comma-separated values —
-	// parseIDList above only reads the first value, so this iterates
-	// every occurrence. "none" is the top-level / no-epic sentinel (the
-	// "none" convention of assignee=/estimate=); every other value must
-	// be a UUID — garbage is 400 naming the bad value, never silently
-	// ignored. The service re-validates (validateListFilterValues) as
-	// defense-in-depth for direct internal callers.
-	parseRepeatIDList := func(name string) ([]string, error) {
-		var out []string
-		for _, raw := range qp[name] {
-			for _, part := range strings.Split(raw, ",") {
-				part = strings.TrimSpace(part)
-				if part == "" {
-					continue
-				}
-				if part != "none" {
-					if _, err := uuid.Parse(part); err != nil {
-						return nil, fmt.Errorf("invalid %s: %q is not a UUID or \"none\"", name, part)
-					}
-				}
-				out = append(out, part)
-			}
-		}
-		return out, nil
-	}
-	parents, err := parseRepeatIDList("parent")
+	parents, err := parseRepeatIDList(qp, "parent")
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
-	epics, err := parseRepeatIDList("epic")
+	epics, err := parseRepeatIDList(qp, "epic")
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
@@ -568,8 +569,11 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 // the input, so the exclusivity contract holds end to end. C95T0
 // exception: the scope containers ?cycle= and ?module= ARE parsed
 // here — they are containers, not filter dimensions, and they survive
-// PQL mode (service withoutVisualFilters) and AND with the predicate,
-// so /issues?cycle=<uuid>&pql=... stays inside the cycle. A blank
+// PQL mode (service withoutVisualFilters) and AND with the predicate.
+// C108T0 adds ?epic= to that exception, same shape: the scope
+// container is parsed here (repeat-ID list, same UUID/"none"
+// validation and honest 400s as the visual path) and survives PQL
+// mode — so /issues?epic=<uuid>&pql=... stays inside the epic. A blank
 // ?pql= never reaches this function: listIssues treats it as absent
 // and parses the visual filters instead.
 func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
@@ -577,8 +581,13 @@ func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	epics, err := parseRepeatIDList(qp, "epic")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	return service.ListIssuesInput{
 		PQL:                     strings.TrimSpace(qp.Get("pql")),
+		Epics:                   epics,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		OrderBy:                 common.OrderBy,
@@ -599,7 +608,8 @@ func (h *IssueHandler) listIssues(c *echo.Context) error {
 	// visual filters entirely (they are not parsed, not validated, not
 	// applied). C95T0: the scope params ?cycle=/?module= are the one
 	// exception — they are parsed in PQL mode and AND with the
-	// predicate. A blank ?pql= is absent: the visual filters parse as
+	// predicate. C108T0 adds ?epic= to that exception, same shape.
+	// A blank ?pql= is absent: the visual filters parse as
 	// usual, so a cleared PQL editor degrades to an unfiltered list
 	// rather than a 400.
 	var in service.ListIssuesInput
