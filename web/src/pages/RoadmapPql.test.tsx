@@ -5,9 +5,10 @@
 // filtering. PQL mode changes ONLY which issues render: month
 // buckets and the Unscheduled lane are computed from the filtered
 // set. Default mode is byte-for-byte today's behavior (plain list,
-// cursor loop, bucket by target_date month). No Views save path on
-// this page yet (Board precedent), so the editor passes
-// showSaveHint={false}.
+// cursor loop, bucket by target_date month). C110T3 adds the
+// detail-mode SavedViewsMenu beside the toggle (see
+// RoadmapSavedViews.test.tsx) and flips the editor to the corrected
+// save hint.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +27,13 @@ import {
   makeQueryClient,
   stubMatchMedia,
 } from "../components/shell/test-utils";
+
+// C110T3 fix-up: Roadmap renders SavedViewsMenu → useAuth; the real
+// provider needs a session — stub the auth context (C108T3 fix-up
+// precedent in EpicDetail.test.tsx, same shape).
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 
 const BASE = "/api/v1/workspaces/acme/projects/ENG";
 
@@ -87,6 +95,20 @@ function renderPage() {
       return Promise.resolve({ workspaces: [] });
     if (path === "/api/v1/workspaces/acme")
       return Promise.resolve({ role: 15 });
+    // C110T3 fix-up: shared ["project", slug, identifier] query for
+    // the detail-mode SavedViewsMenu (its project UUID).
+    if (path === BASE)
+      return Promise.resolve({
+        id: "p-eng",
+        workspace_id: "w-acme",
+        identifier: "ENG",
+        name: "ENG",
+        description: "",
+        parallel_cycles: false,
+        labels: [],
+        created_at: "",
+        updated_at: "",
+      });
     if (path === `${BASE}/states`) return Promise.resolve({ states });
     if (path.startsWith(`${BASE}/issues`)) {
       const qs = new URLSearchParams(path.split("?")[1] ?? "");
@@ -281,11 +303,17 @@ describe("roadmap PQL mode (C109T3)", () => {
     expect(screen.getByLabelText("PQL query")).toBeTruthy();
   });
 
-  it("the PQL editor shows no Views save hint on this page", async () => {
+  it("the PQL editor shows the corrected save hint (C110T3)", async () => {
     renderPage();
     await waitForRoadmap();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
     await screen.findByLabelText("PQL query");
-    expect(screen.queryByText(/Save current view/)).toBeNull();
+    // C110T3 flips the hint with the wiring: the detail-mode Views
+    // menu beside the toggle is now the save path.
+    expect(
+      screen.getByText(
+        "To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened.",
+      ),
+    ).toBeTruthy();
   });
 });
