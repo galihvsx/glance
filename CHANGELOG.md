@@ -5,6 +5,24 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Saved views on cycle/module detail pages (cycle 107)**
+
+- Cycle and module detail pages now offer the saved-views menu
+  next to the All-issues / PQL toggle, closing the last gap in
+  the PQL save/apply contract: a PQL query on a detail page
+  can now be saved as a named view and re-applied, instead of
+  staying transient-only. The menu runs in a new detail mode
+  (no URL writes — detail pages do not read URL filters; no
+  default auto-apply — detail pages show membership by
+  default; PQL views only, since there is no visual filter
+  bar here). Applying a view goes through the existing
+  probe-first path with the cycle/module scope ANDed
+  server-side, so a bad saved query fails honestly with the
+  list untouched; progress counts and burndown keep reading
+  the unfiltered membership list. The editor re-seeds on
+  every apply, so re-applying while already in PQL mode
+  shows the new query instead of a stale draft.
+
 **Saved-views default auto-apply race fixed (cycle 106)**
 
 - A user's default saved view now actually auto-applies on
