@@ -2,9 +2,10 @@ package service
 
 // C101T0: multi-project pql_table widget config validation — the
 // C100 exactly-one pin widened to 1..N. Pure config parsing (no
-// database): 2 and 3 projects accepted, empty/missing project_ids
-// still 400, the filters-key rejection unchanged, group_by/metric
-// still accepted-but-ignored, ORDER BY + LIMIT still pass.
+// database): 2 and 3 projects accepted, the filters-key rejection
+// unchanged, group_by/metric still accepted-but-ignored, ORDER BY +
+// LIMIT still pass. (C102T0: empty/missing project_ids are no longer
+// 400 — empty-means-all, see dashboard_c102t0_test.go.)
 
 import (
 	"encoding/json"
@@ -30,8 +31,8 @@ func TestC101PQLMultiProjectRejects(t *testing.T) {
 		name string
 		raw  string
 	}{
-		{"empty project_ids", `{"query":"priority >= 0","project_ids":[]}`},
-		{"missing project_ids", `{"query":"priority >= 0"}`},
+		// C102T0: empty/missing project_ids are now ACCEPTED
+		// (empty-means-all — see dashboard_c102t0_test.go).
 		{"filters key with 2 projects", `{"query":"priority >= 0","project_ids":["` + c100ProjA + `","` + c100ProjB + `"],"filters":{"states":["` + c100ProjA + `"]}}`},
 		{"empty filters key with 2 projects", `{"query":"priority >= 0","project_ids":["` + c100ProjA + `","` + c100ProjB + `"],"filters":{}}`},
 		{"blank query with 2 projects", `{"query":"   ","project_ids":["` + c100ProjA + `","` + c100ProjB + `"]}`},

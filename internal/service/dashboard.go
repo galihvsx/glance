@@ -108,8 +108,11 @@ package service
 //     on failure — name resolution stays a compute-time concern, so a
 //     renamed state/epic/label surfaces per-widget at data time,
 //     annotated with the failing project's name when 2+ projects are
-//     pinned); project_ids must contain 1..N projects (empty is a
-//     400 — empty-means-all is a follow-up, not a silent widening);
+//     in scope); project_ids is empty-means-all (C102T0: absent or
+//     [] resolves at compute time to every non-archived,
+//     actor-accessible project of the workspace, the other
+//     row-list types' rule — a previously-rejected empty config
+//     is now valid, existing pinned configs unchanged);
 //     filters is REJECTED (PQL is the filter — a silently-ignored
 //     filters key would be a lie); group_by/metric
 //     accepted-but-ignored (row-list precedent). Query ORDER BY wins
@@ -979,12 +982,13 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		// Plus the PQL contract: query required and non-blank,
 		// parse + semantic validation at write time (name resolution
 		// stays compute-time — a renamed state/epic/label must still
-		// surface per-widget at data time), and 1..N pinned projects
-		// (C101T0 widening of the C100 exactly-one pin: the
-		// translator takes one projectID, so compute translates
-		// once per project and UNION ALLs the results; empty stays
-		// a 400 — empty-means-all is a follow-up, not a silent
-		// widening).
+		// surface per-widget at data time), and empty-means-all
+		// project scope (C102T0: absent or [] is valid and resolves
+		// at compute time through widgetProjectScope to every
+		// non-archived, actor-accessible workspace project, the
+		// other row-list types' rule — the C101 1..N pin is gone;
+		// the translator still translates once per resolved project
+		// and UNION ALLs the results).
 		cfg.groupBy = ""
 		if strings.TrimSpace(cfg.query) == "" {
 			return nil, fmt.Errorf("%w: query is required for %q widgets and must not be blank", ErrInvalidWidgetConfig, widgetType)
@@ -1000,8 +1004,11 @@ func parseWidgetConfig(widgetType string, raw json.RawMessage) (*widgetConfig, e
 		if err := ValidatePQL(parsed.Predicate); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInvalidWidgetConfig, err)
 		}
-		if len(cfg.projectIDs) < 1 {
-			return nil, fmt.Errorf("%w: project_ids must contain at least one project for %q widgets", ErrInvalidWidgetConfig, widgetType)
+		if len(cfg.projectIDs) == 0 {
+			// Empty means all: canonicalize to nil, like an absent
+			// key (widgetProjectScope treats both as "every live,
+			// accessible project").
+			cfg.projectIDs = nil
 		}
 		inCols := false
 		for _, c := range cfg.columns {
@@ -1862,8 +1869,8 @@ func resolveWidgetCompute(ctx context.Context, pool *pgxpool.Pool, widgetID, act
 // WidgetRowItem rows in the config's sort order (assigned_to_me forces
 // assignee = the caller at compute time). The C100T0 pql_table widget
 // returns the same rows shape: the rows matching the stored PQL query
-// (C101T0: translated once per pinned project, UNION ALLed, with ONE
-// global ORDER BY), in the query's ORDER BY when present
+// (C101T0: translated once per project in the resolved scope, UNION
+// ALLed, with ONE global ORDER BY), in the query's ORDER BY when present
 // (else the config sort + id tiebreak), with the query's LIMIT
 // capping the TOTAL rows across pages (total is the capped count, so
 // pages past the cap are empty rather than a lie about more rows).
@@ -2166,12 +2173,17 @@ func pqlWidgetOrderBy(parsed *pqlParsedQuery, cfg *widgetConfig) string {
 
 // computePQLRowItems runs the pql_table recompute: the stored query
 // re-parsed (parse-only at write time, so a re-parse here is cheap
-// and keeps the translator's input fresh). A one-project widget
-// keeps the C100 compute path verbatim (byte-identical behavior);
-// a multi-project widget translates once per pinned project and
-// UNION ALLs the per-project SELECTs (computePQLRowItemsMulti).
-// The base WHERE is the widget's project scope (each pinned project
-// intersected with the actor's effective access, C92T2 — an
+// and keeps the translator's input fresh). Dispatch is on the
+// RESOLVED scope (wc.projectIDs, already computed through
+// widgetProjectScope, C102T0): 0 → the multi path's existing empty
+// branch (an empty widget, total 0 — an empty-scope widget over a
+// workspace with no live, accessible projects, or a pinned widget
+// whose projects are all archived/unreachable); 1 → the C100
+// single-project path verbatim (byte-identical behavior for a
+// pinned reachable project, and identical for an empty-scope widget
+// over a one-project workspace); >1 → computePQLRowItemsMulti.
+// The base WHERE is the widget's resolved project scope (each
+// project intersected with the actor's effective access, C92T2 — an
 // unreachable pinned project silently yields zero rows, like every
 // other widget) plus live-issue liveness, ANDed with the PQL
 // predicate. Query ORDER BY wins over the config sort (C98
@@ -2181,14 +2193,7 @@ func pqlWidgetOrderBy(parsed *pqlParsedQuery, cfg *widgetConfig) string {
 // export honors the same cap).
 func computePQLRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
 	cfg := wc.cfg
-	if len(cfg.projectIDs) < 1 {
-		// Unreachable through validated writes (parseWidgetConfig
-		// enforces 1..N), but a corrupt stored config must fail
-		// as a config 400, never translate against a guessed
-		// project.
-		return nil, fmt.Errorf("%w: project_ids must contain at least one project for %q widgets", ErrInvalidWidgetConfig, wc.widget.WidgetType)
-	}
-	if len(cfg.projectIDs) == 1 {
+	if len(wc.projectIDs) == 1 {
 		return computePQLRowItemsSingle(ctx, pool, wc, actorID, page, paginate)
 	}
 	parsed, err := ParsePQLWithOrder(cfg.query)
@@ -2199,12 +2204,17 @@ func computePQLRowItems(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompu
 }
 
 // computePQLRowItemsSingle is the C100 compute path, untouched by
-// C101T0: the stored query translated against the single pinned
+// C101T0: the stored query translated against the single resolved
 // project via the existing translator (no forked PQL semantics —
 // state/epic/estimate/parent names resolve within that project,
 // unknown names are the PQL error with position), rows fetched
 // through the shared row-list SELECT. Kept verbatim so a
-// one-project widget behaves byte-identically to C100.
+// one-project widget behaves byte-identically to C100. C102T0: the
+// translation project is wc.projectIDs[0] (the resolved scope), not
+// cfg.projectIDs[0] — identical for a pinned reachable project
+// (the resolved scope preserves config order), and the only form in
+// which an empty-scope widget over a one-project workspace can take
+// this path at all.
 func computePQLRowItemsSingle(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, page int, paginate bool) (*WidgetData, error) {
 	cfg := wc.cfg
 	parsed, err := ParsePQLWithOrder(cfg.query)
@@ -2217,7 +2227,7 @@ func computePQLRowItemsSingle(ctx context.Context, pool *pgxpool.Pool, wc *widge
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
-	pred, err := translatePQL(ctx, pool, wc.dr.Dashboard.WorkspaceID, cfg.projectIDs[0], actorID, parsed.Predicate, arg)
+	pred, err := translatePQL(ctx, pool, wc.dr.Dashboard.WorkspaceID, wc.projectIDs[0], actorID, parsed.Predicate, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -2389,7 +2399,9 @@ func pqlProjectDisplayName(ctx context.Context, pool *pgxpool.Pool, projectID st
 // per-widget 400 with details. Projects outside the resolved scope
 // (unreachable, archived) contribute no branch at all — zero rows,
 // not an error, exactly as C92. An empty resolved scope is an empty
-// widget (total 0), not an error.
+// widget (total 0), not an error — C102T0 routes a resolved scope
+// of 0 here too, so an empty-scope widget over a workspace with no
+// live, accessible projects lands on this branch.
 func computePQLRowItemsMulti(ctx context.Context, pool *pgxpool.Pool, wc *widgetCompute, actorID string, parsed *pqlParsedQuery, page int, paginate bool) (*WidgetData, error) {
 	cfg := wc.cfg
 	maxRows := cfg.maxRows

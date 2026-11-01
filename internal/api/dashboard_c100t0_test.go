@@ -1,9 +1,10 @@
 package api
 
 // C100T0: dashboards backend over HTTP — the pql_table widget type.
-// A PQL-driven row list: config validation (blank query, 0/2+ pinned
-// projects, filters-key rejection, meaningless-key rejection, bad
-// syntax at write time), query ORDER BY (multi-key) winning over the
+// A PQL-driven row list: config validation (blank query,
+// filters-key rejection, meaningless-key rejection, bad syntax at
+// write time — C102T0: empty/missing project_ids are valid,
+// empty-means-all), query ORDER BY (multi-key) winning over the
 // config sort, LIMIT as a total cap across pages and in the CSV
 // export, pagination, the single-project scope, a renamed-name error
 // surfacing per-widget at data time without breaking other widgets,
@@ -52,10 +53,8 @@ func TestC100_PQLWriteValidation(t *testing.T) {
 	}{
 		{"missing query", `{"title":"t","widget_type":"pql_table","config":{"project_ids":["` + fx.wd.projAID + `"]}}`},
 		{"blank query", `{"title":"t","widget_type":"pql_table","config":{"query":"  ","project_ids":["` + fx.wd.projAID + `"]}}`},
-		{"no projects", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":[]}}`},
-		{"missing projects", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0"}}`},
-		// C101T0: two projects are now ACCEPTED (see
-		// dashboard_c101t0_test.go); the exactly-one pin is gone.
+		// C102T0: empty/missing project_ids are now ACCEPTED
+		// (empty-means-all — see dashboard_c102t0_test.go).
 		{"filters key", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":["` + fx.wd.projAID + `"],"filters":{"states":["` + fx.wd.backlogA + `"]}}}`},
 		{"visualization key", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >= 0","project_ids":["` + fx.wd.projAID + `"],"visualization":"table"}}`},
 		{"bad syntax", `{"title":"t","widget_type":"pql_table","config":{"query":"priority >=","project_ids":["` + fx.wd.projAID + `"]}}`},
