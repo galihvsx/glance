@@ -4,10 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import { usePeekParam } from "../components/issue/usePeek";
 import PriorityBars from "../components/issue/PriorityBars";
 import { api } from "../lib/api";
-import type { Issue, IssueListResult, IssueState } from "../lib/types";
+import { EMPTY_FILTERS } from "../lib/filters";
+import { formatPqlError } from "../lib/pql";
+import type { Issue, IssueListResult, IssueState, Project } from "../lib/types";
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { priorityLabel } from "../lib/types";
 import { stateDotClass } from "../lib/stateDot";
 import {
@@ -91,10 +95,27 @@ export default function Roadmap() {
   // shows it inline and the displayed set is untouched
   // (appliedQuery — and therefore displayedIssues — never changes).
   // Empty query = no filter: stays in PQL mode, shows the full list.
-  // No Views save path on this page yet (Board precedent), so the
-  // editor passes showSaveHint={false}.
+  // C110T3: the detail-mode SavedViewsMenu below (C107T1 shape) —
+  // the shared ["project", slug, identifier] query supplies the
+  // project UUID the menu needs, cache-warm whenever the user came
+  // from another project page. Roadmap has no window, so the C109
+  // design question is moot here: a view apply sets the query, and
+  // month buckets and the Unscheduled lane recompute from the
+  // filtered set. The wiring is the same detail-mode shape as the
+  // other date views for consistency, not because a window is
+  // involved — a saved query never moves anything, it only filters.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(base),
+  });
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C110T3: a saved view whose query fails its probe has no editor
+  // inline error to land in — the editor only reports failures from
+  // its own Apply button, and it mounts fresh (empty draft) for a
+  // menu apply. The failure is surfaced here, at the detail level,
+  // instead of vanishing or rejecting unhandled.
+  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlIssuesQuery = useQuery({
     queryKey: ["roadmap-pql", slug, identifier, appliedQuery],
     enabled: pqlMode && appliedQuery.trim() !== "",
@@ -111,6 +132,7 @@ export default function Roadmap() {
     }
     await fetchAllIssues(`${base}/issues?pql=${encodeURIComponent(q)}`);
     setAppliedQuery(q);
+    setSavedViewError(null);
   }
   function handlePqlModeChange(mode: "all" | "pql") {
     if (mode === "pql") {
@@ -121,6 +143,33 @@ export default function Roadmap() {
     // list (already cached) is restored immediately.
     setPqlMode(false);
     setAppliedQuery("");
+    setSavedViewError(null);
+  }
+  // C110T3: applying a saved PQL view from the detail-mode menu,
+  // copying the Cycles handleSavedViewApplied shape verbatim.
+  // Probe FIRST, then enter PQL mode: the probe commits appliedQuery
+  // while still in all-issues mode (displayedIssues is unaffected
+  // until pqlMode flips), so the editor mounts seeded with the
+  // applied query. A 400 leaves appliedQuery untouched — the list
+  // never changes — and the error surfaces in the detail-level alert
+  // (the editor cannot show it: it mounts fresh with an empty draft).
+  // The menu ignores this handler's return value, so the catch here
+  // is load-bearing: without it the rejected probe would be an
+  // unhandled rejection. Null is unreachable from the detail-mode
+  // menu (PQL views only) and mirrors Cycles: leave PQL mode.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      setPqlMode(false);
+      setAppliedQuery("");
+      setSavedViewError(null);
+      return;
+    }
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setSavedViewError(formatPqlError(e));
+    }
+    setPqlMode(true);
   }
   // While a committed PQL query is still loading, keep showing the
   // unfiltered list rather than blanking it — the filtered set
@@ -238,6 +287,21 @@ export default function Roadmap() {
               PQL
             </button>
           </div>
+          {/* C110T3: detail-mode SavedViewsMenu beside the toggle,
+              copying the CycleDetail/EpicDetail detail toolbar
+              verbatim. Detail mode guarantees no URL writes and no
+              default auto-apply, so the page settles PQL state
+              through onViewApplied only. */}
+          <SavedViewsMenu
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            detailMode
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+          />
           <div
             className="inline-flex h-[30px] items-center rounded-[6px] border border-border bg-[#101012] p-[2px]"
             role="group"
@@ -271,6 +335,12 @@ export default function Roadmap() {
           </span>
         </div>
 
+        {savedViewError && (
+          <Alert variant="destructive">
+            <AlertDescription>{savedViewError}</AlertDescription>
+          </Alert>
+        )}
+
         {pqlMode && (
           // Keyed by the applied query: PqlEditor's draft is
           // initial-value-only, so without this a re-apply would
@@ -280,8 +350,12 @@ export default function Roadmap() {
             key={appliedQuery}
             appliedQuery={appliedQuery}
             onApply={handlePqlApply}
-            onClear={() => setAppliedQuery("")}
-            showSaveHint={false}
+            onClear={() => {
+              setAppliedQuery("");
+              setSavedViewError(null);
+            }}
+            showSaveHint={true}
+            saveHintText="To save this query, use Views → Save current view next to the All issues / PQL toggle; it re-applies when the view is opened."
           />
         )}
 
