@@ -5,6 +5,7 @@ import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
+import PqlEditor from "../components/issue/PqlEditor";
 import { usePeekParam } from "../components/issue/usePeek";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { IssueChip } from "../components/calendar/IssueChip";
@@ -192,6 +193,92 @@ export default function Calendar() {
     queryFn: () => fetchAllIssues(`${base}/issues?undated=1`),
   });
 
+  // C109T1: PQL mode on the calendar. Copies the Cycles detail pattern
+  // verbatim (C95T1/C107T1): pqlMode local state, appliedQuery,
+  // probe-first handlePqlApply through the three window queries, and
+  // a PQL editor keyed by appliedQuery (the C107 re-apply lesson —
+  // PqlEditor's draft is initial-value-only, so a re-apply without
+  // the key shows a stale draft). PQL mode changes ONLY which issues
+  // render: the window queries keep their window params and AND with
+  // the predicate (C109T0 backend), window navigation keeps the
+  // applied query (the PQL query keys include the window start), and
+  // group-by-epic stays display-only over the filtered set. The PQL
+  // query keys include the applied query so PQL and visual caches
+  // never cross-contaminate; leaving PQL mode clears the applied
+  // query and the already-cached unfiltered window sets return.
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const pqlActive = pqlMode && appliedQuery.trim() !== "";
+  const pqlDueQuery = useQuery({
+    queryKey: ["calendar", slug, identifier, "due-pql", start, appliedQuery],
+    enabled: pqlActive,
+    queryFn: () =>
+      fetchAllIssues(
+        `${base}/issues?due_after=${rfc(start)}&due_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}`,
+      ),
+  });
+  const pqlStartQuery = useQuery({
+    queryKey: ["calendar", slug, identifier, "start-pql", start, appliedQuery],
+    enabled: pqlActive,
+    queryFn: () =>
+      fetchAllIssues(
+        `${base}/issues?start_after=${rfc(start)}&start_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}`,
+      ),
+  });
+  const pqlUndatedQuery = useQuery({
+    queryKey: ["calendar", slug, identifier, "undated-pql", appliedQuery],
+    enabled: pqlActive,
+    queryFn: () =>
+      fetchAllIssues(
+        `${base}/issues?undated=1&pql=${encodeURIComponent(appliedQuery.trim())}`,
+      ),
+  });
+  // Probe-first apply (Cycles pattern): fetch one page of each window
+  // query with the candidate query and commit only on success. A 400
+  // rejects, so PqlEditor shows it inline and the displayed sets are
+  // untouched (appliedQuery — and therefore the displayed sets —
+  // never changes). Empty query = no filter: stays in PQL mode,
+  // shows the full window sets.
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    const probe = (params: Record<string, string>) => {
+      const p = new URLSearchParams({ ...params, pql: q, per_page: "100" });
+      return api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
+    };
+    await Promise.all([
+      probe({ due_after: rfc(start), due_before: rfc(end) }),
+      probe({ start_after: rfc(start), start_before: rfc(end) }),
+      probe({ undated: "1" }),
+    ]);
+    setAppliedQuery(q);
+  }
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the unfiltered
+    // window sets (already cached) are restored immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+  // While a committed PQL query is still loading, keep showing the
+  // unfiltered window sets rather than blanking — the filtered sets
+  // replace them as soon as they arrive (Cycles precedent).
+  const displayedDue = pqlActive
+    ? (pqlDueQuery.data ?? dueQuery.data ?? [])
+    : (dueQuery.data ?? []);
+  const displayedStart = pqlActive
+    ? (pqlStartQuery.data ?? startQuery.data ?? [])
+    : (startQuery.data ?? []);
+  const displayedUndated = pqlActive
+    ? (pqlUndatedQuery.data ?? undatedQuery.data ?? [])
+    : (undatedQuery.data ?? []);
+
   // Workflow states drive the state-dot colors on the event chips
   // (C19 state-dot system — same vocabulary as the board cards).
   const statesQuery = useQuery({
@@ -233,10 +320,10 @@ export default function Calendar() {
     [view, anchor],
   );
   const byDay = useMemo(
-    () => bucketIssuesByDay(dueQuery.data ?? [], startQuery.data ?? []),
-    [dueQuery.data, startQuery.data],
+    () => bucketIssuesByDay(displayedDue, displayedStart),
+    [displayedDue, displayedStart],
   );
-  const undated = useMemo(() => undatedQuery.data ?? [], [undatedQuery.data]);
+  const undated = useMemo(() => displayedUndated, [displayedUndated]);
 
   // C72T2: epic swimlanes. Lanes are computed over every issue visible in
   // the grid's range (first-appearance order); the shared pure
@@ -539,6 +626,40 @@ export default function Calendar() {
               );
             })}
           </div>
+          {/* C109T1: All-issues / PQL toggle (Cycles pattern), above
+              the calendar next to the existing view controls. */}
+          <div
+            role="group"
+            aria-label="Issue list mode"
+            className="ml-2 flex h-[30px] items-center rounded-md border border-border bg-[#101012] p-[2px]"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => handlePqlModeChange("all")}
+              className={cn(
+                "h-[24px] rounded px-2 text-[10px] font-medium transition-colors",
+                !pqlMode
+                  ? "bg-raised text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
+              )}
+            >
+              All issues
+            </button>
+            <button
+              type="button"
+              aria-pressed={pqlMode}
+              onClick={() => handlePqlModeChange("pql")}
+              className={cn(
+                "h-[24px] rounded px-2 text-[10px] font-medium transition-colors",
+                pqlMode
+                  ? "bg-raised text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
+              )}
+            >
+              PQL
+            </button>
+          </div>
           <button
             type="button"
             onClick={copyICalURL}
@@ -552,6 +673,22 @@ export default function Calendar() {
             Placed by due date, start date when there is no due date
           </span>
         </div>
+
+        {pqlMode && (
+          // Keyed by the applied query: PqlEditor's draft is
+          // initial-value-only, so without this a re-apply while
+          // already in PQL mode would leave the editor showing the
+          // previous draft instead of the applied query (C107
+          // lesson). showSaveHint={false}: no Views save path on
+          // this page yet (Board precedent).
+          <PqlEditor
+            key={appliedQuery}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => setAppliedQuery("")}
+            showSaveHint={false}
+          />
+        )}
 
         {feedMsg && (
           <p className="text-[11px] text-ink-muted">
