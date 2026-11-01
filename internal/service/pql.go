@@ -873,6 +873,37 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	return in
 }
 
+// Workspace scope (C112T0): an empty projectID means workspace scope
+// (MyWork's /my-issues endpoint, which has no single project). The
+// parser, validation, and every workspace-scoped field (label,
+// assignee, priority, dates, has*()) are identical; only the
+// per-project name fields change, and only in these ways:
+//
+//   - Multi-match set semantics: a state / epic / estimate-point name
+//     resolves to the SET of ids bearing that name across the actor's
+//     accessible projects, and translates with ANY — never an
+//     ambiguity error. A name meaning "issues in a Todo-like state"
+//     across projects is the query's plain reading, not an error to
+//     "fix" back to single-id semantics. Zero matches is still an
+//     unknown-name 400 with position, never a silent empty list.
+//   - Resolution is confined to accessible projects (the same
+//     projectAccessibleSQL predicate ListMyWork rows use): a name
+//     existing ONLY in a private project the actor cannot reach is
+//     unknown (400), never a match — otherwise the 400-vs-match
+//     difference would leak the private project's taxonomy.
+//   - Parent keys resolve by identifier across the workspace
+//     (identifiers are workspace-unique): the project is looked up
+//     by identifier, then the sequence inside it, under the same
+//     accessibility confinement — a key naming an inaccessible
+//     project is unknown (400), never a leak. Malformed-key 400s,
+//     deleted-parent-unknown, and archived-parent-resolves are the
+//     same as project scope.
+//
+// Project scope (projectID != "") is byte-for-byte today's behavior;
+// its tests are the guard. The dispatch lives in translatePQLCmp,
+// which routes only state/epic/estimate/parent to the workspace
+// translators below when projectID is empty.
+//
 // translatePQL compiles a validated predicate tree to one parenthesized
 // SQL condition. arg is the caller's placeholder function (same one
 // issueListConds uses), so placeholders stay in sequence with the rest
@@ -946,14 +977,26 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 	case pqlNameField:
 		switch n.Field {
 		case "state":
+			if projectID == "" {
+				return translatePQLStateWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
 			return translatePQLState(ctx, pool, projectID, n, arg)
 		case "label":
 			return translatePQLLabel(ctx, pool, wsID, n, arg)
 		case "epic":
+			if projectID == "" {
+				return translatePQLEpicWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
 			return translatePQLEpic(ctx, pool, projectID, n, arg)
 		case "estimate":
+			if projectID == "" {
+				return translatePQLEstimateWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
 			return translatePQLEstimate(ctx, pool, projectID, n, arg)
 		case "parent":
+			if projectID == "" {
+				return translatePQLParentWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
 			return translatePQLParent(ctx, pool, projectID, n, arg)
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
@@ -1118,6 +1161,63 @@ func translatePQLState(ctx context.Context, pool *pgxpool.Pool, projectID string
 	case "!=":
 		return "i.state_id <> " + arg(ids[0]) + "::uuid", nil
 	default: // in
+		return "i.state_id = ANY(" + arg(ids) + "::uuid[])", nil
+	}
+}
+
+// resolvePQLWorkspaceIDs runs a name lookup across the actor's
+// accessible projects in the workspace, returning EVERY matching id.
+// The query takes ($1 wsID, $2 name, $3 actorID) and must itself join
+// projects and apply projectAccessibleSQL, so a name existing only in
+// an inaccessible private project never matches. Zero matches is an
+// unknown-name 400 ("in this workspace"); there is deliberately NO
+// ambiguity error — the set IS the answer in workspace scope (see the
+// translatePQL comment above).
+func resolvePQLWorkspaceIDs(ctx context.Context, pool *pgxpool.Pool, query, wsID, name, actorID string, pos int, kind string) ([]string, error) {
+	rows, err := pool.Query(ctx, query, wsID, name, actorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, pqlErr(pos, "unknown %s %q in this workspace", kind, name)
+	}
+	return ids, nil
+}
+
+// translatePQLStateWorkspace resolves state names to the set of state
+// ids across accessible projects (C112T0). `=` and `in` both use ANY
+// over the union set; `!=` is NOT (... = ANY(...)) — the plan's
+// spelling, and equivalent to project scope's <> since state_id is
+// never NULL on a live issue row.
+func translatePQLStateWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	ids := make([]string, 0, len(n.Values))
+	for _, v := range n.Values {
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT s.id::text FROM states s JOIN projects p ON p.id = s.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(s.name) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "state")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "!=":
+		return "NOT (i.state_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	default: // "=" and "in" are both set membership in workspace scope
 		return "i.state_id = ANY(" + arg(ids) + "::uuid[])", nil
 	}
 }
@@ -1340,23 +1440,9 @@ func translatePQLEstimate(ctx context.Context, pool *pgxpool.Pool, projectID str
 // hidden from the default list). A malformed key (no dash, bad
 // identifier, non-numeric sequence) is a 400, not a lookup miss.
 func resolvePQLParentKey(ctx context.Context, pool *pgxpool.Pool, projectID string, v pqlValue) (string, error) {
-	dash := strings.LastIndex(v.Text, "-")
-	if dash <= 0 || dash == len(v.Text)-1 {
-		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
-	}
-	identPart, seqPart := v.Text[:dash], v.Text[dash+1:]
-	if len(identPart) > 12 {
-		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
-	}
-	for i := 0; i < len(identPart); i++ {
-		c := identPart[i]
-		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
-			return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
-		}
-	}
-	seq, err := atoiStrict(seqPart)
-	if err != nil || seq <= 0 {
-		return "", pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	identPart, seq, err := parsePQLParentKeyParts(v)
+	if err != nil {
+		return "", err
 	}
 	var id string
 	err = pool.QueryRow(ctx,
@@ -1407,6 +1493,207 @@ func translatePQLParent(ctx context.Context, pool *pgxpool.Pool, projectID strin
 			return "i.parent_id IS NOT NULL", nil
 		}
 		return "i.parent_id IS DISTINCT FROM " + arg(ids[0]) + "::uuid", nil
+	default: // in: parent matches OR top-level, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.parent_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.parent_id IS NULL")
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Workspace-scope translators (C112T0; projectID == "")
+// ---------------------------------------------------------------------------
+
+// translatePQLEpicWorkspace resolves epic names to the set of epic ids
+// across accessible projects. Same EXISTS shape as project scope, with
+// ANY over the union set; != is NOT EXISTS over the set, so issues in
+// other epics and issues in no epic both count as "not this epic".
+// The `none` handling is unchanged from project scope.
+func translatePQLEpicWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	existsFor := func(ids []string) string {
+		return "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT e.id::text FROM epics e JOIN projects p ON p.id = e.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(e.name) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "epic")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	default: // in: epic matches OR no-epic, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLEstimateWorkspace resolves estimate-point keys to the
+// set of point ids across accessible projects (the key lookup joins
+// through estimates to projects, same as project scope). The `none`
+// handling is unchanged; != keeps the inclusive-NULL convention via
+// an explicit IS NULL OR NOT (... = ANY(...)) — a bare NOT over ANY
+// would drop unestimated rows, unlike project scope's IS DISTINCT
+// FROM on a single id.
+func translatePQLEstimateWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT ep.id::text FROM estimate_points ep JOIN estimates e ON e.id = ep.estimate_id
+			  JOIN projects p ON p.id = e.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(ep.key) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "estimate point")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return "i.estimate_point_id IS NULL", nil
+		}
+		return "i.estimate_point_id = ANY(" + arg(ids) + "::uuid[])", nil
+	case "!=":
+		if wantNone {
+			return "i.estimate_point_id IS NOT NULL", nil
+		}
+		return "(i.estimate_point_id IS NULL OR NOT (i.estimate_point_id = ANY(" + arg(ids) + "::uuid[])))", nil
+	default: // in: point matches OR no-point, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.estimate_point_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.estimate_point_id IS NULL")
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// parsePQLParentKeyParts validates one parent key token and splits it
+// into its identifier and sequence parts. Shared by the project and
+// workspace resolvers so malformed-key 400s stay identical in both
+// scopes.
+func parsePQLParentKeyParts(v pqlValue) (identPart string, seq int, err error) {
+	dash := strings.LastIndex(v.Text, "-")
+	if dash <= 0 || dash == len(v.Text)-1 {
+		return "", 0, pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	identPart, seqPart := v.Text[:dash], v.Text[dash+1:]
+	if len(identPart) > 12 {
+		return "", 0, pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	for i := 0; i < len(identPart); i++ {
+		c := identPart[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return "", 0, pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+		}
+	}
+	seq, err = atoiStrict(seqPart)
+	if err != nil || seq <= 0 {
+		return "", 0, pqlErr(v.Pos, "invalid parent key %q (want {IDENTIFIER}-{sequence_id}, e.g. ENG-123)", v.Text)
+	}
+	return identPart, seq, nil
+}
+
+// resolvePQLParentKeyWorkspace maps one parent value token to the
+// parent issue id across the workspace: the project is looked up by
+// identifier (workspace-unique, case-insensitive), then the sequence
+// inside it, confined to accessible projects — a key naming an
+// inaccessible project is unknown (400), never a leak. A deleted
+// parent is unknown too; an archived parent still resolves, exactly
+// as in project scope.
+func resolvePQLParentKeyWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, v pqlValue) (string, error) {
+	identPart, seq, err := parsePQLParentKeyParts(v)
+	if err != nil {
+		return "", err
+	}
+	var id string
+	err = pool.QueryRow(ctx,
+		`SELECT i.id::text FROM issues i JOIN projects p ON p.id = i.project_id
+		  WHERE p.workspace_id = $1::uuid AND lower(p.identifier) = lower($2)
+		    AND i.sequence_id = $3 AND i.deleted_at IS NULL
+		    AND `+projectAccessibleSQL("p", "$4::uuid"),
+		wsID, identPart, seq, actorID).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", pqlErr(v.Pos, "unknown parent %q in this workspace", v.Text)
+		}
+		return "", err
+	}
+	return id, nil
+}
+
+// translatePQLParentWorkspace resolves parent keys across the
+// workspace (see resolvePQLParentKeyWorkspace). The `none` handling
+// and the inclusive-!= convention (NULL counts as "not this parent")
+// are unchanged from project scope; only single-id comparisons become
+// set comparisons over the resolved keys.
+func translatePQLParentWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		id, err := resolvePQLParentKeyWorkspace(ctx, pool, wsID, actorID, v)
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return "i.parent_id IS NULL", nil
+		}
+		return "i.parent_id = ANY(" + arg(ids) + "::uuid[])", nil
+	case "!=":
+		if wantNone {
+			return "i.parent_id IS NOT NULL", nil
+		}
+		return "(i.parent_id IS NULL OR NOT (i.parent_id = ANY(" + arg(ids) + "::uuid[])))", nil
 	default: // in: parent matches OR top-level, when both are present
 		var parts []string
 		if len(ids) > 0 {

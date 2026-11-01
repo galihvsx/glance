@@ -8,7 +8,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,6 +46,27 @@ type MyWorkItem struct {
 // ListMyWork returns the caller's issues in the workspace, newest first.
 // filter defaults to assigned; limit is clamped to [1,200] (default 100).
 func ListMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, filter MyWorkFilter, limit int) ([]MyWorkItem, error) {
+	return listMyWork(ctx, pool, wsSlug, actorID, filter, limit, "")
+}
+
+// ListMyWorkPQL is ListMyWork with a PQL predicate (C112T0): the
+// translated predicate ANDs with the filter predicate and the base
+// WHERE (workspace, accessibility, deleted_at IS NULL) — the base
+// clause is preserved exactly, PQL adds no new exclusion, and the
+// list still orders by updated_at DESC. A blank pql degrades to the
+// unfiltered filter list. A probe failure is a *PQLQueryError (400
+// with message + position), never a 500. Name resolution is workspace
+// scope: state / epic / estimate names match the SET of ids across
+// the actor's accessible projects (see translatePQL), parent keys
+// resolve by identifier across the workspace, and label / assignee /
+// priority / dates / has*() translate unchanged. ORDER BY / LIMIT
+// clauses inside the query are parsed and discarded by ParsePQL —
+// the endpoint's ?limit= and updated_at DESC order govern.
+func ListMyWorkPQL(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, filter MyWorkFilter, limit int, pql string) ([]MyWorkItem, error) {
+	return listMyWork(ctx, pool, wsSlug, actorID, filter, limit, pql)
+}
+
+func listMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string, filter MyWorkFilter, limit int, pql string) ([]MyWorkItem, error) {
 	if filter == "" {
 		filter = MyWorkAssigned
 	}
@@ -83,6 +106,25 @@ func ListMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string,
 	if filter == MyWorkCreated {
 		where += ` AND i.created_by = $2::uuid`
 	}
+	// The PQL predicate's placeholders continue the $1/$2/$3 sequence
+	// (wsID, actorID, limit), so the base placeholders above keep their
+	// positions and the final arg list is one slice.
+	args := []any{wsID, actorID, limit}
+	if strings.TrimSpace(pql) != "" {
+		parsed, err := ParsePQL(pql)
+		if err != nil {
+			return nil, err
+		}
+		arg := func(v any) string {
+			args = append(args, v)
+			return fmt.Sprintf("$%d", len(args))
+		}
+		cond, err := translatePQL(ctx, pool, wsID, "", actorID, parsed, arg)
+		if err != nil {
+			return nil, err
+		}
+		where += ` AND (` + cond + `)`
+	}
 	rows, err := pool.Query(ctx, `
 		SELECT i.id::text, p.identifier, i.sequence_id, i.name, i.priority,
 		       i.state_id::text, s.name, s."group",
@@ -94,7 +136,7 @@ func ListMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string,
 		 WHERE `+where+`
 		 ORDER BY i.updated_at DESC
 		 LIMIT $3`,
-		wsID, actorID, limit)
+		args...)
 	if err != nil {
 		return nil, err
 	}
