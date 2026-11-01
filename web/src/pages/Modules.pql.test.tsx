@@ -5,7 +5,7 @@
 // counts keep the unfiltered membership list (plan decision 5).
 // Invalid PQL leaves the list untouched (probe-first editor).
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   fireEvent,
@@ -22,6 +22,41 @@ import {
   makeQueryClient,
   stubMatchMedia,
 } from "../components/shell/test-utils";
+// C107T2: the detail-mode menu reads views through this hook; mock it
+// (same pattern as SavedViewsMenu.test.tsx) so page tests control the
+// view list without a views endpoint. The default is no views, so the
+// pre-C107 tests below render the menu's empty state untouched.
+vi.mock("../components/issue/useSavedViews", () => ({
+  useSavedViews: vi.fn(),
+}));
+import { useSavedViews } from "../components/issue/useSavedViews";
+import type { SavedView } from "../components/issue/useSavedViews";
+import { EMPTY_FILTERS } from "../lib/filters";
+
+const mockUseSavedViews = vi.mocked(useSavedViews);
+
+function mockViews(
+  ownViews: SavedView[],
+  sharedViews: SavedView[] = [],
+) {
+  mockUseSavedViews.mockReturnValue({
+    views: [...ownViews, ...sharedViews],
+    ownViews,
+    sharedViews,
+    viewsLoading: false,
+    viewsReady: true,
+    viewsError: false,
+    createView: vi.fn(),
+    renameView: vi.fn(),
+    deleteView: vi.fn(),
+    setDefaultView: vi.fn(),
+    setViewShared: vi.fn(),
+  } as ReturnType<typeof useSavedViews>);
+}
+
+beforeEach(() => {
+  mockViews([]);
+});
 
 const BASE = "/api/v1/workspaces/acme/projects/ENG";
 const MODULE_ID = "mod-1";
@@ -81,6 +116,7 @@ function renderPage(opts: { pqlError?: boolean } = {}) {
     if (path === "/api/v1/workspaces/acme") return Promise.resolve({ role: 5 });
     if (path === "/api/v1/workspaces/acme/members") return Promise.resolve({ members: [] });
     if (path === `${BASE}/states`) return Promise.resolve({ states });
+    if (path === `${BASE}`) return Promise.resolve({ id: "p-eng" });
     if (path === `${BASE}/modules`) return Promise.resolve({ modules: [moduleRow] });
     if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
       return Promise.resolve({ issues: membership });
@@ -251,6 +287,7 @@ describe("module detail PQL refetch on membership mutation (C103T1)", () => {
       if (path === "/api/v1/workspaces/acme") return Promise.resolve({ role: 5 });
       if (path === "/api/v1/workspaces/acme/members") return Promise.resolve({ members: [] });
       if (path === `${BASE}/states`) return Promise.resolve({ states });
+      if (path === `${BASE}`) return Promise.resolve({ id: "p-eng" });
       if (path === `${BASE}/modules`) return Promise.resolve({ modules: [moduleRow] });
       if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
         let list = membership;
@@ -365,5 +402,184 @@ describe("module detail PQL refetch on membership mutation (C103T1)", () => {
     }
     expect(screen.queryByText("Open work")).toBeNull();
     expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+});
+
+describe("module detail saved views (C107T2)", () => {
+  const savedPql: SavedView = {
+    id: "v-pql",
+    name: "High priority",
+    filters: { ...EMPTY_FILTERS, pql: "priority = High" },
+    display: null,
+    isDefault: false,
+    shared: false,
+    ownerId: "me",
+    ownerName: "Me",
+  };
+  const savedVisual: SavedView = {
+    id: "v-vis",
+    name: "My bugs",
+    filters: EMPTY_FILTERS,
+    display: null,
+    isDefault: false,
+    shared: false,
+    ownerId: "me",
+    ownerName: "Me",
+  };
+  const sharedVisual: SavedView = {
+    id: "v-sh-vis",
+    name: "Team visual",
+    filters: EMPTY_FILTERS,
+    display: null,
+    isDefault: false,
+    shared: true,
+    ownerId: "user-2",
+    ownerName: "Bob",
+  };
+  const savedDefaultPql: SavedView = {
+    id: "v-def",
+    name: "Default pql",
+    filters: { ...EMPTY_FILTERS, pql: "state = Done" },
+    display: null,
+    isDefault: true,
+    shared: false,
+    ownerId: "me",
+    ownerName: "Me",
+  };
+
+  function renderPageWithViews(
+    ownViews: SavedView[],
+    sharedViews: SavedView[] = [],
+    opts: { pqlError?: boolean } = {},
+  ) {
+    mockViews(ownViews, sharedViews);
+    stubMatchMedia(false);
+    const pqlCalls: string[] = [];
+    const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+      if (path === "/api/v1/workspaces") return Promise.resolve({ workspaces: [] });
+      if (path === "/api/v1/workspaces/acme") return Promise.resolve({ role: 5 });
+      if (path === "/api/v1/workspaces/acme/members") return Promise.resolve({ members: [] });
+      if (path === `${BASE}/states`) return Promise.resolve({ states });
+      if (path === `${BASE}`) return Promise.resolve({ id: "p-eng" });
+      if (path === `${BASE}/modules`) return Promise.resolve({ modules: [moduleRow] });
+      if (path === `${BASE}/modules/${MODULE_ID}/issues`) {
+        return Promise.resolve({ issues: membership });
+      }
+      if (path.startsWith(`${BASE}/issues?`)) {
+        pqlCalls.push(path);
+        if (opts.pqlError) {
+          return Promise.reject(
+            new ApiError(400, "unknown field", "validation_error", { position: 1 }),
+          );
+        }
+        return Promise.resolve({ results: [membership.find((i) => i.id === "i-started")!], next_cursor: undefined });
+      }
+      return Promise.reject(new Error(`unexpected GET ${path}`));
+    });
+    const qc = makeQueryClient();
+    render(
+      <MemoryRouter initialEntries={["/w/acme/p/ENG/modules"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/w/:slug/p/:identifier/modules" element={<Modules />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return { get, pqlCalls };
+  }
+
+  async function openSavedViewsMenu() {
+    fireEvent.click(screen.getByRole("button", { name: "Saved views" }));
+    await screen.findByRole("button", { name: "Save current view" });
+  }
+
+  it("applying a saved PQL view narrows the list and shows the query in the editor", async () => {
+    const { pqlCalls } = renderPageWithViews([savedPql]);
+    await openDetail();
+    await openSavedViewsMenu();
+    fireEvent.click(screen.getByTitle("Apply view “High priority”"));
+    await waitFor(() => {
+      expect(screen.queryByText("Open work")).toBeNull();
+      expect(screen.getByText("Started work")).toBeTruthy();
+      expect(screen.queryByText("Done work")).toBeNull();
+    });
+    // PQL mode entered with the applied query: the editor shows it
+    // (keyed remount — PqlEditor's draft is initial-value-only) and
+    // the progress note still credits the full membership list.
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = High");
+    expect(screen.getByText("PQL filter active — progress above counts the full module.")).toBeTruthy();
+    // Probe-first apply + React Query fetch, both scoped module + pql.
+    expect(pqlCalls).toHaveLength(2);
+    for (const call of pqlCalls) {
+      const params = new URLSearchParams(call.split("?")[1]);
+      expect(params.get("module")).toBe(MODULE_ID);
+      expect(params.get("pql")).toBe("priority = High");
+    }
+  });
+
+  it("a default view present does NOT auto-apply on detail mount", async () => {
+    renderPageWithViews([savedDefaultPql]);
+    await openDetail();
+    // Membership list intact, PQL mode never entered: no editor, and
+    // the All-issues toggle still shows as pressed.
+    expect(screen.getByText("Open work")).toBeTruthy();
+    expect(screen.getByText("Started work")).toBeTruthy();
+    expect(screen.getByText("Done work")).toBeTruthy();
+    expect(screen.queryByLabelText("PQL query")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "All issues" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("a saved view with an invalid query fails honestly: list untouched, error surfaced", async () => {
+    const { pqlCalls } = renderPageWithViews([savedPql], [], { pqlError: true });
+    await openDetail();
+    await openSavedViewsMenu();
+    fireEvent.click(screen.getByTitle("Apply view “High priority”"));
+    // The probe 400 surfaces (menu path has no editor inline error,
+    // so the page's alert carries it) and the list never changes.
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert").textContent).toContain("unknown field");
+    expect(screen.getByText("Open work")).toBeTruthy();
+    expect(screen.getByText("Started work")).toBeTruthy();
+    expect(screen.getByText("Done work")).toBeTruthy();
+    // PQL mode was entered (editor visible) but nothing committed:
+    // no applied query, no "filter active" note, no query fetch
+    // beyond the single failed probe.
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("");
+    expect(screen.queryByText(/PQL filter active/)).toBeNull();
+    expect(pqlCalls).toHaveLength(1);
+  });
+
+  it("the detail menu renders no visual views, own or shared", async () => {
+    renderPageWithViews([savedPql, savedVisual], [sharedVisual]);
+    await openDetail();
+    await openSavedViewsMenu();
+    expect(screen.getByText("High priority")).toBeTruthy();
+    expect(screen.queryByText("My bugs")).toBeNull();
+    expect(screen.queryByText("Team visual")).toBeNull();
+  });
+
+  it("leaving PQL mode after a view apply restores the membership list", async () => {
+    renderPageWithViews([savedPql]);
+    await openDetail();
+    await openSavedViewsMenu();
+    fireEvent.click(screen.getByTitle("Apply view “High priority”"));
+    await waitFor(() => {
+      expect(screen.queryByText("Open work")).toBeNull();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "All issues" }));
+    await waitFor(() => {
+      expect(screen.getByText("Open work")).toBeTruthy();
+      expect(screen.getByText("Started work")).toBeTruthy();
+      expect(screen.getByText("Done work")).toBeTruthy();
+    });
+    expect(screen.queryByLabelText("PQL query")).toBeNull();
   });
 });

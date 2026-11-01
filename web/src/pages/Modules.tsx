@@ -12,6 +12,7 @@ import type {
   IssueState,
   Member,
   Module,
+  Project,
 } from "../lib/types";
 import PageHeader from "../components/shell/PageHeader";
 import { Badge } from "../components/ui/badge";
@@ -35,8 +36,14 @@ import {
 } from "../components/ui/native-select";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { stateDotClass } from "../lib/stateDot";
-import { buildPqlRequestParams, pqlHasLimit } from "../lib/pql";
+import {
+  buildPqlRequestParams,
+  formatPqlError,
+  pqlHasLimit,
+} from "../lib/pql";
+import { EMPTY_FILTERS } from "../lib/filters";
 import PqlEditor from "../components/issue/PqlEditor";
+import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import {
   OrgCard,
   OrgDetailHeader,
@@ -713,15 +720,29 @@ function ModuleDetail({
   // filtered query. The editor is probe-first (PqlEditor contract):
   // a 400 rejects before any state commits, so the list is untouched
   // on error. Leaving PQL mode clears the filtered list and restores
-  // the full membership list. No visual filter bar, no save-as-view
-  // on this page (both out of this cycle).
+  // the full membership list. No visual filter bar on this page.
+  // C107T2: the detail-mode SavedViewsMenu below (PQL views only,
+  // no URL writes, no default auto-apply) saves/applies PQL views;
+  // applying one goes through the same probe-first handlePqlApply.
   // C103T1: the PQL fetch is a React Query (Cycles/Board pattern)
   // keyed ["module-issues-pql", slug, identifier, module.id,
   // appliedQuery], so the parent's shared invalidate() re-runs the
   // committed query in place after a membership mutation.
   const [pqlMode, setPqlMode] = useState(false);
   const [appliedQuery, setAppliedQuery] = useState("");
+  // C107T2: error from applying a saved view. The menu calls
+  // onViewApplied synchronously and never awaits it, so a probe
+  // failure cannot surface through the editor's inline error — the
+  // handler below catches it and reports it here instead.
+  const [viewApplyError, setViewApplyError] = useState<string | null>(null);
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
+  // C107T2: same ["project", slug, identifier] query Issues/Board
+  // use — the menu needs the project UUID; cache-warm whenever the
+  // user came from another project page.
+  const projectQuery = useQuery({
+    queryKey: ["project", slug, identifier],
+    queryFn: () => api.get<Project>(base),
+  });
   const pqlIssuesQuery = useQuery({
     queryKey: ["module-issues-pql", slug, identifier, module.id, appliedQuery],
     enabled: pqlMode && appliedQuery.trim() !== "",
@@ -785,6 +806,7 @@ function ModuleDetail({
   // Empty query = no filter: stays in PQL mode, shows the full list.
   async function handlePqlApply(query: string): Promise<void> {
     const q = query.trim();
+    setViewApplyError(null);
     if (!q) {
       setAppliedQuery("");
       return;
@@ -802,12 +824,36 @@ function ModuleDetail({
   }
 
   function handlePqlClear() {
+    setViewApplyError(null);
     setAppliedQuery("");
   }
 
   function exitPqlMode() {
+    setViewApplyError(null);
     setPqlMode(false);
     setAppliedQuery("");
+  }
+
+  // C107T2: saved-view apply in detail mode. Enters PQL mode and
+  // applies through the probe-first handlePqlApply, so a 400 from a
+  // saved query leaves appliedQuery (and therefore the displayed
+  // list) untouched. The menu never awaits this callback, so the
+  // rejection is caught here and surfaced as the alert below —
+  // never an unhandled rejection, never a silent list change. A
+  // null query cannot come from the detail-mode menu (PQL views
+  // only) but exits PQL mode defensively, mirroring Board.
+  async function handleSavedViewApplied(pqlQuery: string | null) {
+    if (pqlQuery === null) {
+      exitPqlMode();
+      return;
+    }
+    setPqlMode(true);
+    setViewApplyError(null);
+    try {
+      await handlePqlApply(pqlQuery);
+    } catch (e) {
+      setViewApplyError(formatPqlError(e));
+    }
   }
 
   const grouped = useMemo(() => {
@@ -891,41 +937,67 @@ function ModuleDetail({
       </div>
 
       <div className="mt-6">
-        <div
-          role="group"
-          aria-label="Issue list mode"
-          className="mb-2 flex rounded-md border p-0.5"
-        >
-          <button
-            type="button"
-            aria-pressed={!pqlMode}
-            onClick={exitPqlMode}
-            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
-              !pqlMode ? "bg-primary text-primary-foreground" : ""
-            }`}
+        <div className="mb-2 flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Issue list mode"
+            className="flex flex-1 rounded-md border p-0.5"
           >
-            All issues
-          </button>
-          <button
-            type="button"
-            aria-pressed={!!pqlMode}
-            onClick={() => setPqlMode(true)}
-            className={`h-7 flex-1 rounded-sm text-xs font-medium ${
-              pqlMode ? "bg-primary text-primary-foreground" : ""
-            }`}
-          >
-            PQL
-          </button>
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={exitPqlMode}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                !pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              All issues
+            </button>
+            <button
+              type="button"
+              aria-pressed={!!pqlMode}
+              onClick={() => setPqlMode(true)}
+              className={`h-7 flex-1 rounded-sm text-xs font-medium ${
+                pqlMode ? "bg-primary text-primary-foreground" : ""
+              }`}
+            >
+              PQL
+            </button>
+          </div>
+          {/* C107T2: detail-mode menu — PQL views only, no URL writes,
+              no default auto-apply (guaranteed by the menu's detail
+              mode, not reimplemented here). */}
+          <SavedViewsMenu
+            key={`${slug}:${identifier}`}
+            projectId={projectQuery.data?.id ?? ""}
+            filters={EMPTY_FILTERS}
+            display={null}
+            onApplyDisplay={null}
+            detailMode
+            pqlMode={pqlMode}
+            pqlQuery={appliedQuery}
+            onViewApplied={handleSavedViewApplied}
+          />
         </div>
         {pqlMode && (
           <div className="mb-2 rounded-md border">
+            {/* Keyed by the applied query: PqlEditor's draft is
+                initial-value-only, so without this a view applied
+                from the menu would leave the editor showing the
+                previous draft instead of the applied query. */}
             <PqlEditor
+              key={appliedQuery}
               appliedQuery={appliedQuery}
               onApply={handlePqlApply}
               onClear={handlePqlClear}
               showSaveHint={false}
             />
           </div>
+        )}
+        {pqlMode && viewApplyError && (
+          <Alert variant="destructive" className="mb-2">
+            <AlertDescription>{viewApplyError}</AlertDescription>
+          </Alert>
         )}
         {pqlMode && appliedQuery && (
           <p className="mb-2 text-xs text-muted-foreground">
