@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // C100T1: WidgetDialog PQL panel — the new type card, the
-// single-project picker (required, exactly one), the PQL query editor
-// with cheat-sheet, the row-list columns/sort/max-rows controls, and
-// the exact per-type config key set on submit (never a filters key).
+// multi-project picker (C101T1: 1..N, save blocked at 0), the PQL
+// query editor with cheat-sheet, the row-list columns/sort/max-rows
+// controls, and the exact per-type config key set on submit (never a
+// filters key).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
@@ -69,17 +70,28 @@ function fillTitle(v: string) {
 }
 
 async function waitForProjectOptions() {
+  // The PQL picker is the shared multi-select popover (C101T1):
+  // open it and wait for the project rows to render.
+  fireEvent.click(
+    screen.getByRole("button", { name: /Select projects|projects? selected/ }),
+  );
   await waitFor(() =>
-    expect(screen.getByRole("option", { name: "ENG" })).toBeInTheDocument(),
+    expect(screen.getByRole("checkbox", { name: "ENG" })).toBeInTheDocument(),
   );
 }
 
-function projectSelect() {
-  return screen.getByLabelText(/Project \(exactly one/);
+function projectPickerTrigger() {
+  return screen.getByRole("button", {
+    name: /Select projects|projects? selected/,
+  });
 }
 
+const PROJECT_NAMES: Record<string, string> = { p1: "ENG", p2: "WEB" };
+
 function pickProject(id: string) {
-  fireEvent.change(projectSelect(), { target: { value: id } });
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: PROJECT_NAMES[id] }),
+  );
 }
 
 function fillQuery(v: string) {
@@ -125,11 +137,11 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the single-project picker, PQL editor, and row-list controls for pql_table", async () => {
+  it("shows the multi-project picker, PQL editor, and row-list controls for pql_table", async () => {
     renderDialog();
     selectType(/PQL table/);
     await waitForProjectOptions();
-    expect(projectSelect()).toBeInTheDocument();
+    expect(projectPickerTrigger()).toBeInTheDocument();
     expect(screen.getByLabelText("PQL query")).toBeInTheDocument();
     expect(screen.getByText("PQL is the filter")).toBeInTheDocument();
     // No visual-filters section for this type: PQL is the filter.
@@ -177,7 +189,7 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("does not submit with 2+ projects carried over from another type", async () => {
+  it("submits with 2 projects carried over from another type", async () => {
     const { onSubmit } = renderDialog({
       mode: "edit",
       initial: pqlWidget({
@@ -189,15 +201,14 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     await waitForProjectOptions();
     fillTitle("Open bugs");
     fillQuery('state = "In Progress"');
-    // Two projects pinned: the single-select shows the placeholder and
-    // save stays disabled until exactly one is picked.
-    expect(projectSelect()).toHaveValue("");
+    // Two projects carried over stay picked (C101T1: 1..N) and save
+    // is enabled; both land in the submitted config.
+    expect(projectPickerTrigger()).toHaveTextContent("2 projects selected");
     expect(
       screen.getByRole("button", { name: /Save changes/ }),
-    ).toBeDisabled();
-    pickProject("p1");
+    ).not.toBeDisabled();
     const form = await submit(onSubmit);
-    expect(form.config.project_ids).toEqual(["p1"]);
+    expect(form.config.project_ids).toEqual(["p1", "p2"]);
   });
 
   it("submits the exact pql_table config key set, never filters", async () => {
@@ -250,13 +261,13 @@ describe("WidgetDialog PQL panel (C100T1)", () => {
     ]);
   });
 
-  it("prefills the query and pinned project in edit mode", async () => {
+  it("prefills the query and picked project in edit mode", async () => {
     renderDialog({ mode: "edit", initial: pqlWidget() });
     await waitForProjectOptions();
     expect(screen.getByLabelText("PQL query")).toHaveValue(
       'state = "In Progress"',
     );
-    expect(projectSelect()).toHaveValue("p1");
+    expect(projectPickerTrigger()).toHaveTextContent("1 project selected");
     expect(
       screen.getByRole("button", { name: /Save changes/ }),
     ).not.toBeDisabled();

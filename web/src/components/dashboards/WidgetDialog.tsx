@@ -7,14 +7,17 @@
 // max-rows + gauge color + show-percentage (smart_gauge), max-rows
 // (table_2d), view toggle (intake_breakdown). intake_breakdown hides the
 // projects/filters sections — the backend ignores widget-level filters
-// and project scope there. C100T1: the pql_table panel — a single-project
-// picker (required, exactly one — the PQL translator is
+// and project scope there. C100T1: the pql_table panel — a
+// single-project picker (required, exactly one — the PQL translator is
 // single-project-scoped), a PQL query editor reusing lib/pql's
 // cheat-sheet (PqlEditor itself is a probe-and-commit control whose
 // draft lives outside the form, so the dialog owns the textarea and
 // reuses the cheat-sheet data + error wording instead; parse
 // validation is the server's at save time, surfaced via serverError),
-// and the row-list columns/sort/max-rows controls. Config keys mirror
+// and the row-list columns/sort/max-rows controls. C101T1: the
+// picker became a multi-project picker (1..N — the backend
+// translates the same query once per picked project and unions the
+// rows; save is blocked at 0 projects). Config keys mirror
 // the backend's per-type allow-list (parseWidgetConfig): a key
 // meaningless for the type is a 400, so each type sends exactly its
 // own key set — pql_table sends query/columns/sort_by/sort_dir/
@@ -501,13 +504,13 @@ export default function WidgetDialog({
   );
 
   const trimmed = title.trim();
-  // pql_table additionally requires a non-blank query and exactly one
-  // pinned project — the dialog must not submit with 0 or 2+ projects.
+  // pql_table additionally requires a non-blank query and at least
+  // one picked project — the dialog must not submit with 0 projects.
   const canSave =
     trimmed.length > 0 &&
     !pending &&
     (widgetType !== "pql_table" ||
-      (query.trim().length > 0 && projectIds.length === 1));
+      (query.trim().length > 0 && projectIds.length >= 1));
 
   const summary = filterSummary(
     { project_ids: projectIds, filters: prunedFilters },
@@ -531,8 +534,8 @@ export default function WidgetDialog({
       // The backend 400s when sort_by is not one of the configured
       // columns, so a sort column dropped from the chips falls back
       // to the first kept column instead of surfacing a 400.
-      // Exactly the C100T0 allow-list: query, columns, sort_by,
-      // sort_dir, max_rows, project_ids — NEVER filters (PQL is the
+      // Exactly the C101T0 allow-list: query, columns, sort_by,
+      // sort_dir, max_rows, project_ids (1..N) — NEVER filters (PQL is the
       // filter); group_by/metric are accepted-but-ignored server-side
       // and are not sent.
       const kept = columns.length > 0 ? columns : [...ROW_COLUMNS];
@@ -645,9 +648,10 @@ export default function WidgetDialog({
           {/* Project scope: empty = all visible (live) projects. Hidden
               for intake_breakdown — the backend ignores project_ids
               there (dashboard scope only). pql_table replaces the
-              multi-select with a required single-select: the PQL
-              translator is single-project-scoped, so the widget is
-              pinned to exactly one project. */}
+              generic section with its own multi-project picker below:
+              the query is translated once per picked project and the
+              rows unioned, so the widget needs 1..N projects and save
+              is blocked at 0 (empty does NOT mean all here). */}
           {!isIntake && !isPql && (
           <div className="flex flex-col gap-1.5">
             <UiLabel>Projects</UiLabel>
@@ -676,27 +680,31 @@ export default function WidgetDialog({
 
           {isPql && (
           <div className="flex flex-col gap-1.5">
-            <UiLabel htmlFor="widget-project">
-              Project (exactly one — PQL names resolve within one project)
-            </UiLabel>
-            <NativeSelect
-              id="widget-project"
-              value={projectIds.length === 1 ? projectIds[0] : ""}
-              onChange={(e) =>
-                setProjectIds(e.target.value ? [e.target.value] : [])
+            <UiLabel>Projects</UiLabel>
+            <FilterPicker
+              title="Projects"
+              options={projects.map((p) => ({ id: p.id, label: p.name }))}
+              selected={projectIds}
+              onToggle={(id) =>
+                setProjectIds((prev) =>
+                  prev.includes(id)
+                    ? prev.filter((x) => x !== id)
+                    : [...prev, id],
+                )
               }
-            >
-              <option value="">Select a project…</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </NativeSelect>
-            {projectIds.length !== 1 && (
+              onClear={() => setProjectIds([])}
+              loading={projectsQuery.isPending}
+              emptyText="No projects in this workspace."
+              triggerLabel={
+                projectIds.length === 0
+                  ? "Select projects…"
+                  : `${projectIds.length} project${projectIds.length > 1 ? "s" : ""} selected`
+              }
+            />
+            {projectIds.length === 0 && (
               <p className="text-xs text-destructive">
-                Select exactly one project — a PQL widget is pinned to a
-                single project.
+                Select at least one project — the query runs against
+                each picked project and the rows are merged.
               </p>
             )}
           </div>
@@ -817,7 +825,7 @@ export default function WidgetDialog({
               ) : (
                 <p className="text-xs text-muted-foreground">
                   Query ORDER BY wins over the sort below; LIMIT caps
-                  total rows.
+                  total rows across all picked projects.
                 </p>
               )}
               <div>
