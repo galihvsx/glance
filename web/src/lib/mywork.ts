@@ -1,10 +1,16 @@
 // mywork: "My work" view client (C6T3).
 //
-// Contract (verified 2026-10-09):
+// Contract (verified 2026-10-09, extended C112):
 //   GET /api/v1/workspaces/:slug/my-issues?filter=assigned|created|watched
-//     &limit=1..200 -> {issues: [MyWorkItem]}
+//     &limit=1..200[&pql=...] -> {issues: [MyWorkItem]}
 //   filter defaults to assigned; limit defaults to 100 (cap 200).
 //   400 on unknown filter / bad limit; 404 for non-members.
+//   C112: an optional pql= param ANDs the PQL predicate with the
+//   filter predicate (the backend contract the MyWork PQL mode
+//   builds against); a probe failure 400s with message + position
+//   (the C91 contract), and a blank pql degrades to the unfiltered
+//   filter list — so the client omits pql entirely when blank
+//   rather than sending an empty value.
 
 import { api } from "./api";
 import { STATE_GROUPS } from "./taxonomy";
@@ -42,8 +48,13 @@ export function fetchMyWork(
   slug: string,
   filter: MyWorkFilter,
   limit = 100,
+  pql?: string,
 ): Promise<MyWorkItem[]> {
   const q = new URLSearchParams({ filter, limit: String(limit) });
+  const trimmed = pql?.trim();
+  if (trimmed) {
+    q.set("pql", trimmed);
+  }
   return api
     .get<{ issues: MyWorkItem[] }>(
       `/api/v1/workspaces/${encodeURIComponent(slug)}/my-issues?${q}`,
