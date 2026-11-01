@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
+import PqlEditor from "../components/issue/PqlEditor";
 import { usePeekParam } from "../components/issue/usePeek";
 import PriorityBars from "../components/issue/PriorityBars";
 import { api } from "../lib/api";
@@ -75,6 +76,59 @@ export default function Roadmap() {
     queryKey: ["roadmap", slug, identifier],
     queryFn: () => fetchAllIssues(`${base}/issues`),
   });
+
+  // C109T3: PQL mode on the roadmap, copying the Cycles detail pattern
+  // verbatim (C95T1/C107T1): pqlMode local state, appliedQuery,
+  // probe-first handlePqlApply through the plain list (cursor loop
+  // via fetchAllIssues, as today), PQL editor keyed by appliedQuery
+  // (the C107 re-apply lesson — PqlEditor's draft is
+  // initial-value-only). The PQL query key includes the applied
+  // query, so PQL and visual caches never cross-contaminate.
+  // PQL mode changes ONLY which issues render: month buckets and
+  // the Unscheduled lane are computed from the filtered set below.
+  // Leaving PQL mode clears the applied query and restores the
+  // unfiltered list. A 400 rejects in the probe, so PqlEditor
+  // shows it inline and the displayed set is untouched
+  // (appliedQuery — and therefore displayedIssues — never changes).
+  // Empty query = no filter: stays in PQL mode, shows the full list.
+  // No Views save path on this page yet (Board precedent), so the
+  // editor passes showSaveHint={false}.
+  const [pqlMode, setPqlMode] = useState(false);
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const pqlIssuesQuery = useQuery({
+    queryKey: ["roadmap-pql", slug, identifier, appliedQuery],
+    enabled: pqlMode && appliedQuery.trim() !== "",
+    queryFn: () =>
+      fetchAllIssues(
+        `${base}/issues?pql=${encodeURIComponent(appliedQuery.trim())}`,
+      ),
+  });
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setAppliedQuery("");
+      return;
+    }
+    await fetchAllIssues(`${base}/issues?pql=${encodeURIComponent(q)}`);
+    setAppliedQuery(q);
+  }
+  function handlePqlModeChange(mode: "all" | "pql") {
+    if (mode === "pql") {
+      setPqlMode(true);
+      return;
+    }
+    // Leaving PQL mode clears the applied query, so the unfiltered
+    // list (already cached) is restored immediately.
+    setPqlMode(false);
+    setAppliedQuery("");
+  }
+  // While a committed PQL query is still loading, keep showing the
+  // unfiltered list rather than blanking it — the filtered set
+  // replaces it as soon as it arrives.
+  const displayedIssues =
+    pqlMode && appliedQuery.trim() !== ""
+      ? (pqlIssuesQuery.data ?? issuesQuery.data ?? [])
+      : (issuesQuery.data ?? []);
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
     queryFn: () =>
@@ -89,8 +143,8 @@ export default function Roadmap() {
 
   const buckets = useMemo(() => roadmapMonths(anchor, range), [anchor, range]);
   const { columns, unscheduled } = useMemo(
-    () => bucketIssues(issuesQuery.data ?? [], buckets),
-    [issuesQuery.data, buckets],
+    () => bucketIssues(displayedIssues, buckets),
+    [displayedIssues, buckets],
   );
 
   const loading = issuesQuery.isLoading || statesQuery.isLoading;
@@ -150,6 +204,40 @@ export default function Roadmap() {
       <PageHeader viewName="Roadmap" />
       <div className="flex h-full flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-1.5">
+          {/* C109T3: All issues / PQL toggle, Cycles pattern verbatim,
+              above the roadmap next to the existing controls. */}
+          <div
+            className="inline-flex h-[30px] items-center rounded-[6px] border border-border bg-[#101012] p-[2px]"
+            role="group"
+            aria-label="Issue list mode"
+          >
+            <button
+              type="button"
+              aria-pressed={!pqlMode}
+              onClick={() => handlePqlModeChange("all")}
+              className={cn(
+                "h-[24px] rounded-[4px] px-2 text-[10px]",
+                !pqlMode
+                  ? "bg-raised font-medium text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
+              )}
+            >
+              All issues
+            </button>
+            <button
+              type="button"
+              aria-pressed={pqlMode}
+              onClick={() => handlePqlModeChange("pql")}
+              className={cn(
+                "h-[24px] rounded-[4px] px-2 text-[10px]",
+                pqlMode
+                  ? "bg-raised font-medium text-ink"
+                  : "text-ink-muted hover:text-ink-secondary",
+              )}
+            >
+              PQL
+            </button>
+          </div>
           <div
             className="inline-flex h-[30px] items-center rounded-[6px] border border-border bg-[#101012] p-[2px]"
             role="group"
@@ -182,6 +270,20 @@ export default function Roadmap() {
             {windowLabel}
           </span>
         </div>
+
+        {pqlMode && (
+          // Keyed by the applied query: PqlEditor's draft is
+          // initial-value-only, so without this a re-apply would
+          // leave the editor showing the previous draft instead of
+          // the applied query.
+          <PqlEditor
+            key={appliedQuery}
+            appliedQuery={appliedQuery}
+            onApply={handlePqlApply}
+            onClear={() => setAppliedQuery("")}
+            showSaveHint={false}
+          />
+        )}
 
         {loading && (
           <div className="text-[13px] text-ink-muted">Loading roadmap…</div>
