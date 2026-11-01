@@ -4,7 +4,14 @@
 // ?include_project_structure=1, resolved server-side in one query — C21T2
 // killed the old per-row N+1), and sort behavior (empty cells sort last,
 // matching the existing spreadsheet convention).
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -151,12 +158,14 @@ vi.mock("../lib/auth", () => ({
   }),
 }));
 
-function renderSpreadsheet() {
+function renderSpreadsheet(
+  initialEntry = "/w/acme/p/ENG/spreadsheet",
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <MemoryRouter initialEntries={["/w/acme/p/ENG/spreadsheet"]}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route
@@ -425,5 +434,217 @@ describe("Spreadsheet inline cell editing (C20T3)", () => {
       screen.getByLabelText("Edit state for ENG-1"),
     ).toBeInTheDocument();
     expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+});
+
+describe("Spreadsheet PQL mode (C104T0)", () => {
+  // PQL tests route api.get by path: visual list requests return all
+  // three issues, PQL requests return only the given subset, so the
+  // grid's switch from visual to PQL rows is observable. All other
+  // endpoints keep the factory mock's fixtures.
+  async function renderPqlReady(
+    pqlResults: Issue[],
+    opts: { initialEntry?: string; probeError?: unknown } = {},
+  ) {
+    const { api } = await import("../lib/api");
+    const { stubMatchMedia } = await import("../components/shell/test-utils");
+    stubMatchMedia(false);
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path.includes("/states")) {
+          return Promise.resolve({ states });
+        }
+        if (path.includes("/members")) {
+          return Promise.resolve({ members });
+        }
+        if (path.includes("/labels")) {
+          return Promise.resolve({ labels: [] });
+        }
+        if (path.includes("/estimates")) {
+          return Promise.resolve({ estimates: [] });
+        }
+        if (path.includes("/custom-fields")) {
+          return Promise.resolve({ custom_fields: [] });
+        }
+        if (path.includes("/views")) {
+          return Promise.resolve({ views: [] });
+        }
+        if (path.includes("/epics")) {
+          return Promise.resolve({ epics: [] });
+        }
+        if (path.includes("/issues")) {
+          if (path.includes("pql=")) {
+            if (opts.probeError) {
+              return Promise.reject(opts.probeError);
+            }
+            return Promise.resolve({
+              results: pqlResults.map((i) => ({
+                ...i,
+                project_structure: structures[i.id],
+              })),
+              next_cursor: undefined,
+            });
+          }
+          return Promise.resolve({
+            results: issues.map((i) => ({
+              ...i,
+              project_structure: structures[i.id],
+            })),
+            next_cursor: undefined,
+          });
+        }
+        if (path === BASE) {
+          return Promise.resolve({
+            id: "proj-1",
+            identifier: "ENG",
+            name: "Eng",
+          });
+        }
+        return Promise.reject(new Error("unexpected path: " + path));
+      },
+    );
+    renderSpreadsheet(opts.initialEntry);
+    await screen.findByRole("button", { name: "Sort by Cycle" });
+    return userEvent.setup();
+  }
+
+  async function openPqlEditor(
+    user: ReturnType<typeof userEvent.setup>,
+  ) {
+    // Clicked while the popover is closed, so the "Filters" mode
+    // toggle is not yet in the document to collide with this match.
+    // (The trigger's accessible name is "Filter1" — no space — so a
+    // \b-anchored regex never matches it.)
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    await user.click(screen.getByRole("button", { name: "PQL" }));
+    return screen.getByLabelText("PQL query");
+  }
+
+  async function getCalls(): Promise<string[]> {
+    const { api } = await import("../lib/api");
+    return (api.get as ReturnType<typeof vi.fn>).mock.calls.map(
+      (args: unknown[]) => args[0] as string,
+    );
+  }
+
+  it("apply commits and re-runs the query — probe + fetch both carry pql", async () => {
+    const user = await renderPqlReady([issues[1]]);
+    const editor = await openPqlEditor(user);
+    await user.type(editor, "priority = High");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    // Grid switches to the PQL subset (ENG-2 only).
+    await screen.findByRole("link", { name: /Open issue ENG-2/ });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-3/ }),
+      ).toBeNull();
+    });
+
+    // Probe (per_page 100, pre-commit) and the PQL query fetch both
+    // carried the pql param; neither carried a visual filter param.
+    const calls = await getCalls();
+    const pqlFetches = calls.filter(
+      (p) => p.includes("pql=") && p.includes("per_page=100"),
+    );
+    expect(pqlFetches.length).toBeGreaterThanOrEqual(2);
+    for (const p of pqlFetches) {
+      expect(p).toContain("pql=priority");
+      expect(p).toContain("include_project_structure=1");
+      expect(p).not.toContain("state=");
+    }
+  });
+
+  it("a 400 rejects without changing the grid", async () => {
+    const { ApiError } = await import("../lib/api");
+    const user = await renderPqlReady([], {
+      probeError: new ApiError(400, "unknown field foo"),
+    });
+    const editor = await openPqlEditor(user);
+    await user.type(editor, "foo = bar");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    // Server message inline; the editor stays open and the grid is
+    // untouched (all three visual rows still there).
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "unknown field foo",
+    );
+    expect(rowLabels()).toHaveLength(3);
+    const calls = await getCalls();
+    // Only the probe fired — no committed PQL query fetch followed it.
+    expect(
+      calls.filter((p) => p.includes("pql=")).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("mode exit restores the parked visual filters", async () => {
+    const user = await renderPqlReady(issues, {
+      initialEntry: "/w/acme/p/ENG/spreadsheet?q=hello",
+    });
+    // Single space here: Testing Library's normalizer collapses the
+    // node's double space before comparing, so the query must too.
+    const search = screen.getByPlaceholderText(
+      "Search issues… ( / )",
+    ) as HTMLInputElement;
+    expect(search).toHaveValue("hello");
+
+    // Enter PQL mode: the search text is parked, the box clears and
+    // disables (search is a visual filter).
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    await user.click(screen.getByRole("button", { name: "PQL" }));
+    const parkedSearch = screen.getByPlaceholderText(
+      "Search is replaced by PQL mode",
+    ) as HTMLInputElement;
+    expect(parkedSearch).toHaveValue("");
+    expect(parkedSearch).toBeDisabled();
+
+    // Exit back to Filters: the parked search text comes back.
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const restored = screen.getByPlaceholderText(
+      "Search issues… ( / )",
+    ) as HTMLInputElement;
+    expect(restored).toHaveValue("hello");
+    expect(restored).not.toBeDisabled();
+  });
+
+  it("header count follows the PQL result", async () => {
+    const user = await renderPqlReady([issues[1]]);
+    const breadcrumb = screen.getByLabelText("Breadcrumb");
+    expect(within(breadcrumb).getByText("3")).toBeInTheDocument();
+
+    const editor = await openPqlEditor(user);
+    await user.type(editor, "priority = High");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => {
+      expect(within(breadcrumb).getByText("1")).toBeInTheDocument();
+    });
+  });
+
+  it("a pasted ?pql= link opens in PQL mode (backstop)", async () => {
+    const user = await renderPqlReady([issues[1]], {
+      initialEntry:
+        "/w/acme/p/ENG/spreadsheet?pql=priority+%3D+High",
+    });
+    // Grid shows the PQL subset, not the visual list.
+    await screen.findByRole("link", { name: /Open issue ENG-2/ });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("link", { name: /Open issue ENG-1/ }),
+      ).toBeNull();
+    });
+
+    // The panel opens already in PQL mode with the query in the editor.
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    expect(screen.getByRole("button", { name: "PQL" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("PQL query")).toHaveValue(
+      "priority = High",
+    );
   });
 });

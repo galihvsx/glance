@@ -1,6 +1,7 @@
-import { Fragment, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQueries,
@@ -61,11 +62,13 @@ import {
   type CustomValue,
 } from "../lib/customFields";
 import {
+  EMPTY_FILTERS,
   activeFilterCount,
   toApiParams,
   useIssueFilters,
   type IssueFilters,
 } from "../lib/filters";
+import { pqlHasLimit } from "../lib/pql";
 import { useShortcutAction } from "../lib/shortcuts";
 import { stateDotClass } from "../lib/stateDot";
 import { cn } from "../lib/utils";
@@ -104,6 +107,27 @@ function buildIssuePath(
   // cycle/module/release membership (one server-side query), replacing
   // the old per-row ?include_project_structure=1 detail fetches.
   p.set("include_project_structure", "1");
+  return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
+}
+
+// C104T0: PQL fetch shape for the grid — pql-only filter params plus
+// the grid's response-shape flag (?include_project_structure=1, so the
+// cycle/module/release columns keep rendering on PQL rows exactly as
+// on visual rows). The flag is not a filter: the backend parses it
+// independently of pql (issue_handler.go) and attaches membership to
+// every returned row regardless of filter mode (service/issue.go), so
+// no visual filter can leak in through it.
+function buildPqlPath(
+  slug: string,
+  identifier: string,
+  query: string,
+  cursor?: string,
+): string {
+  const p = new URLSearchParams();
+  p.set("pql", query.trim());
+  p.set("per_page", "100");
+  p.set("include_project_structure", "1");
+  if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
 
@@ -189,6 +213,22 @@ export default function Spreadsheet() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [filters, setFilters, clearFilters] = useIssueFilters();
+  // C104T0: PQL mode, following the List (C91) pattern verbatim. The
+  // applied query lives in the URL (?pql=) via the shared filter
+  // state; the mode flag itself is page state. Entering PQL mode
+  // parks the visual selection in memory (pql stripped) and exiting
+  // restores it; the parked set is in-memory only — a reload keeps
+  // the applied query but not the parked selection.
+  const [pqlMode, setPqlMode] = useState(filters.pql?.trim() ? true : false);
+  const parkedFiltersRef = useRef<IssueFilters | null>(null);
+  // Backstop for mode sync: a non-blank ?pql= in the URL (pasted link,
+  // back/forward) always means PQL mode. Mode is NEVER auto-cleared
+  // here — leaving PQL mode happens only via an explicit toggle to
+  // Filters or applying a visual saved view, because PQL mode with an
+  // empty (cleared) query is a real state: no filter.
+  useEffect(() => {
+    if (filters.pql?.trim()) setPqlMode(true);
+  }, [filters.pql]);
   // Seed from the URL so a pasted link shows its query in the box.
   const [searchInput, setSearchInput] = useState(filters.q);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -236,7 +276,106 @@ export default function Spreadsheet() {
       api.get<IssueListResult>(buildIssuePath(slug, identifier, filters, pageParam)),
     getNextPageParam: (last) => last.next_cursor || undefined,
     initialPageParam: undefined as string | undefined,
+    // C104T0: keep the previous pages across filter-key changes, so
+    // committing a PQL query never blanks the grid while the PQL query
+    // is still loading — the previous visual rows stay on screen until
+    // the PQL result replaces them (Board/C95 pattern). Same effect
+    // on visual filter changes: old rows until the new page arrives.
+    placeholderData: keepPreviousData,
   });
+
+  // C104T0: committed PQL query — Board's pqlIssuesQuery shape,
+  // adapted to the grid's row list (per_page 100 cursor loop, pql-only
+  // filter params; a LIMIT query is a single page since the server
+  // always returns next_cursor null for it).
+  const appliedQuery = filters.pql?.trim() ?? "";
+  const pqlActive = pqlMode && appliedQuery !== "";
+  const pqlIssuesKey = [
+    "spreadsheet-issues-pql",
+    slug,
+    identifier,
+    appliedQuery,
+  ] as const;
+  const pqlIssuesQuery = useQuery({
+    queryKey: pqlIssuesKey,
+    enabled: pqlActive,
+    queryFn: async () => {
+      if (pqlHasLimit(appliedQuery)) {
+        const page = await api.get<IssueListResult>(
+          buildPqlPath(slug, identifier, appliedQuery),
+        );
+        return page.results;
+      }
+      const all: Issue[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await api.get<IssueListResult>(
+          buildPqlPath(slug, identifier, appliedQuery, cursor),
+        );
+        all.push(...page.results);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return all;
+    },
+  });
+
+  // C104T0: PQL mode handlers (List pattern verbatim — see the
+  // mode-restore note at the pqlMode state above).
+  function handlePqlModeChange(mode: "visual" | "pql") {
+    if (mode === "pql") {
+      if (!pqlMode) {
+        // Park the visual selection (pql stripped — the parked set is
+        // visual-only) and clear the URL so no request can mix modes.
+        parkedFiltersRef.current = { ...filters, pql: "" };
+        setFilters({ ...EMPTY_FILTERS, pql: "" });
+        setSearchInput("");
+      }
+      setPqlMode(true);
+      return;
+    }
+    const parked = parkedFiltersRef.current;
+    parkedFiltersRef.current = null;
+    setPqlMode(false);
+    if (parked) {
+      setFilters({ ...parked, pql: "" });
+      setSearchInput(parked.q);
+    } else {
+      setFilters({ pql: "" });
+    }
+  }
+
+  /**
+   * Probe-first PQL apply (List pattern): fetch one page with the
+   * pql-only params; commit to the URL only when the server accepts
+   * the query. A 400 rejects, so the grid never changes and the
+   * editor shows the server's message + column inline. Empty query =
+   * no filter (commits "" and stays in PQL mode).
+   */
+  async function handlePqlApply(query: string): Promise<void> {
+    const q = query.trim();
+    if (!q) {
+      setFilters({ pql: "" });
+      return;
+    }
+    await api.get<IssueListResult>(buildPqlPath(slug, identifier, q));
+    setFilters({ pql: q });
+  }
+
+  function handlePqlClear() {
+    setFilters({ pql: "" });
+  }
+
+  /**
+   * Saved-view application (List pattern): the menu already wrote the
+   * view's filters to the URL; this only settles the mode. A PQL view
+   * enters PQL mode; a visual view leaves it. Either way the parked
+   * visual selection is dropped — the view, not the pre-view
+   * selection, is now the state.
+   */
+  function handleSavedViewApplied(pqlQuery: string | null) {
+    parkedFiltersRef.current = null;
+    setPqlMode(pqlQuery !== null);
+  }
 
   const stateById = useMemo(
     () => new Map((statesQuery.data ?? []).map((s) => [s.id, s] as const)),
@@ -468,6 +607,17 @@ export default function Spreadsheet() {
     [issuesQuery.data],
   );
 
+  // C104T0: the displayed rows — the visual grid by default, the PQL
+  // result while a query is committed. While a committed query is
+  // still loading, keep showing the visual rows rather than blanking
+  // the grid (Board/C95 pattern); the filtered list replaces them on
+  // arrival. The header count, custom-value fetches, membership map,
+  // and client-side sort all derive from this list.
+  const displayedIssues = useMemo(
+    () => (pqlActive ? (pqlIssuesQuery.data ?? issues) : issues),
+    [pqlActive, pqlIssuesQuery.data, issues],
+  );
+
   // C9T4: per-issue custom values. The list endpoint deliberately never
   // carries custom_values (C7T2 kept the list query untouched for perf, and
   // this task is frontend-only with zero backend changes), so while at
@@ -478,7 +628,7 @@ export default function Spreadsheet() {
     queries:
       visibleCfFields.length === 0
         ? []
-        : issues.map((issue) => ({
+        : displayedIssues.map((issue) => ({
             queryKey: ["issue-custom-values", slug, identifier, issue.id],
             queryFn: () =>
               api
@@ -492,7 +642,7 @@ export default function Spreadsheet() {
   const cfValuesByIssue = useMemo(
     () =>
       new Map(
-        issues.map(
+        displayedIssues.map(
           (issue, i) =>
             [
               issue.id,
@@ -500,7 +650,7 @@ export default function Spreadsheet() {
             ] as const,
         ),
       ),
-    [issues, cfValueQueries],
+    [displayedIssues, cfValueQueries],
   );
 
   // C21T2: cycle/module/release membership rides on the list rows —
@@ -512,16 +662,16 @@ export default function Spreadsheet() {
   const structureByIssue = useMemo(
     () =>
       new Map(
-        issues.map(
+        displayedIssues.map(
           (issue) => [issue.id, issue.project_structure] as const,
         ),
       ),
-    [issues],
+    [displayedIssues],
   );
   const sortedIssues = useMemo(() => {
-    if (!sortKey) return issues;
+    if (!sortKey) return displayedIssues;
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...issues].sort((a, b) => {
+    return [...displayedIssues].sort((a, b) => {
       const va = cellValue(
         a,
         sortKey,
@@ -543,7 +693,7 @@ export default function Spreadsheet() {
         return (va - vb) * dir;
       return String(va).localeCompare(String(vb)) * dir;
     });
-  }, [issues, sortKey, sortDir, stateById, structureByIssue]);
+  }, [displayedIssues, sortKey, sortDir, stateById, structureByIssue]);
 
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
@@ -554,7 +704,7 @@ export default function Spreadsheet() {
       {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
       <PageHeader
         viewName="Table"
-        count={issues.length}
+        count={displayedIssues.length}
         showViews
         filterPanel={
           <FilterPanel
@@ -571,6 +721,15 @@ export default function Spreadsheet() {
               setSortKey(null);
             }}
             triggerClassName={pageHeaderControlClass}
+            pqlMode={pqlMode}
+            pqlAppliedQuery={appliedQuery}
+            onPqlModeChange={handlePqlModeChange}
+            onPqlApply={handlePqlApply}
+            onPqlClear={handlePqlClear}
+            // The spreadsheet's Views menu saves visual filters only
+            // (no PQL save path here — Board/C96T1 precedent), so the
+            // editor must not promise a Views save for the query.
+            pqlShowSaveHint={false}
           />
         }
         displayPanel={
@@ -592,6 +751,7 @@ export default function Spreadsheet() {
             filters={filters}
             display={null}
             onApplyDisplay={null}
+            onViewApplied={handleSavedViewApplied}
             triggerClassName={pageHeaderControlClass}
           />
         }
@@ -671,7 +831,17 @@ export default function Spreadsheet() {
               ref={searchRef}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search issues…  ( / )"
+              placeholder={
+                pqlMode
+                  ? "Search is replaced by PQL mode"
+                  : "Search issues…  ( / )"
+              }
+              disabled={pqlMode}
+              title={
+                pqlMode
+                  ? "Free-text search is a visual filter — switch back to Filters to search"
+                  : undefined
+              }
               className="w-56 bg-surface pl-8 text-[13px]"
             />
           </form>
@@ -681,6 +851,9 @@ export default function Spreadsheet() {
               size="sm"
               className="text-ink-secondary hover:bg-wash-hover hover:text-ink"
               onClick={() => {
+                // Clearing means clearing: the parked visual selection
+                // is dropped too, so toggling back cannot resurrect it.
+                parkedFiltersRef.current = null;
                 clearFilters();
                 setSearchInput("");
                 setSortKey(null);
@@ -1077,7 +1250,9 @@ export default function Spreadsheet() {
                 </tbody>
               </table>
             </div>
-            {issuesQuery.hasNextPage && (
+            {/* C104T0: no Load more in PQL mode — the PQL result is
+                already the full cursor loop, not a first page. */}
+            {!pqlActive && issuesQuery.hasNextPage && (
               <div className="mt-4 flex justify-center">
                 <Button
                   variant="outline"
