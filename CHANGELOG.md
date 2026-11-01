@@ -5,6 +5,16 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**PQL saved views on Board + Spreadsheet (cycle 105)**
+
+- Board and Spreadsheet now wire the full PQL save/apply contract
+  from the issue list (C91): in PQL mode a save stores only the
+  query; applying a PQL view enters PQL mode, applying a visual
+  view leaves it. This fixes Board's defect where saving while in
+  PQL mode silently saved the visual filters instead, and adds the
+  missing save wiring on Spreadsheet, where PQL mode arrived in
+  C104 without it.
+
 **PQL mode on the Spreadsheet view + filter params survive view switches (cycle 104)**
 
 - The Spreadsheet (Table) view now has PQL mode like List and Board:
