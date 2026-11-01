@@ -18,7 +18,15 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Cycles from "./Cycles";
 import { api, ApiError } from "../lib/api";
+import { EMPTY_FILTERS } from "../lib/filters";
+import type { IssueViewRow } from "../lib/savedViews";
 import type { Cycle, Issue } from "../lib/types";
+
+// CycleDetail renders SavedViewsMenu → useAuth; the real provider needs
+// a session — stub the auth context (BoardPql.test.tsx pattern).
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -61,12 +69,26 @@ function makeIssue(id: string, displayId: string, name: string): Issue {
 const issueA = makeIssue("i-a", "ENG-1", "Fix login redirect");
 const issueB = makeIssue("i-b", "ENG-2", "Urgent checkout bug");
 
-function renderPage() {
+function renderPage(opts: { views?: IssueViewRow[] } = {}) {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces/acme")
       return Promise.resolve({ role: 15 });
+    if (path === BASE)
+      return Promise.resolve({
+        id: "p-eng",
+        workspace_id: "w-acme",
+        identifier: "ENG",
+        name: "ENG",
+        description: "",
+        parallel_cycles: false,
+        labels: [],
+        created_at: "",
+        updated_at: "",
+      });
     if (path === `${BASE}/states`) return Promise.resolve({ states: [] });
     if (path === `${BASE}/cycles`) return Promise.resolve({ cycles: [cycle] });
+    if (path === "/api/v1/projects/p-eng/views")
+      return Promise.resolve({ views: opts.views ?? [] });
     if (path.includes("/issues")) {
       const qs = new URLSearchParams(path.split("?")[1] ?? "");
       const pql = qs.get("pql");
@@ -77,6 +99,12 @@ function renderPage() {
               position: 1,
             }),
           );
+        }
+        // Distinct scoped result for a second saved view, so a
+        // re-apply while already in PQL mode is observable in the
+        // list as well as in the editor draft.
+        if (pql.includes("Low")) {
+          return Promise.resolve({ results: [issueA], next_cursor: null });
         }
         return Promise.resolve({ results: [issueB], next_cursor: null });
       }
@@ -174,7 +202,7 @@ describe("cycle detail PQL mode (C95T1)", () => {
     }
   });
 
-  it("cycle detail PQL editor hides the save hint (C96T1: no Views menu on detail pages)", async () => {
+  it("cycle detail PQL editor hides the save hint (C96T1)", async () => {
     renderPage();
     await openDetail();
     fireEvent.click(screen.getByRole("button", { name: "PQL" }));
@@ -370,3 +398,163 @@ describe("cycle detail PQL refetch on membership mutation (C103T0)", () => {
   });
 });
 
+
+describe("cycle detail saved views (C107T1)", () => {
+  function makeViewRow(
+    name: string,
+    filters: IssueViewRow["filters"],
+    opts: { isDefault?: boolean; shared?: boolean; ownerId?: string } = {},
+  ): IssueViewRow {
+    return {
+      id: `v-${name}`,
+      name,
+      filters,
+      display: null,
+      is_default: opts.isDefault ?? false,
+      shared: opts.shared ?? false,
+      owner_id: opts.ownerId ?? "u-1",
+      owner_name: "",
+      created_at: "",
+    };
+  }
+
+  async function openViewsMenu() {
+    fireEvent.click(screen.getByRole("button", { name: "Saved views" }));
+  }
+
+  async function applyViewNamed(name: string) {
+    await openViewsMenu();
+    await screen.findByText(name);
+    fireEvent.click(screen.getByTitle(`Apply view “${name}”`));
+  }
+
+  it("applying a saved PQL view narrows the list and seeds the PQL editor", async () => {
+    renderPage({
+      views: [
+        makeViewRow("High priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = High",
+        }),
+      ],
+    });
+    await openDetail();
+    await applyViewNamed("High priority");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "PQL" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    // Probe-first then mode entry: the editor mounts seeded with the
+    // applied query, not an empty draft.
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = High");
+  });
+
+  it("a default view present does NOT auto-apply on detail mount", async () => {
+    renderPage({
+      views: [
+        makeViewRow(
+          "High priority",
+          { ...EMPTY_FILTERS, pql: "priority = High" },
+          { isDefault: true },
+        ),
+      ],
+    });
+    await openDetail();
+    // Opening the menu proves the views have loaded — the detail-mode
+    // effect must still not have applied anything by then.
+    await openViewsMenu();
+    await screen.findByText("High priority");
+    expect(screen.getByText("Fix login redirect")).toBeTruthy();
+    expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+    expect(screen.queryByLabelText("PQL query")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "All issues" }),
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a saved view with an invalid query fails honestly: list untouched, error surfaced", async () => {
+    renderPage({
+      views: [
+        makeViewRow("Broken", { ...EMPTY_FILTERS, pql: "bogus = 1" }),
+      ],
+    });
+    await openDetail();
+    await applyViewNamed("Broken");
+    // The detail-level alert carries the probe's 400 (the editor
+    // mounts fresh, so its own inline error cannot show it).
+    await screen.findByText(/unknown field: bogus/);
+    expect(screen.getByText("Fix login redirect")).toBeTruthy();
+    expect(screen.getByText("Urgent checkout bug")).toBeTruthy();
+    // No unhandled rejection: the handler catches the probe failure
+    // internally (a rejection here would fail the run), and the
+    // editor is present for the user to correct the query.
+    expect(screen.getByLabelText("PQL query")).toBeTruthy();
+  });
+
+  it("the detail menu renders PQL views only, own and shared", async () => {
+    renderPage({
+      views: [
+        makeViewRow("High priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = High",
+        }),
+        makeViewRow("My bugs", EMPTY_FILTERS),
+        makeViewRow(
+          "Shared high",
+          { ...EMPTY_FILTERS, pql: "priority = High" },
+          { shared: true, ownerId: "u-2" },
+        ),
+        makeViewRow("Shared bugs", EMPTY_FILTERS, {
+          shared: true,
+          ownerId: "u-2",
+        }),
+      ],
+    });
+    await openDetail();
+    await openViewsMenu();
+    await screen.findByText("High priority");
+    expect(screen.getByText("Shared high")).toBeTruthy();
+    expect(screen.queryByText("My bugs")).toBeNull();
+    expect(screen.queryByText("Shared bugs")).toBeNull();
+  });
+
+  it("applying a second saved view while already in PQL mode re-seeds the editor", async () => {
+    renderPage({
+      views: [
+        makeViewRow("High priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = High",
+        }),
+        makeViewRow("Low priority", {
+          ...EMPTY_FILTERS,
+          pql: "priority = Low",
+        }),
+      ],
+    });
+    await openDetail();
+    await applyViewNamed("High priority");
+    await waitFor(() => {
+      expect(screen.queryByText("Fix login redirect")).toBeNull();
+    });
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = High");
+    // Already in PQL mode: the editor is mounted, so without the
+    // applied-query key its draft would stay on view A's query.
+    await applyViewNamed("Low priority");
+    // While the re-scoped query loads, the list falls back to the
+    // full membership list (both issues) — wait for the refetch to
+    // land, not just for the new result to appear.
+    await waitFor(() => {
+      expect(screen.queryByText("Urgent checkout bug")).toBeNull();
+    });
+    expect(screen.getByText("Fix login redirect")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("PQL query") as HTMLTextAreaElement).value,
+    ).toBe("priority = Low");
+  });
+});

@@ -18,6 +18,12 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Cycles from "./Cycles";
 import { api, ApiError } from "../lib/api";
 import type { Cycle } from "../lib/types";
+
+// C107T1: CycleDetail renders SavedViewsMenu → useAuth; the real
+// provider needs a session — stub the auth context (BoardPql pattern).
+vi.mock("../lib/auth", () => ({
+  useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
+}));
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -45,6 +51,21 @@ function renderPage(opts: { role?: number; cycles?: Cycle[] } = {}) {
     if (path === `${BASE}/states`) return Promise.resolve({ states: [] });
     if (path === `${BASE}/cycles`)
       return Promise.resolve({ cycles: opts.cycles ?? [] });
+    // C107T1: CycleDetail's project query + the menu's views query.
+    if (path === BASE)
+      return Promise.resolve({
+        id: "p-eng",
+        workspace_id: "w-acme",
+        identifier: "ENG",
+        name: "ENG",
+        description: "",
+        parallel_cycles: false,
+        labels: [],
+        created_at: "",
+        updated_at: "",
+      });
+    if (path === "/api/v1/projects/p-eng/views")
+      return Promise.resolve({ views: [] });
     if (path.includes("/issues"))
       return Promise.resolve({ results: [], next_cursor: null });
     if (path.includes("/burndown"))
