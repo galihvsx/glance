@@ -27,6 +27,10 @@ export interface PqlCheatEntry {
  * The release field (C117T0) accepts =/!=/in like a name field,
  * project-scoped by name (workspace scope: the name across
  * accessible projects), with `none` for issues in no release.
+ * The mentions field (C120T0) is a NAME field like assignee /
+ * created_by: values resolve against workspace members (member name,
+ * email, or `me`), plus `none` for issues with no mention rows —
+ * the assignee resolver shape, with `=` and `!=`.
  * The state_group field (C119T0) is a CLOSED-VOCABULARY field
  * like priority, not a name field: values are group slugs
  * validated against backlog, unstarted, started, completed,
@@ -87,6 +91,19 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: 'created_by = "Jane Doe"',
     meaning: "Created by the named member (workspace-scoped)",
+  },
+  {
+    example: 'mentions = "Jane Doe"',
+    meaning:
+      "Mentioned in a comment: the named member (workspace-scoped; also a member email, me, or none)",
+  },
+  {
+    example: "mentions != me",
+    meaning: "Current user was not mentioned in any comment",
+  },
+  {
+    example: "mentions = none",
+    meaning: "Issues with no mentions in any comment",
   },
   { example: "hasNoAssignee()", meaning: "Issues with no assignees" },
   { example: "hasAssignee()", meaning: "Issues with at least one assignee" },

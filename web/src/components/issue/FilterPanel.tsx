@@ -149,7 +149,7 @@ function DateRange({
  *  no Apply button. Dimensions: state, state group (multi, C119T1),
  *  priority (multi), labels (multi),
  *  assignees (multi + unassigned), created by (multi, C118T1),
- *  estimate (multi + none), parent
+ *  mentions (multi + no-mentions, C120T1), estimate (multi + none), parent
  *  (multi + top-level, C75T1), epic (multi + none, C75T1),
  *  cycle (multi + none, C116T1), module (multi + none, C116T1), release
  *  (multi + none, C117T1), date ranges
@@ -412,6 +412,13 @@ export default function FilterPanel({
     (id) => !members.some((m) => m.id === id),
   );
 
+  // C120T1: same missing-ID idiom for mentions. The "none" sentinel
+  // is a valid selection, not a member id, so it is excluded here
+  // (it gets its own row in the section, like the Assignees none row).
+  const missingMentionIds = filters.mentions.filter(
+    (id) => id !== "none" && !members.some((m) => m.id === id),
+  );
+
   const count = activeFilterCount(filters);
 
   return (
@@ -567,6 +574,47 @@ export default function FilterPanel({
                 onChange({ priorities: toggle(filters.priorities, p) })
               }
               label={priorityLabel(p)}
+            />
+          ))}
+        </div>
+
+        {/* C120T1: Mentions section — immediately after Priority (Plane's
+            order is Priority → Mentions → Label). Copies the Created-by
+            section's shape over the SAME members list (no new fetch)
+            PLUS the Assignees section's none row ("No mentions") PLUS
+            the Created-by missing-ids rows (truncated-id checked row
+            with the "unknown" hint). */}
+        <Separator className="my-1" />
+        <SectionHeader
+          title="Mentions"
+          active={filters.mentions.length > 0}
+          onClear={() => onChange({ mentions: [] })}
+        />
+        <div className="mb-1 max-h-40 overflow-y-auto">
+          <CheckRow
+            checked={filters.mentions.includes("none")}
+            onChange={() => onChange({ mentions: toggle(filters.mentions, "none") })}
+            label="No mentions"
+          />
+          {members.map((m) => (
+            <CheckRow
+              key={m.id}
+              checked={filters.mentions.includes(m.id)}
+              onChange={() =>
+                onChange({ mentions: toggle(filters.mentions, m.id) })
+              }
+              label={m.name ?? m.email}
+            />
+          ))}
+          {missingMentionIds.map((id) => (
+            <CheckRow
+              key={id}
+              checked
+              onChange={() =>
+                onChange({ mentions: toggle(filters.mentions, id) })
+              }
+              label={`${id.slice(0, 8)}…`}
+              hint="unknown"
             />
           ))}
         </div>

@@ -874,3 +874,125 @@ describe("State Group filter section (C119T1)", () => {
     expect(headers.indexOf("State Group")).toBe(headers.indexOf("State") + 1);
   });
 });
+
+describe("Mentions filter section (C120T1)", () => {
+  const M_ALICE = "123e4567-e89b-12d3-a456-426614174060";
+  const M_BOB = "123e4567-e89b-12d3-a456-426614174061";
+  const UNKNOWN_MENTION = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+  function member(id: string, name: string | null, email: string): Member {
+    return { id, name, email, role: 1 };
+  }
+
+  const alice = member(M_ALICE, "Alice", "alice@example.com");
+  const bob = member(M_BOB, null, "bob@example.com");
+
+  /** The Mentions list div: the sibling after the "Mentions" header. */
+  function mentionsList(): HTMLElement {
+    const header = screen.getByText("Mentions");
+    const list = header.closest("div")?.nextElementSibling;
+    expect(list).not.toBeNull();
+    return list as HTMLElement;
+  }
+
+  function isCheckedIn(list: HTMLElement, labelText: string): boolean {
+    const row = Array.from(list.querySelectorAll("label")).find(
+      (l) => l.textContent?.includes(labelText),
+    );
+    expect(row).not.toBeUndefined();
+    return row!.querySelector('[aria-checked="true"]') !== null;
+  }
+
+  function clickIn(list: HTMLElement, labelText: string): void {
+    const row = Array.from(list.querySelectorAll("label")).find(
+      (l) => l.textContent?.includes(labelText),
+    );
+    expect(row).not.toBeUndefined();
+    fireEvent.click(row!);
+  }
+
+  it("renders member rows with name, falling back to email, over the same members list", () => {
+    renderPanel({ members: [alice, bob] });
+    const list = mentionsList();
+    expect(list.textContent).toContain("Alice");
+    expect(list.textContent).toContain("bob@example.com");
+  });
+
+  it("has the Assignees-style none row ('No mentions'), distinct from 'Unassigned'", () => {
+    renderPanel({ members: [alice] });
+    expect(screen.getByText("No mentions")).not.toBeNull();
+    expect(mentionsList().textContent).toContain("No mentions");
+    expect(screen.getAllByText("Unassigned")).toHaveLength(1);
+  });
+
+  it("toggling a member in this section calls onChange with mentions", () => {
+    const { onChange } = renderPanel({ members: [alice, bob] });
+    clickIn(mentionsList(), "Alice");
+    expect(onChange).toHaveBeenCalledWith({ mentions: [M_ALICE] });
+  });
+
+  it("toggling the none row calls onChange with mentions ['none']", () => {
+    const { onChange } = renderPanel({ members: [alice] });
+    clickIn(mentionsList(), "No mentions");
+    expect(onChange).toHaveBeenCalledWith({ mentions: ["none"] });
+  });
+
+  it("selected mentions render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, mentions: [M_ALICE] },
+      members: [alice, bob],
+    });
+    expect(isCheckedIn(mentionsList(), "Alice")).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear Mentions filter" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ mentions: [] });
+  });
+
+  it("hides the per-section Clear when the section is inactive", () => {
+    renderPanel({ members: [alice] });
+    expect(
+      screen.queryByRole("button", { name: "Clear Mentions filter" }),
+    ).toBeNull();
+  });
+
+  it("renders a clearable fallback row for an unknown mentioned id", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, mentions: [UNKNOWN_MENTION] },
+      members: [],
+    });
+    const list = mentionsList();
+    expect(list.textContent).toContain("bbbbbbbb…");
+    expect(list.textContent).toContain("unknown");
+    clickIn(list, "bbbbbbbb");
+    expect(onChange).toHaveBeenCalledWith({ mentions: [] });
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({
+      filters: { ...EMPTY_FILTERS, mentions: [M_ALICE] },
+      members: [alice],
+    });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("sits immediately after the Priority section and before Labels", () => {
+    renderPanel({ members: [alice] });
+    const priorityHeader = screen.getByText("Priority");
+    const mentionsHeader = screen.getByText("Mentions");
+    expect(
+      priorityHeader.compareDocumentPosition(mentionsHeader) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Immediacy, not just order: no other section header sits between
+    // Priority and Mentions (SectionHeader <p> elements carry the
+    // text-[11px] class; nothing else in the panel does).
+    const headers = Array.from(
+      document.querySelectorAll('p[class*="text-[11px]"]'),
+    ).map((p) => p.textContent);
+    expect(headers.indexOf("Mentions")).toBe(headers.indexOf("Priority") + 1);
+    expect(headers.indexOf("Labels")).toBe(headers.indexOf("Mentions") + 1);
+  });
+});
