@@ -13,7 +13,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import FilterPanel from "./FilterPanel";
 import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
-import type { Cycle, Epic, Issue, Module } from "../../lib/types";
+import type { Cycle, Epic, Issue, Module, Release } from "../../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -77,6 +77,7 @@ function renderPanel(opts: {
   epics?: Epic[];
   cycles?: Cycle[];
   modules?: Module[];
+  releases?: Release[];
   missingParents?: Issue[];
 }) {
   const filters = opts.filters ?? EMPTY_FILTERS;
@@ -94,6 +95,7 @@ function renderPanel(opts: {
     ],
     [["cycles", "acme", "ENG"], opts.cycles ?? []],
     [["modules", "acme", "ENG"], opts.modules ?? []],
+    [["releases", "acme", "ENG"], opts.releases ?? []],
     [["parent-filter-search", "acme", "ENG", ""], searchResults],
   ];
   for (const [q, results] of Object.entries(opts.searchByQuery ?? {})) {
@@ -568,5 +570,101 @@ describe("No due date is-empty chip (C80T1)", () => {
       dueBefore: "",
       dueDateEmpty: false,
     });
+  });
+});
+
+describe("Release filter section (C117T1)", () => {
+  const R_PLANNED = "123e4567-e89b-12d3-a456-426614174030";
+  const R_RELEASED = "123e4567-e89b-12d3-a456-426614174031";
+  const UNKNOWN_RELEASE = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+  const rel = (
+    id: string,
+    name: string,
+    status: Release["status"],
+    count: number,
+  ): Release => ({
+    id,
+    project_id: "p1",
+    name,
+    description: "",
+    status,
+    release_date: null,
+    issue_count: count,
+    progress_snapshot: {},
+    created_at: "",
+    updated_at: "",
+  });
+  const releasePlanned = rel(R_PLANNED, "v2.0", "planned", 7);
+  const releaseReleased = rel(R_RELEASED, "v1.0", "released", 12);
+
+  it("renders the sentinel row and the project releases with hints", () => {
+    renderPanel({ releases: [releasePlanned, releaseReleased] });
+    expect(screen.getByText("No release")).toBeInTheDocument();
+    expect(screen.getByText("v2.0")).toBeInTheDocument();
+    expect(screen.getByText("7 issues")).toBeInTheDocument();
+    expect(screen.getByText("v1.0")).toBeInTheDocument();
+    expect(screen.getByText("released")).toBeInTheDocument();
+  });
+
+  it("follows server order (no invented client sort)", () => {
+    renderPanel({ releases: [releaseReleased, releasePlanned] });
+    const released = screen.getByText("v1.0");
+    const planned = screen.getByText("v2.0");
+    expect(
+      released.compareDocumentPosition(planned) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("toggling 'No release' and a release calls onChange with the right patch", () => {
+    const { onChange } = renderPanel({ releases: [releasePlanned] });
+    fireEvent.click(screen.getByText("No release"));
+    expect(onChange).toHaveBeenCalledWith({ releases: ["none"] });
+    fireEvent.click(screen.getByText("v2.0"));
+    expect(onChange).toHaveBeenCalledWith({ releases: [R_PLANNED] });
+  });
+
+  it("selected releases render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, releases: [R_PLANNED] },
+      releases: [releasePlanned],
+    });
+    expect(isChecked("v2.0")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Clear Release filter" }));
+    expect(onChange).toHaveBeenCalledWith({ releases: [] });
+  });
+
+  it("renders a clearable fallback row for an unknown release id", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, releases: [UNKNOWN_RELEASE] },
+      releases: [],
+    });
+    expect(screen.getByText("cccccccc…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("cccccccc…"));
+    expect(onChange).toHaveBeenCalledWith({ releases: [] });
+  });
+
+  it("shows an empty state when the project has no releases", () => {
+    renderPanel({ releases: [] });
+    expect(
+      screen.getByText("No releases in this project."),
+    ).toBeInTheDocument();
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({ filters: { ...EMPTY_FILTERS, releases: [R_PLANNED] } });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("sits after the Module section", () => {
+    renderPanel({ modules: [], releases: [releasePlanned] });
+    const moduleHeader = screen.getByText("Module");
+    const releaseHeader = screen.getByText("Release");
+    expect(
+      moduleHeader.compareDocumentPosition(releaseHeader) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });

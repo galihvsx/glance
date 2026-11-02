@@ -24,6 +24,9 @@ export interface PqlCheatEntry {
  * The cycle and module fields (C115T0) accept =/!=/in like name
  * fields, project-scoped by name (workspace scope: the name across
  * accessible projects), with `none` for issues in no cycle/module.
+ * The release field (C117T0) accepts =/!=/in like a name field,
+ * project-scoped by name (workspace scope: the name across
+ * accessible projects), with `none` for issues in no release.
  * Keywords (AND/OR/NOT/IN), field names, priority names, and
  * function names are case-insensitive. Quote names containing spaces.
  * A trailing ORDER BY clause (C98T0, multi-key C99T0) sorts by one or
@@ -91,6 +94,14 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: "module = Auth",
     meaning: "Module by name (project-scoped; also none for issues in no module)",
+  },
+  {
+    example: "release = v2.0",
+    meaning: "Release by name (project-scoped; also none for issues in no release)",
+  },
+  {
+    example: "release in (v2.0, none)",
+    meaning: "Release is one of the listed names, or in no release",
   },
   {
     example: "estimate = S",

@@ -25,6 +25,7 @@ import type {
   Label as ProjectLabel,
   Member,
   Module,
+  Release,
 } from "../../lib/types";
 import { priorityLabel } from "../../lib/types";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
@@ -148,7 +149,8 @@ function DateRange({
  *  no Apply button. Dimensions: state, priority (multi), labels (multi),
  *  assignees (multi + unassigned), estimate (multi + none), parent
  *  (multi + top-level, C75T1), epic (multi + none, C75T1),
- *  cycle (multi + none, C116T1), module (multi + none, C116T1), date ranges
+ *  cycle (multi + none, C116T1), module (multi + none, C116T1), release
+ *  (multi + none, C117T1), date ranges
  *  (created / updated / due) plus a "No due date" is-empty chip for the
  *  due range (C80T1, mutually exclusive with the due range), and
  *  subscribed-by-me.
@@ -306,6 +308,19 @@ export default function FilterPanel({
       a.name.localeCompare(b.name),
   );
 
+  // C117T1: release list for the Release filter section. The same
+  // endpoint the Releases page uses; order follows that page (server
+  // order, no invented client sort — unlike cycles/modules, whose
+  // endpoints carry date/creation ordering, not status ordering).
+  const releasesQuery = useQuery({
+    queryKey: ["releases", slug, identifier],
+    queryFn: () =>
+      api
+        .get<{ releases: Release[] }>(`${base}/releases`)
+        .then((d) => d.releases),
+  });
+  const releases = releasesQuery.data ?? [];
+
   // C75T1: searchable parent-issue picker. Mirrors ParentPicker's search
   // (250ms debounce, per_page 10) but renders as toggle rows; the query
   // only runs while the popover is open.
@@ -380,6 +395,11 @@ export default function FilterPanel({
   );
   const missingModuleIds = filters.modules.filter(
     (id) => id !== "none" && !modules.some((m) => m.id === id),
+  );
+
+  // C117T1: same missing-ID idiom for releases.
+  const missingReleaseIds = filters.releases.filter(
+    (id) => id !== "none" && !releases.some((r) => r.id === id),
   );
 
   const count = activeFilterCount(filters);
@@ -794,6 +814,57 @@ export default function FilterPanel({
             missingModuleIds.length === 0 && (
               <p className="px-2 py-1 text-xs text-muted-foreground">
                 No modules in this project.
+              </p>
+            )}
+        </div>
+
+        <Separator className="my-1" />
+        <SectionHeader
+          title="Release"
+          active={filters.releases.length > 0}
+          onClear={() => onChange({ releases: [] })}
+        />
+        <div className="mb-1 max-h-40 overflow-y-auto">
+          <CheckRow
+            checked={filters.releases.includes("none")}
+            onChange={() =>
+              onChange({ releases: toggle(filters.releases, "none") })
+            }
+            label="No release"
+          />
+          {releases.map((r) => (
+            <CheckRow
+              key={r.id}
+              checked={filters.releases.includes(r.id)}
+              onChange={() =>
+                onChange({ releases: toggle(filters.releases, r.id) })
+              }
+              label={r.name}
+              hint={r.status === "released" ? "released" : `${r.issue_count} issues`}
+            />
+          ))}
+          {missingReleaseIds.map((id) => (
+            <CheckRow
+              key={id}
+              checked
+              onChange={() =>
+                onChange({ releases: toggle(filters.releases, id) })
+              }
+              label={`${id.slice(0, 8)}…`}
+              hint="unknown"
+            />
+          ))}
+          {releasesQuery.isPending && (
+            <div className="space-y-1 px-2 py-1">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          )}
+          {!releasesQuery.isPending &&
+            releases.length === 0 &&
+            missingReleaseIds.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">
+                No releases in this project.
               </p>
             )}
         </div>

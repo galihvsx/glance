@@ -305,6 +305,41 @@ describe("SavedViewsMenu default-view auto-apply race (C106T0)", () => {
     expect(search.get("modules")).toBe(moduleId);
   });
 
+  it("auto-applies a default view carrying release filters with the filter tab unchanged (C117T1)", async () => {
+    const releaseId = "123e4567-e89b-12d3-a456-426614174030";
+    const releaseDefault: SavedView = {
+      ...defaultView,
+      filters: {
+        ...EMPTY_FILTERS,
+        releases: [releaseId, "none"],
+      },
+    };
+    mockHook(pendingProjectState);
+    const utils = renderDefaultMenu({ projectId: "" });
+    rerenderDefaultMenu(utils, {
+      projectId: "p1",
+      state: {
+        views: [releaseDefault],
+        ownViews: [releaseDefault],
+        sharedViews: [],
+        viewsLoading: false,
+        viewsReady: true,
+        viewsError: false,
+      },
+    });
+    expect(utils.onViewApplied).toHaveBeenCalledTimes(1);
+    // A visual view (no pql) applies with a null query, so the page
+    // stays on the Filters tab — it must not flip to PQL mode.
+    expect(utils.onViewApplied).toHaveBeenCalledWith(null);
+    await waitFor(() =>
+      expect(
+        new URLSearchParams(
+          screen.getByTestId("search").textContent ?? "",
+        ).get("releases"),
+      ).toBe(`${releaseId},none`),
+    );
+  });
+
   it("does not double-apply when views re-render after the apply (inv 3)", async () => {
     mockHook(pendingProjectState);
     const utils = renderDefaultMenu({ projectId: "" });

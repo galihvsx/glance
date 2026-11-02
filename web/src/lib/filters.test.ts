@@ -20,6 +20,7 @@ const FULL: IssueFilters = {
   epics: ["123e4567-e89b-12d3-a456-426614174001"],
   cycles: ["123e4567-e89b-12d3-a456-426614174003"],
   modules: ["123e4567-e89b-12d3-a456-426614174004", "none"],
+  releases: ["123e4567-e89b-12d3-a456-426614174005", "none"],
   createdAfter: "2026-10-01",
   createdBefore: "2026-10-09",
   updatedAfter: "",
@@ -105,9 +106,9 @@ describe("activeFilterCount", () => {
   it("counts dimensions, not values", () => {
     expect(activeFilterCount(EMPTY_FILTERS)).toBe(0);
     // q, state, priority, label, assignee, estimate, parent, epic,
-    // cycle, module, created pair, due pair, subscribed, archived
-    // = 14 dimensions
-    expect(activeFilterCount(FULL)).toBe(14);
+    // cycle, module, release, created pair, due pair, subscribed, archived
+    // = 15 dimensions
+    expect(activeFilterCount(FULL)).toBe(15);
   });
 });
 
@@ -149,7 +150,7 @@ describe("due_date_empty is-empty chip (C80T1)", () => {
     expect(
       activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true, dueAfter: "2026-10-01" }),
     ).toBe(1);
-    expect(activeFilterCount(FULL)).toBe(14);
+    expect(activeFilterCount(FULL)).toBe(15);
   });
 
   it("recognizes due_date_empty as a filter param so clear-all drops it", () => {
@@ -334,5 +335,74 @@ describe("cycle/module filters (C116T1)", () => {
     const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
     expect(merged.cycles).toEqual([]);
     expect(merged.modules).toEqual([]);
+  });
+});
+
+describe("release filter (C117T1)", () => {
+  const R1 = "123e4567-e89b-12d3-a456-426614174030";
+  const R2 = "123e4567-e89b-12d3-a456-426614174031";
+
+  it("round-trips releases through the URL", () => {
+    const params = serializeFilters({
+      ...EMPTY_FILTERS,
+      releases: [R1, "none"],
+    });
+    expect(params.get("releases")).toBe(`${R1},none`);
+    const back = parseFilters(params);
+    expect(back.releases).toEqual([R1, "none"]);
+  });
+
+  it("keeps the 'none' sentinel for releases", () => {
+    const back = parseFilters(new URLSearchParams("releases=none"));
+    expect(back.releases).toEqual(["none"]);
+  });
+
+  it("supports repeatable and comma-separated forms together", () => {
+    const back = parseFilters(
+      new URLSearchParams(`releases=${R1}&releases=${R2},none`),
+    );
+    expect(back.releases).toEqual([R1, R2, "none"]);
+  });
+
+  it("drops malformed release values and never throws", () => {
+    const back = parseFilters(
+      new URLSearchParams("releases=garbage,,none,123&q=still-fine"),
+    );
+    expect(back.releases).toEqual(["none"]);
+    expect(back.q).toBe("still-fine");
+  });
+
+  it("emits the plural API name (never a singular release= param)", () => {
+    const p = toApiParams({ ...EMPTY_FILTERS, releases: [R1, "none"] });
+    expect(p.get("releases")).toBe(`${R1},none`);
+    expect(p.get("release")).toBeNull();
+  });
+
+  it("omits the empty release dimension from the query string", () => {
+    expect(serializeFilters(EMPTY_FILTERS).get("releases")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("releases")).toBeNull();
+  });
+
+  it("counts releases as one badge dimension", () => {
+    expect(activeFilterCount({ ...EMPTY_FILTERS, releases: [R1] })).toBe(1);
+    expect(
+      activeFilterCount({
+        ...EMPTY_FILTERS,
+        releases: ["none"],
+        modules: ["123e4567-e89b-12d3-a456-426614174004"],
+      }),
+    ).toBe(2);
+  });
+
+  it("recognizes releases as a filter param (peek= still preserved)", () => {
+    expect(isFilterParam("releases")).toBe(true);
+    expect(isFilterParam("peek")).toBe(false);
+  });
+
+  it("defaults the dimension to empty (pre-C117 filter objects)", () => {
+    expect(EMPTY_FILTERS.releases).toEqual([]);
+    const legacy = { q: "x" } as Partial<IssueFilters>;
+    const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
+    expect(merged.releases).toEqual([]);
   });
 });

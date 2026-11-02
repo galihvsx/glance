@@ -116,3 +116,23 @@ describe("PqlEditor custom save hint (C108T1)", () => {
     expect(screen.queryByText(/To save this query, use Views/)).toBeNull();
   });
 });
+
+describe("PqlEditor release cheat-sheet rows (C117T1)", () => {
+  it("renders the release row with its none-sentinel meaning", () => {
+    renderEditor();
+    expect(screen.getByText("release = v2.0")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Release by name (project-scoped; also none for issues in no release)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the release in-list row", () => {
+    renderEditor();
+    expect(screen.getByText("release in (v2.0, none)")).toBeInTheDocument();
+    expect(
+      screen.getByText("Release is one of the listed names, or in no release"),
+    ).toBeInTheDocument();
+  });
+});
