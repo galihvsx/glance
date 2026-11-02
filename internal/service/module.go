@@ -593,5 +593,13 @@ func ListModuleIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifie
 		}
 		out = append(out, *item)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// C121T0: scope lists carry the same batched display counts as
+	// the normal list, so their rows never render a silent zero.
+	if err := attachIssueDisplayCounts(ctx, pool, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
