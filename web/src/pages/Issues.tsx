@@ -77,6 +77,7 @@ import {
   type SubGroupSection,
 } from "../components/issue/subGroup";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
@@ -144,6 +145,7 @@ function buildIssuePath(
   f: IssueFilters,
   orderBy: string,
   cursor?: string,
+  includeSubtasks = false,
 ): string {
   // C91T1 exclusivity: a non-blank PQL query replaces the visual
   // filters entirely — the request carries ONLY pql (+ pagination /
@@ -153,6 +155,9 @@ function buildIssuePath(
     const p = buildPqlRequestParams(f.pql, { orderBy, perPage: PER_PAGE, cursor });
     // C121T1: batched project-structure chips on list rows (C21T2).
     p.set("include_project_structure", "1");
+    // C124T0: nested sub-work rows — only when the toggle is on;
+    // off means today's flat fetch exactly, no unused data.
+    if (includeSubtasks) p.set("include_subtasks", "1");
     return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
   }
   const p = toApiParams(f);
@@ -160,6 +165,8 @@ function buildIssuePath(
   p.set("order_by", orderBy);
   // C121T1: batched project-structure chips on list rows (C21T2).
   p.set("include_project_structure", "1");
+  // C124T0: same toggle-gated flag as the PQL branch.
+  if (includeSubtasks) p.set("include_subtasks", "1");
   if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
@@ -460,10 +467,27 @@ export default function Issues() {
   }
 
   const issuesQuery = useInfiniteQuery({
-    queryKey: ["issues", slug, identifier, filters, settings.orderBy],
+    // C124T0: the toggle is part of the key too — flipping it
+    // refetches with / without include_subtasks=1 instead of
+    // reusing stale rows (Board precedent, C122T1).
+    queryKey: [
+      "issues",
+      slug,
+      identifier,
+      filters,
+      settings.orderBy,
+      settings.showSubWorkItems,
+    ],
     queryFn: ({ pageParam }: { pageParam?: string }) =>
       api.get<IssueListResult>(
-        buildIssuePath(slug, identifier, filters, settings.orderBy, pageParam),
+        buildIssuePath(
+          slug,
+          identifier,
+          filters,
+          settings.orderBy,
+          pageParam,
+          settings.showSubWorkItems,
+        ),
       ),
     // C98T1: a LIMIT query is a single page — never fetch a next
     // page for it, even if a cursor were ever returned (the server
@@ -827,7 +851,31 @@ export default function Issues() {
     setDialogOpen(true);
   }
 
-  const issues = issuesQuery.data?.pages.flatMap((p) => p.results) ?? [];
+  const fetchedIssues =
+    issuesQuery.data?.pages.flatMap((p) => p.results) ?? [];
+  // C124T0: the split applies to the FULL fetched page set BEFORE
+  // grouping. `issues` below is the post-split visible rows, so the
+  // flat path, every primary group's `issues`, and every sub-group
+  // section's `issues` (built from the groups) are visible rows only,
+  // and group header counts reflect visible rows. No JSX render site
+  // changes this task: the flat path, select-all, header count, and
+  // orderedIssues all read `issues`, which is now the visible set.
+  //
+  // T1 CONTRACT (read this before touching the render sites):
+  //   listSplit.nestedByParent: Map<string, SubtaskRow[]>
+  // in this component's scope, computed from the FULL fetched set
+  // (before group filtering), keyed by top-level parent issue id,
+  // rows sorted by sort_order ASC, non-empty only when the toggle is
+  // on. A parent appearing in several groups (epic multi-appearance)
+  // looks its rows up by the same id under EACH appearance.
+  // Toggle off: listSplit.visibleIssues === fetchedIssues and the
+  // map is empty. T1 renders rows from this map under parent rows;
+  // this task only computes it.
+  const listSplit = useMemo(
+    () => splitNestedIssues(fetchedIssues, settings.showSubWorkItems),
+    [fetchedIssues, settings.showSubWorkItems],
+  );
+  const issues = listSplit.visibleIssues;
   const states = statesQuery.data ?? [];
 
   // "Select all" covers every loaded page (the selection is a set of
@@ -871,6 +919,9 @@ export default function Issues() {
     priority?: number;
   }
 
+  // C124T0: `issues` here is already the post-split visible rows
+  // (split above, before grouping), so each group's `issues` — and
+  // the sub-group sections built from them below — are visible rows.
   const groups = useMemo<IssueGroup[]>(() => {
     let gs: IssueGroup[] = [];
     if (groupByState) {
