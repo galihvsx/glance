@@ -161,6 +161,20 @@ export default function DisplayPanel({
                 aria-label="Show empty groups"
               />
             </Label>
+            {/* C122T1: board-only in effect (the list view stays flat
+                this cycle), but the toggle lives with the other
+                grouping controls — display settings are per-project
+                and shared across views, so a list-view toggle still
+                takes effect when the user switches to the board. */}
+            <Label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent">
+              <span>Show sub-work items</span>
+              <Switch
+                size="sm"
+                checked={settings.showSubWorkItems}
+                onCheckedChange={(v) => onUpdate({ showSubWorkItems: v })}
+                aria-label="Show sub-work items"
+              />
+            </Label>
           </div>
 
           {view === "list" && (

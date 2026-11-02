@@ -103,3 +103,52 @@ describe("useDisplaySettings (C121T1)", () => {
     expect(stored.fields.release).toBe(true);
   });
 });
+
+describe("useDisplaySettings showSubWorkItems (C122T1)", () => {
+  it("defaults showSubWorkItems to true", () => {
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.showSubWorkItems).toBe(true);
+    expect(DEFAULT_DISPLAY_SETTINGS.showSubWorkItems).toBe(true);
+  });
+
+  it("gives pre-existing stored settings the key as true (no migration)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        fields: {
+          state: true,
+          priority: true,
+          labels: true,
+          assignees: true,
+          dates: true,
+        },
+        groupBy: "state",
+        orderBy: "-updated_at",
+        showEmptyGroups: true,
+      }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.showSubWorkItems).toBe(true);
+  });
+
+  it("keeps a stored false (a user-switched-off toggle stays off)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ showSubWorkItems: false }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.showSubWorkItems).toBe(false);
+  });
+
+  it("persists the toggle via update", () => {
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    act(() => {
+      result.current.update({ showSubWorkItems: false });
+    });
+    expect(result.current.settings.showSubWorkItems).toBe(false);
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}") as {
+      showSubWorkItems: boolean;
+    };
+    expect(stored.showSubWorkItems).toBe(false);
+  });
+});

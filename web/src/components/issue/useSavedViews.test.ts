@@ -58,6 +58,24 @@ describe("sanitizeView", () => {
     expect(sanitizeView(makeRow({ is_default: true }))?.isDefault).toBe(true);
   });
 
+  it("gives a pre-C122 saved display showSubWorkItems as true (no migration)", () => {
+    // A backend row written before the key existed: drop it to
+    // simulate the old shape (cast, as the row type now requires it).
+    const { showSubWorkItems: _dropped, ...oldDisplay } =
+      DEFAULT_DISPLAY_SETTINGS;
+    const v = sanitizeView(makeRow({ display: oldDisplay as never }));
+    expect(v?.display?.showSubWorkItems).toBe(true);
+  });
+
+  it("keeps a stored showSubWorkItems false on sanitize", () => {
+    const v = sanitizeView(
+      makeRow({
+        display: { ...DEFAULT_DISPLAY_SETTINGS, showSubWorkItems: false },
+      }),
+    );
+    expect(v?.display?.showSubWorkItems).toBe(false);
+  });
+
   it("accepts a null display (spreadsheet-saved view)", () => {
     const v = sanitizeView(makeRow({ display: null }));
     expect(v?.display).toBeNull();

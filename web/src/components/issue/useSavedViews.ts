@@ -80,6 +80,13 @@ function sanitizeDisplay(raw: unknown): DisplaySettings | null {
       typeof p.showEmptyGroups === "boolean"
         ? p.showEmptyGroups
         : DEFAULT_DISPLAY_SETTINGS.showEmptyGroups,
+    // C122T1: saved views written before this key gain it as true
+    // (same defaults-under-stored merge as load() in
+    // useDisplaySettings — no migration, no reset).
+    showSubWorkItems:
+      typeof p.showSubWorkItems === "boolean"
+        ? p.showSubWorkItems
+        : DEFAULT_DISPLAY_SETTINGS.showSubWorkItems,
   };
 }
 

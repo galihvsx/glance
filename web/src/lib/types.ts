@@ -180,6 +180,10 @@ export interface Issue {
   labels: IssueLabel[];
   /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
   subtask_progress?: SubtaskProgress | null;
+  /** Direct-subtask rows (C122): present only on list rows fetched
+   *  with include_subtasks=1; undefined = not fetched (render nothing
+   *  nested, never a per-row detail fetch). */
+  subtasks?: SubtaskRow[];
   /** Batched per-row counts (C121T0: one server-side query per source
    *  for the whole page, never per-row). Present on list rows; omitted
    *  on endpoints that don't select them (undefined = not computed —
@@ -204,6 +208,27 @@ export interface Issue {
    *  detail endpoint (omitted when the issue has none). Archived epics
    *  stay in this list — the UI dims them, never drops them. */
   epics?: EpicRef[];
+}
+
+/** One direct-subtask row on a list item (C122T0/T1): present ONLY
+ *  when the list fetch passed include_subtasks=1 (omitted otherwise;
+ *  when on, always an array — empty for childless issues — never
+ *  null). Direct children only, ordered by sort_order ASC.
+ *  `priority` accepts both shapes while the T0/T1 merge check
+ *  confirms the wire type: the plan contract says string | null,
+ *  but the codebase serializes issue priority as int 0-4, so a
+ *  numeric value is the expected wire form and a label string is
+ *  normalized at render (see subtaskPriorityLevel). No names ride
+ *  the row — assignees are ids only, so nested rows render generic
+ *  avatar glyphs, never fabricated initials. */
+export interface SubtaskRow {
+  id: string;
+  display_id: string;
+  title: string;
+  state_id: string | null;
+  priority: number | string | null;
+  assignee_ids: string[];
+  sort_order: number;
 }
 
 /** One linked PR or commit on an issue (C17T0), as returned by

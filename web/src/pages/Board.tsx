@@ -76,6 +76,7 @@ import type {
   IssueListResult,
   IssueState,
   Project,
+  SubtaskRow,
   Workspace,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
@@ -85,6 +86,11 @@ import PeekDrawer from "../components/issue/PeekDrawer";
 import BlockerConfirmDialog from "../components/issue/BlockerConfirmDialog";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Badge } from "../components/ui/badge";
+import { Avatar, AvatarFallback } from "../components/ui/avatar";
+import {
+  splitBoardIssues,
+  subtaskPriorityLevel,
+} from "../components/issue/boardSubtasks";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -349,6 +355,70 @@ function BoardCardBody({
   );
 }
 
+/** C122T1: one nested sub-work row under a parent card — existing
+ *  primitives only (state indicator, title link, assignee avatar,
+ *  priority icon), indented under the parent card. No drag handle:
+ *  nested rows are not draggable this cycle. The row renders in the
+ *  PARENT's column even when the child's own state differs; the state
+ *  indicator shows the child's real state. Assignee avatars are
+ *  generic glyphs: the SubtaskRow contract carries ids only, no names,
+ *  so no initials are fabricated. */
+function NestedSubtaskRow({
+  row,
+  state,
+  onOpen,
+}: {
+  row: SubtaskRow;
+  state: IssueState | undefined;
+  onOpen: (id: string) => void;
+}) {
+  const level = subtaskPriorityLevel(row.priority);
+  return (
+    <div
+      data-nested-subtask={row.id}
+      className="flex items-center gap-2 py-[3px]"
+    >
+      <span
+        className={`state-dot ${stateDotClass(state?.group)}`}
+        aria-hidden="true"
+        title={state?.name}
+      />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen(row.id);
+        }}
+        className="min-w-0 flex-1 truncate text-left text-[13px] leading-[18px] text-ink hover:underline"
+      >
+        {row.title}
+      </button>
+      {row.assignee_ids.length > 0 && (
+        <span
+          className="flex flex-none -space-x-1"
+          aria-label={`${row.assignee_ids.length} assignee${row.assignee_ids.length === 1 ? "" : "s"}`}
+        >
+          {row.assignee_ids.map((id) => (
+            <Avatar key={id} size="sm" aria-hidden="true">
+              <AvatarFallback>
+                <User className="h-3 w-3" aria-hidden />
+              </AvatarFallback>
+            </Avatar>
+          ))}
+        </span>
+      )}
+      {level !== null && (
+        <span
+          className="flex flex-none items-center"
+          aria-label={`Priority: ${priorityLabel(level)}`}
+        >
+          <PriorityBars priority={level} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SortableCard({
   issue,
   state,
@@ -356,6 +426,8 @@ function SortableCard({
   fields,
   onOpen,
   dragId,
+  nested,
+  stateById,
 }: {
   issue: Issue;
   state: IssueState | undefined;
@@ -365,6 +437,11 @@ function SortableCard({
   /** dnd-kit sortable id override — epic mode uses compound ids
    *  (epicCardDragId) so multi-appearance drops resolve the right column. */
   dragId?: string;
+  /** C122T1: direct-subtask rows nested under this card (empty when
+   *  the toggle is off or the fetch carried no subtasks). */
+  nested?: SubtaskRow[];
+  /** C122T1: state lookup for nested rows' real-state indicators. */
+  stateById?: Map<string, IssueState>;
 }) {
   const {
     attributes,
@@ -381,6 +458,9 @@ function SortableCard({
     onOpen(issue.id);
   }
 
+  // C122T1: the sortable node is the wrapper so a dragged parent card
+  // carries its nested rows with it; the drag listeners live on the
+  // card face only, so nested rows never start a drag.
   return (
     <div
       ref={setNodeRef}
@@ -389,26 +469,41 @@ function SortableCard({
         transition,
         opacity: isDragging ? 0.35 : 1,
       }}
-      {...attributes}
-      {...listeners}
-      // Compose with dnd-kit's own onKeyDown (keyboard-drag): our handler
-      // runs second and only acts on Enter outside an active drag.
-      onKeyDown={(e) => {
-        listeners?.onKeyDown?.(e);
-        if (e.key === "Enter" && !e.defaultPrevented && !isDragging) {
-          openIssue();
-        }
-      }}
-      className="cursor-pointer touch-none rounded-[6px] border border-border bg-surface p-[10px] transition-[border-color,background-color] duration-150 hover:border-[#3f3f46] hover:bg-[#17171a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-      onClick={openIssue}
-      data-board-card={issue.id}
     >
-      <BoardCardBody
-        issue={issue}
-        state={state}
-        fields={fields}
-        menu={<CardMoreMenu issue={issue} />}
-      />
+      <div
+        {...attributes}
+        {...listeners}
+        // Compose with dnd-kit's own onKeyDown (keyboard-drag): our handler
+        // runs second and only acts on Enter outside an active drag.
+        onKeyDown={(e) => {
+          listeners?.onKeyDown?.(e);
+          if (e.key === "Enter" && !e.defaultPrevented && !isDragging) {
+            openIssue();
+          }
+        }}
+        className="cursor-pointer touch-none rounded-[6px] border border-border bg-surface p-[10px] transition-[border-color,background-color] duration-150 hover:border-[#3f3f46] hover:bg-[#17171a] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        onClick={openIssue}
+        data-board-card={issue.id}
+      >
+        <BoardCardBody
+          issue={issue}
+          state={state}
+          fields={fields}
+          menu={<CardMoreMenu issue={issue} />}
+        />
+      </div>
+      {(nested ?? []).length > 0 && (
+        <div className="ml-4 mt-[7px] flex flex-col gap-[2px] border-l-2 border-border pl-3">
+          {(nested ?? []).map((row) => (
+            <NestedSubtaskRow
+              key={row.id}
+              row={row}
+              state={stateById?.get(row.state_id ?? "")}
+              onOpen={onOpen}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -429,6 +524,8 @@ function BoardColumn({
   onQuickExpand,
   fields,
   onOpen,
+  nestedByParent,
+  stateById,
 }: {
   droppableId: string;
   title: string;
@@ -458,6 +555,10 @@ function BoardColumn({
   onQuickExpand: (name: string) => void;
   fields: DisplayFields;
   onOpen: (id: string) => void;
+  /** C122T1: parent id → nested subtask rows for this column's cards. */
+  nestedByParent?: Map<string, SubtaskRow[]>;
+  /** C122T1: state lookup for nested rows' real-state indicators. */
+  stateById?: Map<string, IssueState>;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
@@ -555,6 +656,8 @@ function BoardColumn({
                 fields={fields}
                 onOpen={onOpen}
                 dragId={getCardDragId?.(issue)}
+                nested={nestedByParent?.get(issue.id) ?? []}
+                stateById={stateById}
               />
             ))}
           </div>
@@ -628,7 +731,15 @@ export default function Board() {
 
   const base = `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}`;
   // Filters are part of the key: changing them refetches the board.
-  const issuesKey = ["board-issues", slug, identifier, filters] as const;
+  // C122T1: the toggle is part of the key too — flipping it refetches
+  // with / without include_subtasks=1 instead of reusing stale rows.
+  const issuesKey = [
+    "board-issues",
+    slug,
+    identifier,
+    filters,
+    settings.showSubWorkItems,
+  ] as const;
 
   const projectQuery = useQuery({
     queryKey: ["project", slug, identifier],
@@ -655,6 +766,9 @@ export default function Board() {
         p.set("per_page", "100");
         // C121T1: batched project-structure chips on board cards (C21T2).
         p.set("include_project_structure", "1");
+        // C122T1: nested sub-work rows — only when the toggle is on;
+        // off means today's flat fetch exactly, no unused data.
+        if (settings.showSubWorkItems) p.set("include_subtasks", "1");
         if (cursor) p.set("cursor", cursor);
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
@@ -671,7 +785,13 @@ export default function Board() {
   // params — visual filters never combine with a PQL query.
   // C98T1: a LIMIT query is a single page (the server always returns
   // next_cursor null), so skip the cursor loop and fetch once.
-  const pqlIssuesKey = ["board-issues-pql", slug, identifier, appliedQuery] as const;
+  const pqlIssuesKey = [
+    "board-issues-pql",
+    slug,
+    identifier,
+    appliedQuery,
+    settings.showSubWorkItems,
+  ] as const;
   const pqlIssuesQuery = useQuery({
     queryKey: pqlIssuesKey,
     enabled: pqlMode && appliedQuery.trim() !== "",
@@ -684,6 +804,8 @@ export default function Board() {
         });
         // C121T1: batched project-structure chips on board cards (C21T2).
         p.set("include_project_structure", "1");
+        // C122T1: same toggle-gated flag as the visual fetch.
+        if (settings.showSubWorkItems) p.set("include_subtasks", "1");
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
         );
@@ -699,6 +821,8 @@ export default function Board() {
         });
         // C121T1: batched project-structure chips on board cards (C21T2).
         p.set("include_project_structure", "1");
+        // C122T1: same toggle-gated flag as the visual fetch.
+        if (settings.showSubWorkItems) p.set("include_subtasks", "1");
         if (cursor) p.set("cursor", cursor);
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
@@ -726,6 +850,8 @@ export default function Board() {
     });
     // C121T1: keep the probe's param shape identical to the board fetch.
     p.set("include_project_structure", "1");
+    // C122T1: same toggle-gated flag as the board fetch.
+    if (settings.showSubWorkItems) p.set("include_subtasks", "1");
     await api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
     setAppliedQuery(q);
   }
@@ -818,6 +944,15 @@ export default function Board() {
     pqlMode && appliedQuery.trim() !== ""
       ? (pqlIssuesQuery.data ?? issues)
       : issues;
+  // C122T1: split the displayed list into visible cards + nested rows.
+  // Toggle off (or a fetch without the flag) returns the flat list
+  // untouched; orphans and grandchildren stay flat cards — see
+  // splitBoardIssues. Grouping, counts and drag state all derive from
+  // the split list, so a nested child never appears twice.
+  const { visibleIssues: boardIssues, nestedByParent } = useMemo(
+    () => splitBoardIssues(displayedIssues, settings.showSubWorkItems),
+    [displayedIssues, settings.showSubWorkItems],
+  );
   // The query feeding the displayed columns. Drag-drop, QuickAdd, and
   // settle-invalidations target this key, so in PQL mode a card whose
   // new state no longer matches the query leaves the board on the
@@ -828,8 +963,7 @@ export default function Board() {
   // C72T1: in epic mode the active id is a compound epicCardDragId;
   // epicDragIssueId is identity for plain ids.
   const activeIssue = activeId
-    ? (displayedIssues.find((i) => i.id === epicDragIssueId(activeId)) ??
-      null)
+    ? (boardIssues.find((i) => i.id === epicDragIssueId(activeId)) ?? null)
     : null;
 
   const patchMutation = useMutation({
@@ -981,7 +1115,7 @@ export default function Board() {
       // Progress counts come from the loaded states — no extra fetches
       // (the C70/C71 derived-data discipline).
       gs = buildEpicBoardGroups(
-        displayedIssues,
+        boardIssues,
         (i) => stateById.get(i.state_id)?.group,
         states[0]?.id,
       ).map((g) => ({
@@ -998,7 +1132,7 @@ export default function Board() {
         droppableId: `priority:${p}`,
         title: priorityLabel(p),
         priority: p,
-        issues: displayedIssues.filter((i) => i.priority === p),
+        issues: boardIssues.filter((i) => i.priority === p),
         newStateId: states[0]?.id,
         newPriority: p,
       }));
@@ -1007,7 +1141,7 @@ export default function Board() {
         droppableId: s.id,
         title: s.name,
         state: s,
-        issues: columnIssues(displayedIssues, s.id),
+        issues: columnIssues(boardIssues, s.id),
         newStateId: s.id,
       }));
     }
@@ -1020,7 +1154,7 @@ export default function Board() {
     settings.showEmptyGroups,
     states,
     stateById,
-    displayedIssues,
+    boardIssues,
   ]);
 
   // C68T1: per-column drop hint while a drag is active — the set of
@@ -1264,7 +1398,7 @@ export default function Board() {
         // issue count — the header shows UNIQUE issues, not memberships.
         count={
           groupByEpic
-            ? uniqueIssueCount(displayedIssues)
+            ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
         showViews
@@ -1413,6 +1547,8 @@ export default function Board() {
                     onQuickExpand={(name) => quickExpand(g, name)}
                     fields={settings.fields}
                     onOpen={openPeek}
+                    nestedByParent={nestedByParent}
+                    stateById={stateById}
                   />
                 );
               })}
