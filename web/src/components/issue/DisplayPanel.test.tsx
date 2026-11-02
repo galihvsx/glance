@@ -82,6 +82,8 @@ describe("DisplayPanel (C121T1)", () => {
       "Show cycle",
       "Show releases",
       "Show empty groups",
+      // C122T1: next to "Show empty groups" in the Group by section.
+      "Show sub-work items",
     ]);
     for (const row of NEW_ROWS) {
       expect(screen.getByText(row.label)).toBeInTheDocument();
@@ -114,5 +116,50 @@ describe("DisplayPanel (C121T1)", () => {
         switchByLabel(`Show ${row.label.toLowerCase()}`),
       ).toBeInTheDocument();
     }
+  });
+});
+
+describe("DisplayPanel show sub-work items (C122T1)", () => {
+  function renderPanelWithUpdate(
+    settings: DisplaySettings = DEFAULT_DISPLAY_SETTINGS,
+  ) {
+    const onUpdate = vi.fn();
+    render(
+      <DisplayPanel
+        settings={settings}
+        onUpdate={onUpdate}
+        onUpdateFields={vi.fn()}
+        onReset={vi.fn()}
+        view="board"
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    return { onUpdate };
+  }
+
+  it("renders the toggle on by default next to Show empty groups", () => {
+    renderPanelWithUpdate();
+    expect(screen.getByText("Show sub-work items")).toBeInTheDocument();
+    expect(switchByLabel("Show sub-work items")).toHaveAttribute(
+      "data-checked",
+    );
+  });
+
+  it("toggles sub-work items off via its switch", () => {
+    const { onUpdate } = renderPanelWithUpdate();
+    fireEvent.click(switchByLabel("Show sub-work items"));
+    expect(onUpdate).toHaveBeenCalledWith({ showSubWorkItems: false });
+  });
+
+  it("reflects a switched-off toggle", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      showSubWorkItems: false,
+    });
+    expect(switchByLabel("Show sub-work items")).toHaveAttribute(
+      "data-unchecked",
+    );
   });
 });

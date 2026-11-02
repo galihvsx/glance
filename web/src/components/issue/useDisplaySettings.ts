@@ -51,6 +51,11 @@ export interface DisplaySettings {
   groupBy: GroupBy;
   orderBy: OrderBy;
   showEmptyGroups: boolean;
+  /** C122T1: board nests direct subtasks under their parent card
+   *  (flat child cards hidden while nested). Default TRUE: Plane
+   *  shows sub-items nested by default, and nothing a user sees
+   *  disappears — children move under parents, same content. */
+  showSubWorkItems: boolean;
 }
 
 export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
@@ -72,6 +77,7 @@ export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   groupBy: "state",
   orderBy: "-updated_at",
   showEmptyGroups: true,
+  showSubWorkItems: true,
 };
 
 const GROUP_BYS: GroupBy[] = ["state", "priority", "epic", "none"];
@@ -107,6 +113,12 @@ function load(slug: string, identifier: string): DisplaySettings {
         typeof p.showEmptyGroups === "boolean"
           ? p.showEmptyGroups
           : DEFAULT_DISPLAY_SETTINGS.showEmptyGroups,
+      // C122T1: pre-existing stored settings gain the key as true —
+      // no migration, no reset (C121 precedent).
+      showSubWorkItems:
+        typeof p.showSubWorkItems === "boolean"
+          ? p.showSubWorkItems
+          : DEFAULT_DISPLAY_SETTINGS.showSubWorkItems,
     };
   } catch {
     return DEFAULT_DISPLAY_SETTINGS;
