@@ -5,6 +5,25 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Drag-to-reorder rows in the list view (cycle 126)**
+
+- List rows are now draggable, completing cycle 125's Manual-rank
+  order option (which was read-only from the list): a grip handle
+  in the row's selection gutter — hover/focus-reveal like the
+  checkbox, never shifting the grid — lets a row be dragged to a
+  new position within its own stack (flat list, one state group,
+  or one sub-group section), reusing the board's proven pipeline
+  (dnd-kit sortable, midpoint math, `PATCH {sort_order}`, POST
+  rebalance on collapsed gap with one retry). A list reorder never
+  reassigns state, never opens the peek drawer, and never toggles
+  selection; failures revert the optimistic order and surface as
+  a list error. Drag exists only under Manual-rank order in
+  visual (non-PQL) mode with flat or state grouping — any other
+  order, PQL mode, priority/epic grouping, and nested subtask rows
+  render exactly as before, and group/sub-group headers are not
+  drop targets. No backend change: both endpoints already existed
+  for the board.
+
 **Manual rank order option in the list view (cycle 125)**
 
 - The list view's Display panel gains Plane's "Manual rank" Order
