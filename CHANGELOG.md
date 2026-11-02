@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`created_by` filter dimension (cycle 118)**
+
+- Plane's "Created by" filter dimension, missing from both
+  surfaces, is closed: PQL gains a `created_by` field (`=`
+  / `!=` / `in`, resolved by case-insensitive member name or
+  email among workspace members, `me` for the caller,
+  ambiguous or unknown names a 400 with position), and the
+  visual FilterPanel on Issues, Board, and Spreadsheet gains
+  a Created-by section after Assignees, copying the Assignees
+  section's shape (multi-select checkboxes over the project
+  member list, and rows for selected-but-unlisted IDs so a
+  removed author stays visible and removable). There is
+  deliberately no "none" form anywhere: `created_by` is NOT
+  NULL, so every issue has an author, and `none` is a 400
+  rather than a silent empty list.
+- The list API gains a `created_by=` param (repeatable and
+  comma-separated, malformed values a 400) backed by a filter
+  on the direct `created_by` column that ANDs with any
+  detail-page scope; exports share the same parser, so they
+  honor the new filter too. The filter round-trips through
+  the URL query string and saved views; views saved before
+  this cycle load unchanged, and PQL exclusivity is untouched
+  (a non-blank `pql` still sends only `pql`).
+
 **`release` filter dimension (cycle 117)**
 
 - The last Plane filter-panel dimension missing from both
