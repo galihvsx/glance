@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`cycle` and `module` PQL fields (cycle 115)**
+
+- PQL gains `cycle` and `module` fields (`=` / `!=` / `in`),
+  the last two Plane filter dimensions the grammar was
+  missing: `cycle = Sprint 3` filters to a cycle's issues,
+  `module = Auth` to a module's. Values resolve by
+  case-insensitive name within the project (cycles and
+  modules are unique per project), with a `none` sentinel
+  for issues in no cycle / no module; unknown names are a
+  400 with position, never a silent empty list. On
+  workspace-scoped lists like MyWork the name resolves
+  across the caller's accessible projects with multi-match
+  set semantics, and names existing only in projects the
+  caller cannot reach are a 400, never a leak. Unlike the
+  workspace-only `project` field, these fields follow the
+  epic rule: they AND with the `?cycle=` / `?module=` /
+  `?epic=` scope params on detail pages instead of being
+  rejected there, so `module = Auth` on a cycle-detail
+  list filters correctly and a predicate naming a foreign
+  cycle yields empty by construction. The cheat sheet
+  documents both fields, and MyWork saved views round-trip
+  them with the filter tab unchanged.
+
 **`project` PQL field for workspace-scoped lists (cycle 114)**
 
 - PQL gains a `project` field (`=` / `!=` / `in`): on
