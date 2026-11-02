@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`cycle` and `module` visual filters (cycle 116)**
+
+- The visual FilterPanel on Issues, Board, and Spreadsheet
+  gains Cycle and Module sections, closing the last
+  visual-filter gap vs Plane (PQL already covered both
+  dimensions since cycle 115). Each section copies the
+  Epic section's shape: multi-select checkboxes, a "No
+  cycle" / "No module" row for issues in no cycle /
+  module, and rows for selected-but-unlisted IDs so a
+  deleted cycle or module stays visible and removable.
+- The list API gains `cycles=` / `modules=` params
+  (repeatable and comma-separated, `"none"` sentinel,
+  malformed values a 400) backed by new filter fields
+  that AND with the detail-page scope — deliberately
+  plural, so they never collide with the singular
+  `cycle=` / `module=` scope params. Exports share the
+  same parser, so they honor the new filters too. The
+  filters round-trip through the URL query string and
+  saved views; views saved before this cycle load
+  unchanged, and PQL exclusivity is untouched (a
+  non-blank `pql` still sends only `pql`).
+
 **`cycle` and `module` PQL fields (cycle 115)**
 
 - PQL gains `cycle` and `module` fields (`=` / `!=` / `in`),
