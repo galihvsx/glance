@@ -63,6 +63,7 @@ const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [
   { value: "priority", label: "Priority: low to high" },
   { value: "sequence_id", label: "Sequence: low to high" },
   { value: "-sequence_id", label: "Sequence: high to low" },
+  { value: "sort_order", label: "Manual rank" },
 ];
 
 function SectionTitle({ children }: { children: string }) {

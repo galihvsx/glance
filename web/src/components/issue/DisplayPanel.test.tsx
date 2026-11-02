@@ -9,6 +9,7 @@
 // rather than by computed accessible name.
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import DisplayPanel from "./DisplayPanel";
 import {
@@ -254,5 +255,63 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
       screen.getByRole("radiogroup", { name: "Sub-group by" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
+  });
+});
+
+describe("DisplayPanel order by Manual rank (C125T0)", () => {
+  function renderPanelWithUpdate(
+    settings: DisplaySettings = DEFAULT_DISPLAY_SETTINGS,
+    view: "list" | "board" = "list",
+  ) {
+    const onUpdate = vi.fn();
+    render(
+      <DisplayPanel
+        settings={settings}
+        onUpdate={onUpdate}
+        onUpdateFields={vi.fn()}
+        onReset={vi.fn()}
+        view={view}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    return { onUpdate };
+  }
+
+  it("offers Manual rank as the last Order-by option in the list view", async () => {
+    renderPanelWithUpdate();
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Order issues by" }),
+    );
+    const option = await screen.findByRole("option", {
+      name: "Manual rank",
+    });
+    expect(option).toBeInTheDocument();
+    // Last in the list, after the sequence entries.
+    const options = Array.from(
+      document.querySelectorAll('[role="option"]'),
+    ).map((el) => el.textContent);
+    expect(options[options.length - 1]).toBe("Manual rank");
+    expect(options).toContain("Sequence: high to low");
+  });
+
+  it("selecting Manual rank reports orderBy sort_order", async () => {
+    const user = userEvent.setup();
+    const { onUpdate } = renderPanelWithUpdate();
+    await user.click(
+      screen.getByRole("combobox", { name: "Order issues by" }),
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "Manual rank" }),
+    );
+    expect(onUpdate).toHaveBeenCalledWith({ orderBy: "sort_order" });
+  });
+
+  it("board view shows no Order-by control", () => {
+    renderPanelWithUpdate(DEFAULT_DISPLAY_SETTINGS, "board");
+    expect(
+      screen.queryByRole("combobox", { name: "Order issues by" }),
+    ).toBeNull();
   });
 });

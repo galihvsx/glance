@@ -57,6 +57,7 @@ const ORDER_BYS: OrderBy[] = [
   "priority",
   "sequence_id",
   "-sequence_id",
+  "sort_order",
 ];
 
 function sanitizeDisplay(raw: unknown): DisplaySettings | null {

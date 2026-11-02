@@ -261,3 +261,27 @@ describe("default view auto-apply on mount (C106T1)", () => {
     expect(listCalls().some((qs) => qs.get("q") === "login")).toBe(false);
   });
 });
+
+describe("list Manual rank order (C125T0)", () => {
+  it("carries order_by=sort_order when display settings select Manual rank", async () => {
+    localStorage.clear();
+    localStorage.setItem(
+      "glance:display:acme:ENG",
+      JSON.stringify({
+        fields: {},
+        groupBy: "state",
+        subGroupBy: "none",
+        orderBy: "sort_order",
+        showEmptyGroups: true,
+        showSubWorkItems: true,
+      }),
+    );
+    renderIssues();
+    await waitFor(() => expect(listCalls().length).toBeGreaterThan(0));
+    expect(listCalls().length).toBeGreaterThan(0);
+    for (const qs of listCalls()) {
+      expect(qs.get("order_by")).toBe("sort_order");
+    }
+    localStorage.clear();
+  });
+});

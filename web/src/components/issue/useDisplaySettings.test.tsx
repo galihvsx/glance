@@ -203,3 +203,42 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(stored.subGroupBy).toBe("epic");
   });
 });
+
+describe("useDisplaySettings orderBy sort_order (C125T0)", () => {
+  it("keeps a stored sort_order value (Manual rank survives load)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", orderBy: "sort_order" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.orderBy).toBe("sort_order");
+  });
+
+  it("falls back to the default for an unknown stored order value", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", orderBy: "bogus" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.orderBy).toBe(
+      DEFAULT_DISPLAY_SETTINGS.orderBy,
+    );
+  });
+
+  it("persists sort_order via update and a fresh hook loads it back", () => {
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    act(() => {
+      result.current.update({ orderBy: "sort_order" });
+    });
+    expect(result.current.settings.orderBy).toBe("sort_order");
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}") as {
+      orderBy: string;
+    };
+    expect(stored.orderBy).toBe("sort_order");
+    // A fresh hook instance reads the stored value back (load round-trip).
+    const { result: reloaded } = renderHook(() =>
+      useDisplaySettings("acme", "ENG"),
+    );
+    expect(reloaded.current.settings.orderBy).toBe("sort_order");
+  });
+});
