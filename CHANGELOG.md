@@ -5,6 +5,31 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`release` filter dimension (cycle 117)**
+
+- The last Plane filter-panel dimension missing from both
+  surfaces is closed: PQL gains a `release` field (`=` /
+  `!=` / `in`, resolved by case-insensitive release name
+  within the project, `none` for issues in no release, unknown
+  names a 400 with position), and the visual FilterPanel on
+  Issues, Board, and Spreadsheet gains a Release section
+  after Module, copying the Epic section's shape
+  (multi-select checkboxes, a "No release" row, and rows for
+  selected-but-unlisted IDs so a deleted release stays
+  visible and removable). On workspace-scoped lists like
+  MyWork the name resolves across the caller's accessible
+  projects with multi-match set semantics, and names existing
+  only in unreachable projects are a 400, never a leak.
+- The list API gains a `releases=` param (repeatable and
+  comma-separated, `"none"` sentinel, malformed values a 400)
+  backed by a filter on the direct `release_id` column that
+  ANDs with any detail-page scope; exports share the same
+  parser, so they honor the new filter too. The filter
+  round-trips through the URL query string and saved views;
+  views saved before this cycle load unchanged, and PQL
+  exclusivity is untouched (a non-blank `pql` still sends
+  only `pql`).
+
 **`cycle` and `module` visual filters (cycle 116)**
 
 - The visual FilterPanel on Issues, Board, and Spreadsheet
