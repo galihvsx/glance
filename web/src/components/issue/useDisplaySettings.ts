@@ -9,6 +9,26 @@ export interface DisplayFields {
   assignees: boolean;
   /** Start/target date line on cards. */
   dates: boolean;
+  /** display_id badge on cards (dense-row ID column on list rows).
+   *  Aria-labels keep the ID even when the badge is hidden. */
+  id: boolean;
+  /** Subtask progress bar on cards (only when the issue has direct
+   *  subtasks; the dense list row has no slot for it). */
+  subitems: boolean;
+  /** Module chips from project_structure (guarded: nothing renders
+   *  when the list fetch did not pass include_project_structure=1). */
+  modules: boolean;
+  /** Cycle chip from project_structure (guarded like modules). */
+  cycle: boolean;
+  /** Release chip from project_structure (guarded like modules). */
+  release: boolean;
+  /** Attachment count row, rendered only when the count is > 0. */
+  attachments: boolean;
+  /** Link count row, rendered only when the count is > 0. */
+  links: boolean;
+  /** Dependency count row (blocks + blocked-by, one count),
+   *  rendered only when the count is > 0. */
+  dependencies: boolean;
 }
 
 /** C72T0: "epic" groups list rows by live epic membership (multi-appearance:
@@ -34,7 +54,21 @@ export interface DisplaySettings {
 }
 
 export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
-  fields: { state: true, priority: true, labels: true, assignees: true, dates: true },
+  fields: {
+    state: true,
+    priority: true,
+    labels: true,
+    assignees: true,
+    dates: true,
+    id: true,
+    subitems: true,
+    modules: true,
+    cycle: true,
+    release: true,
+    attachments: true,
+    links: true,
+    dependencies: true,
+  },
   groupBy: "state",
   orderBy: "-updated_at",
   showEmptyGroups: true,

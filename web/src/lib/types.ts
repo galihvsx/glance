@@ -180,6 +180,16 @@ export interface Issue {
   labels: IssueLabel[];
   /** Subtask rollup (C17T2); omitted on endpoints that don't select it. */
   subtask_progress?: SubtaskProgress | null;
+  /** Batched per-row counts (C121T0: one server-side query per source
+   *  for the whole page, never per-row). Present on list rows; omitted
+   *  on endpoints that don't select them (undefined = not computed —
+   *  the card rows render nothing, never a silent zero). When present,
+   *  a count row renders only when the count is > 0. relation_count
+   *  counts BOTH directions of issue_relations (blocks + blocked-by)
+   *  in one count; the detail page owns the directional breakdown. */
+  attachment_count?: number;
+  link_count?: number;
+  relation_count?: number;
   /** Seconds spent in the current workflow state (C70T1); present on the
    *  detail (and list) endpoints when the backend selects it.
    *  Null/undefined = unknown (the property row is hidden). */

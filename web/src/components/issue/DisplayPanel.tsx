@@ -25,6 +25,15 @@ const FIELD_ROWS: { key: keyof DisplayFields; label: string; hint: string }[] = 
   { key: "labels", label: "Labels", hint: "Label chips on cards" },
   { key: "assignees", label: "Assignees", hint: "Assignee chips on cards" },
   { key: "dates", label: "Dates", hint: "Start → target date line" },
+  // C121T1: Plane's panel order after the existing rows.
+  { key: "id", label: "ID", hint: "Display ID badge on cards" },
+  { key: "subitems", label: "Sub-items", hint: "Subtask progress bar on cards" },
+  { key: "attachments", label: "Attachments", hint: "Attachment count on cards" },
+  { key: "links", label: "Link", hint: "Link count on cards" },
+  { key: "dependencies", label: "Dependencies", hint: "Dependency count on cards" },
+  { key: "modules", label: "Module", hint: "Module chips on cards" },
+  { key: "cycle", label: "Cycle", hint: "Cycle chip on cards" },
+  { key: "release", label: "Releases", hint: "Release chip on cards" },
 ];
 
 const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [

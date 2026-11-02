@@ -43,8 +43,10 @@ import {
   Link2,
   Maximize2,
   MoreHorizontal,
+  Paperclip,
   Plus,
   User,
+  Waypoints,
 } from "lucide-react";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import PriorityBars from "../components/issue/PriorityBars";
@@ -162,7 +164,11 @@ function CardMoreMenu({ issue }: { issue: Issue }) {
 /** The card face shared by the sortable card and the drag overlay:
  *  ID row → title → meta chip row (prototype Screen 2). The Display
  *  panel still gates the priority chip and the assignee control; labels
- *  and dates render as extra rows only when enabled (and present). */
+ *  and dates render as extra rows only when enabled (and present).
+ *  C121T1: the same gate applies to the ID text, the subtask progress
+ *  bar, the module/cycle/release chips (from project_structure,
+ *  guarded when undefined), and the attachment/link/dependency count
+ *  rows (only when the count is > 0). */
 function BoardCardBody({
   issue,
   state,
@@ -179,9 +185,11 @@ function BoardCardBody({
   return (
     <>
       <div className="flex items-center">
-        <span className="font-mono text-[10px] text-ink-muted">
-          {issue.display_id}
-        </span>
+        {fields.id && (
+          <span className="font-mono text-[10px] text-ink-muted">
+            {issue.display_id}
+          </span>
+        )}
         {menu}
       </div>
       <p className="mb-[10px] mt-[5px] text-[13px] font-[570] leading-[18px] tracking-[-0.008em] text-ink">
@@ -225,8 +233,11 @@ function BoardCardBody({
         </button>
       </div>
       {/* C17T2: compact subtask progress — renders only when the
-          issue has direct subtasks. */}
-      <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
+          issue has direct subtasks. C121T1: gated by the Sub-items
+          display toggle. */}
+      {fields.subitems && (
+        <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
+      )}
       {fields.labels && issue.labels.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {issue.labels.slice(0, 3).map((l) => (
@@ -254,6 +265,84 @@ function BoardCardBody({
         <div className="mt-2 flex items-center gap-1 text-[11px] text-ink-muted">
           <Calendar className="h-3 w-3" aria-hidden />
           <span>{dateRange}</span>
+        </div>
+      )}
+      {/* C121T1: project-structure chips — module chips like labels
+          (first 3 + overflow), cycle + release as single chips.
+          project_structure is undefined on fetches without
+          include_project_structure=1: guard it and render nothing,
+          never a per-row detail fetch. */}
+      {((fields.modules && (issue.project_structure?.modules.length ?? 0) > 0) ||
+        (fields.cycle && issue.project_structure?.cycle) ||
+        (fields.release && issue.project_structure?.release)) && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {fields.modules &&
+            (issue.project_structure?.modules ?? [])
+              .slice(0, 3)
+              .map((m) => (
+                <Badge
+                  key={m.id}
+                  variant="secondary"
+                  className="text-[11px] font-normal"
+                  aria-label={`Module: ${m.name}`}
+                >
+                  {m.name}
+                </Badge>
+              ))}
+          {fields.modules &&
+            (issue.project_structure?.modules.length ?? 0) > 3 && (
+              <Badge variant="secondary" className="text-[11px] font-normal">
+                +{(issue.project_structure?.modules.length ?? 0) - 3}
+              </Badge>
+            )}
+          {fields.cycle && issue.project_structure?.cycle && (
+            <Badge
+              variant="secondary"
+              className="text-[11px] font-normal"
+              aria-label={`Cycle: ${issue.project_structure.cycle.name}`}
+            >
+              {issue.project_structure.cycle.name}
+            </Badge>
+          )}
+          {fields.release && issue.project_structure?.release && (
+            <Badge
+              variant="secondary"
+              className="text-[11px] font-normal"
+              aria-label={`Release: ${issue.project_structure.release.name}`}
+            >
+              {issue.project_structure.release.name}
+            </Badge>
+          )}
+        </div>
+      )}
+      {/* C121T1: icon + count rows in the dates-row shape, rendered
+          only when the count is > 0 (undefined = not computed on
+          this fetch: render nothing, never a silent zero). */}
+      {fields.attachments && (issue.attachment_count ?? 0) > 0 && (
+        <div
+          className="mt-2 flex items-center gap-1 text-[11px] text-ink-muted"
+          aria-label={`${issue.attachment_count} attachment${issue.attachment_count === 1 ? "" : "s"}`}
+        >
+          <Paperclip className="h-3 w-3" aria-hidden />
+          <span>{issue.attachment_count}</span>
+        </div>
+      )}
+      {fields.links && (issue.link_count ?? 0) > 0 && (
+        <div
+          className="mt-2 flex items-center gap-1 text-[11px] text-ink-muted"
+          aria-label={`${issue.link_count} link${issue.link_count === 1 ? "" : "s"}`}
+        >
+          <Link2 className="h-3 w-3" aria-hidden />
+          <span>{issue.link_count}</span>
+        </div>
+      )}
+      {fields.dependencies && (issue.relation_count ?? 0) > 0 && (
+        <div
+          className="mt-2 flex items-center gap-1 text-[11px] text-ink-muted"
+          aria-label={`${issue.relation_count} ${issue.relation_count === 1 ? "dependency" : "dependencies"}`}
+        >
+          <Waypoints className="h-3 w-3" aria-hidden />
+          <span>{issue.relation_count}</span>
         </div>
       )}
     </>
@@ -564,6 +653,8 @@ export default function Board() {
         const p = toApiParams(filters);
         p.set("order_by", "sort_order");
         p.set("per_page", "100");
+        // C121T1: batched project-structure chips on board cards (C21T2).
+        p.set("include_project_structure", "1");
         if (cursor) p.set("cursor", cursor);
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
@@ -591,6 +682,8 @@ export default function Board() {
           order_by: "sort_order",
           per_page: "100",
         });
+        // C121T1: batched project-structure chips on board cards (C21T2).
+        p.set("include_project_structure", "1");
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
         );
@@ -604,6 +697,8 @@ export default function Board() {
           order_by: "sort_order",
           per_page: "100",
         });
+        // C121T1: batched project-structure chips on board cards (C21T2).
+        p.set("include_project_structure", "1");
         if (cursor) p.set("cursor", cursor);
         const page = await api.get<IssueListResult>(
           `${base}/issues?${p.toString()}`,
@@ -629,6 +724,8 @@ export default function Board() {
       order_by: "sort_order",
       per_page: "100",
     });
+    // C121T1: keep the probe's param shape identical to the board fetch.
+    p.set("include_project_structure", "1");
     await api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
     setAppliedQuery(q);
   }
