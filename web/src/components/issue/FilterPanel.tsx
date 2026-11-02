@@ -147,7 +147,8 @@ function DateRange({
 /** Rich filter panel shared by the list, board, and spreadsheet views.
  *  Every control applies live (URL-backed via useIssueFilters) — there is
  *  no Apply button. Dimensions: state, priority (multi), labels (multi),
- *  assignees (multi + unassigned), estimate (multi + none), parent
+ *  assignees (multi + unassigned), created by (multi, C118T1),
+ *  estimate (multi + none), parent
  *  (multi + top-level, C75T1), epic (multi + none, C75T1),
  *  cycle (multi + none, C116T1), module (multi + none, C116T1), release
  *  (multi + none, C117T1), date ranges
@@ -402,6 +403,14 @@ export default function FilterPanel({
     (id) => id !== "none" && !releases.some((r) => r.id === id),
   );
 
+  // C118T1: same missing-ID idiom for created-by authors. No "none"
+  // exclusion: created_by is NOT NULL, so "none" is never a valid
+  // selection — a stale "none" would surface here as a removable
+  // fallback row rather than being silently dropped.
+  const missingCreatedByIds = filters.createdBy.filter(
+    (id) => !members.some((m) => m.id === id),
+  );
+
   const count = activeFilterCount(filters);
 
   return (
@@ -574,6 +583,39 @@ export default function FilterPanel({
                 onChange({ assignees: toggle(filters.assignees, m.id) })
               }
               label={m.name ?? m.email}
+            />
+          ))}
+        </div>
+
+        {/* C118T1: Created-by section — copies the Assignees section's
+            shape over the same members list (NO none row: created_by
+            is NOT NULL, so there are no authorless issues). */}
+        <Separator className="my-1" />
+        <SectionHeader
+          title="Created by"
+          active={filters.createdBy.length > 0}
+          onClear={() => onChange({ createdBy: [] })}
+        />
+        <div className="mb-1 max-h-40 overflow-y-auto">
+          {members.map((m) => (
+            <CheckRow
+              key={m.id}
+              checked={filters.createdBy.includes(m.id)}
+              onChange={() =>
+                onChange({ createdBy: toggle(filters.createdBy, m.id) })
+              }
+              label={m.name ?? m.email}
+            />
+          ))}
+          {missingCreatedByIds.map((id) => (
+            <CheckRow
+              key={id}
+              checked
+              onChange={() =>
+                onChange({ createdBy: toggle(filters.createdBy, id) })
+              }
+              label={`${id.slice(0, 8)}…`}
+              hint="unknown"
             />
           ))}
         </div>

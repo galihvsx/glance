@@ -21,6 +21,7 @@ const FULL: IssueFilters = {
   cycles: ["123e4567-e89b-12d3-a456-426614174003"],
   modules: ["123e4567-e89b-12d3-a456-426614174004", "none"],
   releases: ["123e4567-e89b-12d3-a456-426614174005", "none"],
+  createdBy: ["123e4567-e89b-12d3-a456-426614174006"],
   createdAfter: "2026-10-01",
   createdBefore: "2026-10-09",
   updatedAfter: "",
@@ -106,9 +107,9 @@ describe("activeFilterCount", () => {
   it("counts dimensions, not values", () => {
     expect(activeFilterCount(EMPTY_FILTERS)).toBe(0);
     // q, state, priority, label, assignee, estimate, parent, epic,
-    // cycle, module, release, created pair, due pair, subscribed, archived
-    // = 15 dimensions
-    expect(activeFilterCount(FULL)).toBe(15);
+    // cycle, module, release, created by, created pair, due pair,
+    // subscribed, archived = 16 dimensions
+    expect(activeFilterCount(FULL)).toBe(16);
   });
 });
 
@@ -150,7 +151,7 @@ describe("due_date_empty is-empty chip (C80T1)", () => {
     expect(
       activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true, dueAfter: "2026-10-01" }),
     ).toBe(1);
-    expect(activeFilterCount(FULL)).toBe(15);
+    expect(activeFilterCount(FULL)).toBe(16);
   });
 
   it("recognizes due_date_empty as a filter param so clear-all drops it", () => {
@@ -404,5 +405,70 @@ describe("release filter (C117T1)", () => {
     const legacy = { q: "x" } as Partial<IssueFilters>;
     const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
     expect(merged.releases).toEqual([]);
+  });
+});
+
+describe("created by filter (C118T1)", () => {
+  const A1 = "123e4567-e89b-12d3-a456-426614174040";
+  const A2 = "123e4567-e89b-12d3-a456-426614174041";
+
+  it("round-trips createdBy through the URL", () => {
+    const params = serializeFilters({
+      ...EMPTY_FILTERS,
+      createdBy: [A1, A2],
+    });
+    expect(params.get("created_by")).toBe(`${A1},${A2}`);
+    const back = parseFilters(params);
+    expect(back.createdBy).toEqual([A1, A2]);
+  });
+
+  it("supports repeatable and comma-separated forms together", () => {
+    const back = parseFilters(
+      new URLSearchParams(`created_by=${A1}&created_by=${A2},${A1}`),
+    );
+    expect(back.createdBy).toEqual([A1, A2, A1]);
+  });
+
+  it("drops malformed values — including 'none', which has no meaning for a NOT NULL column — and never throws", () => {
+    const back = parseFilters(
+      new URLSearchParams("created_by=garbage,,none,123&q=still-fine"),
+    );
+    expect(back.createdBy).toEqual([]);
+    expect(back.q).toBe("still-fine");
+  });
+
+  it("emits the plan-contract API name (created_by) and no other form", () => {
+    const p = toApiParams({ ...EMPTY_FILTERS, createdBy: [A1] });
+    expect(p.get("created_by")).toBe(A1);
+    expect(p.get("createdBy")).toBeNull();
+    expect(p.get("author")).toBeNull();
+  });
+
+  it("omits the empty created-by dimension from the query string", () => {
+    expect(serializeFilters(EMPTY_FILTERS).get("created_by")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("created_by")).toBeNull();
+  });
+
+  it("counts createdBy as one badge dimension", () => {
+    expect(activeFilterCount({ ...EMPTY_FILTERS, createdBy: [A1] })).toBe(1);
+    expect(
+      activeFilterCount({
+        ...EMPTY_FILTERS,
+        createdBy: [A1],
+        releases: ["123e4567-e89b-12d3-a456-426614174030"],
+      }),
+    ).toBe(2);
+  });
+
+  it("recognizes created_by as a filter param (peek= still preserved)", () => {
+    expect(isFilterParam("created_by")).toBe(true);
+    expect(isFilterParam("peek")).toBe(false);
+  });
+
+  it("defaults the dimension to empty (pre-C118 filter objects)", () => {
+    expect(EMPTY_FILTERS.createdBy).toEqual([]);
+    const legacy = { q: "x" } as Partial<IssueFilters>;
+    const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
+    expect(merged.createdBy).toEqual([]);
   });
 });

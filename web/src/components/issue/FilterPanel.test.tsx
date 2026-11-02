@@ -13,7 +13,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import FilterPanel from "./FilterPanel";
 import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
-import type { Cycle, Epic, Issue, Module, Release } from "../../lib/types";
+import type { Cycle, Epic, Issue, Member, Module, Release } from "../../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -78,6 +78,7 @@ function renderPanel(opts: {
   cycles?: Cycle[];
   modules?: Module[];
   releases?: Release[];
+  members?: Member[];
   missingParents?: Issue[];
 }) {
   const filters = opts.filters ?? EMPTY_FILTERS;
@@ -86,7 +87,7 @@ function renderPanel(opts: {
   const searchResults = opts.searchResults ?? [];
   const seeds: [readonly unknown[], unknown][] = [
     [["states", "acme", "ENG"], []],
-    [["members", "acme"], []],
+    [["members", "acme"], opts.members ?? []],
     [["labels", "acme", "ENG"], []],
     [["estimates", "acme", "ENG"], []],
     [
@@ -664,6 +665,114 @@ describe("Release filter section (C117T1)", () => {
     const releaseHeader = screen.getByText("Release");
     expect(
       moduleHeader.compareDocumentPosition(releaseHeader) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
+describe("Created by filter section (C118T1)", () => {
+  const A_ALICE = "123e4567-e89b-12d3-a456-426614174050";
+  const A_BOB = "123e4567-e89b-12d3-a456-426614174051";
+  const UNKNOWN_AUTHOR = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+  function member(id: string, name: string | null, email: string): Member {
+    return { id, name, email, role: 1 };
+  }
+
+  const alice = member(A_ALICE, "Alice", "alice@example.com");
+  const bob = member(A_BOB, null, "bob@example.com");
+
+  /** The Created-by list div: the sibling after the "Created by" header. */
+  function createdByList(): HTMLElement {
+    const header = screen.getByText("Created by");
+    const list = header.closest("div")?.nextElementSibling;
+    expect(list).not.toBeNull();
+    return list as HTMLElement;
+  }
+
+  function isCheckedIn(list: HTMLElement, labelText: string): boolean {
+    const row = Array.from(list.querySelectorAll("label")).find(
+      (l) => l.textContent?.includes(labelText),
+    );
+    expect(row).not.toBeUndefined();
+    return row!.querySelector('[aria-checked="true"]') !== null;
+  }
+
+  it("renders member rows with name, falling back to email", () => {
+    renderPanel({ members: [alice, bob] });
+    const list = createdByList();
+    expect(list.textContent).toContain("Alice");
+    expect(list.textContent).toContain("bob@example.com");
+  });
+
+  it("has no none row: no 'No author' row, and 'Unassigned' belongs only to Assignees", () => {
+    renderPanel({ members: [alice] });
+    expect(screen.queryByText("No author")).toBeNull();
+    expect(screen.getAllByText("Unassigned")).toHaveLength(1);
+    expect(createdByList().textContent).not.toContain("Unassigned");
+  });
+
+  it("toggling a member in this section calls onChange with createdBy", () => {
+    const { onChange } = renderPanel({ members: [alice, bob] });
+    const list = createdByList();
+    fireEvent.click(
+      Array.from(list.querySelectorAll("label")).find(
+        (l) => l.textContent?.includes("Alice"),
+      )!,
+    );
+    expect(onChange).toHaveBeenCalledWith({ createdBy: [A_ALICE] });
+  });
+
+  it("selected authors render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, createdBy: [A_ALICE] },
+      members: [alice, bob],
+    });
+    expect(isCheckedIn(createdByList(), "Alice")).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear Created by filter" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ createdBy: [] });
+  });
+
+  it("hides the per-section Clear when the section is inactive", () => {
+    renderPanel({ members: [alice] });
+    expect(
+      screen.queryByRole("button", { name: "Clear Created by filter" }),
+    ).toBeNull();
+  });
+
+  it("renders a clearable fallback row for an unknown author id", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, createdBy: [UNKNOWN_AUTHOR] },
+      members: [],
+    });
+    const list = createdByList();
+    expect(list.textContent).toContain("aaaaaaaa…");
+    fireEvent.click(
+      Array.from(list.querySelectorAll("label")).find(
+        (l) => l.textContent?.includes("aaaaaaaa"),
+      )!,
+    );
+    expect(onChange).toHaveBeenCalledWith({ createdBy: [] });
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({
+      filters: { ...EMPTY_FILTERS, createdBy: [A_ALICE] },
+      members: [alice],
+    });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("sits after the Assignees section", () => {
+    renderPanel({ members: [alice] });
+    const assigneesHeader = screen.getByText("Assignees");
+    const createdByHeader = screen.getByText("Created by");
+    expect(
+      assigneesHeader.compareDocumentPosition(createdByHeader) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });

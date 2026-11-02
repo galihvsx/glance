@@ -119,6 +119,34 @@ describe("sanitizeView", () => {
     expect(v?.filters.q).toBe("login bug");
   });
 
+  it("keeps createdBy filters on a view saved with them (C118T1)", () => {
+    const v = sanitizeView(
+      makeRow({
+        filters: {
+          ...FULL_FILTERS,
+          createdBy: ["123e4567-e89b-12d3-a456-426614174050"],
+        },
+      }),
+    );
+    expect(v?.filters.createdBy).toEqual([
+      "123e4567-e89b-12d3-a456-426614174050",
+    ]);
+    // The filter tab is unchanged: the view still carries its other
+    // dimensions alongside the new key.
+    expect(v?.filters.q).toBe("login bug");
+    expect(v?.filters.assignees).toEqual(["user-uuid-1", "none"]);
+  });
+
+  it("loads a pre-C118 view object without the key as empty (C118T1)", () => {
+    // Strip the key the way a row saved before C118 stores it: absent.
+    const { createdBy: _cb, ...legacy } = FULL_FILTERS;
+    void _cb;
+    const v = sanitizeView(makeRow({ filters: legacy as never }));
+    expect(v?.filters.createdBy).toEqual([]);
+    // And the surviving dimensions still load.
+    expect(v?.filters.q).toBe("login bug");
+  });
+
   it("keeps release filters on a view saved with them (C117T1)", () => {
     const v = sanitizeView(
       makeRow({
