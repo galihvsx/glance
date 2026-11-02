@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -35,6 +35,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import IssueRow from "../components/issue/IssueRow";
+import NestedListSubtaskRow from "../components/issue/NestedListSubtaskRow";
 import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
@@ -1503,17 +1504,35 @@ export default function Issues() {
                           )}
                           <div>
                             {sub.issues.map((issue) => (
-                              <IssueRow
-                                key={issue.id}
-                                issue={issue}
-                                state={stateById.get(issue.state_id)}
-                                fields={settings.fields}
-                                onOpen={(it) => openPeek(it.id)}
-                                kbdSelected={indexById.get(issue.id) === selected}
-                                bulkSelected={bulk.isSelected(issue.id)}
-                                bulkActive={bulk.count > 0}
-                                onToggleSelect={() => bulk.toggle(issue.id)}
-                              />
+                              <Fragment key={issue.id}>
+                                <IssueRow
+                                  issue={issue}
+                                  state={stateById.get(issue.state_id)}
+                                  fields={settings.fields}
+                                  onOpen={(it) => openPeek(it.id)}
+                                  kbdSelected={indexById.get(issue.id) === selected}
+                                  bulkSelected={bulk.isSelected(issue.id)}
+                                  bulkActive={bulk.count > 0}
+                                  onToggleSelect={() => bulk.toggle(issue.id)}
+                                />
+                                {/* C124T1: nested sub-work rows under the
+                                    parent. STUB: T0's merge swaps
+                                    issue.subtasks for
+                                    nestedByParent.get(issue.id) here. */}
+                                {settings.showSubWorkItems &&
+                                  (issue.subtasks ?? []).length > 0 && (
+                                    <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
+                                      {(issue.subtasks ?? []).map((row) => (
+                                        <NestedListSubtaskRow
+                                          key={row.id}
+                                          row={row}
+                                          state={stateById.get(row.state_id ?? "")}
+                                          onOpen={(id) => openPeek(id)}
+                                        />
+                                      ))}
+                                    </div>
+                                  )}
+                              </Fragment>
                             ))}
                           </div>
                         </div>
@@ -1522,17 +1541,35 @@ export default function Issues() {
                   ) : (
                     <div>
                       {g.issues.map((issue) => (
-                        <IssueRow
-                          key={issue.id}
-                          issue={issue}
-                          state={stateById.get(issue.state_id)}
-                          fields={settings.fields}
-                          onOpen={(it) => openPeek(it.id)}
-                          kbdSelected={indexById.get(issue.id) === selected}
-                          bulkSelected={bulk.isSelected(issue.id)}
-                          bulkActive={bulk.count > 0}
-                          onToggleSelect={() => bulk.toggle(issue.id)}
-                        />
+                        <Fragment key={issue.id}>
+                          <IssueRow
+                            issue={issue}
+                            state={stateById.get(issue.state_id)}
+                            fields={settings.fields}
+                            onOpen={(it) => openPeek(it.id)}
+                            kbdSelected={indexById.get(issue.id) === selected}
+                            bulkSelected={bulk.isSelected(issue.id)}
+                            bulkActive={bulk.count > 0}
+                            onToggleSelect={() => bulk.toggle(issue.id)}
+                          />
+                          {/* C124T1: nested sub-work rows under the
+                              parent. STUB: T0's merge swaps
+                              issue.subtasks for
+                              nestedByParent.get(issue.id) here. */}
+                          {settings.showSubWorkItems &&
+                            (issue.subtasks ?? []).length > 0 && (
+                              <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
+                                {(issue.subtasks ?? []).map((row) => (
+                                  <NestedListSubtaskRow
+                                    key={row.id}
+                                    row={row}
+                                    state={stateById.get(row.state_id ?? "")}
+                                    onOpen={(id) => openPeek(id)}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                        </Fragment>
                       ))}
                     </div>
                   )}
@@ -1551,17 +1588,34 @@ export default function Issues() {
           ) : (
             <div>
               {issues.map((issue, i) => (
-                <IssueRow
-                  key={issue.id}
-                  issue={issue}
-                  state={stateById.get(issue.state_id)}
-                  fields={settings.fields}
-                  onOpen={(it) => openPeek(it.id)}
-                  kbdSelected={i === selected}
-                  bulkSelected={bulk.isSelected(issue.id)}
-                  bulkActive={bulk.count > 0}
-                  onToggleSelect={() => bulk.toggle(issue.id)}
-                />
+                <Fragment key={issue.id}>
+                  <IssueRow
+                    issue={issue}
+                    state={stateById.get(issue.state_id)}
+                    fields={settings.fields}
+                    onOpen={(it) => openPeek(it.id)}
+                    kbdSelected={i === selected}
+                    bulkSelected={bulk.isSelected(issue.id)}
+                    bulkActive={bulk.count > 0}
+                    onToggleSelect={() => bulk.toggle(issue.id)}
+                  />
+                  {/* C124T1: nested sub-work rows under the parent.
+                      STUB: T0's merge swaps issue.subtasks for
+                      nestedByParent.get(issue.id) here. */}
+                  {settings.showSubWorkItems &&
+                    (issue.subtasks ?? []).length > 0 && (
+                      <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
+                        {(issue.subtasks ?? []).map((row) => (
+                          <NestedListSubtaskRow
+                            key={row.id}
+                            row={row}
+                            state={stateById.get(row.state_id ?? "")}
+                            onOpen={(id) => openPeek(id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                </Fragment>
               ))}
               {filters.state && (
                 <QuickAdd
