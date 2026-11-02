@@ -267,6 +267,44 @@ describe("SavedViewsMenu default-view auto-apply race (C106T0)", () => {
     );
   });
 
+  it("auto-applies a default view carrying cycle/module filters (C116T1)", async () => {
+    const cycleId = "123e4567-e89b-12d3-a456-426614174010";
+    const moduleId = "123e4567-e89b-12d3-a456-426614174012";
+    const cycleModuleDefault: SavedView = {
+      ...defaultView,
+      filters: {
+        ...EMPTY_FILTERS,
+        cycles: [cycleId, "none"],
+        modules: [moduleId],
+      },
+    };
+    mockHook(pendingProjectState);
+    const utils = renderDefaultMenu({ projectId: "" });
+    rerenderDefaultMenu(utils, {
+      projectId: "p1",
+      state: {
+        views: [cycleModuleDefault],
+        ownViews: [cycleModuleDefault],
+        sharedViews: [],
+        viewsLoading: false,
+        viewsReady: true,
+        viewsError: false,
+      },
+    });
+    expect(utils.onViewApplied).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(
+        new URLSearchParams(
+          screen.getByTestId("search").textContent ?? "",
+        ).get("cycles"),
+      ).toBe(`${cycleId},none`),
+    );
+    const search = new URLSearchParams(
+      screen.getByTestId("search").textContent ?? "",
+    );
+    expect(search.get("modules")).toBe(moduleId);
+  });
+
   it("does not double-apply when views re-render after the apply (inv 3)", async () => {
     mockHook(pendingProjectState);
     const utils = renderDefaultMenu({ projectId: "" });

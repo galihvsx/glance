@@ -13,7 +13,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import FilterPanel from "./FilterPanel";
 import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
-import type { Epic, Issue } from "../../lib/types";
+import type { Cycle, Epic, Issue, Module } from "../../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -75,6 +75,8 @@ function renderPanel(opts: {
   /** Debounced-search result sets keyed by the search text. */
   searchByQuery?: Record<string, Issue[]>;
   epics?: Epic[];
+  cycles?: Cycle[];
+  modules?: Module[];
   missingParents?: Issue[];
 }) {
   const filters = opts.filters ?? EMPTY_FILTERS;
@@ -90,6 +92,8 @@ function renderPanel(opts: {
       ["epics", "acme", "ENG", "status=active&status=archived"],
       opts.epics ?? [],
     ],
+    [["cycles", "acme", "ENG"], opts.cycles ?? []],
+    [["modules", "acme", "ENG"], opts.modules ?? []],
     [["parent-filter-search", "acme", "ENG", ""], searchResults],
   ];
   for (const [q, results] of Object.entries(opts.searchByQuery ?? {})) {
@@ -260,6 +264,187 @@ describe("Epic filter section", () => {
   it("shows an empty state when the project has no epics", () => {
     renderPanel({ epics: [] });
     expect(screen.getByText("No epics in this project.")).toBeInTheDocument();
+  });
+});
+
+describe("Cycle filter section (C116T1)", () => {
+  const C_CURRENT = "123e4567-e89b-12d3-a456-426614174010";
+  const C_UPCOMING = "123e4567-e89b-12d3-a456-426614174011";
+  const C_COMPLETED = "123e4567-e89b-12d3-a456-426614174012";
+  const UNKNOWN_CYCLE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const cycle = (
+    id: string,
+    name: string,
+    status: Cycle["status"],
+    start: string,
+  ): Cycle => ({
+    id,
+    project_id: "p1",
+    name,
+    start_date: start,
+    end_date: "2026-12-31",
+    status,
+    progress_snapshot: {},
+    created_at: "",
+    updated_at: "",
+  });
+  const cycleCurrent = cycle(C_CURRENT, "Sprint 3", "current", "2026-11-01");
+  const cycleUpcoming = cycle(C_UPCOMING, "Sprint 4", "upcoming", "2026-12-01");
+  const cycleCompleted = cycle(C_COMPLETED, "Sprint 2", "completed", "2026-10-01");
+
+  it("renders the sentinel row and the project cycles with status hints", () => {
+    renderPanel({ cycles: [cycleCurrent, cycleUpcoming] });
+    expect(screen.getByText("No cycle")).toBeInTheDocument();
+    expect(screen.getByText("Sprint 3")).toBeInTheDocument();
+    expect(screen.getByText("Sprint 4")).toBeInTheDocument();
+    expect(screen.getByText("current")).toBeInTheDocument();
+    expect(screen.getByText("upcoming")).toBeInTheDocument();
+  });
+
+  it("sorts live cycles first (current, upcoming, completed), then by name", () => {
+    renderPanel({
+      cycles: [cycleCompleted, cycleUpcoming, cycleCurrent],
+    });
+    const current = screen.getByText("Sprint 3");
+    const upcoming = screen.getByText("Sprint 4");
+    const completed = screen.getByText("Sprint 2");
+    expect(
+      current.compareDocumentPosition(upcoming) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      upcoming.compareDocumentPosition(completed) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("toggling 'No cycle' and a cycle calls onChange with the right patch", () => {
+    const { onChange } = renderPanel({ cycles: [cycleCurrent] });
+    fireEvent.click(screen.getByText("No cycle"));
+    expect(onChange).toHaveBeenCalledWith({ cycles: ["none"] });
+    fireEvent.click(screen.getByText("Sprint 3"));
+    expect(onChange).toHaveBeenCalledWith({ cycles: [C_CURRENT] });
+  });
+
+  it("selected cycles render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, cycles: [C_CURRENT] },
+      cycles: [cycleCurrent],
+    });
+    expect(isChecked("Sprint 3")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Clear Cycle filter" }));
+    expect(onChange).toHaveBeenCalledWith({ cycles: [] });
+  });
+
+  it("renders a clearable fallback row for an unknown cycle id", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, cycles: [UNKNOWN_CYCLE] },
+      cycles: [],
+    });
+    expect(screen.getByText("aaaaaaaa…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("aaaaaaaa…"));
+    expect(onChange).toHaveBeenCalledWith({ cycles: [] });
+  });
+
+  it("shows an empty state when the project has no cycles", () => {
+    renderPanel({ cycles: [] });
+    expect(screen.getByText("No cycles in this project.")).toBeInTheDocument();
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({ filters: { ...EMPTY_FILTERS, cycles: [C_CURRENT] } });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "1",
+    );
+  });
+});
+
+describe("Module filter section (C116T1)", () => {
+  const M_ACTIVE = "123e4567-e89b-12d3-a456-426614174020";
+  const M_ARCHIVED = "123e4567-e89b-12d3-a456-426614174021";
+  const UNKNOWN_MODULE = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+  const mod = (
+    id: string,
+    name: string,
+    status: Module["status"],
+    count: number,
+  ): Module => ({
+    id,
+    project_id: "p1",
+    name,
+    status,
+    issue_count: count,
+    created_at: "",
+    updated_at: "",
+  });
+  const moduleActive = mod(M_ACTIVE, "Auth", "active", 5);
+  const moduleArchived = mod(M_ARCHIVED, "Legacy", "archived", 0);
+
+  it("renders the sentinel row and the project modules with hints", () => {
+    renderPanel({ modules: [moduleActive, moduleArchived] });
+    expect(screen.getByText("No module")).toBeInTheDocument();
+    expect(screen.getByText("Auth")).toBeInTheDocument();
+    expect(screen.getByText("5 issues")).toBeInTheDocument();
+    expect(screen.getByText("Legacy")).toBeInTheDocument();
+    expect(screen.getByText("archived")).toBeInTheDocument();
+  });
+
+  it("sorts archived modules last", () => {
+    renderPanel({ modules: [moduleArchived, moduleActive] });
+    const active = screen.getByText("Auth");
+    const archived = screen.getByText("Legacy");
+    expect(
+      active.compareDocumentPosition(archived) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("toggling 'No module' and a module calls onChange with the right patch", () => {
+    const { onChange } = renderPanel({ modules: [moduleActive] });
+    fireEvent.click(screen.getByText("No module"));
+    expect(onChange).toHaveBeenCalledWith({ modules: ["none"] });
+    fireEvent.click(screen.getByText("Auth"));
+    expect(onChange).toHaveBeenCalledWith({ modules: [M_ACTIVE] });
+  });
+
+  it("selected modules render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, modules: [M_ACTIVE] },
+      modules: [moduleActive],
+    });
+    expect(isChecked("Auth")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Clear Module filter" }));
+    expect(onChange).toHaveBeenCalledWith({ modules: [] });
+  });
+
+  it("renders a clearable fallback row for an unknown module id", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, modules: [UNKNOWN_MODULE] },
+      modules: [],
+    });
+    expect(screen.getByText("bbbbbbbb…")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("bbbbbbbb…"));
+    expect(onChange).toHaveBeenCalledWith({ modules: [] });
+  });
+
+  it("shows an empty state when the project has no modules", () => {
+    renderPanel({ modules: [] });
+    expect(
+      screen.getByText("No modules in this project."),
+    ).toBeInTheDocument();
+  });
+
+  it("counts cycle + module as two badge dimensions", () => {
+    renderPanel({
+      filters: {
+        ...EMPTY_FILTERS,
+        cycles: ["123e4567-e89b-12d3-a456-426614174010"],
+        modules: [M_ACTIVE],
+      },
+    });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "2",
+    );
   });
 });
 

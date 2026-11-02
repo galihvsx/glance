@@ -17,12 +17,14 @@ import {
 } from "../../lib/filters";
 import PqlEditor from "./PqlEditor";
 import type {
+  Cycle,
   Epic,
   Issue,
   IssueListResult,
   IssueState,
   Label as ProjectLabel,
   Member,
+  Module,
 } from "../../lib/types";
 import { priorityLabel } from "../../lib/types";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
@@ -145,7 +147,8 @@ function DateRange({
  *  Every control applies live (URL-backed via useIssueFilters) — there is
  *  no Apply button. Dimensions: state, priority (multi), labels (multi),
  *  assignees (multi + unassigned), estimate (multi + none), parent
- *  (multi + top-level, C75T1), epic (multi + none, C75T1), date ranges
+ *  (multi + top-level, C75T1), epic (multi + none, C75T1),
+ *  cycle (multi + none, C116T1), module (multi + none, C116T1), date ranges
  *  (created / updated / due) plus a "No due date" is-empty chip for the
  *  due range (C80T1, mutually exclusive with the due range), and
  *  subscribed-by-me.
@@ -262,6 +265,47 @@ export default function FilterPanel({
       a.name.localeCompare(b.name),
   );
 
+  // C116T1: cycle + module lists for the Cycle / Module filter sections.
+  // Same endpoints the Cycles / Modules pages use; sorted client-side
+  // on the epic section's idiom (live first, finished last, then name)
+  // because the endpoints carry date/creation ordering, not status
+  // ordering. Cycle status rank: current, upcoming, completed.
+  const cyclesQuery = useQuery({
+    queryKey: ["cycles", slug, identifier],
+    queryFn: () =>
+      api.get<{ cycles: Cycle[] }>(`${base}/cycles`).then((d) => d.cycles),
+  });
+  const CYCLE_STATUS_RANK: Record<Cycle["status"], number> = {
+    current: 0,
+    upcoming: 1,
+    completed: 2,
+  };
+  const cycles = [...(cyclesQuery.data ?? [])].sort(
+    (a, b) =>
+      CYCLE_STATUS_RANK[a.status] - CYCLE_STATUS_RANK[b.status] ||
+      a.start_date.localeCompare(b.start_date) ||
+      a.name.localeCompare(b.name),
+  );
+  // Module status rank: active, completed, archived (the epic
+  // section's archived-last idiom, generalized).
+  const modulesQuery = useQuery({
+    queryKey: ["modules", slug, identifier],
+    queryFn: () =>
+      api
+        .get<{ modules: Module[] }>(`${base}/modules`)
+        .then((d) => d.modules),
+  });
+  const MODULE_STATUS_RANK: Record<Module["status"], number> = {
+    active: 0,
+    completed: 1,
+    archived: 2,
+  };
+  const modules = [...(modulesQuery.data ?? [])].sort(
+    (a, b) =>
+      MODULE_STATUS_RANK[a.status] - MODULE_STATUS_RANK[b.status] ||
+      a.name.localeCompare(b.name),
+  );
+
   // C75T1: searchable parent-issue picker. Mirrors ParentPicker's search
   // (250ms debounce, per_page 10) but renders as toggle rows; the query
   // only runs while the popover is open.
@@ -328,6 +372,14 @@ export default function FilterPanel({
   // raw-id fallback row so the stale selection stays clearable.
   const missingEpicIds = filters.epics.filter(
     (id) => id !== "none" && !epics.some((e) => e.id === id),
+  );
+
+  // C116T1: same missing-ID idiom for cycles and modules.
+  const missingCycleIds = filters.cycles.filter(
+    (id) => id !== "none" && !cycles.some((c) => c.id === id),
+  );
+  const missingModuleIds = filters.modules.filter(
+    (id) => id !== "none" && !modules.some((m) => m.id === id),
   );
 
   const count = activeFilterCount(filters);
@@ -650,6 +702,98 @@ export default function FilterPanel({
             missingEpicIds.length === 0 && (
               <p className="px-2 py-1 text-xs text-muted-foreground">
                 No epics in this project.
+              </p>
+            )}
+        </div>
+
+        <Separator className="my-1" />
+        <SectionHeader
+          title="Cycle"
+          active={filters.cycles.length > 0}
+          onClear={() => onChange({ cycles: [] })}
+        />
+        <div className="mb-1 max-h-40 overflow-y-auto">
+          <CheckRow
+            checked={filters.cycles.includes("none")}
+            onChange={() => onChange({ cycles: toggle(filters.cycles, "none") })}
+            label="No cycle"
+          />
+          {cycles.map((c) => (
+            <CheckRow
+              key={c.id}
+              checked={filters.cycles.includes(c.id)}
+              onChange={() => onChange({ cycles: toggle(filters.cycles, c.id) })}
+              label={c.name}
+              hint={c.status}
+            />
+          ))}
+          {missingCycleIds.map((id) => (
+            <CheckRow
+              key={id}
+              checked
+              onChange={() => onChange({ cycles: toggle(filters.cycles, id) })}
+              label={`${id.slice(0, 8)}…`}
+              hint="unknown"
+            />
+          ))}
+          {cyclesQuery.isPending && (
+            <div className="space-y-1 px-2 py-1">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          )}
+          {!cyclesQuery.isPending &&
+            cycles.length === 0 &&
+            missingCycleIds.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">
+                No cycles in this project.
+              </p>
+            )}
+        </div>
+
+        <Separator className="my-1" />
+        <SectionHeader
+          title="Module"
+          active={filters.modules.length > 0}
+          onClear={() => onChange({ modules: [] })}
+        />
+        <div className="mb-1 max-h-40 overflow-y-auto">
+          <CheckRow
+            checked={filters.modules.includes("none")}
+            onChange={() =>
+              onChange({ modules: toggle(filters.modules, "none") })
+            }
+            label="No module"
+          />
+          {modules.map((m) => (
+            <CheckRow
+              key={m.id}
+              checked={filters.modules.includes(m.id)}
+              onChange={() => onChange({ modules: toggle(filters.modules, m.id) })}
+              label={m.name}
+              hint={m.status === "archived" ? "archived" : `${m.issue_count} issues`}
+            />
+          ))}
+          {missingModuleIds.map((id) => (
+            <CheckRow
+              key={id}
+              checked
+              onChange={() => onChange({ modules: toggle(filters.modules, id) })}
+              label={`${id.slice(0, 8)}…`}
+              hint="unknown"
+            />
+          ))}
+          {modulesQuery.isPending && (
+            <div className="space-y-1 px-2 py-1">
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          )}
+          {!modulesQuery.isPending &&
+            modules.length === 0 &&
+            missingModuleIds.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">
+                No modules in this project.
               </p>
             )}
         </div>

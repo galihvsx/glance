@@ -648,6 +648,35 @@ describe("Spreadsheet PQL mode (C104T0)", () => {
     expect(restored).not.toBeDisabled();
   });
 
+  it("mode exit restores parked cycle/module filters (C116T1)", async () => {
+    const cycleId = "123e4567-e89b-12d3-a456-426614174010";
+    const moduleId = "123e4567-e89b-12d3-a456-426614174012";
+    const user = await renderPqlReady(issues, {
+      initialEntry: `/w/acme/p/ENG/spreadsheet?cycles=${cycleId}&modules=${moduleId},none`,
+    });
+    expect(searchParam("cycles")).toBe(cycleId);
+    expect(searchParam("modules")).toBe(`${moduleId},none`);
+
+    // Enter PQL mode: the visual selection parks and the URL clears,
+    // so no list request can mix visual cycles/modules with PQL.
+    await user.click(screen.getByRole("button", { name: /^Filter/ }));
+    await user.click(screen.getByRole("button", { name: "PQL" }));
+    await waitFor(() => expect(searchParam("cycles")).toBeNull());
+    expect(searchParam("modules")).toBeNull();
+
+    // Exit back to Filters: the parked cycle/module selection comes back.
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await waitFor(() => expect(searchParam("cycles")).toBe(cycleId));
+    expect(searchParam("modules")).toBe(`${moduleId},none`);
+    await waitFor(async () => {
+      const lists = await listCalls();
+      const last = lists[lists.length - 1];
+      expect(last.get("cycles")).toBe(cycleId);
+      expect(last.get("modules")).toBe(`${moduleId},none`);
+      expect(last.get("pql")).toBeNull();
+    });
+  });
+
   it("header count follows the PQL result", async () => {
     const user = await renderPqlReady([issues[1]]);
     const breadcrumb = screen.getByLabelText("Breadcrumb");
