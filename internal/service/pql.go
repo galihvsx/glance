@@ -678,7 +678,8 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField pqlFieldKind = iota // state, assignee, label, epic, estimate, parent
+	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent
+	pqlProjectField                     // project (workspace scope only; project scope rejects it)
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
 	pqlTsField   // created_at / updated_at (timestamptz columns)
@@ -692,6 +693,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"epic":        pqlNameField,
 	"estimate":    pqlNameField,
 	"parent":      pqlNameField,
+	"project":     pqlProjectField,
 	"due":         pqlDateField,
 	"due_date":    pqlDateField,
 	"target_date": pqlDateField,
@@ -703,7 +705,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, epic, estimate, parent, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, label, epic, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -794,7 +796,7 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 			return pqlErr(n.Pos, "unknown field %q (known fields: %s)", n.Field, pqlKnownFields)
 		}
 		switch kind {
-		case pqlNameField:
+		case pqlNameField, pqlProjectField:
 			if n.Op != "=" && n.Op != "!=" && n.Op != "in" {
 				return pqlErr(n.Pos, "operator %s is not supported for field %q (want =, !=, in)", n.Op, n.Field)
 			}
@@ -901,8 +903,9 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 //
 // Project scope (projectID != "") is byte-for-byte today's behavior;
 // its tests are the guard. The dispatch lives in translatePQLCmp,
-// which routes only state/epic/estimate/parent to the workspace
-// translators below when projectID is empty.
+// which routes only state/epic/estimate/parent/project to the
+// workspace translators below when projectID is empty — except
+// `project` itself, which is rejected in project scope (C114T0).
 //
 // translatePQL compiles a validated predicate tree to one parenthesized
 // SQL condition. arg is the caller's placeholder function (same one
@@ -1001,6 +1004,19 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
 		}
+	case pqlProjectField:
+		// C114T0: the project field lives only on workspace-scoped
+		// lists (MyWork). On a project-scoped list the rows are
+		// already confined to one project, so `project = OTHER`
+		// could only ever mean "nothing" and `project = CURRENT`
+		// could only ever mean "everything" — both readings are
+		// traps, not filters, so the comparison is rejected with a
+		// 400 at the comparison's position instead of silently
+		// returning an empty or full list.
+		if projectID != "" {
+			return "", pqlErr(n.Pos, "field %q is only available on workspace-scoped lists (MyWork)", n.Field)
+		}
+		return translatePQLProjectWorkspace(ctx, pool, wsID, actorID, n, arg)
 	case pqlPriorityField:
 		ints := make([]int, 0, len(n.Values))
 		for _, v := range n.Values {
@@ -1703,5 +1719,90 @@ func translatePQLParentWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, 
 			parts = append(parts, "i.parent_id IS NULL")
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// ---------------------------------------------------------------------------
+// project field (C114T0, workspace scope only)
+// ---------------------------------------------------------------------------
+
+// resolvePQLProjectValue resolves one `project` value token to the
+// set of project ids it names, confined to the actor's accessible
+// projects (projectAccessibleSQL, same as the C112 name fields).
+// Identifier first, then name: project identifiers are
+// UNIQUE(workspace_id, identifier), so an identifier match resolves
+// to exactly one project and wins over a same-named project (a
+// project named "ABC" never shadows the project keyed ABC). A value
+// matching no identifier resolves by case-insensitive project NAME
+// with C112 multi-match set semantics — the set of accessible
+// projects bearing that name, never an ambiguity error. Zero matches
+// on both lookups is an unknown-project 400 with the value's
+// position, never a silent empty list — and a name or identifier
+// existing ONLY in an inaccessible project resolves to unknown, so
+// the 400-vs-match difference cannot leak that project's existence.
+func resolvePQLProjectValue(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, v pqlValue) ([]string, error) {
+	lookup := func(col string) ([]string, error) {
+		rows, err := pool.Query(ctx,
+			`SELECT p.id::text FROM projects p
+			  WHERE p.workspace_id = $1::uuid AND lower(p.`+col+`) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return ids, nil
+	}
+	if ids, err := lookup("identifier"); err != nil {
+		return nil, err
+	} else if len(ids) > 0 {
+		return ids, nil
+	}
+	if ids, err := lookup("name"); err != nil {
+		return nil, err
+	} else if len(ids) > 0 {
+		return ids, nil
+	}
+	return nil, pqlErr(v.Pos, "unknown project %q in this workspace", v.Text)
+}
+
+// translatePQLProjectWorkspace translates a `project` comparison on
+// a workspace-scoped list to i.project_id membership over the union
+// set of the resolved values: `=` / `in` → = ANY(...), `!=` →
+// NOT (... = ANY(...)), mirroring the C112 workspace translators'
+// spelling (project_id is never NULL on a live issue row, so the
+// NOT-ANY spelling is exact). An unknown value inside an `in` list
+// is still a 400 — partial matches never silently drop a value.
+func translatePQLProjectWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	seen := map[string]bool{}
+	for _, v := range n.Values {
+		got, err := resolvePQLProjectValue(ctx, pool, wsID, actorID, v)
+		if err != nil {
+			return "", err
+		}
+		for _, id := range got {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	switch n.Op {
+	case "!=":
+		return "NOT (i.project_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	default: // "=" and "in" are both set membership in workspace scope
+		return "i.project_id = ANY(" + arg(ids) + "::uuid[])", nil
 	}
 }
