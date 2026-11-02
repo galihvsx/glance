@@ -21,6 +21,9 @@ export interface PqlCheatEntry {
  * The project field (C114T0) accepts =/!=/in like a name field but
  * is workspace-scoped only: on a project-scoped list the server
  * rejects it with a 400, since the list is already one project.
+ * The cycle and module fields (C115T0) accept =/!=/in like name
+ * fields, project-scoped by name (workspace scope: the name across
+ * accessible projects), with `none` for issues in no cycle/module.
  * Keywords (AND/OR/NOT/IN), field names, priority names, and
  * function names are case-insensitive. Quote names containing spaces.
  * A trailing ORDER BY clause (C98T0, multi-key C99T0) sorts by one or
@@ -80,6 +83,14 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: "epic in (Platform, none)",
     meaning: "Epic is one of the listed names, or in no epic",
+  },
+  {
+    example: "cycle = Sprint 3",
+    meaning: "Cycle by name (project-scoped; also none for backlog issues)",
+  },
+  {
+    example: "module = Auth",
+    meaning: "Module by name (project-scoped; also none for issues in no module)",
   },
   {
     example: "estimate = S",
