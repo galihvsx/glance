@@ -63,6 +63,8 @@ package service
 //	assignee         issue_assignees   member name, email, `me`, or `none`
 //	label            issue_labels      label name (workspace-scoped)
 //	epic             epic_issues       epic name (project-scoped) or `none`
+//	cycle            cycle_issues      cycle name (project-scoped) or `none`
+//	module           module_issues     module name (project-scoped) or `none`
 //	estimate         i.estimate_point_id  estimate-point key within the project's
 //	                                     estimate system, or `none`
 //	parent           i.parent_id       parent issue key
@@ -97,10 +99,14 @@ package service
 // user input is never interpolated into SQL; only the operator and
 // column (both from fixed whitelists) appear literally.
 //
-// Scope-survives contract (C95T0, extended C108T0, C109T0): Cycle,
-// Module, and Epics are scope containers, not filter dimensions, and
-// the date windows (DueAfter, DueBefore, StartAfter, StartBefore,
-// Undated) are view windows, not filter dimensions. When PQL is
+// Scope-survives contract (C95T0, extended C108T0, C109T0, C115T0):
+// Cycle, Module, and Epics are scope containers — and, like epic
+// already was, cycle and module are ALSO filter dimensions since
+// C115T0 (`cycle = "Sprint 3"`, `module = Auth`), so a PQL cycle /
+// module predicate ANDs with the ?cycle= / ?module= / ?epic= scope
+// params instead of replacing them. The date windows (DueAfter,
+// DueBefore, StartAfter, StartBefore, Undated) are view windows, not
+// filter dimensions. When PQL is
 // present, withoutVisualFilters zeroes every visual filter dimension
 // (state, labels, assignees, priorities, created/updated dates,
 // parents, text, due_date_empty) but leaves Cycle, Module, Epics,
@@ -678,7 +684,7 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent
+	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent, cycle, module
 	pqlProjectField                     // project (workspace scope only; project scope rejects it)
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
@@ -691,6 +697,8 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"assignee":    pqlNameField,
 	"label":       pqlNameField,
 	"epic":        pqlNameField,
+	"cycle":       pqlNameField,
+	"module":      pqlNameField,
 	"estimate":    pqlNameField,
 	"parent":      pqlNameField,
 	"project":     pqlProjectField,
@@ -705,7 +713,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, epic, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, label, epic, cycle, module, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -881,7 +889,8 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 // assignee, priority, dates, has*()) are identical; only the
 // per-project name fields change, and only in these ways:
 //
-//   - Multi-match set semantics: a state / epic / estimate-point name
+//   - Multi-match set semantics: a state / epic / cycle / module /
+//     estimate-point name
 //     resolves to the SET of ids bearing that name across the actor's
 //     accessible projects, and translates with ANY — never an
 //     ambiguity error. A name meaning "issues in a Todo-like state"
@@ -903,9 +912,12 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 //
 // Project scope (projectID != "") is byte-for-byte today's behavior;
 // its tests are the guard. The dispatch lives in translatePQLCmp,
-// which routes only state/epic/estimate/parent/project to the
-// workspace translators below when projectID is empty — except
-// `project` itself, which is rejected in project scope (C114T0).
+// which routes only state/epic/cycle/module/estimate/parent/project
+// to the workspace translators below when projectID is empty —
+// except `project` itself, which is rejected in project scope
+// (C114T0). Cycle/module follow the epic rule, NOT the project
+// rule (C115T0): they are project-scoped names, so they are
+// available in both scopes and AND with the scope params.
 //
 // translatePQL compiles a validated predicate tree to one parenthesized
 // SQL condition. arg is the caller's placeholder function (same one
@@ -991,6 +1003,16 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 				return translatePQLEpicWorkspace(ctx, pool, wsID, actorID, n, arg)
 			}
 			return translatePQLEpic(ctx, pool, projectID, n, arg)
+		case "cycle":
+			if projectID == "" {
+				return translatePQLCycleWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
+			return translatePQLCycle(ctx, pool, projectID, n, arg)
+		case "module":
+			if projectID == "" {
+				return translatePQLModuleWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
+			return translatePQLModule(ctx, pool, projectID, n, arg)
 		case "estimate":
 			if projectID == "" {
 				return translatePQLEstimateWorkspace(ctx, pool, wsID, actorID, n, arg)
@@ -1389,6 +1411,128 @@ func translatePQLEpic(ctx context.Context, pool *pgxpool.Pool, projectID string,
 	}
 }
 
+// translatePQLCycle resolves cycle names project-scoped, mirroring
+// translatePQLEpic exactly: cycles carry UNIQUE(project_id, name),
+// so an ambiguous match can only arise from case-variant names,
+// which the case-insensitive lookup rejects as ambiguous. The
+// `none` sentinel matches issues in no cycle (NOT EXISTS on the
+// cycle_issues junction) — and a cycle literally named "none" is
+// shadowed by the sentinel, exactly as an epic named "none" is.
+// != against a named cycle uses NOT EXISTS, so issues in other
+// cycles and issues in no cycle both count as "not this cycle",
+// like epic != / label !=.
+func translatePQLCycle(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	// Same EXISTS shape as issueListConds' cycle filter.
+	existsFor := func(ids []string) string {
+		if len(ids) == 1 {
+			return "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = " + arg(ids[0]) + "::uuid)"
+		}
+		return "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM cycles WHERE project_id = $1::uuid AND lower(name) = lower($2)`,
+			projectID, v.Text, v.Pos, "cycle", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named cycle, or none.
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		// Single value: not that cycle, or "in any cycle".
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in: cycle matches OR no-cycle, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLModule resolves module names project-scoped, mirroring
+// translatePQLEpic exactly: modules carry UNIQUE(project_id, name),
+// so an ambiguous match can only arise from case-variant names,
+// which the case-insensitive lookup rejects as ambiguous. The
+// `none` sentinel matches issues in no module (NOT EXISTS on the
+// module_issues junction) — and a module literally named "none" is
+// shadowed by the sentinel, exactly as an epic named "none" is.
+// != against a named module uses NOT EXISTS, so issues in other
+// modules and issues in no module both count as "not this module",
+// like epic != / label !=.
+func translatePQLModule(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	// Same EXISTS shape as issueListConds' module filter.
+	existsFor := func(ids []string) string {
+		if len(ids) == 1 {
+			return "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = " + arg(ids[0]) + "::uuid)"
+		}
+		return "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM modules WHERE project_id = $1::uuid AND lower(name) = lower($2)`,
+			projectID, v.Text, v.Pos, "module", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named module, or none.
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		// Single value: not that module, or "in any module".
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in: module matches OR no-module, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
 // translatePQLEstimate resolves estimate-point keys within the
 // project's estimate system: points carry key + value under an
 // estimate_id, and scales are per-project, so the lookup joins
@@ -1566,6 +1710,113 @@ func translatePQLEpicWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, ac
 		}
 		return "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id AND ei.epic_id = ANY(" + arg(ids) + "::uuid[]))", nil
 	default: // in: epic matches OR no-epic, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLCycleWorkspace resolves cycle names to the set of cycle
+// ids across accessible projects, mirroring
+// translatePQLEpicWorkspace: same EXISTS shape as project scope,
+// with ANY over the union set; != is NOT EXISTS over the set, so
+// issues in other cycles and issues in no cycle both count as "not
+// this cycle". The `none` handling is unchanged from project scope.
+func translatePQLCycleWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	existsFor := func(ids []string) string {
+		return "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT c.id::text FROM cycles c JOIN projects p ON p.id = c.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(c.name) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "cycle")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	default: // in: cycle matches OR no-cycle, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLModuleWorkspace resolves module names to the set of
+// module ids across accessible projects, mirroring
+// translatePQLEpicWorkspace: same EXISTS shape as project scope,
+// with ANY over the union set; != is NOT EXISTS over the set, so
+// issues in other modules and issues in no module both count as
+// "not this module". The `none` handling is unchanged from project
+// scope.
+func translatePQLModuleWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	existsFor := func(ids []string) string {
+		return "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT m.id::text FROM modules m JOIN projects p ON p.id = m.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(m.name) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "module")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = ANY(" + arg(ids) + "::uuid[]))", nil
+	default: // in: module matches OR no-module, when both are present
 		var parts []string
 		if len(ids) > 0 {
 			parts = append(parts, existsFor(ids))
