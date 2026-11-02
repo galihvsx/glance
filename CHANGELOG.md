@@ -5,6 +5,20 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Manual rank order option in the list view (cycle 125)**
+
+- The list view's Display panel gains Plane's "Manual rank" Order
+  by option: picking it orders list rows by `sort_order` — the same
+  order the board shows, established by board drag-to-reorder. The
+  backend already accepted `?order_by=sort_order` (the board
+  paginates by it), so this cycle is frontend-only: the option
+  joins the OrderBy type, the settings whitelist, the panel's
+  option list, and the saved-view sanitize whitelist (so a saved
+  Manual-rank view survives reload). The board is untouched — it
+  already orders by manual rank and ignores the list's order
+  setting. No descending manual-rank option (Plane offers a single
+  Manual-Rank entry); list drag-to-reorder stays future work.
+
 **Show sub-work items in the list view (cycle 124)**
 
 - The "Show sub-work items" toggle (default on) now works in the
