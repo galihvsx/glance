@@ -492,6 +492,13 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	// C117T0: visual release filter — plural param only.
+	// There is no singular ?release= scope param on the list
+	// API, so no scope collision is possible.
+	filterReleases, err := parseRepeatIDList(qp, "releases")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -548,6 +555,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		Epics:                   epics,
 		FilterCycles:            filterCycles,
 		FilterModules:           filterModules,
+		FilterReleases:          filterReleases,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),

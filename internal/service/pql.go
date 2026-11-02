@@ -65,6 +65,7 @@ package service
 //	epic             epic_issues       epic name (project-scoped) or `none`
 //	cycle            cycle_issues      cycle name (project-scoped) or `none`
 //	module           module_issues     module name (project-scoped) or `none`
+//	release          i.release_id      release name (project-scoped) or `none`
 //	estimate         i.estimate_point_id  estimate-point key within the project's
 //	                                     estimate system, or `none`
 //	parent           i.parent_id       parent issue key
@@ -102,8 +103,9 @@ package service
 // Scope-survives contract (C95T0, extended C108T0, C109T0, C115T0):
 // Cycle, Module, and Epics are scope containers — and, like epic
 // already was, cycle and module are ALSO filter dimensions since
-// C115T0 (`cycle = "Sprint 3"`, `module = Auth`), so a PQL cycle /
-// module predicate ANDs with the ?cycle= / ?module= / ?epic= scope
+// C115T0 (`cycle = "Sprint 3"`, `module = Auth`), and release
+// since C117T0 (`release = "v1.0"`), so a PQL cycle / module /
+// release predicate ANDs with the ?cycle= / ?module= / ?epic= scope
 // params instead of replacing them. The date windows (DueAfter,
 // DueBefore, StartAfter, StartBefore, Undated) are view windows, not
 // filter dimensions. When PQL is
@@ -684,7 +686,7 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent, cycle, module
+	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent, cycle, module, release
 	pqlProjectField                     // project (workspace scope only; project scope rejects it)
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
@@ -699,6 +701,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"epic":        pqlNameField,
 	"cycle":       pqlNameField,
 	"module":      pqlNameField,
+	"release":     pqlNameField,
 	"estimate":    pqlNameField,
 	"parent":      pqlNameField,
 	"project":     pqlProjectField,
@@ -713,7 +716,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, epic, cycle, module, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -873,8 +876,11 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	// C116T0: FilterCycles/FilterModules ARE zeroed — they are visual
 	// filter dimensions, not scope containers (unlike Cycle/Module),
 	// so in PQL mode they are ignored like every other visual filter.
+	// C117T0: FilterReleases is zeroed too — same shape, and
+	// there is no singular release scope container to preserve.
 	in.FilterCycles = nil
 	in.FilterModules = nil
+	in.FilterReleases = nil
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
@@ -895,7 +901,7 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 // per-project name fields change, and only in these ways:
 //
 //   - Multi-match set semantics: a state / epic / cycle / module /
-//     estimate-point name
+//     release / estimate-point name
 //     resolves to the SET of ids bearing that name across the actor's
 //     accessible projects, and translates with ANY — never an
 //     ambiguity error. A name meaning "issues in a Todo-like state"
@@ -917,11 +923,11 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 //
 // Project scope (projectID != "") is byte-for-byte today's behavior;
 // its tests are the guard. The dispatch lives in translatePQLCmp,
-// which routes only state/epic/cycle/module/estimate/parent/project
+// which routes only state/epic/cycle/module/release/estimate/parent/project
 // to the workspace translators below when projectID is empty —
 // except `project` itself, which is rejected in project scope
-// (C114T0). Cycle/module follow the epic rule, NOT the project
-// rule (C115T0): they are project-scoped names, so they are
+// (C114T0). Cycle/module/release follow the epic rule, NOT the project
+// rule (C115T0/C117T0): they are project-scoped names, so they are
 // available in both scopes and AND with the scope params.
 //
 // translatePQL compiles a validated predicate tree to one parenthesized
@@ -1018,6 +1024,11 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 				return translatePQLModuleWorkspace(ctx, pool, wsID, actorID, n, arg)
 			}
 			return translatePQLModule(ctx, pool, projectID, n, arg)
+		case "release":
+			if projectID == "" {
+				return translatePQLReleaseWorkspace(ctx, pool, wsID, actorID, n, arg)
+			}
+			return translatePQLRelease(ctx, pool, projectID, n, arg)
 		case "estimate":
 			if projectID == "" {
 				return translatePQLEstimateWorkspace(ctx, pool, wsID, actorID, n, arg)
@@ -1538,6 +1549,60 @@ func translatePQLModule(ctx context.Context, pool *pgxpool.Pool, projectID strin
 	}
 }
 
+// translatePQLRelease resolves release names project-scoped,
+// mirroring translatePQLEstimate's direct-column shape (not the
+// cycle/module junction shape): releases carry
+// UNIQUE(project_id, name), so an ambiguous match can only arise
+// from case-variant names, which the case-insensitive lookup
+// rejects as ambiguous. The `none` sentinel matches issues in no
+// release (release_id IS NULL) — and a release literally named
+// "none" is shadowed by the sentinel, exactly as a cycle/module
+// named "none" is. != against a named release uses IS DISTINCT
+// FROM, so unreleased (NULL) issues count as "not this release"
+// — the same inclusive-!= convention as estimate != (a plain <>
+// would silently drop NULL rows).
+func translatePQLRelease(ctx context.Context, pool *pgxpool.Pool, projectID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLIDs(ctx, pool,
+			`SELECT id::text FROM releases WHERE project_id = $1::uuid AND lower(name) = lower($2)`,
+			projectID, v.Text, v.Pos, "release", "project")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got[0])
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a named release, or none.
+		if wantNone {
+			return "i.release_id IS NULL", nil
+		}
+		return "i.release_id = " + arg(ids[0]) + "::uuid", nil
+	case "!=":
+		// Single value: not that release (NULL counts as not
+		// it), or "in any release".
+		if wantNone {
+			return "i.release_id IS NOT NULL", nil
+		}
+		return "i.release_id IS DISTINCT FROM " + arg(ids[0]) + "::uuid", nil
+	default: // in: release matches OR no-release, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.release_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.release_id IS NULL")
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
 // translatePQLEstimate resolves estimate-point keys within the
 // project's estimate system: points carry key + value under an
 // estimate_id, and scales are per-project, so the lookup joins
@@ -1828,6 +1893,54 @@ func translatePQLModuleWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, 
 		}
 		if wantNone {
 			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// translatePQLReleaseWorkspace resolves release names to the set of
+// release ids across accessible projects, mirroring
+// translatePQLEstimateWorkspace's direct-column shape: the `none`
+// handling is unchanged from project scope; != keeps the
+// inclusive-NULL convention via an explicit IS NULL OR NOT
+// (... = ANY(...)) — a bare NOT over ANY would drop unreleased
+// rows, unlike project scope's IS DISTINCT FROM on a single id.
+func translatePQLReleaseWorkspace(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		if strings.EqualFold(v.Text, "none") {
+			wantNone = true
+			continue
+		}
+		got, err := resolvePQLWorkspaceIDs(ctx, pool,
+			`SELECT r.id::text FROM releases r JOIN projects p ON p.id = r.project_id
+			  WHERE p.workspace_id = $1::uuid AND lower(r.name) = lower($2)
+			    AND `+projectAccessibleSQL("p", "$3::uuid"),
+			wsID, v.Text, actorID, v.Pos, "release")
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, got...)
+	}
+	switch n.Op {
+	case "=":
+		if wantNone {
+			return "i.release_id IS NULL", nil
+		}
+		return "i.release_id = ANY(" + arg(ids) + "::uuid[])", nil
+	case "!=":
+		if wantNone {
+			return "i.release_id IS NOT NULL", nil
+		}
+		return "(i.release_id IS NULL OR NOT (i.release_id = ANY(" + arg(ids) + "::uuid[])))", nil
+	default: // in: release matches OR no-release, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.release_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.release_id IS NULL")
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", nil
 	}
