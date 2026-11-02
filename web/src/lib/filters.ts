@@ -36,6 +36,11 @@ import { useSearchParams } from "react-router-dom";
  *                   no module. Malformed values are dropped. (C116T1: the
  *                   visual-filter plural — never the singular module=
  *                   scope param.)
+ *   releases        repeatable and comma-separated release UUIDs (OR-matched,
+ *                   via the direct release_id column); "none" matches issues
+ *                   in no release. Malformed values are dropped. (C117T1:
+ *                   the visual-filter plural — never a singular release=
+ *                   scope param, which does not exist on the list API.)
  *   created_after   YYYY-MM-DD, inclusive
  *   created_before  YYYY-MM-DD, inclusive of the whole day
  *   updated_after   YYYY-MM-DD, inclusive
@@ -89,6 +94,8 @@ export interface IssueFilters {
   cycles: string[];
   /** Module UUIDs via the module_issues junction (OR-matched); "none" = no module. */
   modules: string[];
+  /** Release UUIDs via the direct release_id column (OR-matched); "none" = no release. */
+  releases: string[];
   createdAfter: string;
   createdBefore: string;
   updatedAfter: string;
@@ -121,6 +128,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   epics: [],
   cycles: [],
   modules: [],
+  releases: [],
   createdAfter: "",
   createdBefore: "",
   updatedAfter: "",
@@ -151,7 +159,7 @@ function splitPriorities(v: string | null): number[] {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Split the parent=/epic=/cycles=/modules= params: repeatable AND
+/** Split the parent=/epic=/cycles=/modules=/releases= params: repeatable AND
  *  comma-separated (the backend accepts both forms). Only the "none"
  *  sentinel and well-formed UUIDs survive — garbage is dropped so a
  *  pasted URL can never 400 the list (the list API 400s malformed
@@ -199,6 +207,7 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     epics: splitRepeatIds(search.getAll("epic")),
     cycles: splitRepeatIds(search.getAll("cycles")),
     modules: splitRepeatIds(search.getAll("modules")),
+    releases: splitRepeatIds(search.getAll("releases")),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
     updatedAfter: validDate(search.get("updated_after")),
@@ -233,6 +242,7 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.epics.length > 0) p.set("epic", f.epics.join(","));
   if (f.cycles.length > 0) p.set("cycles", f.cycles.join(","));
   if (f.modules.length > 0) p.set("modules", f.modules.join(","));
+  if (f.releases.length > 0) p.set("releases", f.releases.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
   if (f.createdBefore) p.set("created_before", f.createdBefore);
   if (f.updatedAfter) p.set("updated_after", f.updatedAfter);
@@ -295,6 +305,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.epics.length > 0) n++;
   if (f.cycles.length > 0) n++;
   if (f.modules.length > 0) n++;
+  if (f.releases.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
@@ -353,6 +364,7 @@ const FILTER_PARAM_NAMES = new Set([
   "epic",
   "cycles",
   "modules",
+  "releases",
   "created_after",
   "created_before",
   "updated_after",

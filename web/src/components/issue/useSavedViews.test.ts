@@ -119,6 +119,31 @@ describe("sanitizeView", () => {
     expect(v?.filters.q).toBe("login bug");
   });
 
+  it("keeps release filters on a view saved with them (C117T1)", () => {
+    const v = sanitizeView(
+      makeRow({
+        filters: {
+          ...FULL_FILTERS,
+          releases: ["123e4567-e89b-12d3-a456-426614174030", "none"],
+        },
+      }),
+    );
+    expect(v?.filters.releases).toEqual([
+      "123e4567-e89b-12d3-a456-426614174030",
+      "none",
+    ]);
+  });
+
+  it("loads a pre-C117 view object without the key as empty (C117T1)", () => {
+    // Strip the key the way a row saved before C117 stores it: absent.
+    const { releases: _r, ...legacy } = FULL_FILTERS;
+    void _r;
+    const v = sanitizeView(makeRow({ filters: legacy as never }));
+    expect(v?.filters.releases).toEqual([]);
+    // And the surviving dimensions still load.
+    expect(v?.filters.q).toBe("login bug");
+  });
+
   it("sanitizes a garbage display to defaults, keeps null as null", () => {
     const v = sanitizeView(makeRow({ display: { groupBy: "bogus" } as never }));
     expect(v?.display?.groupBy).toBe(DEFAULT_DISPLAY_SETTINGS.groupBy);
