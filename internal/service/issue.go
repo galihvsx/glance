@@ -3011,6 +3011,27 @@ type ListIssuesInput struct {
 	// UUID filter, so it must never be routed through UUID
 	// validation (that would 400 every query).
 	FilterStateGroups []string
+	// FilterMentions (C120T0) is the VISUAL mentions filter
+	// dimension (?mentions=): mentioned-user UUIDs,
+	// OR-matched, over the persisted issue_mentions index
+	// (migration 000082) — an issue matches if at least one
+	// of its NON-DELETED comments mentions any selected
+	// user. The sentinel "none" matches issues with NO
+	// mention rows (NOT EXISTS), mirroring the Assignees
+	// none shape exactly (assignee `none` = unassigned) —
+	// NOT the created_by rejection shape: an issue whose
+	// only mentions were in since-deleted comments has no
+	// rows and therefore matches `none`, consistently.
+	// Like FilterCreatedBy there is no singular mentions
+	// scope container on the list API, so no scope
+	// collision: purely a visual filter, ANDed with any
+	// detail-page scope (cycle / module / epic) exactly
+	// like FilterCreatedBy, and zeroed by
+	// withoutVisualFilters. One block in issueListConds,
+	// an EXISTS cond over issue_mentions — never a join.
+	// The export path inherits it via the shared
+	// issueListConds (C8T3 precedent).
+	FilterMentions []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -3174,6 +3195,17 @@ func validateListFilterValues(in ListIssuesInput) error {
 	// every state-group query.
 	for _, g := range in.FilterStateGroups {
 		if !webhookFilterStateGroups[strings.ToLower(strings.TrimSpace(g))] {
+			return ErrInvalidListFilter
+		}
+	}
+	// C120T0: visual mentions filter accepts the "none"
+	// sentinel exactly like Assignees above — the HTTP
+	// layer parses it through (parseRepeatIDList shares the
+	// "none" passthrough) and this validation is what keeps
+	// it a 400-free sentinel while still 400ing malformed
+	// UUIDs, never silently dropping them.
+	for _, id := range in.FilterMentions {
+		if id != filterNone && !isUUIDFormat(id) {
 			return ErrInvalidListFilter
 		}
 	}
@@ -3526,6 +3558,36 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 			groups = append(groups, strings.ToLower(strings.TrimSpace(g)))
 		}
 		conds = append(conds, `EXISTS (SELECT 1 FROM states s WHERE s.id = i.state_id AND s."group" = ANY(`+arg(groups)+`::text[]))`)
+	}
+	if len(in.FilterMentions) > 0 {
+		// C120T0: visual mentions filter, the Epics /
+		// Assignees shape over the persisted issue_mentions
+		// index (migration 000082): UUIDs OR-matched,
+		// "none" = no mention rows at all (NOT EXISTS).
+		// Deleted comments carry no rows (the write path
+		// removes them in the same tx as the soft delete),
+		// so "mentioned" always means "mentioned in a live
+		// comment". ANDs with every scope below by
+		// construction — a separate cond, never a scope
+		// replacement. There is no singular mentions scope
+		// container, so no scope block follows for it.
+		var ids []string
+		wantNone := false
+		for _, m := range in.FilterMentions {
+			if m == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, m)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id AND im.user_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
 	if in.Cycle != "" {
 		// Task 22: cycle_issues exists now — a real EXISTS filter on the

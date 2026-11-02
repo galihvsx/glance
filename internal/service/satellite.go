@@ -649,6 +649,11 @@ func CreateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if err != nil {
 		return nil, err
 	}
+	// C120T0: maintain the persisted mention index in the SAME tx
+	// as the comment write — never a second tx that can diverge.
+	if err := syncIssueMentionsTx(ctx, tx, issueID, id, mentioned); err != nil {
+		return nil, err
+	}
 	watchers = subtractStrings(watchers, mentioned)
 	notifyPayload := map[string]any{
 		"comment_id": c.ID,
@@ -968,6 +973,11 @@ func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if err != nil {
 		return nil, err
 	}
+	// C120T0: delete-then-insert in the SAME tx as the comment
+	// edit — an edit that REMOVES a mention must clear its row.
+	if err := syncIssueMentionsTx(ctx, tx, issueID, id, mentioned); err != nil {
+		return nil, err
+	}
 	actorName := actorDisplayName(ctx, tx, actorID)
 	displayID, name, err := issueNotifyContextTx(ctx, tx, ident, issueID)
 	if err != nil {
@@ -994,20 +1004,31 @@ func UpdateComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 }
 
 // DeleteComment soft-deletes a comment. Author or admin; a second delete
-// is ErrCommentNotFound.
+// is ErrCommentNotFound. C120T0: the soft delete and the removal of
+// that comment's mention-index rows run in the SAME tx, so a
+// deleted comment's mentions stop matching the filter atomically
+// with the delete — and other comments mentioning the same user
+// keep their own rows (per-comment grain), so the user stays
+// mentioned via them.
 func DeleteComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issueID, commentID, actorID string) error {
-	_, _, role, err := resolveSatelliteIssue(ctx, pool, wsSlug, identifier, issueID, actorID)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	c, err := getComment(ctx, pool, issueID, commentID)
+	defer tx.Rollback(ctx)
+
+	_, _, role, err := resolveSatelliteIssue(ctx, tx, wsSlug, identifier, issueID, actorID)
+	if err != nil {
+		return err
+	}
+	c, err := getComment(ctx, tx, issueID, commentID)
 	if err != nil {
 		return err
 	}
 	if c.Actor.ID != actorID && role < RoleAdmin {
 		return ErrForbidden
 	}
-	tag, err := pool.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE comments SET deleted_at = now(), updated_at = now()
 		 WHERE id = $1::uuid AND issue_id = $2::uuid AND deleted_at IS NULL`,
 		commentID, issueID)
@@ -1017,7 +1038,10 @@ func DeleteComment(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, 
 	if tag.RowsAffected() == 0 {
 		return ErrCommentNotFound
 	}
-	return nil
+	if err := deleteIssueMentionsTx(ctx, tx, commentID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ResolveComment marks a thread root resolved: resolved_at = now(),
