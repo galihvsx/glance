@@ -481,6 +481,17 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	// C116T0: visual cycle/module filters — plural params only.
+	// The singular ?cycle=/?module= below are single-UUID scope
+	// containers and are never reused as filter dimensions.
+	filterCycles, err := parseRepeatIDList(qp, "cycles")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
+	filterModules, err := parseRepeatIDList(qp, "modules")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -535,6 +546,8 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		EstimatePoints:          estimatePoints,
 		Parents:                 parents,
 		Epics:                   epics,
+		FilterCycles:            filterCycles,
+		FilterModules:           filterModules,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),

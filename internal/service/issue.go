@@ -2950,6 +2950,19 @@ type ListIssuesInput struct {
 	// container like Cycle/Module — it survives PQL mode
 	// (withoutVisualFilters) and ANDs with the PQL predicate.
 	Epics []string
+	// FilterCycles / FilterModules (C116T0) are the VISUAL
+	// cycle/module filter dimensions (?cycles= / ?modules=):
+	// cycle/module UUIDs, OR-matched; the sentinel "none"
+	// matches issues in no cycle / no module (NOT EXISTS on
+	// the junction). They are NOT the Cycle / Module scope
+	// containers above: they AND with scope (a visual filter
+	// inside a scope container narrows it, never replaces
+	// it), and they are zeroed by withoutVisualFilters, so
+	// in PQL mode they are ignored like every other visual
+	// filter. One block per dimension in issueListConds
+	// mirrors the Epics (C75T0) block exactly.
+	FilterCycles  []string
+	FilterModules []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -3065,6 +3078,18 @@ func validateListFilterValues(in ListIssuesInput) error {
 		}
 	}
 	for _, id := range in.Epics {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	// C116T0: visual cycle/module filters accept the "none"
+	// sentinel exactly like Epics above.
+	for _, id := range in.FilterCycles {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	for _, id := range in.FilterModules {
 		if id != filterNone && !isUUIDFormat(id) {
 			return ErrInvalidListFilter
 		}
@@ -3312,6 +3337,53 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 		}
 		if wantNone {
 			parts = append(parts, "NOT EXISTS (SELECT 1 FROM epic_issues ei WHERE ei.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.FilterCycles) > 0 {
+		// C116T0: visual cycle filter, epic-shaped over the
+		// cycle_issues junction: UUIDs OR-matched, "none" =
+		// in no cycle. ANDs with the Cycle scope below (and
+		// with every other dimension) by construction — this
+		// block is a separate cond, never a scope replacement.
+		var ids []string
+		wantNone := false
+		for _, c := range in.FilterCycles {
+			if c == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, c)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id AND ci.cycle_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM cycle_issues ci WHERE ci.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.FilterModules) > 0 {
+		// C116T0: visual module filter, same epic shape over
+		// the module_issues junction: UUIDs OR-matched,
+		// "none" = in no module. ANDs with the Module scope
+		// below, never replaces it.
+		var ids []string
+		wantNone := false
+		for _, m := range in.FilterModules {
+			if m == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, m)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id AND mi.module_id = ANY("+arg(ids)+"::uuid[]))")
+		}
+		if wantNone {
+			parts = append(parts, "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)")
 		}
 		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
