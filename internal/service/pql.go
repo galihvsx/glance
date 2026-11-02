@@ -61,6 +61,11 @@ package service
 //	state            i.state_id        state name (project-scoped)
 //	priority         i.priority        name (none/low/medium/high/urgent) or 0-4
 //	assignee         issue_assignees   member name, email, `me`, or `none`
+//	mentions         issue_mentions    member name, email, `me`, or `none`
+//	                                    (the C120T0 persisted mention index:
+//	                                    an issue matches if a live comment
+//	                                    mentions the member; `none` = no
+//	                                    mention rows at all)
 //	created_by       i.created_by      member name, email, or `me` (never
 //	                                    `none`: created_by is NOT NULL, so
 //	                                    every issue has an author)
@@ -702,6 +707,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"state_group": pqlStateGroupField,
 	"priority":    pqlPriorityField,
 	"assignee":    pqlNameField,
+	"mentions":    pqlNameField,
 	"created_by":  pqlNameField,
 	"label":       pqlNameField,
 	"epic":        pqlNameField,
@@ -722,7 +728,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, state_group, priority, assignee, created_by, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, state_group, priority, assignee, mentions, created_by, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -919,11 +925,14 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	// there is no singular created_by scope container to preserve.
 	// C119T0: FilterStateGroups is zeroed too — same shape, and
 	// there is no singular state_group scope container to preserve.
+	// C120T0: FilterMentions is zeroed too — same shape, and
+	// there is no singular mentions scope container to preserve.
 	in.FilterCycles = nil
 	in.FilterModules = nil
 	in.FilterReleases = nil
 	in.FilterCreatedBy = nil
 	in.FilterStateGroups = nil
+	in.FilterMentions = nil
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
@@ -1084,6 +1093,8 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 			return translatePQLParent(ctx, pool, projectID, n, arg)
 		case "created_by":
 			return translatePQLCreatedBy(ctx, pool, wsID, actorID, n, arg)
+		case "mentions":
+			return translatePQLMentions(ctx, pool, wsID, actorID, n, arg)
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
 		}
@@ -1422,6 +1433,92 @@ func translatePQLAssignee(ctx context.Context, pool *pgxpool.Pool, wsID, actorID
 		}
 		return "NOT EXISTS (SELECT 1 FROM issue_assignees ia WHERE ia.issue_id = i.id AND ia.user_id = " + arg(ids[0]) + "::uuid)", nil
 	default: // in: member matches OR no-assignee, when both are present
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, existsFor(ids))
+		}
+		if wantNone {
+			parts = append(parts, notExists)
+		}
+		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// resolvePQLMentionsValue maps one mentions value token: `me` to
+// the actor, `none` to the no-mentions marker, anything else to a
+// workspace member id resolved by name or email
+// (case-insensitive). This is the resolvePQLAssigneeValue shape
+// with the kind word changed, so unknown / ambiguous names 400
+// naming `mentions`, not `assignee`.
+func resolvePQLMentionsValue(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, v pqlValue) (id string, none bool, err error) {
+	lower := strings.ToLower(v.Text)
+	if lower == "me" {
+		return actorID, false, nil
+	}
+	if lower == "none" {
+		return "", true, nil
+	}
+	got, err := resolvePQLIDs(ctx, pool,
+		`SELECT u.id::text FROM users u JOIN workspace_members m ON m.user_id = u.id
+		 WHERE m.workspace_id = $1::uuid AND (lower(u.name) = lower($2) OR lower(u.email) = lower($2))`,
+		wsID, v.Text, v.Pos, "mentions", "workspace")
+	if err != nil {
+		return "", false, err
+	}
+	return got[0], false, nil
+}
+
+// translatePQLMentions resolves mentions names workspace-scoped
+// (C120T0), mirroring translatePQLAssignee exactly but over the
+// persisted issue_mentions index instead of issue_assignees:
+// = a member (or none = no mention rows), != not that member
+// (or "has any mention" for != none), in the OR of both arms.
+// Workspace scope (MyWork) uses this SAME translator, not a
+// separate workspace variant — the resolution domain is
+// workspace membership, not project taxonomy (the created_by
+// reasoning, which assignee already follows), and the
+// translated predicate still ANDs with the list query's own
+// confinement, so a member whose mentioned issues live only in
+// a private project yields no rows for an actor who cannot
+// reach that project.
+func translatePQLMentions(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	// Same EXISTS shape as issueListConds' mentions filter.
+	existsFor := func(ids []string) string {
+		if len(ids) == 1 {
+			return "EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id AND im.user_id = " + arg(ids[0]) + "::uuid)"
+		}
+		return "EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id AND im.user_id = ANY(" + arg(ids) + "::uuid[]))"
+	}
+	notExists := "NOT EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id)"
+	existsAny := "EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id)"
+
+	var ids []string
+	wantNone := false
+	for _, v := range n.Values {
+		id, none, err := resolvePQLMentionsValue(ctx, pool, wsID, actorID, v)
+		if err != nil {
+			return "", err
+		}
+		if none {
+			wantNone = true
+		} else {
+			ids = append(ids, id)
+		}
+	}
+	switch n.Op {
+	case "=":
+		// Single value: either a member, or none.
+		if wantNone {
+			return notExists, nil
+		}
+		return existsFor(ids), nil
+	case "!=":
+		// Single value: not that member, or "has any mention".
+		if wantNone {
+			return existsAny, nil
+		}
+		return "NOT EXISTS (SELECT 1 FROM issue_mentions im WHERE im.issue_id = i.id AND im.user_id = " + arg(ids[0]) + "::uuid)", nil
+	default: // in: member matches OR no-mentions, when both are present
 		var parts []string
 		if len(ids) > 0 {
 			parts = append(parts, existsFor(ids))

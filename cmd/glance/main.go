@@ -65,6 +65,17 @@ func main() {
 		log.Fatalf("glance: %v", err)
 	}
 
+	// C120T0: one-time backfill of the persisted @-mention index
+	// for comments that predate it. Single-tx and idempotent
+	// (ON CONFLICT DO NOTHING, re-run is a no-op), with a
+	// non-empty fast-path skip inside the same tx — see
+	// BackfillIssueMentions. A failed sweep is fatal at boot:
+	// a half-built index would silently mis-answer the
+	// Mentions filter, so the server must not start on it.
+	if err := service.BackfillIssueMentions(ctx, pool); err != nil {
+		log.Fatalf("glance: mention backfill: %v", err)
+	}
+
 	// C5T0: instance-admin bootstrap. GLANCE_ADMIN_EMAILS is applied
 	// idempotently at every boot (promote-only, never demotes), so an
 	// operator can always regain admin access by setting the env var and

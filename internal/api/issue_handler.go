@@ -551,6 +551,22 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	for i, g := range filterStateGroups {
 		filterStateGroups[i] = strings.ToLower(g)
 	}
+	// C120T0: visual mentions filter — singular param only
+	// (?mentions=), repeatable AND comma-separated via the
+	// same idiom as created_by. There is no plural alias
+	// and no singular mentions scope param on the list API,
+	// so no scope collision is possible; do not invent a
+	// plural alias. Values are user UUIDs plus the "none"
+	// sentinel — the assignee none-passthrough branch, NOT
+	// the created_by none-rejection branch: "none" passes
+	// this parser through AND the service validation, and
+	// matches issues with no mention rows. Malformed UUIDs
+	// are 400 here (never a silent drop) — see
+	// FilterMentions in internal/service/issue.go.
+	filterMentions, err := parseRepeatIDList(qp, "mentions")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -610,6 +626,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		FilterReleases:          filterReleases,
 		FilterCreatedBy:         filterCreatedBy,
 		FilterStateGroups:       filterStateGroups,
+		FilterMentions:          filterMentions,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),
