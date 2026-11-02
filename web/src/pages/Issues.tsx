@@ -5,6 +5,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
 } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
 import { api, ApiError } from "../lib/api";
@@ -35,6 +36,12 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import IssueRow from "../components/issue/IssueRow";
+import SortableIssueRow from "../components/issue/SortableIssueRow";
+import ListRowStack from "../components/issue/ListRowStack";
+import {
+  applyListDrop,
+  isListDragEnabled,
+} from "../components/issue/listReorder";
 import NestedListSubtaskRow from "../components/issue/NestedListSubtaskRow";
 import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
@@ -1049,6 +1056,126 @@ export default function Issues() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, openPeek]);
 
+  // C126T0: list drag-to-reorder. The effective grouping is what
+  // renders (a grouping skipped by its single-value filter renders
+  // flat), so the enable rule reads groupByState/groupByPriority/
+  // groupByEpic, not the raw setting. The drop pipeline lives in
+  // listReorder.ts (board's applyDrop precedent); this only wires it
+  // to api/queryClient. PATCH carries ONLY {sort_order} — a list
+  // reorder never reassigns state. Pagination caveat (plan): drop
+  // targets are the currently loaded rows only; after a drop the
+  // invalidation refetches the loaded pages, so a drop at the bottom
+  // of a partially-loaded list may shift on refetch among unloaded
+  // values — no fetch-all-pages workaround by design.
+  const effectiveGroupBy = groupByEpic
+    ? "epic"
+    : groupByPriority
+      ? "priority"
+      : groupByState
+        ? "state"
+        : "none";
+  const dragEnabled = isListDragEnabled({
+    orderBy: settings.orderBy,
+    pqlMode,
+    groupBy: effectiveGroupBy,
+  });
+  const [reorderError, setReorderError] = useState<string | null>(null);
+  const issuesExactKey = [
+    "issues",
+    slug,
+    identifier,
+    filters,
+    settings.orderBy,
+    settings.showSubWorkItems,
+  ] as const;
+
+  async function handleListDrop(
+    stack: Issue[],
+    activeId: string,
+    overId: string,
+  ) {
+    setReorderError(null);
+    await applyListDrop(stack, activeId, overId, {
+      getData: () =>
+        queryClient.getQueryData<InfiniteData<IssueListResult>>(
+          issuesExactKey,
+        ),
+      setData: (d) => queryClient.setQueryData(issuesExactKey, d),
+      patch: (id, body) => api.patch(`${base}/issues/${id}`, body),
+      rebalance: (body) => api.post(`${base}/issues/rebalance`, body),
+      refetchFlat: async () => {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        const r = await issuesQuery.refetch();
+        return r.data?.pages.flatMap((p) => p.results) ?? [];
+      },
+      invalidate: () =>
+        queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        }),
+      onError: (m) => setReorderError(m),
+    });
+  }
+
+  /**
+   * One list row + its nested subtask rows (C124), draggable when the
+   * enable rule holds, otherwise today's rendering exactly (a bare
+   * fragment adds no DOM). Shared by all three render sites so the
+   * row props cannot drift between flat/grouped/sub-grouped paths.
+   */
+  function renderListRow(issue: Issue, kbd: boolean) {
+    const nestedRows = listSplit.nestedByParent.get(issue.id) ?? [];
+    const nested =
+      nestedRows.length > 0 ? (
+        <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
+          {nestedRows.map((row) => (
+            <NestedListSubtaskRow
+              key={row.id}
+              row={row}
+              state={stateById.get(row.state_id ?? "")}
+              onOpen={(id) => openPeek(id)}
+            />
+          ))}
+        </div>
+      ) : null;
+    const rowProps = {
+      issue,
+      state: stateById.get(issue.state_id),
+      fields: settings.fields,
+      onOpen: (it: Issue) => openPeek(it.id),
+      kbdSelected: kbd,
+      bulkSelected: bulk.isSelected(issue.id),
+      bulkActive: bulk.count > 0,
+      onToggleSelect: () => bulk.toggle(issue.id),
+    };
+    if (!dragEnabled) {
+      return (
+        <>
+          <IssueRow {...rowProps} />
+          {nested}
+        </>
+      );
+    }
+    return <SortableIssueRow {...rowProps}>{nested}</SortableIssueRow>;
+  }
+
+  /** Plain IssueRow face for a stack's drag overlay. */
+  function renderOverlayRow(issue: Issue) {
+    return (
+      <IssueRow
+        issue={issue}
+        state={stateById.get(issue.state_id)}
+        fields={settings.fields}
+        onOpen={(it) => openPeek(it.id)}
+        kbdSelected={indexById.get(issue.id) === selected}
+        bulkSelected={bulk.isSelected(issue.id)}
+        bulkActive={bulk.count > 0}
+        onToggleSelect={() => bulk.toggle(issue.id)}
+      />
+    );
+  }
+
   return (
     <div className="w-full">
       {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
@@ -1420,6 +1547,14 @@ export default function Issues() {
         </Alert>
       )}
 
+      {/* C126T0: reorder failures surface like other list errors (the
+          bulkError-style Alert pattern) — no new toast system. */}
+      {reorderError && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{reorderError}</AlertDescription>
+        </Alert>
+      )}
+
       {bulk.count > 0 && (
         <BulkActionBar
           states={states}
@@ -1553,74 +1688,54 @@ export default function Issues() {
                               />
                             </div>
                           )}
-                          <div>
-                            {sub.issues.map((issue) => (
-                              <Fragment key={issue.id}>
-                                <IssueRow
-                                  issue={issue}
-                                  state={stateById.get(issue.state_id)}
-                                  fields={settings.fields}
-                                  onOpen={(it) => openPeek(it.id)}
-                                  kbdSelected={indexById.get(issue.id) === selected}
-                                  bulkSelected={bulk.isSelected(issue.id)}
-                                  bulkActive={bulk.count > 0}
-                                  onToggleSelect={() => bulk.toggle(issue.id)}
-                                />
-                                {/* C124 merge: nested rows from T0's
-                                    listSplit.nestedByParent (full
-                                    fetched set, pre-grouping). */}
-                                {(listSplit.nestedByParent.get(issue.id) ??
-                                  []).length > 0 && (
-                                    <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                                      {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
-                                        <NestedListSubtaskRow
-                                          key={row.id}
-                                          row={row}
-                                          state={stateById.get(row.state_id ?? "")}
-                                          onOpen={(id) => openPeek(id)}
-                                        />
-                                      ))}
-                                    </div>
+                          {/* C126T0: one sortable context per sub-section
+                              stack; headers stay outside it (not drop
+                              targets). Disabled: ListRowStack renders
+                              only its children, so this is today's DOM. */}
+                          <ListRowStack
+                            rows={sub.issues}
+                            draggable={dragEnabled}
+                            onDrop={(a, o) =>
+                              void handleListDrop(sub.issues, a, o)
+                            }
+                            onDragStart={() => setReorderError(null)}
+                            renderOverlayRow={renderOverlayRow}
+                          >
+                            <div>
+                              {sub.issues.map((issue) => (
+                                <Fragment key={issue.id}>
+                                  {renderListRow(
+                                    issue,
+                                    indexById.get(issue.id) === selected,
                                   )}
-                              </Fragment>
-                            ))}
-                          </div>
+                                </Fragment>
+                              ))}
+                            </div>
+                          </ListRowStack>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div>
-                      {g.issues.map((issue) => (
-                        <Fragment key={issue.id}>
-                          <IssueRow
-                            issue={issue}
-                            state={stateById.get(issue.state_id)}
-                            fields={settings.fields}
-                            onOpen={(it) => openPeek(it.id)}
-                            kbdSelected={indexById.get(issue.id) === selected}
-                            bulkSelected={bulk.isSelected(issue.id)}
-                            bulkActive={bulk.count > 0}
-                            onToggleSelect={() => bulk.toggle(issue.id)}
-                          />
-                          {/* C124 merge: nested rows from T0's
-                              listSplit.nestedByParent (full fetched
-                              set, pre-grouping). */}
-                          {(listSplit.nestedByParent.get(issue.id) ?? [])
-                            .length > 0 && (
-                              <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                                {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
-                                  <NestedListSubtaskRow
-                                    key={row.id}
-                                    row={row}
-                                    state={stateById.get(row.state_id ?? "")}
-                                    onOpen={(id) => openPeek(id)}
-                                  />
-                                ))}
-                              </div>
+                    <ListRowStack
+                      rows={g.issues}
+                      draggable={dragEnabled}
+                      onDrop={(a, o) =>
+                        void handleListDrop(g.issues, a, o)
+                      }
+                      onDragStart={() => setReorderError(null)}
+                      renderOverlayRow={renderOverlayRow}
+                    >
+                      <div>
+                        {g.issues.map((issue) => (
+                          <Fragment key={issue.id}>
+                            {renderListRow(
+                              issue,
+                              indexById.get(issue.id) === selected,
                             )}
-                        </Fragment>
-                      ))}
-                    </div>
+                          </Fragment>
+                        ))}
+                      </div>
+                    </ListRowStack>
                   )}
                   <QuickAdd
                     className="mt-1"
@@ -1635,45 +1750,28 @@ export default function Issues() {
               ))}
             </div>
           ) : (
-            <div>
-              {issues.map((issue, i) => (
-                <Fragment key={issue.id}>
-                  <IssueRow
-                    issue={issue}
-                    state={stateById.get(issue.state_id)}
-                    fields={settings.fields}
-                    onOpen={(it) => openPeek(it.id)}
-                    kbdSelected={i === selected}
-                    bulkSelected={bulk.isSelected(issue.id)}
-                    bulkActive={bulk.count > 0}
-                    onToggleSelect={() => bulk.toggle(issue.id)}
+            <ListRowStack
+              rows={issues}
+              draggable={dragEnabled}
+              onDrop={(a, o) => void handleListDrop(issues, a, o)}
+              onDragStart={() => setReorderError(null)}
+              renderOverlayRow={renderOverlayRow}
+            >
+              <div>
+                {issues.map((issue, i) => (
+                  <Fragment key={issue.id}>
+                    {renderListRow(issue, i === selected)}
+                  </Fragment>
+                ))}
+                {filters.state && (
+                  <QuickAdd
+                    className="mt-1"
+                    onCreate={(name) => quickCreate(filters.state, name)}
+                    onExpand={(name) => expandQuickAdd(filters.state, name)}
                   />
-                  {/* C124 merge: nested rows from T0's
-                      listSplit.nestedByParent (full fetched set,
-                      pre-grouping). */}
-                  {(listSplit.nestedByParent.get(issue.id) ?? []).length >
-                    0 && (
-                      <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                        {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
-                          <NestedListSubtaskRow
-                            key={row.id}
-                            row={row}
-                            state={stateById.get(row.state_id ?? "")}
-                            onOpen={(id) => openPeek(id)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                </Fragment>
-              ))}
-              {filters.state && (
-                <QuickAdd
-                  className="mt-1"
-                  onCreate={(name) => quickCreate(filters.state, name)}
-                  onExpand={(name) => expandQuickAdd(filters.state, name)}
-                />
-              )}
-            </div>
+                )}
+              </div>
+            </ListRowStack>
           )}
           {issuesQuery.hasNextPage && (
             <div className="mt-4 flex justify-center">

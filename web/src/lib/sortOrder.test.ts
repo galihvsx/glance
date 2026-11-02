@@ -4,6 +4,7 @@ import {
   midpoint,
   REBALANCE_GAP,
   SORT_ORDER_STEP,
+  stackDropSortOrder,
   type SortableRow,
 } from "./sortOrder";
 
@@ -96,5 +97,58 @@ describe("dropSortOrder", () => {
   it("returns null for an unknown card", () => {
     const all = rows([1024]);
     expect(dropSortOrder(all, "nope", "s1", "s1", 0)).toBeNull();
+  });
+});
+
+describe("stackDropSortOrder (C126T0 list stacks)", () => {
+  const stack = (orders: number[]): SortableRow[] =>
+    orders.map((o, i) => ({ id: `i${i}`, state_id: "s1", sort_order: o }));
+
+  it("moves a row down within the stack (lands after the hovered row)", () => {
+    // Drag i0 over i2: final [i1, i2, i0, i3] → midpoint(3072, 4096).
+    const d = stackDropSortOrder(stack([1024, 2048, 3072, 4096]), "i0", "i2");
+    expect(d.moved).toBe(true);
+    expect(d.sortOrder).toBe(3584);
+    expect(d.orderedIds).toEqual(["i1", "i2", "i0", "i3"]);
+  });
+
+  it("moves a row up within the stack (lands before the hovered row's successor)", () => {
+    // Drag i3 over i0: final [i3, i0, i1, i2] → top, next - STEP.
+    const d = stackDropSortOrder(stack([1024, 2048, 3072, 4096]), "i3", "i0");
+    expect(d.moved).toBe(true);
+    expect(d.sortOrder).toBe(1024 - SORT_ORDER_STEP);
+    expect(d.orderedIds).toEqual(["i3", "i0", "i1", "i2"]);
+  });
+
+  it("lands at the very bottom when dragged over the last row", () => {
+    const d = stackDropSortOrder(stack([1024, 2048, 3072]), "i0", "i2");
+    expect(d.moved).toBe(true);
+    expect(d.sortOrder).toBe(3072 + SORT_ORDER_STEP);
+    expect(d.orderedIds).toEqual(["i1", "i2", "i0"]);
+  });
+
+  it("splits the gap for a middle drop", () => {
+    // Drag i0 over i1: final [i1, i0, i2] → midpoint(2048, 3072).
+    const d = stackDropSortOrder(stack([1024, 2048, 3072]), "i0", "i1");
+    expect(d.moved).toBe(true);
+    expect(d.sortOrder).toBe(2560);
+    expect(d.orderedIds).toEqual(["i1", "i0", "i2"]);
+  });
+
+  it("is a no-op when dropped on itself or on an unknown row", () => {
+    const s = stack([1024, 2048]);
+    expect(stackDropSortOrder(s, "i0", "i0").moved).toBe(false);
+    expect(stackDropSortOrder(s, "i0", "nope").moved).toBe(false);
+    expect(stackDropSortOrder(s, "nope", "i1").moved).toBe(false);
+  });
+
+  it("returns null sortOrder (moved) when the gap has collapsed", () => {
+    // Drag i3 over i1: final [i0, i3, i1, i2] — i3 lands between the
+    // collapsed i0/i1 pair, so no midpoint can be written.
+    const s = stack([1, 1 + REBALANCE_GAP / 2, 5, 6]);
+    const d = stackDropSortOrder(s, "i3", "i1");
+    expect(d.moved).toBe(true);
+    expect(d.sortOrder).toBeNull();
+    expect(d.orderedIds).toEqual(["i0", "i3", "i1", "i2"]);
   });
 });

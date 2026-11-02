@@ -89,3 +89,52 @@ export function dropSortOrder(
   const next = pos < final.length - 1 ? final[pos + 1].sort_order : null;
   return midpoint(prev, next);
 }
+
+/**
+ * Result of a list-stack drop computation (C126T0). `orderedIds` is the
+ * stack's id order AFTER the move (the optimistic order); `sortOrder`
+ * is the value to write, or null when the gap collapsed and the caller
+ * must rebalance first. `moved` is false for a no-op drop (active ===
+ * over, or either id missing from the stack) — the caller writes
+ * nothing.
+ */
+export interface StackDrop {
+  moved: boolean;
+  sortOrder: number | null;
+  orderedIds: string[];
+}
+
+/**
+ * Compute the sort_order for a row dropped within one list-view stack
+ * (C126T0). Unlike the board's dropSortOrder, which filters a column by
+ * state_id, a list stack is already the exact visible sequence (flat
+ * list, one state group, or one sub-section), so the stack is used
+ * as-is. `overId` is the dnd-kit hovered row: the move follows the
+ * board's arrayMove-after-removal semantics — remove the dragged row,
+ * then insert at the hovered row's original index (clamped), so
+ * dragging down over a row lands AFTER it, and dragging over the last
+ * row lands at the very bottom.
+ */
+export function stackDropSortOrder(
+  stack: SortableRow[],
+  activeId: string,
+  overId: string,
+): StackDrop {
+  const EMPTY: StackDrop = { moved: false, sortOrder: null, orderedIds: [] };
+  if (activeId === overId) return EMPTY;
+  const oldIdx = stack.findIndex((i) => i.id === activeId);
+  const overIdx = stack.findIndex((i) => i.id === overId);
+  if (oldIdx === -1 || overIdx === -1) return EMPTY;
+  const dragged = stack[oldIdx];
+  const without = [...stack.slice(0, oldIdx), ...stack.slice(oldIdx + 1)];
+  const idx = Math.max(0, Math.min(overIdx, without.length));
+  const final = [...without.slice(0, idx), dragged, ...without.slice(idx)];
+  const pos = final.findIndex((i) => i.id === activeId);
+  const prev = pos > 0 ? final[pos - 1].sort_order : null;
+  const next = pos < final.length - 1 ? final[pos + 1].sort_order : null;
+  return {
+    moved: true,
+    sortOrder: midpoint(prev, next),
+    orderedIds: final.map((i) => i.id),
+  };
+}

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { Copy, MoreVertical } from "lucide-react";
 import type { Issue, IssueState } from "../../lib/types";
@@ -46,6 +47,7 @@ export default function IssueRow({
   bulkSelected,
   bulkActive,
   onToggleSelect,
+  dragHandle,
   slug: slugProp,
   identifier: identifierProp,
 }: {
@@ -57,6 +59,14 @@ export default function IssueRow({
   bulkSelected?: boolean;
   bulkActive?: boolean;
   onToggleSelect?: (checked: boolean) => void;
+  /**
+   * C126T0: drag grip rendered in the selection gutter, ahead of the
+   * checkbox (grip 12px + checkbox 16px = the 28px gutter exactly, so
+   * the grid never shifts). The sortable wrapper (SortableIssueRow)
+   * supplies this node; when absent the gutter renders exactly as
+   * before.
+   */
+  dragHandle?: ReactNode;
   slug?: string;
   identifier?: string;
 }) {
@@ -93,12 +103,14 @@ export default function IssueRow({
       } ${kbdSelected ? "ring-1 ring-inset ring-[#4f8ef7]" : ""}`}
     >
       {/* Selection gutter — fixed 28px, never shifts the grid. */}
-      {onToggleSelect && (
+      {(onToggleSelect || dragHandle) && (
         <span
           className="flex w-7 flex-none items-center justify-center"
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
+          {dragHandle}
+          {onToggleSelect && (
           <Checkbox
             checked={bulkSelected ?? false}
             onCheckedChange={(v) => onToggleSelect(v === true)}
@@ -110,6 +122,7 @@ export default function IssueRow({
                 : "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
             }`}
           />
+          )}
         </span>
       )}
       <div className="grid min-h-[47px] flex-1 grid-cols-[76px_minmax(0,1fr)_110px_80px] items-center gap-[10px] py-2 pr-8">
