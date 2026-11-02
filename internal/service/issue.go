@@ -3083,6 +3083,15 @@ type ListIssuesInput struct {
 	// per-row ?include_project_structure=1 detail fetches. False keeps the
 	// list response byte-identical (no new fields, no extra query).
 	IncludeProjectStructure bool
+	// IncludeSubtasks attaches each returned row's direct children
+	// (?include_subtasks=1, C122T0) via attachIssueSubtasks — ONE
+	// query for the children + ONE for their assignees, never
+	// per-parent. Like IncludeProjectStructure it is a list-mode
+	// flag, NOT a visual filter: withoutVisualFilters leaves it
+	// untouched, so the PQL list path honors it too. False keeps
+	// the list response byte-identical (no subtasks field, no
+	// extra queries).
+	IncludeSubtasks bool
 	// PQL (C91T0) is a Plane Query Language predicate for the issue
 	// list (see pql.go). When non-blank, ListIssues ignores every
 	// visual filter on this input (withoutVisualFilters) and appends
@@ -3686,6 +3695,14 @@ type IssueListItem struct {
 	AttachmentCount int `json:"attachment_count"`
 	LinkCount       int `json:"link_count"`
 	RelationCount   int `json:"relation_count"`
+	// Subtasks carries the row's direct children (C122T0), populated
+	// ONLY by ListIssues when ListIssuesInput.IncludeSubtasks is set
+	// (?include_subtasks=1). Pointer-to-slice, deliberately: nil
+	// omits the field (flag off, byte-identical everywhere else),
+	// while a pointer to an empty slice marshals as [] (flag on,
+	// childless issues) — plain-slice omitempty would drop the
+	// empty case. See issue_subtasks.go for the row contract.
+	Subtasks *[]SubtaskRow `json:"subtasks,omitempty"`
 }
 
 // ListIssuesResult is the paginated list envelope (spec §5).
@@ -4019,6 +4036,16 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 	// fields are always present (zero, not omitted).
 	if len(res.Issues) > 0 {
 		if err := attachIssueDisplayCounts(ctx, pool, res.Issues); err != nil {
+			return nil, err
+		}
+	}
+	// C122T0: ?include_subtasks=1 attaches each returned row's direct
+	// children in TWO batched queries for the whole page (children +
+	// their assignees) — never per-parent. Runs on the truncated
+	// page only, so children of parents outside the page are never
+	// attached. Off by default: no extra queries, no subtasks field.
+	if in.IncludeSubtasks && len(res.Issues) > 0 {
+		if err := attachIssueSubtasks(ctx, pool, projectID, ident, res.Issues); err != nil {
 			return nil, err
 		}
 	}
