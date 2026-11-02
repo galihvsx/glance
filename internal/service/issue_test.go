@@ -613,8 +613,12 @@ func TestListNoNPlusOne(t *testing.T) {
 	if n1 != n2 {
 		t.Fatalf("query count grew with issue count: %d (50 issues) → %d (100 issues)", n1, n2)
 	}
-	if n1 > 5 {
-		t.Fatalf("list took %d queries, want ≤ 5 (membership + project + single list query)", n1)
+	// C121T0: the budget grows by exactly the three batched count
+	// queries (one per count source for the whole page — never
+	// per-row), so the cap is 5 + 3 = 8. The n1 == n2 check above is
+	// the actual N+1 guard and is unchanged.
+	if n1 > 8 {
+		t.Fatalf("list took %d queries, want ≤ 8 (membership + project + single list query + 3 batched count queries)", n1)
 	}
 	t.Logf("list query count constant at %d queries for 50 and 100 issues", n1)
 }

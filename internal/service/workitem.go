@@ -112,7 +112,18 @@ func GetIssueByDisplayID(ctx context.Context, pool *pgxpool.Pool, actorID, displ
 		}
 		return nil, err
 	}
-	return getIssueRow(ctx, pool, hits[0].identifier, hits[0].id, issueID)
+	item, err := getIssueRow(ctx, pool, hits[0].identifier, hits[0].id, issueID)
+	if err != nil {
+		return nil, err
+	}
+	// C121T0: display-ID resolution shares the list serializer, so it
+	// carries the same real counts.
+	items := []IssueListItem{*item}
+	if err := attachIssueDisplayCounts(ctx, pool, items); err != nil {
+		return nil, err
+	}
+	*item = items[0]
+	return item, nil
 }
 
 // SearchIssueItem is one global-search hit: the issue plus the workspace
@@ -235,6 +246,26 @@ func SearchIssues(ctx context.Context, pool *pgxpool.Pool, actorID, q, cursor st
 		res.NextCursor = encodeListCursor(searchCursorOrder,
 			strconv.FormatFloat(last.rank, 'g', -1, 64), last.ID)
 		res.Results = res.Results[:perPage]
+	}
+	// C121T0: search hits embed IssueListItem, so they carry the same
+	// batched counts as list rows (one query per source for the page,
+	// across projects — the count queries join the listed issue's own
+	// project, so no per-project batching is needed).
+	if len(res.Results) > 0 {
+		ids := make([]string, 0, len(res.Results))
+		for i := range res.Results {
+			ids = append(ids, res.Results[i].ID)
+		}
+		counts, err := listIssueDisplayCounts(ctx, pool, ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range res.Results {
+			c := counts[res.Results[i].ID]
+			res.Results[i].AttachmentCount = c.Attachment
+			res.Results[i].LinkCount = c.Link
+			res.Results[i].RelationCount = c.Relation
+		}
 	}
 	return res, nil
 }

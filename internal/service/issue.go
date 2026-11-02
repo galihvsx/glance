@@ -632,6 +632,15 @@ func GetIssue(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, issue
 		}
 		return nil, err
 	}
+	// C121T0: the detail response shares the list serializer, so it
+	// carries the same real counts (not a silent zero). The slice
+	// call keeps the detail path on the list path's batching; the
+	// filled row is copied back into the returned item.
+	items := []IssueListItem{*item}
+	if err := attachIssueDisplayCounts(ctx, pool, items); err != nil {
+		return nil, err
+	}
+	*item = items[0]
 	return item, nil
 }
 
@@ -3662,6 +3671,21 @@ type IssueListItem struct {
 	// otherwise, and omitempty keeps every existing list response
 	// byte-identical. Same shape as the detail endpoint's attachment.
 	ProjectStructure *IssueProjectStructure `json:"project_structure,omitempty"`
+	// AttachmentCount, LinkCount, and RelationCount are the C121T0
+	// batched per-row display counts (attachments, issue_links either
+	// side, issue_relations either side — see issue_display_counts.go
+	// for the exact semantics). No omitempty, deliberately: zero is
+	// always present and always means "none", never "not computed".
+	// Every user-facing read path that returns IssueListItem rows
+	// populates them (ListIssues, ListDeletedIssues, GetIssue detail,
+	// GetIssueByDisplayID, module/release/epic scope lists, and
+	// global search); the export path uses its own ExportIssue struct
+	// and carries no counts. Internal getIssueRow callers (AI summaries,
+	// realtime broadcasts) read only the embedded Issue, never these
+	// fields, so they stay out of those payloads.
+	AttachmentCount int `json:"attachment_count"`
+	LinkCount       int `json:"link_count"`
+	RelationCount   int `json:"relation_count"`
 }
 
 // ListIssuesResult is the paginated list envelope (spec §5).
@@ -3989,6 +4013,15 @@ func ListIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, act
 			}
 		}
 	}
+	// C121T0: batched per-row display counts on every returned row —
+	// ONE query per count source for the whole page, never per-row.
+	// Unlike ProjectStructure below, counts are unconditional: the
+	// fields are always present (zero, not omitted).
+	if len(res.Issues) > 0 {
+		if err := attachIssueDisplayCounts(ctx, pool, res.Issues); err != nil {
+			return nil, err
+		}
+	}
 	// C21T2: ?include_project_structure=1 on the list endpoint attaches the
 	// cycle/module/release membership to every returned row in ONE batched
 	// query — never per-row. Off by default: no extra query, no new
@@ -4136,6 +4169,13 @@ func ListDeletedIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifi
 		last := items[len(items)-1]
 		res.Issues = items
 		res.NextCursor = encodeListCursor("-deleted_at", last.DeletedAt.UTC().Format(time.RFC3339Nano), last.ID)
+	}
+	// C121T0: trash rows carry the same batched display counts as the
+	// normal list (same envelope, same row shape).
+	if len(res.Issues) > 0 {
+		if err := attachIssueDisplayCounts(ctx, pool, res.Issues); err != nil {
+			return nil, err
+		}
 	}
 	return res, nil
 }
