@@ -77,6 +77,28 @@ describe("PqlEditor project cheat-sheet row (C114T1)", () => {
   });
 });
 
+describe("PqlEditor cycle/module cheat-sheet rows (C115T1)", () => {
+  it("renders the cycle row with its none-sentinel meaning", () => {
+    renderEditor();
+    expect(screen.getByText("cycle = Sprint 3")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Cycle by name (project-scoped; also none for backlog issues)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the module row with its none-sentinel meaning", () => {
+    renderEditor();
+    expect(screen.getByText("module = Auth")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Module by name (project-scoped; also none for issues in no module)",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("PqlEditor custom save hint (C108T1)", () => {
   it("renders the default text byte-for-byte when no hint is passed", () => {
     renderEditor();
