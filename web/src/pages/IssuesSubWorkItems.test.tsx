@@ -223,9 +223,12 @@ describe("list sub-work items data (C124T0)", () => {
     mockState.issues = fixtureIssues();
     renderIssues();
     await screen.findByText("Parent task");
-    // T1 renders the nested row under the parent; T0 only hides the
-    // flat child row, so the child title is absent entirely here.
-    expect(screen.queryByText("Child task")).toBeNull();
+    // Merged C124: the flat child row is hidden AND T1 renders the
+    // child as a nested row under the parent — so the title appears
+    // exactly once, inside a nested container, never as a flat row.
+    expect(
+      screen.getByText("Child task").closest("[data-nested-subtask]"),
+    ).not.toBeNull();
     expect(screen.getByText("Orphan task")).toBeInTheDocument();
     expect(screen.getByText("Grandchild task")).toBeInTheDocument();
   });
@@ -245,7 +248,11 @@ describe("list sub-work items data (C124T0)", () => {
     mockState.issues = fixtureIssues();
     renderIssues();
     await screen.findByText("Parent task");
-    expect(screen.queryByText("Child task")).toBeNull();
+    // Merged C124: child appears only as a nested row under its
+    // parent, never as a flat row in any group.
+    expect(
+      screen.getByText("Child task").closest("[data-nested-subtask]"),
+    ).not.toBeNull();
     // Todo: parent + grandchild (child is Done, so it never counted
     // here); Done: orphan only (nested child hidden, not counted).
     expect(groupCount("Todo")).toBe("2");
@@ -257,7 +264,11 @@ describe("list sub-work items data (C124T0)", () => {
     mockState.issues = fixtureIssues();
     renderIssues();
     await screen.findByText("Parent task");
-    expect(screen.queryByText("Child task")).toBeNull();
+    // Merged C124: child appears only as a nested row under its
+    // parent, never as a flat row in any section.
+    expect(
+      screen.getByText("Child task").closest("[data-nested-subtask]"),
+    ).not.toBeNull();
     expect(screen.getByText("Orphan task")).toBeInTheDocument();
     expect(screen.getByText("Grandchild task")).toBeInTheDocument();
   });
@@ -276,6 +287,12 @@ describe("list sub-work items data (C124T0)", () => {
     await screen.findAllByText("Parent task");
     // Multi-appearance: one visible row per epic group.
     expect(screen.getAllByText("Parent task")).toHaveLength(2);
-    expect(screen.queryByText("Child task")).toBeNull();
+    // Merged C124: child appears nested under EACH parent
+    // appearance, never as a flat row in either group.
+    const nested = screen.getAllByText("Child task");
+    expect(nested).toHaveLength(2);
+    for (const el of nested) {
+      expect(el.closest("[data-nested-subtask]")).not.toBeNull();
+    }
   });
 });

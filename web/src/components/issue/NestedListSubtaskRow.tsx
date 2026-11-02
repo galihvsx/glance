@@ -15,15 +15,9 @@ import { subtaskPriorityLevel } from "./boardSubtasks";
  *  Deliberately NOT a bulk-select or j/k target: no checkbox, no
  *  row role, no keyboard-selection ring — selection, peek, and
  *  counts operate on the parent rows only. The parent render site
- *  owns the indent wrapper (mirroring SortableCard's nested block)
- *  and the toggle gate; this component renders one row only.
- *
- *  STUB NOTE (C124 merge): the render sites currently pass
- *  `issue.subtasks` rows straight through because T0's shared
- *  helper (splitNestedIssues.ts) has not landed yet. The merge wires
- *  T0's `nestedByParent.get(issue.id)` in place of `issue.subtasks`
- *  at each render site — this component takes rows as a prop either
- *  way, so it does not change. */
+ *  owns the indent wrapper (mirroring SortableCard's nested block);
+ *  rows come from T0's listSplit.nestedByParent, so this component
+ *  renders one row only. */
 export default function NestedListSubtaskRow({
   row,
   state,

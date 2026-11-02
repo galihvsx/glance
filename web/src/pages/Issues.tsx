@@ -1566,14 +1566,13 @@ export default function Issues() {
                                   bulkActive={bulk.count > 0}
                                   onToggleSelect={() => bulk.toggle(issue.id)}
                                 />
-                                {/* C124T1: nested sub-work rows under the
-                                    parent. STUB: T0's merge swaps
-                                    issue.subtasks for
-                                    nestedByParent.get(issue.id) here. */}
-                                {settings.showSubWorkItems &&
-                                  (issue.subtasks ?? []).length > 0 && (
+                                {/* C124 merge: nested rows from T0's
+                                    listSplit.nestedByParent (full
+                                    fetched set, pre-grouping). */}
+                                {(listSplit.nestedByParent.get(issue.id) ??
+                                  []).length > 0 && (
                                     <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                                      {(issue.subtasks ?? []).map((row) => (
+                                      {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
                                         <NestedListSubtaskRow
                                           key={row.id}
                                           row={row}
@@ -1603,14 +1602,13 @@ export default function Issues() {
                             bulkActive={bulk.count > 0}
                             onToggleSelect={() => bulk.toggle(issue.id)}
                           />
-                          {/* C124T1: nested sub-work rows under the
-                              parent. STUB: T0's merge swaps
-                              issue.subtasks for
-                              nestedByParent.get(issue.id) here. */}
-                          {settings.showSubWorkItems &&
-                            (issue.subtasks ?? []).length > 0 && (
+                          {/* C124 merge: nested rows from T0's
+                              listSplit.nestedByParent (full fetched
+                              set, pre-grouping). */}
+                          {(listSplit.nestedByParent.get(issue.id) ?? [])
+                            .length > 0 && (
                               <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                                {(issue.subtasks ?? []).map((row) => (
+                                {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
                                   <NestedListSubtaskRow
                                     key={row.id}
                                     row={row}
@@ -1650,13 +1648,13 @@ export default function Issues() {
                     bulkActive={bulk.count > 0}
                     onToggleSelect={() => bulk.toggle(issue.id)}
                   />
-                  {/* C124T1: nested sub-work rows under the parent.
-                      STUB: T0's merge swaps issue.subtasks for
-                      nestedByParent.get(issue.id) here. */}
-                  {settings.showSubWorkItems &&
-                    (issue.subtasks ?? []).length > 0 && (
+                  {/* C124 merge: nested rows from T0's
+                      listSplit.nestedByParent (full fetched set,
+                      pre-grouping). */}
+                  {(listSplit.nestedByParent.get(issue.id) ?? []).length >
+                    0 && (
                       <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-                        {(issue.subtasks ?? []).map((row) => (
+                        {(listSplit.nestedByParent.get(issue.id) ?? []).map((row) => (
                           <NestedListSubtaskRow
                             key={row.id}
                             row={row}
