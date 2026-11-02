@@ -87,10 +87,8 @@ import BlockerConfirmDialog from "../components/issue/BlockerConfirmDialog";
 import { usePeekParam } from "../components/issue/usePeek";
 import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
-import {
-  splitBoardIssues,
-  subtaskPriorityLevel,
-} from "../components/issue/boardSubtasks";
+import { subtaskPriorityLevel } from "../components/issue/boardSubtasks";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import {
   buildSubGroupSections,
   effectiveSubGroupBy,
@@ -1038,10 +1036,11 @@ export default function Board() {
   // C122T1: split the displayed list into visible cards + nested rows.
   // Toggle off (or a fetch without the flag) returns the flat list
   // untouched; orphans and grandchildren stay flat cards — see
-  // splitBoardIssues. Grouping, counts and drag state all derive from
-  // the split list, so a nested child never appears twice.
+  // splitNestedIssues (C124T0 shared helper, same semantics).
+  // Grouping, counts and drag state all derive from the split list,
+  // so a nested child never appears twice.
   const { visibleIssues: boardIssues, nestedByParent } = useMemo(
-    () => splitBoardIssues(displayedIssues, settings.showSubWorkItems),
+    () => splitNestedIssues(displayedIssues, settings.showSubWorkItems),
     [displayedIssues, settings.showSubWorkItems],
   );
   // The query feeding the displayed columns. Drag-drop, QuickAdd, and
