@@ -228,3 +228,22 @@ describe("pqlHasLimit (C98T1 single-fetch gate)", () => {
     ).toBe(true);
   });
 });
+
+describe("mentions cheat-sheet rows (C120T1)", () => {
+  it("documents the mentions field with =, !=, and none", () => {
+    const eq = PQL_CHEAT_SHEET.find(
+      (e) => e.example === 'mentions = "Jane Doe"',
+    );
+    expect(eq).toBeDefined();
+    expect(eq?.meaning).toContain("none");
+    const neq = PQL_CHEAT_SHEET.find(
+      (e) => e.example === "mentions != me",
+    );
+    expect(neq).toBeDefined();
+    const none = PQL_CHEAT_SHEET.find(
+      (e) => e.example === "mentions = none",
+    );
+    expect(none).toBeDefined();
+    expect(none?.meaning).toContain("no mentions");
+  });
+});

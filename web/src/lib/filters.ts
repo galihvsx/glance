@@ -47,6 +47,12 @@ import { useSearchParams } from "react-router-dom";
  *                   no authorless issues and a none row would be a lie.
  *                   Malformed values (including "none") are dropped.
  *                   (C118T1.)
+ *   mentions        repeatable and comma-separated user UUIDs
+ *                   (OR-matched, via the issue_mentions index: an issue
+ *                   matches if any of its non-deleted comments mentions
+ *                   a selected user). "none" matches issues with no
+ *                   mention rows at all. Malformed values are dropped.
+ *                   (C120T1.)
  *   state_group     repeatable and comma-separated state-group slugs
  *                   (OR-matched, via the issue's state group). Closed
  *                   vocabulary, Plane's five only: backlog, unstarted,
@@ -116,6 +122,12 @@ export interface IssueFilters {
    *  NO "none" value: created_by is NOT NULL, so every issue has
    *  exactly one author. */
   createdBy: string[];
+  /** Mentioned user UUIDs via the issue_mentions index (OR-matched:
+   *  an issue matches if any of its non-deleted comments mentions a
+   *  selected user). "none" = no mention rows at all, mirroring the
+   *  assignee none shape (NOT the created_by rejection shape).
+   *  (C120T1.) */
+  mentions: string[];
   /** State-group slugs via the issue's state group (OR-matched).
    *  Closed vocabulary, Plane's five only: backlog, unstarted,
    *  started, completed, cancelled. NO "none" value: every issue
@@ -155,6 +167,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   modules: [],
   releases: [],
   createdBy: [],
+  mentions: [],
   stateGroups: [],
   createdAfter: "",
   createdBefore: "",
@@ -264,6 +277,10 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     modules: splitRepeatIds(search.getAll("modules")),
     releases: splitRepeatIds(search.getAll("releases")),
     createdBy: splitRepeatIds(search.getAll("created_by"), false),
+    // Default allowNone=true: the assignee none shape, NOT the
+    // created_by rejection shape — "none" passes through, garbage
+    // is dropped so a pasted URL can never 400 the list.
+    mentions: splitRepeatIds(search.getAll("mentions")),
     stateGroups: splitStateGroups(search.getAll("state_group")),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
@@ -301,6 +318,7 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.modules.length > 0) p.set("modules", f.modules.join(","));
   if (f.releases.length > 0) p.set("releases", f.releases.join(","));
   if (f.createdBy.length > 0) p.set("created_by", f.createdBy.join(","));
+  if (f.mentions.length > 0) p.set("mentions", f.mentions.join(","));
   if (f.stateGroups.length > 0)
     p.set("state_group", f.stateGroups.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
@@ -367,6 +385,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.modules.length > 0) n++;
   if (f.releases.length > 0) n++;
   if (f.createdBy.length > 0) n++;
+  if (f.mentions.length > 0) n++;
   if (f.stateGroups.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
@@ -428,6 +447,7 @@ const FILTER_PARAM_NAMES = new Set([
   "modules",
   "releases",
   "created_by",
+  "mentions",
   "state_group",
   "created_after",
   "created_before",
