@@ -5,6 +5,47 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`mentions` filter dimension (cycle 120)**
+
+- Plane's "Mentions" filter dimension, missing from both
+  surfaces, is closed — the last Plane filter-panel dimension
+  that was absent from glance: PQL gains a `mentions` field
+  (`=` / `!=` / `in`, resolved by case-insensitive member name
+  or email among workspace members, `me` for the caller,
+  `none` for issues with no mentions, ambiguous or unknown
+  names a 400 with position), and the visual FilterPanel gains
+  a Mentions section immediately after Priority, copying the
+  Created-by section's shape over the same member list (no new
+  fetch) plus the Assignees section's "No mentions" row and
+  rows for selected-but-unlisted IDs. Unlike `state_group`
+  and `created_by`, `none` IS meaningful here: issues with no
+  mention rows match it, including issues whose only mentions
+  were in since-deleted comments.
+- The dimension is backed by a new persisted `issue_mentions`
+  index (migration 000082): one row per (issue, user, comment),
+  so a comment edit or delete touches only that comment's rows
+  and a second comment mentioning the same user survives the
+  first comment's delete. Comment create, update, and delete
+  maintain the index in the same transaction as the comment
+  write, and a single-transaction idempotent backfill at boot
+  indexes comments that predate the table. Import paths
+  deliberately do not populate the index, following the
+  notification precedent (imported history never fires mention
+  parsing); an edited imported comment re-resolves through the
+  normal write path.
+- The list API gains a `mentions=` param (repeatable and
+  comma-separated, user UUIDs plus the `none` sentinel,
+  malformed UUIDs a 400) backed by an EXISTS filter over the
+  index that ANDs with any detail-page scope; exports share
+  the same parser, so they honor the new filter too. The
+  filter round-trips through the URL query string and saved
+  views; views saved before this cycle load unchanged, and PQL
+  exclusivity is untouched (a non-blank `pql` still sends only
+  `pql`). MyWork PQL inherits the new field via the shared
+  translator; the visual `mentions=` param does not apply on
+  MyWork, which does not share the list path (no separate
+  MyWork-only path built).
+
 **`state_group` filter dimension (cycle 119)**
 
 - Plane's "State Group" filter dimension, missing from both
