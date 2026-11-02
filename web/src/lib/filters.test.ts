@@ -22,6 +22,7 @@ const FULL: IssueFilters = {
   modules: ["123e4567-e89b-12d3-a456-426614174004", "none"],
   releases: ["123e4567-e89b-12d3-a456-426614174005", "none"],
   createdBy: ["123e4567-e89b-12d3-a456-426614174006"],
+  stateGroups: ["started", "completed"],
   createdAfter: "2026-10-01",
   createdBefore: "2026-10-09",
   updatedAfter: "",
@@ -109,7 +110,7 @@ describe("activeFilterCount", () => {
     // q, state, priority, label, assignee, estimate, parent, epic,
     // cycle, module, release, created by, created pair, due pair,
     // subscribed, archived = 16 dimensions
-    expect(activeFilterCount(FULL)).toBe(16);
+    expect(activeFilterCount(FULL)).toBe(17);
   });
 });
 
@@ -151,7 +152,7 @@ describe("due_date_empty is-empty chip (C80T1)", () => {
     expect(
       activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true, dueAfter: "2026-10-01" }),
     ).toBe(1);
-    expect(activeFilterCount(FULL)).toBe(16);
+    expect(activeFilterCount(FULL)).toBe(17);
   });
 
   it("recognizes due_date_empty as a filter param so clear-all drops it", () => {
@@ -470,5 +471,71 @@ describe("created by filter (C118T1)", () => {
     const legacy = { q: "x" } as Partial<IssueFilters>;
     const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
     expect(merged.createdBy).toEqual([]);
+  });
+});
+
+describe("state group filter (C119T1)", () => {
+  it("round-trips stateGroups through the URL", () => {
+    const params = serializeFilters({
+      ...EMPTY_FILTERS,
+      stateGroups: ["started", "completed"],
+    });
+    expect(params.get("state_group")).toBe("started,completed");
+    const back = parseFilters(params);
+    expect(back.stateGroups).toEqual(["started", "completed"]);
+  });
+
+  it("supports repeatable and comma-separated forms together", () => {
+    const back = parseFilters(
+      new URLSearchParams("state_group=started&state_group=completed,backlog"),
+    );
+    expect(back.stateGroups).toEqual(["started", "completed", "backlog"]);
+  });
+
+  it("normalizes case and drops values outside the five-group vocabulary — including 'triage' and 'none' — and never throws", () => {
+    const back = parseFilters(
+      new URLSearchParams(
+        "state_group=Started,TRIAGE,none,garbage,,unstarted&q=still-fine",
+      ),
+    );
+    expect(back.stateGroups).toEqual(["started", "unstarted"]);
+    expect(back.q).toBe("still-fine");
+  });
+
+  it("emits the plan-contract API name (state_group) and no other form", () => {
+    const p = toApiParams({ ...EMPTY_FILTERS, stateGroups: ["started"] });
+    expect(p.get("state_group")).toBe("started");
+    expect(p.get("stateGroups")).toBeNull();
+    expect(p.get("state_groups")).toBeNull();
+  });
+
+  it("omits the empty state-group dimension from the query string", () => {
+    expect(serializeFilters(EMPTY_FILTERS).get("state_group")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("state_group")).toBeNull();
+  });
+
+  it("counts stateGroups as one badge dimension", () => {
+    expect(
+      activeFilterCount({ ...EMPTY_FILTERS, stateGroups: ["started"] }),
+    ).toBe(1);
+    expect(
+      activeFilterCount({
+        ...EMPTY_FILTERS,
+        stateGroups: ["started"],
+        createdBy: ["123e4567-e89b-12d3-a456-426614174040"],
+      }),
+    ).toBe(2);
+  });
+
+  it("recognizes state_group as a filter param (peek= still preserved)", () => {
+    expect(isFilterParam("state_group")).toBe(true);
+    expect(isFilterParam("peek")).toBe(false);
+  });
+
+  it("defaults the dimension to empty (pre-C119 filter objects)", () => {
+    expect(EMPTY_FILTERS.stateGroups).toEqual([]);
+    const legacy = { q: "x" } as Partial<IssueFilters>;
+    const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
+    expect(merged.stateGroups).toEqual([]);
   });
 });

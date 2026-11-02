@@ -777,3 +777,100 @@ describe("Created by filter section (C118T1)", () => {
     ).toBeTruthy();
   });
 });
+
+describe("State Group filter section (C119T1)", () => {
+  /** The State Group list div: the sibling after the "State Group" header. */
+  function stateGroupList(): HTMLElement {
+    const header = screen.getByText("State Group");
+    const list = header.closest("div")?.nextElementSibling;
+    expect(list).not.toBeNull();
+    return list as HTMLElement;
+  }
+
+  function isCheckedIn(list: HTMLElement, labelText: string): boolean {
+    const row = Array.from(list.querySelectorAll("label")).find(
+      (l) => l.textContent?.includes(labelText),
+    );
+    expect(row).not.toBeUndefined();
+    return row!.querySelector('[aria-checked="true"]') !== null;
+  }
+
+  function clickIn(list: HTMLElement, labelText: string): void {
+    const row = Array.from(list.querySelectorAll("label")).find(
+      (l) => l.textContent?.includes(labelText),
+    );
+    expect(row).not.toBeUndefined();
+    fireEvent.click(row!);
+  }
+
+  it("renders exactly the five Plane groups, in order", () => {
+    renderPanel({});
+    const rows = Array.from(
+      stateGroupList().querySelectorAll("label"),
+    ).map((l) => l.textContent);
+    expect(rows).toEqual([
+      "Backlog",
+      "Unstarted",
+      "Started",
+      "Completed",
+      "Cancelled",
+    ]);
+  });
+
+  it("has no none row: no 'No group' row, and 'Unassigned' belongs only to Assignees", () => {
+    renderPanel({});
+    expect(screen.queryByText("No group")).toBeNull();
+    expect(screen.getAllByText("Unassigned")).toHaveLength(1);
+    expect(stateGroupList().textContent).not.toContain("Unassigned");
+  });
+
+  it("toggling a group calls onChange with stateGroups (Priority toggle idiom)", () => {
+    const { onChange } = renderPanel({});
+    clickIn(stateGroupList(), "Started");
+    expect(onChange).toHaveBeenCalledWith({ stateGroups: ["started"] });
+  });
+
+  it("selected groups render checked and per-section Clear resets them", () => {
+    const { onChange } = renderPanel({
+      filters: { ...EMPTY_FILTERS, stateGroups: ["started"] },
+    });
+    expect(isCheckedIn(stateGroupList(), "Started")).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clear State Group filter" }),
+    );
+    expect(onChange).toHaveBeenCalledWith({ stateGroups: [] });
+  });
+
+  it("hides the per-section Clear when the section is inactive", () => {
+    renderPanel({});
+    expect(
+      screen.queryByRole("button", { name: "Clear State Group filter" }),
+    ).toBeNull();
+  });
+
+  it("bumps the filter button badge count", () => {
+    renderPanel({
+      filters: { ...EMPTY_FILTERS, stateGroups: ["completed"] },
+    });
+    expect(screen.getByRole("button", { name: /^filter/i })).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("sits immediately after the State section", () => {
+    renderPanel({});
+    const stateHeader = screen.getByText("State");
+    const stateGroupHeader = screen.getByText("State Group");
+    expect(
+      stateHeader.compareDocumentPosition(stateGroupHeader) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Immediacy, not just order: no other section header sits between
+    // State and State Group (SectionHeader <p> elements carry the
+    // text-[11px] class; nothing else in the panel does).
+    const headers = Array.from(
+      document.querySelectorAll('p[class*="text-[11px]"]'),
+    ).map((p) => p.textContent);
+    expect(headers.indexOf("State Group")).toBe(headers.indexOf("State") + 1);
+  });
+});

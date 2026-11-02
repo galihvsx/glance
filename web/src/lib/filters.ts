@@ -47,6 +47,16 @@ import { useSearchParams } from "react-router-dom";
  *                   no authorless issues and a none row would be a lie.
  *                   Malformed values (including "none") are dropped.
  *                   (C118T1.)
+ *   state_group     repeatable and comma-separated state-group slugs
+ *                   (OR-matched, via the issue's state group). Closed
+ *                   vocabulary, Plane's five only: backlog, unstarted,
+ *                   started, completed, cancelled. NO "none" value:
+ *                   every issue has a state and every state has a
+ *                   group, so there are no groupless issues. Matching
+ *                   is case-insensitive (normalized to lowercase);
+ *                   unknown values (including "triage" and "none")
+ *                   are dropped so a pasted URL can never 400 the
+ *                   list. (C119T1.)
  *   created_after   YYYY-MM-DD, inclusive
  *   created_before  YYYY-MM-DD, inclusive of the whole day
  *   updated_after   YYYY-MM-DD, inclusive
@@ -106,6 +116,11 @@ export interface IssueFilters {
    *  NO "none" value: created_by is NOT NULL, so every issue has
    *  exactly one author. */
   createdBy: string[];
+  /** State-group slugs via the issue's state group (OR-matched).
+   *  Closed vocabulary, Plane's five only: backlog, unstarted,
+   *  started, completed, cancelled. NO "none" value: every issue
+   *  has a state and every state has a group. (C119T1.) */
+  stateGroups: string[];
   createdAfter: string;
   createdBefore: string;
   updatedAfter: string;
@@ -140,6 +155,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   modules: [],
   releases: [],
   createdBy: [],
+  stateGroups: [],
   createdAfter: "",
   createdBefore: "",
   updatedAfter: "",
@@ -188,6 +204,33 @@ function splitRepeatIds(values: string[], allowNone = true): string[] {
   return out;
 }
 
+/** Plane's five filterable state groups (C119T1; the backend's
+ *  webhookFilterStateGroups vocabulary, NOT the states CHECK
+ *  constraint — "triage" is deliberately not filterable). */
+const STATE_GROUP_VOCABULARY = new Set([
+  "backlog",
+  "unstarted",
+  "started",
+  "completed",
+  "cancelled",
+]);
+
+/** Split the state_group= param: repeatable AND comma-separated
+ *  (the backend accepts both forms). Matching is case-insensitive
+ *  (normalized to lowercase); anything outside the five-group
+ *  vocabulary — including "triage" and "none" — is dropped so a
+ *  pasted URL can never 400 the list. */
+function splitStateGroups(values: string[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    for (const part of v.split(",")) {
+      const s = part.trim().toLowerCase();
+      if (s && STATE_GROUP_VOCABULARY.has(s)) out.push(s);
+    }
+  }
+  return out;
+}
+
 function validDate(v: string | null): string {
   if (!v || !DATE_RE.test(v)) return "";
   // Reject impossible dates ("2026-13-99" passes the regex); toApiParams
@@ -221,6 +264,7 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     modules: splitRepeatIds(search.getAll("modules")),
     releases: splitRepeatIds(search.getAll("releases")),
     createdBy: splitRepeatIds(search.getAll("created_by"), false),
+    stateGroups: splitStateGroups(search.getAll("state_group")),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
     updatedAfter: validDate(search.get("updated_after")),
@@ -257,6 +301,8 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.modules.length > 0) p.set("modules", f.modules.join(","));
   if (f.releases.length > 0) p.set("releases", f.releases.join(","));
   if (f.createdBy.length > 0) p.set("created_by", f.createdBy.join(","));
+  if (f.stateGroups.length > 0)
+    p.set("state_group", f.stateGroups.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
   if (f.createdBefore) p.set("created_before", f.createdBefore);
   if (f.updatedAfter) p.set("updated_after", f.updatedAfter);
@@ -321,6 +367,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.modules.length > 0) n++;
   if (f.releases.length > 0) n++;
   if (f.createdBy.length > 0) n++;
+  if (f.stateGroups.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
@@ -381,6 +428,7 @@ const FILTER_PARAM_NAMES = new Set([
   "modules",
   "releases",
   "created_by",
+  "state_group",
   "created_after",
   "created_before",
   "updated_after",

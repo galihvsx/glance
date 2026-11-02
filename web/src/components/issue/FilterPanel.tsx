@@ -146,7 +146,8 @@ function DateRange({
 
 /** Rich filter panel shared by the list, board, and spreadsheet views.
  *  Every control applies live (URL-backed via useIssueFilters) — there is
- *  no Apply button. Dimensions: state, priority (multi), labels (multi),
+ *  no Apply button. Dimensions: state, state group (multi, C119T1),
+ *  priority (multi), labels (multi),
  *  assignees (multi + unassigned), created by (multi, C118T1),
  *  estimate (multi + none), parent
  *  (multi + top-level, C75T1), epic (multi + none, C75T1),
@@ -520,6 +521,35 @@ export default function FilterPanel({
               No states yet.
             </p>
           )}
+        </div>
+
+        {/* C119T1: State Group section — copies the Priority section's
+            static CheckRow shape with the same toggle idiom (no fetch:
+            the five groups are a closed vocabulary). NO none row:
+            every issue has a state and every state has a group. */}
+        <Separator className="my-1" />
+        <SectionHeader
+          title="State Group"
+          active={filters.stateGroups.length > 0}
+          onClear={() => onChange({ stateGroups: [] })}
+        />
+        <div className="mb-1">
+          {[
+            { value: "backlog", label: "Backlog" },
+            { value: "unstarted", label: "Unstarted" },
+            { value: "started", label: "Started" },
+            { value: "completed", label: "Completed" },
+            { value: "cancelled", label: "Cancelled" },
+          ].map((g) => (
+            <CheckRow
+              key={g.value}
+              checked={filters.stateGroups.includes(g.value)}
+              onChange={() =>
+                onChange({ stateGroups: toggle(filters.stateGroups, g.value) })
+              }
+              label={g.label}
+            />
+          ))}
         </div>
 
         <Separator className="my-1" />
