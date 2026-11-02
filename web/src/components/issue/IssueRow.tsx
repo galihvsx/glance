@@ -12,6 +12,7 @@ import {
 import { stateDotClass } from "../../lib/stateDot";
 import PriorityBars from "./PriorityBars";
 import { useCloneIssue } from "./useCloneIssue";
+import type { DisplayFields } from "./useDisplaySettings";
 
 /** One dense row of the issue list, per the Cycle 19 Plane-layout
  *  prototype (SHELL CONTENT §5): min-height 47px, grid
@@ -25,9 +26,17 @@ import { useCloneIssue } from "./useCloneIssue";
  *  row opens the issue — via `onOpen` when given (peek drawer),
  *  otherwise the detail page. `kbdSelected` is the j/k keyboard cursor
  *  (inset blue ring); `bulkSelected` paints the active wash.
- *  `fields` (Display panel) toggles the state/priority columns; labels,
- *  assignees and dates have no column on the dense row and are ignored
- *  here (they still render on board cards). */
+ *  `fields` (Display panel) toggles the state/priority columns and the
+ *  ID column (C121T1: `fields.id` gates the display_id text; the column
+ *  stays so the grid never shifts, and aria-labels keep the ID even
+ *  when the text is hidden). Labels, assignees and dates have no column
+ *  on the dense row and are ignored here (they still render on board
+ *  cards) — and so are the C121T1 card rows: the fixed single-line
+ *  47px grid has no slot for the subtask progress bar, the
+ *  module/cycle/release chips, or the attachment/link/dependency count
+ *  rows, so those toggles do not change this row (they still render on
+ *  IssueCard and board cards). Adding them here would redesign the row,
+ *  not gate a field. */
 export default function IssueRow({
   issue,
   state,
@@ -43,7 +52,7 @@ export default function IssueRow({
   issue: Issue;
   state: IssueState | undefined;
   onOpen?: (issue: Issue) => void;
-  fields: { state: boolean; priority: boolean };
+  fields: DisplayFields;
   kbdSelected?: boolean;
   bulkSelected?: boolean;
   bulkActive?: boolean;
@@ -105,7 +114,7 @@ export default function IssueRow({
       )}
       <div className="grid min-h-[47px] flex-1 grid-cols-[76px_minmax(0,1fr)_110px_80px] items-center gap-[10px] py-2 pr-8">
         <span className="truncate font-mono text-[10px] text-ink-muted">
-          {issue.display_id}
+          {fields.id ? issue.display_id : null}
         </span>
         <span className="truncate text-[12px] text-ink">{issue.name}</span>
         <span className="flex min-w-0 items-center gap-[6px]">

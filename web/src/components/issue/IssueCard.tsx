@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from "react-router-dom";
-import { Calendar, Copy, MoreVertical } from "lucide-react";
+import { Calendar, Copy, Link2, MoreVertical, Paperclip, Waypoints } from "lucide-react";
 import type { Issue, IssueState } from "../../lib/types";
 import { priorityLabel } from "../../lib/types";
 import { Badge } from "../ui/badge";
@@ -25,6 +25,11 @@ import {
  *  priority, assignees. Click opens the issue — via `onOpen` when given
  *  (peek drawer), otherwise navigates to the detail page. The `fields`
  *  prop (from the Display panel) toggles which attributes render.
+ *  C121T1: the ID badge, subtask progress bar, module/cycle/release
+ *  chips (from project_structure, guarded when undefined), and
+ *  attachment/link/dependency count rows (only when the count is > 0)
+ *  are all gated by their toggles; aria-labels keep the ID even when
+ *  the badge is hidden.
  *  `selected`/`onToggleSelect` render a multi-select checkbox (C5T8 bulk
  *  operations); the click is stopped so it never opens the issue.
  *  `slug`/`identifier` override the route params for the clone action —
@@ -93,9 +98,11 @@ export default function IssueCard({
               />
             </span>
           )}
-          <Badge variant="outline" className="font-mono">
-            {issue.display_id}
-          </Badge>
+          {fields.id && (
+            <Badge variant="outline" className="font-mono">
+              {issue.display_id}
+            </Badge>
+          )}
           {fields.state && state && <StateBadge state={state} />}
           {fields.priority && (
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -137,8 +144,11 @@ export default function IssueCard({
         )}
         <CardTitle className="text-base font-medium">{issue.name}</CardTitle>
         {/* C17T2: compact subtask progress — renders only when the
-            issue has direct subtasks. */}
-        <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
+            issue has direct subtasks. C121T1: gated by the Sub-items
+            display toggle. */}
+        {fields.subitems && (
+          <SubtaskProgressBar progress={issue.subtask_progress} variant="compact" />
+        )}
         {((fields.labels && issue.labels.length > 0) ||
           (fields.assignees && issue.assignees.length > 0)) && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -173,6 +183,76 @@ export default function IssueCard({
           <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
             <Calendar className="h-3 w-3" aria-hidden />
             <span>{dateRange}</span>
+          </div>
+        )}
+        {/* C121T1: project-structure chips — module chips like labels,
+            cycle + release as single chips. project_structure is
+            undefined on fetches without include_project_structure=1
+            (e.g. Home/MyWork cross-project lists): guard it and render
+            nothing, never a per-row detail fetch. */}
+        {((fields.modules && (issue.project_structure?.modules.length ?? 0) > 0) ||
+          (fields.cycle && issue.project_structure?.cycle) ||
+          (fields.release && issue.project_structure?.release)) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {fields.modules &&
+              (issue.project_structure?.modules ?? []).map((m) => (
+                <Badge
+                  key={m.id}
+                  variant="secondary"
+                  className="text-xs font-normal"
+                  aria-label={`Module: ${m.name}`}
+                >
+                  {m.name}
+                </Badge>
+              ))}
+            {fields.cycle && issue.project_structure?.cycle && (
+              <Badge
+                variant="secondary"
+                className="text-xs font-normal"
+                aria-label={`Cycle: ${issue.project_structure.cycle.name}`}
+              >
+                {issue.project_structure.cycle.name}
+              </Badge>
+            )}
+            {fields.release && issue.project_structure?.release && (
+              <Badge
+                variant="secondary"
+                className="text-xs font-normal"
+                aria-label={`Release: ${issue.project_structure.release.name}`}
+              >
+                {issue.project_structure.release.name}
+              </Badge>
+            )}
+          </div>
+        )}
+        {/* C121T1: icon + count rows in the dates-row shape, rendered
+            only when the count is > 0 (undefined = not computed on
+            this fetch: render nothing, never a silent zero). */}
+        {fields.attachments && (issue.attachment_count ?? 0) > 0 && (
+          <div
+            className="flex items-center gap-1 text-[11px] text-muted-foreground"
+            aria-label={`${issue.attachment_count} attachment${issue.attachment_count === 1 ? "" : "s"}`}
+          >
+            <Paperclip className="h-3 w-3" aria-hidden />
+            <span>{issue.attachment_count}</span>
+          </div>
+        )}
+        {fields.links && (issue.link_count ?? 0) > 0 && (
+          <div
+            className="flex items-center gap-1 text-[11px] text-muted-foreground"
+            aria-label={`${issue.link_count} link${issue.link_count === 1 ? "" : "s"}`}
+          >
+            <Link2 className="h-3 w-3" aria-hidden />
+            <span>{issue.link_count}</span>
+          </div>
+        )}
+        {fields.dependencies && (issue.relation_count ?? 0) > 0 && (
+          <div
+            className="flex items-center gap-1 text-[11px] text-muted-foreground"
+            aria-label={`${issue.relation_count} ${issue.relation_count === 1 ? "dependency" : "dependencies"}`}
+          >
+            <Waypoints className="h-3 w-3" aria-hidden />
+            <span>{issue.relation_count}</span>
           </div>
         )}
       </CardHeader>

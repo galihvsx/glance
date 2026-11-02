@@ -146,11 +146,15 @@ function buildIssuePath(
   // the frontend must not send a two-mode request in the first place.
   if (f.pql?.trim()) {
     const p = buildPqlRequestParams(f.pql, { orderBy, perPage: PER_PAGE, cursor });
+    // C121T1: batched project-structure chips on list rows (C21T2).
+    p.set("include_project_structure", "1");
     return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
   }
   const p = toApiParams(f);
   p.set("per_page", String(PER_PAGE));
   p.set("order_by", orderBy);
+  // C121T1: batched project-structure chips on list rows (C21T2).
+  p.set("include_project_structure", "1");
   if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
