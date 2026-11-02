@@ -65,6 +65,15 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
     example: 'assignee = "Jane Doe"',
     meaning: "Assigned to the named member (workspace-scoped)",
   },
+  {
+    example: "created_by = me",
+    meaning:
+      "Created by the current user (also a member name or email; every issue has an author, so there is no none form)",
+  },
+  {
+    example: 'created_by = "Jane Doe"',
+    meaning: "Created by the named member (workspace-scoped)",
+  },
   { example: "hasNoAssignee()", meaning: "Issues with no assignees" },
   { example: "hasAssignee()", meaning: "Issues with at least one assignee" },
   {

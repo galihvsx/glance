@@ -136,3 +136,23 @@ describe("PqlEditor release cheat-sheet rows (C117T1)", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("PqlEditor created_by cheat-sheet rows (C118T1)", () => {
+  it("renders the created_by = me row", () => {
+    renderEditor();
+    expect(screen.getByText("created_by = me")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Created by the current user (also a member name or email; every issue has an author, so there is no none form)",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the created_by name row", () => {
+    renderEditor();
+    expect(screen.getByText('created_by = "Jane Doe"')).toBeInTheDocument();
+    expect(
+      screen.getByText("Created by the named member (workspace-scoped)"),
+    ).toBeInTheDocument();
+  });
+});

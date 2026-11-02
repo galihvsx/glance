@@ -41,6 +41,12 @@ import { useSearchParams } from "react-router-dom";
  *                   in no release. Malformed values are dropped. (C117T1:
  *                   the visual-filter plural — never a singular release=
  *                   scope param, which does not exist on the list API.)
+ *   created_by      repeatable and comma-separated author user UUIDs
+ *                   (OR-matched, via the direct created_by column). NO
+ *                   "none" value: created_by is NOT NULL, so there are
+ *                   no authorless issues and a none row would be a lie.
+ *                   Malformed values (including "none") are dropped.
+ *                   (C118T1.)
  *   created_after   YYYY-MM-DD, inclusive
  *   created_before  YYYY-MM-DD, inclusive of the whole day
  *   updated_after   YYYY-MM-DD, inclusive
@@ -96,6 +102,10 @@ export interface IssueFilters {
   modules: string[];
   /** Release UUIDs via the direct release_id column (OR-matched); "none" = no release. */
   releases: string[];
+  /** Author user UUIDs via the direct created_by column (OR-matched).
+   *  NO "none" value: created_by is NOT NULL, so every issue has
+   *  exactly one author. */
+  createdBy: string[];
   createdAfter: string;
   createdBefore: string;
   updatedAfter: string;
@@ -129,6 +139,7 @@ export const EMPTY_FILTERS: IssueFilters = {
   cycles: [],
   modules: [],
   releases: [],
+  createdBy: [],
   createdAfter: "",
   createdBefore: "",
   updatedAfter: "",
@@ -159,18 +170,19 @@ function splitPriorities(v: string | null): number[] {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Split the parent=/epic=/cycles=/modules=/releases= params: repeatable AND
- *  comma-separated (the backend accepts both forms). Only the "none"
- *  sentinel and well-formed UUIDs survive — garbage is dropped so a
- *  pasted URL can never 400 the list (the list API 400s malformed
- *  UUIDs). */
-function splitRepeatIds(values: string[]): string[] {
+/** Split the parent=/epic=/cycles=/modules=/releases=/created_by= params:
+ *  repeatable AND comma-separated (the backend accepts both forms).
+ *  Only the "none" sentinel and well-formed UUIDs survive — garbage is
+ *  dropped so a pasted URL can never 400 the list (the list API 400s
+ *  malformed UUIDs). Pass allowNone=false for created_by: the column
+ *  is NOT NULL, so "none" is meaningless there and is dropped too. */
+function splitRepeatIds(values: string[], allowNone = true): string[] {
   const out: string[] = [];
   for (const v of values) {
     for (const part of v.split(",")) {
       const s = part.trim();
       if (!s) continue;
-      if (s === "none" || UUID_RE.test(s)) out.push(s);
+      if ((allowNone && s === "none") || UUID_RE.test(s)) out.push(s);
     }
   }
   return out;
@@ -208,6 +220,7 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     cycles: splitRepeatIds(search.getAll("cycles")),
     modules: splitRepeatIds(search.getAll("modules")),
     releases: splitRepeatIds(search.getAll("releases")),
+    createdBy: splitRepeatIds(search.getAll("created_by"), false),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
     updatedAfter: validDate(search.get("updated_after")),
@@ -243,6 +256,7 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.cycles.length > 0) p.set("cycles", f.cycles.join(","));
   if (f.modules.length > 0) p.set("modules", f.modules.join(","));
   if (f.releases.length > 0) p.set("releases", f.releases.join(","));
+  if (f.createdBy.length > 0) p.set("created_by", f.createdBy.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
   if (f.createdBefore) p.set("created_before", f.createdBefore);
   if (f.updatedAfter) p.set("updated_after", f.updatedAfter);
@@ -306,6 +320,7 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.cycles.length > 0) n++;
   if (f.modules.length > 0) n++;
   if (f.releases.length > 0) n++;
+  if (f.createdBy.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
@@ -365,6 +380,7 @@ const FILTER_PARAM_NAMES = new Set([
   "cycles",
   "modules",
   "releases",
+  "created_by",
   "created_after",
   "created_before",
   "updated_after",
