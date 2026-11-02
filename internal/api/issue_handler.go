@@ -499,6 +499,19 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	// C118T0: visual author filter — singular param only
+	// (?created_by=), repeatable AND comma-separated via
+	// the same idiom. There is no plural alias and no
+	// singular created_by scope param on the list API, so
+	// no scope collision is possible; do not invent a
+	// plural alias. "none" passes this parser through
+	// (the shared passthrough) and is rejected by the
+	// service's validateListFilterValues as a 400 — see
+	// FilterCreatedBy in internal/service/issue.go.
+	filterCreatedBy, err := parseRepeatIDList(qp, "created_by")
+	if err != nil {
+		return service.ListIssuesInput{}, err
+	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -556,6 +569,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		FilterCycles:            filterCycles,
 		FilterModules:           filterModules,
 		FilterReleases:          filterReleases,
+		FilterCreatedBy:         filterCreatedBy,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),
