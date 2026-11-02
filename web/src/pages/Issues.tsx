@@ -71,6 +71,11 @@ import {
 import { fetchEstimates, type Estimate } from "../lib/taxonomy";
 import DisplayPanel from "../components/issue/DisplayPanel";
 import { useDisplaySettings } from "../components/issue/useDisplaySettings";
+import {
+  buildSubGroupSections,
+  effectiveSubGroupBy,
+  type SubGroupSection,
+} from "../components/issue/subGroup";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -911,9 +916,52 @@ export default function Issues() {
     issues,
     settings.showEmptyGroups,
   ]);
-  const orderedIssues = groupingActive
-    ? groups.flatMap((g) => g.issues)
-    : issues;
+  // C123T1: sub-group dimension. The effective rule (never equals the
+  // active primary dimension; groupBy "none" → flat) lives in the shared
+  // helper; sub-grouping applies only to primary groups actually
+  // rendered, so the existing group-skip rules (single-state /
+  // single-priority filter) gate it via groupingActive. When the
+  // effective sub-group is "none", the layout below is today's exactly.
+  const effectiveSubGroup = effectiveSubGroupBy(settings);
+  const subGroupingActive = groupingActive && effectiveSubGroup !== "none";
+  const subSectionsByGroup = useMemo(() => {
+    if (!subGroupingActive) return null;
+    const m = new Map<string, SubGroupSection[]>();
+    for (const g of groups) {
+      const secs = buildSubGroupSections(g.issues, effectiveSubGroup, {
+        states: sortedStates,
+        stateById,
+      });
+      // Show-empty filtering for sub-sections follows showEmptyGroups,
+      // same as primary groups.
+      m.set(
+        g.key,
+        settings.showEmptyGroups
+          ? secs
+          : secs.filter((s) => s.issues.length > 0),
+      );
+    }
+    return m;
+  }, [
+    subGroupingActive,
+    groups,
+    effectiveSubGroup,
+    sortedStates,
+    stateById,
+    settings.showEmptyGroups,
+  ]);
+  // Flattened order = primary-group order, then sub-section order
+  // within each group — sub-sections only re-order the visual stacking
+  // of the same rows, so selection (j/k), peek, and counts are
+  // unchanged. (Epic sub-groups multi-appear, exactly like primary
+  // epic groups, so orderedIssues may list an issue more than once.)
+  const orderedIssues = !groupingActive
+    ? issues
+    : subSectionsByGroup
+      ? groups.flatMap((g) =>
+          (subSectionsByGroup.get(g.key) ?? []).flatMap((s) => s.issues),
+        )
+      : groups.flatMap((g) => g.issues);
   const indexById = useMemo(
     () => new Map(orderedIssues.map((it, i) => [it.id, i] as const)),
     [orderedIssues],
@@ -1419,21 +1467,75 @@ export default function Issues() {
                       />
                     </div>
                   )}
-                  <div>
-                    {g.issues.map((issue) => (
-                      <IssueRow
-                        key={issue.id}
-                        issue={issue}
-                        state={stateById.get(issue.state_id)}
-                        fields={settings.fields}
-                        onOpen={(it) => openPeek(it.id)}
-                        kbdSelected={indexById.get(issue.id) === selected}
-                        bulkSelected={bulk.isSelected(issue.id)}
-                        bulkActive={bulk.count > 0}
-                        onToggleSelect={() => bulk.toggle(issue.id)}
-                      />
-                    ))}
-                  </div>
+                  {/* C123T1: sub-group sections nest inside the primary
+                      group (same group-header + row primitives, one
+                      level deeper). When the effective sub-group is
+                      "none" this is today's flat row stack. QuickAdd
+                      stays once per primary group, after all
+                      sub-sections — counts and quick-add targets are
+                      unchanged. */}
+                  {subSectionsByGroup ? (
+                    <div>
+                      {(subSectionsByGroup.get(g.key) ?? []).map((sub) => (
+                        <div key={sub.key}>
+                          <div className="flex h-[30px] items-center gap-2 border-b border-border-hairline pl-4">
+                            {sub.stateGroup ? (
+                              <span
+                                className={`state-dot ${stateDotClass(sub.stateGroup)}`}
+                                aria-hidden
+                              />
+                            ) : null}
+                            <h3 className="text-[12px] font-medium text-ink">
+                              {sub.title}
+                            </h3>
+                            <span className="font-mono text-[10px] text-ink-muted">
+                              {sub.issues.length}
+                            </span>
+                          </div>
+                          {sub.byGroup && (
+                            <div className="mb-1 mt-2 max-w-[480px] pl-4">
+                              <EpicGroupBreakdown
+                                byGroup={sub.byGroup}
+                                total={sub.issues.length}
+                                epicName={sub.title}
+                              />
+                            </div>
+                          )}
+                          <div>
+                            {sub.issues.map((issue) => (
+                              <IssueRow
+                                key={issue.id}
+                                issue={issue}
+                                state={stateById.get(issue.state_id)}
+                                fields={settings.fields}
+                                onOpen={(it) => openPeek(it.id)}
+                                kbdSelected={indexById.get(issue.id) === selected}
+                                bulkSelected={bulk.isSelected(issue.id)}
+                                bulkActive={bulk.count > 0}
+                                onToggleSelect={() => bulk.toggle(issue.id)}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div>
+                      {g.issues.map((issue) => (
+                        <IssueRow
+                          key={issue.id}
+                          issue={issue}
+                          state={stateById.get(issue.state_id)}
+                          fields={settings.fields}
+                          onOpen={(it) => openPeek(it.id)}
+                          kbdSelected={indexById.get(issue.id) === selected}
+                          bulkSelected={bulk.isSelected(issue.id)}
+                          bulkActive={bulk.count > 0}
+                          onToggleSelect={() => bulk.toggle(issue.id)}
+                        />
+                      ))}
+                    </div>
+                  )}
                   <QuickAdd
                     className="mt-1"
                     onCreate={(name) =>
