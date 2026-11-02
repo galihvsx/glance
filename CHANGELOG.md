@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Show sub-work items: nested sub-issue rows under board cards (cycle 122)**
+
+- The Display panel gains a "Show sub-work items" toggle
+  (default on, next to "Show empty groups"; pre-existing stored
+  settings gain it as on with no migration). When on, the board
+  nests each top-level parent's direct sub-issues as indented
+  rows under the parent card — state indicator, title, assignee
+  avatar, priority icon — and hides those children's standalone
+  flat cards. Turning it off restores today's flat board
+  exactly. The Issues list view is unchanged this cycle.
+- List fetches gain `?include_subtasks=1`: each returned row
+  carries its direct children (id, display_id, title, state_id,
+  priority, assignee_ids, sort_order) via two batched queries
+  for the whole page, never N+1. Flag off, the field is absent
+  and no extra queries run. Priority rides the row as a label
+  string (none/low/medium/high/urgent); the nested-row renderer
+  normalizes either strings or ints.
+- Orphan rule: a child whose parent is not in the fetched
+  result stays a flat card in its own state column — a child
+  never vanishes. Grandchildren stay flat (only top-level
+  parents nest rows); nested rows are not draggable, and
+  dragging a parent carries its rows with it. Column counts
+  reflect visible cards.
+
 **Display properties depth: Plane's 13 card fields (cycle 121)**
 
 - The Display panel now toggles all 13 of Plane's card fields:
