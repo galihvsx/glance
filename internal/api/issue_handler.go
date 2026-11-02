@@ -349,6 +349,7 @@ type issueListCommon struct {
 	Archived                bool
 	Deleted                 bool
 	IncludeProjectStructure bool
+	IncludeSubtasks         bool
 }
 
 func parseIssueListCommon(qp url.Values) (issueListCommon, error) {
@@ -405,6 +406,11 @@ func parseIssueListCommon(qp url.Values) (issueListCommon, error) {
 		Archived:                qp.Get("archived") == "true" || qp.Get("archived") == "1",
 		Deleted:                 qp.Get("deleted") == "true" || qp.Get("deleted") == "1",
 		IncludeProjectStructure: qp.Get("include_project_structure") == "1" || qp.Get("include_project_structure") == "true",
+		// C122T0: ?include_subtasks=1 attaches direct-subtask rows
+		// to the list response. Parsed here (shared by the visual
+		// and PQL parsers) so both list paths honor it, like
+		// include_project_structure above.
+		IncludeSubtasks: qp.Get("include_subtasks") == "1" || qp.Get("include_subtasks") == "true",
 	}, nil
 }
 
@@ -650,6 +656,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		SequenceID:              common.SequenceID,
 		Fields:                  common.Fields,
 		IncludeProjectStructure: common.IncludeProjectStructure,
+		IncludeSubtasks:         common.IncludeSubtasks,
 	}, nil
 }
 
@@ -733,6 +740,7 @@ func parsePQLListInput(qp url.Values) (service.ListIssuesInput, error) {
 		SequenceID:              common.SequenceID,
 		Fields:                  common.Fields,
 		IncludeProjectStructure: common.IncludeProjectStructure,
+		IncludeSubtasks:         common.IncludeSubtasks,
 	}, nil
 }
 
