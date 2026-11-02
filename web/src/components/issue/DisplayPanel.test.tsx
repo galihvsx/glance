@@ -163,3 +163,96 @@ describe("DisplayPanel show sub-work items (C122T1)", () => {
     );
   });
 });
+
+describe("DisplayPanel sub-group by (C123T0)", () => {
+  function renderPanelWithUpdate(
+    settings: DisplaySettings = DEFAULT_DISPLAY_SETTINGS,
+    view: "list" | "board" = "list",
+  ) {
+    const onUpdate = vi.fn();
+    render(
+      <DisplayPanel
+        settings={settings}
+        onUpdate={onUpdate}
+        onUpdateFields={vi.fn()}
+        onReset={vi.fn()}
+        view={view}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    return { onUpdate };
+  }
+
+  function subGroupRadios() {
+    const group = screen.getByRole("radiogroup", { name: "Sub-group by" });
+    return {
+      group,
+      radio: (name: string) =>
+        // Radio buttons are scoped to the sub-group radiogroup — the
+        // Group by radiogroup has the same option labels.
+        Array.from(group.querySelectorAll('[role="radio"]')).find(
+          (el) => el.textContent === name,
+        ) as HTMLElement,
+    };
+  }
+
+  it("renders the Sub-group by row directly under Group by, None checked by default", () => {
+    renderPanelWithUpdate();
+    const { group, radio } = subGroupRadios();
+    expect(group).toBeInTheDocument();
+    for (const label of ["None", "State", "Priority", "Epic"]) {
+      expect(radio(label)).toBeInTheDocument();
+    }
+    expect(radio("None")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("disables the active primary dimension's option (greyed out, not hidden)", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "state",
+    });
+    const { radio } = subGroupRadios();
+    expect(radio("State")).toBeDisabled();
+    expect(radio("Priority")).not.toBeDisabled();
+    expect(radio("Epic")).not.toBeDisabled();
+    expect(radio("None")).not.toBeDisabled();
+  });
+
+  it("disables the whole control with a hint when groupBy is none", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "none",
+    });
+    const { radio } = subGroupRadios();
+    for (const label of ["None", "State", "Priority", "Epic"]) {
+      expect(radio(label)).toBeDisabled();
+    }
+    expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
+  });
+
+  it("shows no hint when a Group by is chosen", () => {
+    renderPanelWithUpdate();
+    expect(
+      screen.queryByText("Choose a Group by first"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("updates subGroupBy via its radios", () => {
+    const { onUpdate } = renderPanelWithUpdate();
+    fireEvent.click(subGroupRadios().radio("Priority"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "priority" });
+  });
+
+  it("board view keeps the control (groupBy none still disables it)", () => {
+    renderPanelWithUpdate(
+      { ...DEFAULT_DISPLAY_SETTINGS, groupBy: "none" },
+      "board",
+    );
+    expect(
+      screen.getByRole("radiogroup", { name: "Sub-group by" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
+  });
+});

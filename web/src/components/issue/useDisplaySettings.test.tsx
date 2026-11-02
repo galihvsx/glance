@@ -152,3 +152,54 @@ describe("useDisplaySettings showSubWorkItems (C122T1)", () => {
     expect(stored.showSubWorkItems).toBe(false);
   });
 });
+
+describe("useDisplaySettings subGroupBy (C123T0)", () => {
+  it("defaults subGroupBy to none", () => {
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("none");
+    expect(DEFAULT_DISPLAY_SETTINGS.subGroupBy).toBe("none");
+  });
+
+  it("gives pre-existing stored settings the key as none (no migration)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        groupBy: "state",
+        orderBy: "-updated_at",
+        showEmptyGroups: true,
+      }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("none");
+  });
+
+  it("keeps a stored valid sub-group value", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "priority" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("priority");
+  });
+
+  it("falls back to none for an unknown stored value", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "assignee" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("none");
+  });
+
+  it("persists the sub-group via update", () => {
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    act(() => {
+      result.current.update({ subGroupBy: "epic" });
+    });
+    expect(result.current.settings.subGroupBy).toBe("epic");
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? "{}") as {
+      subGroupBy: string;
+    };
+    expect(stored.subGroupBy).toBe("epic");
+  });
+});
