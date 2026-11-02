@@ -27,6 +27,11 @@ export interface PqlCheatEntry {
  * The release field (C117T0) accepts =/!=/in like a name field,
  * project-scoped by name (workspace scope: the name across
  * accessible projects), with `none` for issues in no release.
+ * The state_group field (C119T0) is a CLOSED-VOCABULARY field
+ * like priority, not a name field: values are group slugs
+ * validated against backlog, unstarted, started, completed,
+ * cancelled (never resolved against the DB), with `=` and `!=`;
+ * there is no none form — every issue belongs to a state group.
  * Keywords (AND/OR/NOT/IN), field names, priority names, and
  * function names are case-insensitive. Quote names containing spaces.
  * A trailing ORDER BY clause (C98T0, multi-key C99T0) sorts by one or
@@ -48,6 +53,15 @@ export const PQL_CHEAT_SHEET: PqlCheatEntry[] = [
   {
     example: 'state in (Todo, "In Progress")',
     meaning: "State is one of the listed names",
+  },
+  {
+    example: "state_group = started",
+    meaning:
+      "State group by slug: backlog, unstarted, started, completed, cancelled (no none form — every issue belongs to a state group)",
+  },
+  {
+    example: "state_group != completed",
+    meaning: "State group is not the listed group",
   },
   {
     example: "priority = High",

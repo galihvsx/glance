@@ -204,6 +204,24 @@ describe("pqlHasLimit (C98T1 single-fetch gate)", () => {
     );
   });
 
+  it("documents the state_group field with = and != (C119T1)", () => {
+    const eq = PQL_CHEAT_SHEET.find(
+      (e) => e.example === "state_group = started",
+    );
+    expect(eq).toBeDefined();
+    expect(eq?.meaning).toContain("backlog");
+    expect(eq?.meaning).toContain("unstarted");
+    expect(eq?.meaning).toContain("started");
+    expect(eq?.meaning).toContain("completed");
+    expect(eq?.meaning).toContain("cancelled");
+    expect(eq?.meaning).toContain("no none form");
+    const neq = PQL_CHEAT_SHEET.find(
+      (e) => e.example === "state_group != completed",
+    );
+    expect(neq).toBeDefined();
+    expect(neq?.meaning).toContain("not the listed group");
+  });
+
   it("documents LIMIT in the cheat sheet", () => {
     expect(
       PQL_CHEAT_SHEET.some((e) => e.example.includes("LIMIT")),
