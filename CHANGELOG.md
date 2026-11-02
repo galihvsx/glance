@@ -5,6 +5,27 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`project` PQL field for workspace-scoped lists (cycle 114)**
+
+- PQL gains a `project` field (`=` / `!=` / `in`): on
+  workspace-scoped lists like MyWork, `project = ABC` filters
+  to one project, `project in (ABC, DEF)` to several. Values
+  resolve identifier-first (project keys are unique per
+  workspace, so a key match wins over a same-named project),
+  then by case-insensitive project name with multi-match set
+  semantics across the caller's accessible projects; unknown
+  names, and names or keys existing only in projects the
+  caller cannot reach, are a 400 with position — never a
+  silent empty list, never a leak. On project-scoped lists
+  the field is rejected with a 400 (workspace-scoped lists
+  only): confined to one project already, `project = OTHER`
+  could only ever mean "nothing" and `project = CURRENT`
+  only "everything". The cheat sheet documents the field,
+  MyWork saved views round-trip it (a view holding
+  `project = ABC` re-applies with the filter tab unchanged),
+  and the probe-first editor surfaces the project-scope 400
+  inline without touching the list.
+
 **Workspace-scoped saved views on MyWork (cycle 113)**
 
 - MyWork — the only PQL surface without a Views menu — now
