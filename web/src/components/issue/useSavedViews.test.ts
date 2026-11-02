@@ -364,3 +364,26 @@ describe("shared views (C10T1)", () => {
     expect((err as ApiError).status).toBe(403);
   });
 });
+
+describe("sanitizeView orderBy sort_order (C125T0)", () => {
+  it("keeps a saved sort_order (Manual rank survives sanitize)", () => {
+    const v = sanitizeView(
+      makeRow({
+        display: { ...DEFAULT_DISPLAY_SETTINGS, orderBy: "sort_order" },
+      }),
+    );
+    expect(v?.display?.orderBy).toBe("sort_order");
+  });
+
+  it("falls back to the default for an unknown saved order value", () => {
+    const v = sanitizeView(
+      makeRow({
+        display: {
+          ...DEFAULT_DISPLAY_SETTINGS,
+          orderBy: "bogus" as never,
+        },
+      }),
+    );
+    expect(v?.display?.orderBy).toBe(DEFAULT_DISPLAY_SETTINGS.orderBy);
+  });
+});

@@ -48,7 +48,8 @@ export type OrderBy =
   | "-priority"
   | "priority"
   | "sequence_id"
-  | "-sequence_id";
+  | "-sequence_id"
+  | "sort_order";
 
 export interface DisplaySettings {
   fields: DisplayFields;
@@ -100,6 +101,7 @@ const ORDER_BYS: OrderBy[] = [
   "priority",
   "sequence_id",
   "-sequence_id",
+  "sort_order",
 ];
 
 function storageKey(slug: string, identifier: string): string {
