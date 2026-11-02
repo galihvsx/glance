@@ -18,6 +18,8 @@ const FULL: IssueFilters = {
   estimates: ["none"],
   parents: ["123e4567-e89b-12d3-a456-426614174000", "none"],
   epics: ["123e4567-e89b-12d3-a456-426614174001"],
+  cycles: ["123e4567-e89b-12d3-a456-426614174003"],
+  modules: ["123e4567-e89b-12d3-a456-426614174004", "none"],
   createdAfter: "2026-10-01",
   createdBefore: "2026-10-09",
   updatedAfter: "",
@@ -103,8 +105,9 @@ describe("activeFilterCount", () => {
   it("counts dimensions, not values", () => {
     expect(activeFilterCount(EMPTY_FILTERS)).toBe(0);
     // q, state, priority, label, assignee, estimate, parent, epic,
-    // created pair, due pair, subscribed, archived = 12 dimensions
-    expect(activeFilterCount(FULL)).toBe(12);
+    // cycle, module, created pair, due pair, subscribed, archived
+    // = 14 dimensions
+    expect(activeFilterCount(FULL)).toBe(14);
   });
 });
 
@@ -146,7 +149,7 @@ describe("due_date_empty is-empty chip (C80T1)", () => {
     expect(
       activeFilterCount({ ...EMPTY_FILTERS, dueDateEmpty: true, dueAfter: "2026-10-01" }),
     ).toBe(1);
-    expect(activeFilterCount(FULL)).toBe(12);
+    expect(activeFilterCount(FULL)).toBe(14);
   });
 
   it("recognizes due_date_empty as a filter param so clear-all drops it", () => {
@@ -237,5 +240,99 @@ describe("parent/epic filters (C75T1)", () => {
     expect(isFilterParam("parent")).toBe(true);
     expect(isFilterParam("epic")).toBe(true);
     expect(isFilterParam("peek")).toBe(false);
+  });
+});
+
+describe("cycle/module filters (C116T1)", () => {
+  const C1 = "123e4567-e89b-12d3-a456-426614174010";
+  const C2 = "123e4567-e89b-12d3-a456-426614174011";
+  const M1 = "123e4567-e89b-12d3-a456-426614174012";
+
+  it("round-trips cycles and modules through the URL", () => {
+    const params = serializeFilters({
+      ...EMPTY_FILTERS,
+      cycles: [C1, "none"],
+      modules: [M1],
+    });
+    expect(params.get("cycles")).toBe(`${C1},none`);
+    expect(params.get("modules")).toBe(M1);
+    const back = parseFilters(params);
+    expect(back.cycles).toEqual([C1, "none"]);
+    expect(back.modules).toEqual([M1]);
+  });
+
+  it("keeps the 'none' sentinel for cycle and module", () => {
+    const back = parseFilters(
+      new URLSearchParams("cycles=none&modules=none"),
+    );
+    expect(back.cycles).toEqual(["none"]);
+    expect(back.modules).toEqual(["none"]);
+  });
+
+  it("supports repeatable and comma-separated forms together", () => {
+    const back = parseFilters(
+      new URLSearchParams(`cycles=${C1}&cycles=${C2},none&modules=${M1},${C1}`),
+    );
+    expect(back.cycles).toEqual([C1, C2, "none"]);
+    expect(back.modules).toEqual([M1, C1]);
+  });
+
+  it("drops malformed cycle/module values and never throws", () => {
+    const back = parseFilters(
+      new URLSearchParams(
+        "cycles=garbage,,none,123&modules=not-a-uuid,&q=still-fine",
+      ),
+    );
+    expect(back.cycles).toEqual(["none"]);
+    expect(back.modules).toEqual([]);
+    expect(back.q).toBe("still-fine");
+  });
+
+  it("emits the plural API names (never the singular scope params)", () => {
+    const p = toApiParams({
+      ...EMPTY_FILTERS,
+      cycles: [C1, "none"],
+      modules: [M1],
+    });
+    expect(p.get("cycles")).toBe(`${C1},none`);
+    expect(p.get("modules")).toBe(M1);
+    expect(p.get("cycle")).toBeNull();
+    expect(p.get("module")).toBeNull();
+  });
+
+  it("omits empty cycle/module dimensions from the query string", () => {
+    expect(serializeFilters(EMPTY_FILTERS).get("cycles")).toBeNull();
+    expect(serializeFilters(EMPTY_FILTERS).get("modules")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("cycles")).toBeNull();
+    expect(toApiParams(EMPTY_FILTERS).get("modules")).toBeNull();
+  });
+
+  it("counts cycle and module as separate badge dimensions", () => {
+    expect(activeFilterCount({ ...EMPTY_FILTERS, cycles: [C1] })).toBe(1);
+    expect(
+      activeFilterCount({
+        ...EMPTY_FILTERS,
+        cycles: ["none"],
+        modules: [M1],
+      }),
+    ).toBe(2);
+  });
+
+  it("recognizes cycles/modules as filter params (peek= still preserved)", () => {
+    expect(isFilterParam("cycles")).toBe(true);
+    expect(isFilterParam("modules")).toBe(true);
+    expect(isFilterParam("peek")).toBe(false);
+  });
+
+  it("defaults both dimensions to empty (pre-C116 filter objects)", () => {
+    expect(EMPTY_FILTERS.cycles).toEqual([]);
+    expect(EMPTY_FILTERS.modules).toEqual([]);
+    // A filter object built before C116 (no cycles/modules keys) merges
+    // over EMPTY_FILTERS at the saved-view boundary; the spread below
+    // mirrors that merge and must never leave the keys undefined.
+    const legacy = { q: "x" } as Partial<IssueFilters>;
+    const merged: IssueFilters = { ...EMPTY_FILTERS, ...legacy };
+    expect(merged.cycles).toEqual([]);
+    expect(merged.modules).toEqual([]);
   });
 });

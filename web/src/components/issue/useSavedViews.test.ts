@@ -88,6 +88,37 @@ describe("sanitizeView", () => {
     expect(v?.filters.archived).toBe(false);
   });
 
+  it("keeps cycle/module filters on a view saved with them (C116T1)", () => {
+    const v = sanitizeView(
+      makeRow({
+        filters: {
+          ...FULL_FILTERS,
+          cycles: ["123e4567-e89b-12d3-a456-426614174010", "none"],
+          modules: ["123e4567-e89b-12d3-a456-426614174012"],
+        },
+      }),
+    );
+    expect(v?.filters.cycles).toEqual([
+      "123e4567-e89b-12d3-a456-426614174010",
+      "none",
+    ]);
+    expect(v?.filters.modules).toEqual([
+      "123e4567-e89b-12d3-a456-426614174012",
+    ]);
+  });
+
+  it("loads a pre-C116 view object without the keys as both empty (C116T1)", () => {
+    // Strip the keys the way a row saved before C116 stores them: absent.
+    const { cycles: _c, modules: _m, ...legacy } = FULL_FILTERS;
+    void _c;
+    void _m;
+    const v = sanitizeView(makeRow({ filters: legacy as never }));
+    expect(v?.filters.cycles).toEqual([]);
+    expect(v?.filters.modules).toEqual([]);
+    // And the surviving dimensions still load.
+    expect(v?.filters.q).toBe("login bug");
+  });
+
   it("sanitizes a garbage display to defaults, keeps null as null", () => {
     const v = sanitizeView(makeRow({ display: { groupBy: "bogus" } as never }));
     expect(v?.display?.groupBy).toBe(DEFAULT_DISPLAY_SETTINGS.groupBy);

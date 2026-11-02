@@ -26,6 +26,16 @@ import { useSearchParams } from "react-router-dom";
  *   epic            repeatable and comma-separated epic UUIDs (OR-matched,
  *                   via the epic_issues junction); "none" matches issues in
  *                   no epic. Malformed values are dropped.
+ *   cycles          repeatable and comma-separated cycle UUIDs (OR-matched,
+ *                   via the cycle_issues junction); "none" matches issues in
+ *                   no cycle. Malformed values are dropped. (C116T1: the
+ *                   visual-filter plural — never the singular cycle=
+ *                   scope param.)
+ *   modules         repeatable and comma-separated module UUIDs (OR-matched,
+ *                   via the module_issues junction); "none" matches issues in
+ *                   no module. Malformed values are dropped. (C116T1: the
+ *                   visual-filter plural — never the singular module=
+ *                   scope param.)
  *   created_after   YYYY-MM-DD, inclusive
  *   created_before  YYYY-MM-DD, inclusive of the whole day
  *   updated_after   YYYY-MM-DD, inclusive
@@ -75,6 +85,10 @@ export interface IssueFilters {
   parents: string[];
   /** Epic UUIDs via the epic_issues junction (OR-matched); "none" = no epic. */
   epics: string[];
+  /** Cycle UUIDs via the cycle_issues junction (OR-matched); "none" = no cycle. */
+  cycles: string[];
+  /** Module UUIDs via the module_issues junction (OR-matched); "none" = no module. */
+  modules: string[];
   createdAfter: string;
   createdBefore: string;
   updatedAfter: string;
@@ -105,6 +119,8 @@ export const EMPTY_FILTERS: IssueFilters = {
   estimates: [],
   parents: [],
   epics: [],
+  cycles: [],
+  modules: [],
   createdAfter: "",
   createdBefore: "",
   updatedAfter: "",
@@ -135,11 +151,12 @@ function splitPriorities(v: string | null): number[] {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Split the parent=/epic= params: repeatable AND comma-separated (the
- *  backend accepts both forms). Only the "none" sentinel and well-formed
- *  UUIDs survive — garbage is dropped so a pasted URL can never 400 the
- *  list (the list API 400s malformed UUIDs). */
-function splitParentEpicIds(values: string[]): string[] {
+/** Split the parent=/epic=/cycles=/modules= params: repeatable AND
+ *  comma-separated (the backend accepts both forms). Only the "none"
+ *  sentinel and well-formed UUIDs survive — garbage is dropped so a
+ *  pasted URL can never 400 the list (the list API 400s malformed
+ *  UUIDs). */
+function splitRepeatIds(values: string[]): string[] {
   const out: string[] = [];
   for (const v of values) {
     for (const part of v.split(",")) {
@@ -178,8 +195,10 @@ export function parseFilters(search: URLSearchParams): IssueFilters {
     labels: splitIds(search.get("label")),
     assignees: splitIds(search.get("assignee")),
     estimates: splitIds(search.get("estimate")),
-    parents: splitParentEpicIds(search.getAll("parent")),
-    epics: splitParentEpicIds(search.getAll("epic")),
+    parents: splitRepeatIds(search.getAll("parent")),
+    epics: splitRepeatIds(search.getAll("epic")),
+    cycles: splitRepeatIds(search.getAll("cycles")),
+    modules: splitRepeatIds(search.getAll("modules")),
     createdAfter: validDate(search.get("created_after")),
     createdBefore: validDate(search.get("created_before")),
     updatedAfter: validDate(search.get("updated_after")),
@@ -212,6 +231,8 @@ export function serializeFilters(f: IssueFilters): URLSearchParams {
   if (f.estimates.length > 0) p.set("estimate", f.estimates.join(","));
   if (f.parents.length > 0) p.set("parent", f.parents.join(","));
   if (f.epics.length > 0) p.set("epic", f.epics.join(","));
+  if (f.cycles.length > 0) p.set("cycles", f.cycles.join(","));
+  if (f.modules.length > 0) p.set("modules", f.modules.join(","));
   if (f.createdAfter) p.set("created_after", f.createdAfter);
   if (f.createdBefore) p.set("created_before", f.createdBefore);
   if (f.updatedAfter) p.set("updated_after", f.updatedAfter);
@@ -272,6 +293,8 @@ export function activeFilterCount(f: IssueFilters): number {
   if (f.estimates.length > 0) n++;
   if (f.parents.length > 0) n++;
   if (f.epics.length > 0) n++;
+  if (f.cycles.length > 0) n++;
+  if (f.modules.length > 0) n++;
   if (f.createdAfter || f.createdBefore) n++;
   if (f.updatedAfter || f.updatedBefore) n++;
   if (f.dueAfter || f.dueBefore || f.dueDateEmpty) n++;
@@ -328,6 +351,8 @@ const FILTER_PARAM_NAMES = new Set([
   "estimate",
   "parent",
   "epic",
+  "cycles",
+  "modules",
   "created_after",
   "created_before",
   "updated_after",
