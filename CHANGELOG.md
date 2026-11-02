@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**`state_group` filter dimension (cycle 119)**
+
+- Plane's "State Group" filter dimension, missing from both
+  surfaces, is closed: PQL gains a `state_group` field (`=`
+  / `!=` over the closed five-group vocabulary — backlog,
+  unstarted, started, completed, cancelled — case-insensitive,
+  unknown values a 400 with position), and the visual
+  FilterPanel gains a State Group section immediately after
+  State, copying the Priority section's static CheckRow shape
+  (five checkboxes, no fetch). There is deliberately no "none"
+  form anywhere: every issue has a state and every state has
+  a group, and `none` is a 400 rather than a silent empty
+  list. Glance's own `triage` group is deliberately NOT
+  filterable, keeping the cycle-69 webhook-filter scope
+  decision consistent across surfaces — `triage` is a 400
+  naming the five accepted values.
+- The list API gains a `state_group=` param (repeatable and
+  comma-separated, slugs validated against the five-group
+  vocabulary) backed by an EXISTS filter over the issue's
+  state row that ANDs with any detail-page scope; exports
+  share the same parser, so they honor the new filter too.
+  The filter round-trips through the URL query string and
+  saved views; views saved before this cycle load unchanged,
+  and PQL exclusivity is untouched (a non-blank `pql` still
+  sends only `pql`). MyWork PQL inherits the new field via
+  the shared translator; the visual `state_group=` param
+  does not apply on MyWork, which does not share the list
+  path (no separate MyWork-only path built).
+
 **`created_by` filter dimension (cycle 118)**
 
 - Plane's "Created by" filter dimension, missing from both
