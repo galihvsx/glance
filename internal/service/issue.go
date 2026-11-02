@@ -2963,6 +2963,18 @@ type ListIssuesInput struct {
 	// mirrors the Epics (C75T0) block exactly.
 	FilterCycles  []string
 	FilterModules []string
+	// FilterReleases (C117T0) is the VISUAL release filter
+	// dimension (?releases=): release UUIDs, OR-matched; the
+	// sentinel "none" matches issues in no release
+	// (release_id IS NULL). Unlike Cycle / Module there is NO
+	// singular release scope container on the list API, so
+	// there is no scope collision: this field is purely a
+	// visual filter, ANDed with any detail-page scope (cycle /
+	// module / epic) exactly like FilterCycles /
+	// FilterModules, and zeroed by withoutVisualFilters. One
+	// block in issueListConds, on the DIRECT release_id
+	// column (simpler than the C75/C116 junction shape).
+	FilterReleases []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -3090,6 +3102,13 @@ func validateListFilterValues(in ListIssuesInput) error {
 		}
 	}
 	for _, id := range in.FilterModules {
+		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	// C117T0: visual release filter accepts the "none"
+	// sentinel exactly like FilterCycles / FilterModules.
+	for _, id := range in.FilterReleases {
 		if id != filterNone && !isUUIDFormat(id) {
 			return ErrInvalidListFilter
 		}
@@ -3384,6 +3403,32 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 		}
 		if wantNone {
 			parts = append(parts, "NOT EXISTS (SELECT 1 FROM module_issues mi WHERE mi.issue_id = i.id)")
+		}
+		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.FilterReleases) > 0 {
+		// C117T0: visual release filter, direct-column shape
+		// (release_id is a direct FK on issues since C19T3, not
+		// a junction): UUIDs OR-matched, "none" = in no
+		// release (release_id IS NULL). ANDs with every scope
+		// below by construction — a separate cond, never a
+		// scope replacement. There is no singular release
+		// scope container, so no scope block follows for it.
+		var ids []string
+		wantNone := false
+		for _, r := range in.FilterReleases {
+			if r == filterNone {
+				wantNone = true
+			} else {
+				ids = append(ids, r)
+			}
+		}
+		var parts []string
+		if len(ids) > 0 {
+			parts = append(parts, "i.release_id = ANY("+arg(ids)+"::uuid[])")
+		}
+		if wantNone {
+			parts = append(parts, "i.release_id IS NULL")
 		}
 		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
 	}
