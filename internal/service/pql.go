@@ -870,6 +870,11 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	in.EstimatePoints = nil
 	in.Parents = nil
 	// Epics deliberately NOT zeroed (C108T0): scope container, see above.
+	// C116T0: FilterCycles/FilterModules ARE zeroed — they are visual
+	// filter dimensions, not scope containers (unlike Cycle/Module),
+	// so in PQL mode they are ignored like every other visual filter.
+	in.FilterCycles = nil
+	in.FilterModules = nil
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
