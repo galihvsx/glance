@@ -434,6 +434,28 @@ func parseRepeatIDList(qp url.Values, name string) ([]string, error) {
 	return out, nil
 }
 
+// parseRepeatSlugList parses a repeatable AND comma-separated slug
+// param (C119T0: state_group=): the parseRepeatIDList idiom
+// WITHOUT the UUID check — slugs pass through verbatim and
+// the service validates them against the closed vocabulary
+// (validateListFilterValues), exactly like the "none"
+// passthrough for created_by. It must NOT call
+// parseRepeatIDList: slugs are not UUIDs, so that check
+// would 400 every state-group query.
+func parseRepeatSlugList(qp url.Values, name string) []string {
+	var out []string
+	for _, raw := range qp[name] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // parseIssueListInput parses the query params shared by the issue list
 // and the export endpoint (C8T3), so both honor identical filter
 // semantics. Pagination/sort params and list-mode flags come from
@@ -512,6 +534,23 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 	if err != nil {
 		return service.ListIssuesInput{}, err
 	}
+	// C119T0: visual state-group filter — singular param
+	// only (?state_group=), repeatable AND comma-separated
+	// via the same idiom as created_by, but slugs, not
+	// UUIDs (parseRepeatSlugList, not parseRepeatIDList).
+	// There is no singular state_group scope param on the
+	// list API, so no scope collision is possible; do not
+	// invent a plural alias. Slugs pass through and are
+	// normalized to lowercase here; the service validates
+	// them against the five-group vocabulary as
+	// defense-in-depth (unknown / triage / none → 400) —
+	// see FilterStateGroups in internal/service/issue.go.
+	// The existing singular ?state= single-state scope
+	// container (parseIssueListCommon) is untouched.
+	filterStateGroups := parseRepeatSlugList(qp, "state_group")
+	for i, g := range filterStateGroups {
+		filterStateGroups[i] = strings.ToLower(g)
+	}
 	parseTime := func(name string) (*time.Time, error) {
 		s := qp.Get(name)
 		if s == "" {
@@ -570,6 +609,7 @@ func parseIssueListInput(qp url.Values) (service.ListIssuesInput, error) {
 		FilterModules:           filterModules,
 		FilterReleases:          filterReleases,
 		FilterCreatedBy:         filterCreatedBy,
+		FilterStateGroups:       filterStateGroups,
 		Cycle:                   qp.Get("cycle"),
 		Module:                  qp.Get("module"),
 		Q:                       qp.Get("q"),

@@ -2989,6 +2989,28 @@ type ListIssuesInput struct {
 	// withoutVisualFilters. One block in issueListConds, on
 	// the DIRECT created_by column, with no IS NULL arm.
 	FilterCreatedBy []string
+	// FilterStateGroups (C119T0) is the VISUAL state-group
+	// filter dimension (?state_group=): group SLUGS, not
+	// UUIDs, OR-matched — the closed five-group vocabulary
+	// (backlog, unstarted, started, completed, cancelled),
+	// case-insensitive input normalized to lowercase. There
+	// is NO "none" sentinel: every issue has a state and
+	// every state has a group, so there are no groupless
+	// issues, and glance's own "triage" group is NOT
+	// filterable (the cycle-69 webhook-filter scope
+	// decision, kept consistent here) — unknown, triage,
+	// and none values are rejected by
+	// validateListFilterValues (ErrInvalidListFilter), never
+	// silently dropped. Like FilterCreatedBy there is no
+	// singular state_group scope container on the list API,
+	// so no scope collision: purely a visual filter, ANDed
+	// with any detail-page scope (cycle / module / epic)
+	// exactly like FilterCreatedBy, and zeroed by
+	// withoutVisualFilters. One block in issueListConds,
+	// an EXISTS cond over the issue's state row — NOT a
+	// UUID filter, so it must never be routed through UUID
+	// validation (that would 400 every query).
+	FilterStateGroups []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -3136,6 +3158,22 @@ func validateListFilterValues(in ListIssuesInput) error {
 	// validation is what turns it into a 400.
 	for _, id := range in.FilterCreatedBy {
 		if !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	// C119T0: visual state-group filter validates SLUGS
+	// against the closed five-group vocabulary
+	// (webhookFilterStateGroups, the cycle-69 Plane mirror —
+	// NOT validStateGroups, which also admits triage).
+	// Matching is case-insensitive; issueListConds
+	// normalizes to lowercase before comparing against the
+	// lowercase states."group" column. Unknown, triage,
+	// and "none" values are malformed here, never silently
+	// dropped — and this branch must NOT check UUID format:
+	// slugs are not UUIDs, so UUID validation would 400
+	// every state-group query.
+	for _, g := range in.FilterStateGroups {
+		if !webhookFilterStateGroups[strings.ToLower(strings.TrimSpace(g))] {
 			return ErrInvalidListFilter
 		}
 	}
@@ -3469,6 +3507,25 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 		// is no singular created_by scope container, so no
 		// scope block follows for it.
 		conds = append(conds, "i.created_by = ANY("+arg(in.FilterCreatedBy)+"::uuid[])")
+	}
+	if len(in.FilterStateGroups) > 0 {
+		// C119T0: visual state-group filter, EXISTS shape
+		// over the issue's state row (states."group" exists
+		// since migration 000006 — no new join in the main
+		// query, no migration). Slugs OR-matched via ANY
+		// over a ::text[] param; values are normalized to
+		// lowercase here so a direct service caller passing
+		// "Started" matches the lowercase column exactly
+		// like the HTTP layer's normalized parse. ANDs with
+		// every scope below by construction — a separate
+		// cond, never a scope replacement. There is no
+		// singular state_group scope container, so no scope
+		// block follows for it.
+		groups := make([]string, 0, len(in.FilterStateGroups))
+		for _, g := range in.FilterStateGroups {
+			groups = append(groups, strings.ToLower(strings.TrimSpace(g)))
+		}
+		conds = append(conds, `EXISTS (SELECT 1 FROM states s WHERE s.id = i.state_id AND s."group" = ANY(`+arg(groups)+`::text[]))`)
 	}
 	if in.Cycle != "" {
 		// Task 22: cycle_issues exists now — a real EXISTS filter on the

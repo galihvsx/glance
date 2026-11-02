@@ -692,12 +692,14 @@ const (
 	pqlNameField    pqlFieldKind = iota // state, assignee, created_by, label, epic, estimate, parent, cycle, module, release
 	pqlProjectField                     // project (workspace scope only; project scope rejects it)
 	pqlPriorityField
-	pqlDateField // target_date / start_date (date columns)
-	pqlTsField   // created_at / updated_at (timestamptz columns)
+	pqlStateGroupField // state_group (C119T0: closed vocabulary, no DB resolution)
+	pqlDateField       // target_date / start_date (date columns)
+	pqlTsField         // created_at / updated_at (timestamptz columns)
 )
 
 var pqlFieldKinds = map[string]pqlFieldKind{
 	"state":       pqlNameField,
+	"state_group": pqlStateGroupField,
 	"priority":    pqlPriorityField,
 	"assignee":    pqlNameField,
 	"created_by":  pqlNameField,
@@ -720,7 +722,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, created_by, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, state_group, priority, assignee, created_by, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -741,6 +743,26 @@ func parsePQLPriority(v pqlValue) (int, *PQLQueryError) {
 		return n, nil
 	}
 	return 0, pqlErr(v.Pos, "unknown priority %q (want 0-4 or none/low/medium/high/urgent)", v.Text)
+}
+
+// parsePQLStateGroup maps a state_group value token to its
+// normalized slug (C119T0): a closed vocabulary, validated
+// WITHOUT any DB resolution — the priority translator's
+// shape, not the name fields'. Matching is case-insensitive
+// and normalized to lowercase. Unknown values, triage
+// (glance's own group, not filterable per the cycle-69
+// scope decision), and "none" are 400s with position: every
+// issue belongs to a state group, so "none" can never match
+// anything and must not silently yield an empty list.
+func parsePQLStateGroup(v pqlValue) (string, *PQLQueryError) {
+	g := strings.ToLower(v.Text)
+	if g == "none" {
+		return "", pqlErr(v.Pos, "state_group %q is not a valid group: every issue belongs to a state group (want backlog|unstarted|started|completed|cancelled)", v.Text)
+	}
+	if !webhookFilterStateGroups[g] {
+		return "", pqlErr(v.Pos, "unknown state_group %q (want backlog|unstarted|started|completed|cancelled)", v.Text)
+	}
+	return g, nil
 }
 
 // atoiStrict parses an all-digit (optionally sign-prefixed) integer.
@@ -815,6 +837,13 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 			if n.Op != "=" && n.Op != "!=" && n.Op != "in" {
 				return pqlErr(n.Pos, "operator %s is not supported for field %q (want =, !=, in)", n.Op, n.Field)
 			}
+		case pqlStateGroupField:
+			// C119T0: only = and != — the closed vocabulary
+			// has no ordering, and `in` is not part of this
+			// field's contract (unlike the name fields).
+			if n.Op != "=" && n.Op != "!=" {
+				return pqlErr(n.Pos, "operator %s is not supported for field %q (want =, !=)", n.Op, n.Field)
+			}
 		case pqlPriorityField, pqlDateField, pqlTsField:
 			// All operators supported.
 		}
@@ -825,6 +854,10 @@ func ValidatePQL(n *pqlNode) *PQLQueryError {
 			switch kind {
 			case pqlPriorityField:
 				if _, err := parsePQLPriority(v); err != nil {
+					return err
+				}
+			case pqlStateGroupField:
+				if _, err := parsePQLStateGroup(v); err != nil {
 					return err
 				}
 			case pqlDateField, pqlTsField:
@@ -884,10 +917,13 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	// there is no singular release scope container to preserve.
 	// C118T0: FilterCreatedBy is zeroed too — same shape, and
 	// there is no singular created_by scope container to preserve.
+	// C119T0: FilterStateGroups is zeroed too — same shape, and
+	// there is no singular state_group scope container to preserve.
 	in.FilterCycles = nil
 	in.FilterModules = nil
 	in.FilterReleases = nil
 	in.FilterCreatedBy = nil
+	in.FilterStateGroups = nil
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
@@ -1064,6 +1100,26 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 			return "", pqlErr(n.Pos, "field %q is only available on workspace-scoped lists (MyWork)", n.Field)
 		}
 		return translatePQLProjectWorkspace(ctx, pool, wsID, actorID, n, arg)
+	case pqlStateGroupField:
+		// C119T0: closed-vocabulary translation, the
+		// priority translator's shape — no DB resolution.
+		// The EXISTS cond mirrors issueListConds'
+		// FilterStateGroups block; != follows the priority
+		// translator's NOT shape (every issue has exactly
+		// one state, so <> on the group is exact). Same
+		// cond in project and workspace scope: the state
+		// row is reached through the issue's own state_id,
+		// so MyWork PQL inherits it with no separate path.
+		g, err := parsePQLStateGroup(n.Values[0])
+		if err != nil {
+			return "", err
+		}
+		switch n.Op {
+		case "=":
+			return `EXISTS (SELECT 1 FROM states s WHERE s.id = i.state_id AND s."group" = ` + arg(g) + `)`, nil
+		default: // != — op comes from the ValidatePQL whitelist, never raw input
+			return `EXISTS (SELECT 1 FROM states s WHERE s.id = i.state_id AND s."group" <> ` + arg(g) + `)`, nil
+		}
 	case pqlPriorityField:
 		ints := make([]int, 0, len(n.Values))
 		for _, v := range n.Values {
