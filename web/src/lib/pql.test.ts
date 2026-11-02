@@ -118,6 +118,7 @@ describe("PQL_CHEAT_SHEET (documented field table)", () => {
       "priority",
       "assignee",
       "label",
+      "project",
       "epic",
       "estimate",
       "parent",
@@ -193,6 +194,14 @@ describe("pqlHasLimit (C98T1 single-fetch gate)", () => {
     // A quoted "LIMIT 10" value is data, not a clause.
     expect(pqlHasLimit('label = "LIMIT 10"')).toBe(false);
     expect(pqlHasLimit("label = 'LIMIT 10'")).toBe(false);
+  });
+
+  it("documents the project field as workspace-lists-only (C114T1)", () => {
+    const row = PQL_CHEAT_SHEET.find((e) => e.example === "project = ABC");
+    expect(row).toBeDefined();
+    expect(row?.meaning).toBe(
+      "Project by key or name (workspace lists like MyWork only)",
+    );
   });
 
   it("documents LIMIT in the cheat sheet", () => {

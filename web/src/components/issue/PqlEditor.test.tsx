@@ -65,6 +65,18 @@ describe("PqlEditor save hint (C96T1)", () => {
   });
 });
 
+describe("PqlEditor project cheat-sheet row (C114T1)", () => {
+  it("renders the project row with its workspace-only meaning", () => {
+    renderEditor();
+    expect(screen.getByText("project = ABC")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Project by key or name (workspace lists like MyWork only)",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("PqlEditor custom save hint (C108T1)", () => {
   it("renders the default text byte-for-byte when no hint is passed", () => {
     renderEditor();
