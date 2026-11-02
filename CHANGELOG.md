@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Show sub-work items in the list view (cycle 124)**
+
+- The "Show sub-work items" toggle (default on) now works in the
+  Issues list, not just on the board: with the toggle on, the list
+  fetches `include_subtasks=1` and nests each top-level parent's
+  direct sub-issues as indented rows under the parent row — in the
+  flat list and inside every primary group and sub-group section
+  (state dot with the child's real state, title opening the peek
+  drawer, assignee glyphs, priority bars). Nested rows are not
+  bulk-select or keyboard targets, and group counts reflect
+  visible rows. With the toggle off, the list is today's flat
+  layout exactly.
+- Same one-level, never-vanish semantics as the board (cycle
+  122): a child whose parent is not in the fetched set stays a
+  flat row, and a grandchild stays flat (its parent is itself a
+  nested row, not a top-level row). Epic grouping keeps its
+  multi-appearance semantics: a parent in several epic groups
+  shows its nested rows under each appearance.
+- No backend change: the list endpoint already served
+  `include_subtasks=1` (cycle 122); the board and the list now
+  share one split helper, so both views nest with exactly the
+  same semantics.
+
 **Sub-group by: a second grouping dimension (cycle 123)**
 
 - The Display panel gains a "Sub-group by" control (None /
