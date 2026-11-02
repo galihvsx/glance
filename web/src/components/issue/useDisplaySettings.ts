@@ -35,6 +35,10 @@ export interface DisplayFields {
  * an issue with N live epics shows under every epic group). */
 export type GroupBy = "state" | "priority" | "epic" | "none";
 
+/** C123T0: second grouping dimension inside each primary group. Mirrors
+ *  the primary dimensions; "none" is the default (opt-in, Plane-style). */
+export type SubGroupBy = "none" | "state" | "priority" | "epic";
+
 /** Whitelisted ?order_by= values the backend accepts (internal/service/issue.go). */
 export type OrderBy =
   | "-updated_at"
@@ -49,6 +53,10 @@ export type OrderBy =
 export interface DisplaySettings {
   fields: DisplayFields;
   groupBy: GroupBy;
+  /** C123T0: second grouping dimension inside each primary group.
+   *  The effective value never equals groupBy — see
+   *  effectiveSubGroupBy in subGroup.ts. */
+  subGroupBy: SubGroupBy;
   orderBy: OrderBy;
   showEmptyGroups: boolean;
   /** C122T1: board nests direct subtasks under their parent card
@@ -75,12 +83,14 @@ export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
     dependencies: true,
   },
   groupBy: "state",
+  subGroupBy: "none",
   orderBy: "-updated_at",
   showEmptyGroups: true,
   showSubWorkItems: true,
 };
 
 const GROUP_BYS: GroupBy[] = ["state", "priority", "epic", "none"];
+const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
   "updated_at",
@@ -106,6 +116,12 @@ function load(slug: string, identifier: string): DisplaySettings {
       groupBy: GROUP_BYS.includes(p.groupBy as GroupBy)
         ? (p.groupBy as GroupBy)
         : DEFAULT_DISPLAY_SETTINGS.groupBy,
+      // C123T0: pre-existing stored settings gain the key as "none" —
+      // no migration, no reset (C121/C122 precedent). Unknown values
+      // also fall back to "none".
+      subGroupBy: SUB_GROUP_BYS.includes(p.subGroupBy as SubGroupBy)
+        ? (p.subGroupBy as SubGroupBy)
+        : DEFAULT_DISPLAY_SETTINGS.subGroupBy,
       orderBy: ORDER_BYS.includes(p.orderBy as OrderBy)
         ? (p.orderBy as OrderBy)
         : DEFAULT_DISPLAY_SETTINGS.orderBy,

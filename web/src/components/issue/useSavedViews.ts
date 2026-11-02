@@ -5,6 +5,7 @@ import {
   type DisplaySettings,
   type GroupBy,
   type OrderBy,
+  type SubGroupBy,
 } from "./useDisplaySettings";
 import { EMPTY_FILTERS, type IssueFilters } from "../../lib/filters";
 import {
@@ -46,6 +47,7 @@ const MAX_VIEWS = 50;
 const MAX_NAME_LEN = 64;
 
 const GROUP_BYS: GroupBy[] = ["state", "priority", "none"];
+const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
   "updated_at",
@@ -87,6 +89,11 @@ function sanitizeDisplay(raw: unknown): DisplaySettings | null {
       typeof p.showSubWorkItems === "boolean"
         ? p.showSubWorkItems
         : DEFAULT_DISPLAY_SETTINGS.showSubWorkItems,
+    // C123T0: same merge for the sub-group key — views saved before
+    // it gain "none", unknown values fall back to "none".
+    subGroupBy: SUB_GROUP_BYS.includes(p.subGroupBy as SubGroupBy)
+      ? (p.subGroupBy as SubGroupBy)
+      : DEFAULT_DISPLAY_SETTINGS.subGroupBy,
   };
 }
 

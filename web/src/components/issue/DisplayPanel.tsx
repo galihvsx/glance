@@ -17,6 +17,7 @@ import type {
   DisplaySettings,
   GroupBy,
   OrderBy,
+  SubGroupBy,
 } from "./useDisplaySettings";
 
 const FIELD_ROWS: { key: keyof DisplayFields; label: string; hint: string }[] = [
@@ -41,6 +42,16 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "priority", label: "Priority" },
   { value: "epic", label: "Epic" },
   { value: "none", label: "None" },
+];
+
+// C123T0: second grouping dimension inside each primary group. Same
+// labels as the primary options; the active primary dimension's option
+// is disabled (greyed out, not hidden — Plane greys it out).
+const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "state", label: "State" },
+  { value: "priority", label: "Priority" },
+  { value: "epic", label: "Epic" },
 ];
 
 const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [
@@ -151,6 +162,51 @@ export default function DisplayPanel({
                   {o.label}
                 </button>
               ))}
+            </div>
+            {/* C123T0: "Sub-group by" lives in the Group by section,
+                directly under the Group by radios, same button style.
+                The active primary dimension's option is disabled (not
+                hidden); when groupBy is "none" the whole control is
+                disabled with a hint. The effective rule (same-as-
+                primary renders as "none") lives in subGroup.ts. */}
+            <div className="space-y-1 pt-1">
+              <p className="px-2 text-xs font-medium text-muted-foreground">
+                Sub-group by
+              </p>
+              <div
+                className="flex gap-1 px-2"
+                role="radiogroup"
+                aria-label="Sub-group by"
+              >
+                {SUB_GROUP_OPTIONS.map((o) => {
+                  const disabled =
+                    settings.groupBy === "none" ||
+                    o.value === settings.groupBy;
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={settings.subGroupBy === o.value}
+                      disabled={disabled}
+                      onClick={() => onUpdate({ subGroupBy: o.value })}
+                      className={cn(
+                        "flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                        settings.subGroupBy === o.value
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+                      )}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {settings.groupBy === "none" && (
+                <p className="px-2 text-xs text-muted-foreground">
+                  Choose a Group by first
+                </p>
+              )}
             </div>
             <Label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent">
               <span>Show empty groups</span>

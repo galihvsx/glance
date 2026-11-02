@@ -92,6 +92,12 @@ import {
   subtaskPriorityLevel,
 } from "../components/issue/boardSubtasks";
 import {
+  buildSubGroupSections,
+  effectiveSubGroupBy,
+  type SubGroupSection,
+} from "../components/issue/subGroup";
+import type { SubGroupBy } from "../components/issue/useDisplaySettings";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -103,6 +109,25 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 /** Issues in one column, in board order (the API returns sort_order ASC). */
 function columnIssues(all: Issue[], stateId: string): Issue[] {
   return all.filter((i) => i.state_id === stateId);
+}
+
+/** C123T0: sortable id prefix for cards inside an epic sub-group
+ *  section: `subgroup-card:<sectionKey>:<issueId>`. Epic sub-sections
+ *  are multi-appearance (one issue renders in several sections of one
+ *  column), so plain issue ids would collide as sortable ids — the
+ *  compound id keeps each copy draggable. The drop pipeline unwraps it
+ *  (subgroupDragIssueId) before resolving the target, so drag semantics
+ *  stay primary-dimension-only: sub-group sections are visual only,
+ *  never drop targets that re-stamp the sub-dimension. Issue ids are
+ *  UUIDs (no colons), so the LAST colon always separates the issue id. */
+const SUBGROUP_CARD_PREFIX = "subgroup-card:";
+/** Issue id behind a sub-group sortable id. Identity for plain and
+ *  epic-compound ids, so it is safe to call on every active/over id. */
+function subgroupDragIssueId(id: string): string {
+  if (!id.startsWith(SUBGROUP_CARD_PREFIX)) return id;
+  const rest = id.slice(SUBGROUP_CARD_PREFIX.length);
+  const sep = rest.lastIndexOf(":");
+  return sep === -1 ? id : rest.slice(sep + 1);
 }
 
 /** Shared chip / mini-control / tool-button classes for the board
@@ -526,6 +551,8 @@ function BoardColumn({
   onOpen,
   nestedByParent,
   stateById,
+  subSections,
+  subGroup,
 }: {
   droppableId: string;
   title: string;
@@ -559,11 +586,25 @@ function BoardColumn({
   nestedByParent?: Map<string, SubtaskRow[]>;
   /** C122T1: state lookup for nested rows' real-state indicators. */
   stateById?: Map<string, IssueState>;
+  /** C123T0: sub-group sections for this column's cards (already
+   *  show-empty-filtered by the caller). Undefined = today's flat
+   *  column layout exactly. */
+  subSections?: SubGroupSection[];
+  /** C123T0: effective sub-group dimension (drives the epic
+   *  multi-appearance drag ids below). */
+  subGroup?: SubGroupBy;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
     disabled: dropDisabled,
   });
+  /** C123T0: sortable id per card. Epic sub-sections need the compound
+   *  id (one issue, several section copies); every other mode keeps
+   *  today's id (epic-column compound ids included). */
+  const cardDragId = (issue: Issue, sectionKey?: string) =>
+    subGroup === "epic" && sectionKey !== undefined
+      ? `${SUBGROUP_CARD_PREFIX}${sectionKey}:${issue.id}`
+      : (getCardDragId?.(issue) ?? issue.id);
   // Header expand tool: widen this column for a closer look.
   const [expanded, setExpanded] = useState(false);
   // Header "+" tool: opens this column's inline quick-add.
@@ -641,6 +682,56 @@ function BoardColumn({
         // Empty column: header + full-width new-item row only. The spacer
         // pins the footer to the column bottom (min-height 420px).
         <div className="min-h-[20px] flex-1" aria-hidden="true" />
+      ) : subSections ? (
+        // C123T0: sub-group sections inside the column — one
+        // SortableContext for the whole column, so dragging a card
+        // across sections of one column still resolves by the primary
+        // column exactly as today (sections are visual only, not drop
+        // targets). C122 nested rows render under their parent card
+        // inside whichever section holds the parent.
+        <SortableContext
+          items={subSections.flatMap((s) =>
+            s.issues.map((i) => cardDragId(i, s.key)),
+          )}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="flex flex-col gap-[10px]">
+            {subSections.map((section) => (
+              <div key={section.key} data-sub-group-section={section.key}>
+                <div className="flex items-center gap-[6px] px-[4px] pb-[4px]">
+                  {section.color && (
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: section.color }}
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span className="text-[11px] font-semibold text-ink">
+                    {section.title}
+                  </span>
+                  <span className="font-mono text-[10px] text-ink-muted">
+                    {section.issues.length}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-[7px]">
+                  {section.issues.map((issue) => (
+                    <SortableCard
+                      key={`${section.key}:${issue.id}`}
+                      issue={issue}
+                      state={cardState ? cardState(issue) : state}
+                      disabled={disabled}
+                      fields={fields}
+                      onOpen={onOpen}
+                      dragId={cardDragId(issue, section.key)}
+                      nested={nestedByParent?.get(issue.id) ?? []}
+                      stateById={stateById}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </SortableContext>
       ) : (
         <SortableContext
           items={issues.map((i) => i.id)}
@@ -963,7 +1054,9 @@ export default function Board() {
   // C72T1: in epic mode the active id is a compound epicCardDragId;
   // epicDragIssueId is identity for plain ids.
   const activeIssue = activeId
-    ? (boardIssues.find((i) => i.id === epicDragIssueId(activeId)) ?? null)
+    ? (boardIssues.find(
+        (i) => i.id === epicDragIssueId(subgroupDragIssueId(activeId)),
+      ) ?? null)
     : null;
 
   const patchMutation = useMutation({
@@ -1105,7 +1198,14 @@ export default function Board() {
     /** State/priority stamped onto quick-added issues in this column. */
     newStateId?: string;
     newPriority?: number;
+    /** C123T0: sub-group sections for this column (undefined = flat). */
+    subSections?: SubGroupSection[];
   }
+
+  // C123T0: effective sub-group dimension (never equals groupBy,
+  // "none" when groupBy is "none") — shared helper, same rule the
+  // list view (T1) consumes.
+  const effectiveSubGroup = effectiveSubGroupBy(settings);
 
   const groups = useMemo<BoardGroup[]>(() => {
     let gs: BoardGroup[];
@@ -1145,9 +1245,28 @@ export default function Board() {
         newStateId: s.id,
       }));
     }
+    // C123T0: sub-group sections per column (show-empty filtering
+    // here at the call site, not in the helper). When the effective
+    // sub-group is "none", columns stay exactly as today.
+    const withSub =
+      effectiveSubGroup === "none"
+        ? gs
+        : gs.map((g) => {
+            const sections = buildSubGroupSections(
+              g.issues,
+              effectiveSubGroup,
+              { states, stateById },
+            );
+            return {
+              ...g,
+              subSections: settings.showEmptyGroups
+                ? sections
+                : sections.filter((s) => s.issues.length > 0),
+            };
+          });
     return settings.showEmptyGroups
-      ? gs
-      : gs.filter((g) => g.issues.length > 0);
+      ? withSub
+      : withSub.filter((g) => g.issues.length > 0);
   }, [
     groupByEpic,
     settings.groupBy,
@@ -1155,6 +1274,7 @@ export default function Board() {
     states,
     stateById,
     boardIssues,
+    effectiveSubGroup,
   ]);
 
   // C68T1: per-column drop hint while a drag is active — the set of
@@ -1307,8 +1427,10 @@ export default function Board() {
     const { active, over } = e;
     setActiveId(null);
     if (!over || !canEdit) return;
-    const activeIssueId = String(active.id);
-    const overId = String(over.id);
+    // C123T0: unwrap sub-group compound ids before resolving — the
+    // drop still resolves by primary column exactly as today.
+    const activeIssueId = subgroupDragIssueId(String(active.id));
+    const overId = subgroupDragIssueId(String(over.id));
 
     const all = queryClient.getQueryData<Issue[]>(displayKey) ?? [];
     // C72T1: epicDragIssueId is identity for plain (state/priority mode)
@@ -1549,6 +1671,8 @@ export default function Board() {
                     onOpen={openPeek}
                     nestedByParent={nestedByParent}
                     stateById={stateById}
+                    subSections={g.subSections}
+                    subGroup={effectiveSubGroup}
                   />
                 );
               })}
