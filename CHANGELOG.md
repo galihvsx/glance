@@ -5,6 +5,44 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Display properties depth: Plane's 13 card fields (cycle 121)**
+
+- The Display panel now toggles all 13 of Plane's card fields:
+  glance previously toggled only state, priority, labels,
+  assignees, and dates. New toggles, all default on: ID,
+  Sub-items, Attachments, Link, Dependencies, Module, Cycle,
+  and Releases. Pre-existing stored display settings gain the
+  new keys as on with no migration and no reset, so nothing a
+  user currently sees disappears.
+- List and board cards gain the new rows, each gated by its
+  toggle: the `display_id` badge (aria-labels keep the ID even
+  when the badge is hidden), the existing subtask progress bar
+  (still only when the issue has direct subtasks), module /
+  cycle / release chips from the batched project-structure
+  attachment (list and board fetches now pass
+  `include_project_structure=1`; fetches that do not pass the
+  flag render nothing for these three, never a per-row fetch),
+  and icon + count rows for attachments, links, and
+  dependencies, rendered only when the count is > 0. The dense
+  list row carries only the ID toggle — it has no slot for
+  chips or count rows, the same precedent by which it already
+  ignores labels, assignees, and dates.
+- List rows gain batched per-row counts backing the new rows:
+  `attachment_count`, `link_count`, and `relation_count`
+  (relations count both directions, blocks + blocked-by, in
+  one count; same-project live endpoints only, self-edges
+  counted once), resolved in one query per source for the
+  whole page, never per-row. Counts ride the main list, trash,
+  detail, display-ID, module / release / epic scope lists,
+  and global search; the export path carries no counts by
+  design. The `TestListNoNPlusOne` query cap moves from 5 to
+  8 for the three batched count queries; the guard's
+  invariant (query count constant regardless of issue count)
+  is unchanged.
+- Still to come, stated not cut: sub-group by, Manual-Rank
+  ordering, and "Show sub-work items" nested rows under board
+  cards are their own future cycles.
+
 **`mentions` filter dimension (cycle 120)**
 
 - Plane's "Mentions" filter dimension, missing from both
