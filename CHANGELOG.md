@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by: a second grouping dimension (cycle 123)**
+
+- The Display panel gains a "Sub-group by" control (None /
+  State / Priority / Epic, default None) under Group by. Inside
+  every primary group — on the board and in the Issues list —
+  cards/rows split into sub-group sections with a sub-header
+  (title + count). The sub-group dimension never equals the
+  active Group by (that option is greyed out, and a stored
+  value equal to the primary renders as None); with Group by
+  None the control is disabled ("Choose a Group by first").
+  Pre-existing stored settings gain the key as None with no
+  migration, so existing layouts are unchanged until opted in.
+- Sub-group sections are visual grouping only: board drag
+  semantics stay primary-dimension-only (state drops change
+  state, priority drops re-stamp priority, epic drops attach);
+  dragging across sub-sections inside one column does not
+  re-stamp the sub-dimension. C122 nested sub-item rows follow
+  their parent card into the parent's sub-section. Show-empty
+  filtering follows "Show empty groups". Epic sub-groups reuse
+  the live-epic multi-appearance semantics (an issue with N
+  epics appears under every epic sub-section, Ungrouped last);
+  rows with a missing sub-group value land in Ungrouped last
+  rather than vanishing.
+- No backend change: grouping is client-side in both views, so
+  no endpoint, migration, or new table rides this cycle.
+
 **Show sub-work items: nested sub-issue rows under board cards (cycle 122)**
 
 - The Display panel gains a "Show sub-work items" toggle
