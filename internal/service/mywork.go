@@ -59,6 +59,7 @@ func ListMyWork(ctx context.Context, pool *pgxpool.Pool, wsSlug, actorID string,
 // scope: state / epic / estimate names match the SET of ids across
 // the actor's accessible projects (see translatePQL), parent keys
 // resolve by identifier across the workspace, and label / assignee /
+// created_by (C118T0: same workspace-member resolution as assignee) /
 // priority / dates / has*() translate unchanged. ORDER BY / LIMIT
 // clauses inside the query are parsed and discarded by ParsePQL —
 // the endpoint's ?limit= and updated_at DESC order govern.

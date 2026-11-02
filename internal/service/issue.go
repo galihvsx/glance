@@ -2975,6 +2975,20 @@ type ListIssuesInput struct {
 	// block in issueListConds, on the DIRECT release_id
 	// column (simpler than the C75/C116 junction shape).
 	FilterReleases []string
+	// FilterCreatedBy (C118T0) is the VISUAL author filter
+	// dimension (?created_by=): author UUIDs, OR-matched.
+	// There is NO "none" sentinel: created_by is UUID NOT
+	// NULL (migration 000007), so there are no authorless
+	// issues and a "none" value is rejected by
+	// validateListFilterValues (ErrInvalidListFilter), never
+	// silently dropped. Like FilterReleases there is no
+	// singular created_by scope container on the list API,
+	// so no scope collision: purely a visual filter, ANDed
+	// with any detail-page scope (cycle / module / epic)
+	// exactly like FilterReleases, and zeroed by
+	// withoutVisualFilters. One block in issueListConds, on
+	// the DIRECT created_by column, with no IS NULL arm.
+	FilterCreatedBy []string
 	// Date ranges (inclusive start, exclusive end).
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -3110,6 +3124,18 @@ func validateListFilterValues(in ListIssuesInput) error {
 	// sentinel exactly like FilterCycles / FilterModules.
 	for _, id := range in.FilterReleases {
 		if id != filterNone && !isUUIDFormat(id) {
+			return ErrInvalidListFilter
+		}
+	}
+	// C118T0: visual author filter accepts NO sentinel.
+	// created_by is UUID NOT NULL, so "none" is a malformed
+	// value here (ErrInvalidListFilter), exactly like the
+	// label filter's meaningless-sentinel rejection — the
+	// HTTP layer parses it through (parseRepeatIDList shares
+	// the "none" passthrough with epic/parent) and this
+	// validation is what turns it into a 400.
+	for _, id := range in.FilterCreatedBy {
+		if !isUUIDFormat(id) {
 			return ErrInvalidListFilter
 		}
 	}
@@ -3431,6 +3457,18 @@ func issueListConds(in ListIssuesInput, projectID, actorID string, arg func(any)
 			parts = append(parts, "i.release_id IS NULL")
 		}
 		conds = append(conds, "("+strings.Join(parts, " OR ")+")")
+	}
+	if len(in.FilterCreatedBy) > 0 {
+		// C118T0: visual author filter, direct-column shape
+		// (created_by is a direct FK on issues since
+		// migration 000007, not a junction): UUIDs
+		// OR-matched, no IS NULL arm — the column is NOT
+		// NULL, so there is no authorless case to match.
+		// ANDs with every scope below by construction — a
+		// separate cond, never a scope replacement. There
+		// is no singular created_by scope container, so no
+		// scope block follows for it.
+		conds = append(conds, "i.created_by = ANY("+arg(in.FilterCreatedBy)+"::uuid[])")
 	}
 	if in.Cycle != "" {
 		// Task 22: cycle_issues exists now — a real EXISTS filter on the

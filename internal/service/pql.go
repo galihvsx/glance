@@ -61,6 +61,9 @@ package service
 //	state            i.state_id        state name (project-scoped)
 //	priority         i.priority        name (none/low/medium/high/urgent) or 0-4
 //	assignee         issue_assignees   member name, email, `me`, or `none`
+//	created_by       i.created_by      member name, email, or `me` (never
+//	                                    `none`: created_by is NOT NULL, so
+//	                                    every issue has an author)
 //	label            issue_labels      label name (workspace-scoped)
 //	epic             epic_issues       epic name (project-scoped) or `none`
 //	cycle            cycle_issues      cycle name (project-scoped) or `none`
@@ -93,7 +96,7 @@ package service
 // match the day users mean instead of a single midnight instant.
 //
 // Name resolution is scoped (states, epics, and estimate-point keys
-// to the project; labels and assignees to the workspace). An unknown
+// to the project; labels, assignees, and created_by to the workspace). An unknown
 // or ambiguous name is a
 // PQLQueryError (400), never a silent empty list. All values are
 // parameterized through the caller's arg() placeholder function —
@@ -686,7 +689,7 @@ func (p *pqlParser) parseValue() (pqlValue, error) {
 type pqlFieldKind int
 
 const (
-	pqlNameField    pqlFieldKind = iota // state, assignee, label, epic, estimate, parent, cycle, module, release
+	pqlNameField    pqlFieldKind = iota // state, assignee, created_by, label, epic, estimate, parent, cycle, module, release
 	pqlProjectField                     // project (workspace scope only; project scope rejects it)
 	pqlPriorityField
 	pqlDateField // target_date / start_date (date columns)
@@ -697,6 +700,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"state":       pqlNameField,
 	"priority":    pqlPriorityField,
 	"assignee":    pqlNameField,
+	"created_by":  pqlNameField,
 	"label":       pqlNameField,
 	"epic":        pqlNameField,
 	"cycle":       pqlNameField,
@@ -716,7 +720,7 @@ var pqlFieldKinds = map[string]pqlFieldKind{
 	"updated_at":  pqlTsField,
 }
 
-const pqlKnownFields = "state, priority, assignee, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
+const pqlKnownFields = "state, priority, assignee, created_by, label, epic, cycle, module, release, estimate, parent, project, due, due_date, target_date, start, start_date, created, created_at, updated, updated_at"
 
 // pqlPriorityNames mirrors the Plane vocabulary used by the importer
 // (0=none, 1=low, 2=medium, 3=high, 4=urgent).
@@ -878,9 +882,12 @@ func (in ListIssuesInput) withoutVisualFilters() ListIssuesInput {
 	// so in PQL mode they are ignored like every other visual filter.
 	// C117T0: FilterReleases is zeroed too — same shape, and
 	// there is no singular release scope container to preserve.
+	// C118T0: FilterCreatedBy is zeroed too — same shape, and
+	// there is no singular created_by scope container to preserve.
 	in.FilterCycles = nil
 	in.FilterModules = nil
 	in.FilterReleases = nil
+	in.FilterCreatedBy = nil
 	in.CreatedAfter = nil
 	in.CreatedBefore = nil
 	in.UpdatedAfter = nil
@@ -1039,6 +1046,8 @@ func translatePQLCmp(ctx context.Context, pool *pgxpool.Pool, wsID, projectID, a
 				return translatePQLParentWorkspace(ctx, pool, wsID, actorID, n, arg)
 			}
 			return translatePQLParent(ctx, pool, projectID, n, arg)
+		case "created_by":
+			return translatePQLCreatedBy(ctx, pool, wsID, actorID, n, arg)
 		default: // assignee
 			return translatePQLAssignee(ctx, pool, wsID, actorID, n, arg)
 		}
@@ -1365,6 +1374,76 @@ func translatePQLAssignee(ctx context.Context, pool *pgxpool.Pool, wsID, actorID
 			parts = append(parts, notExists)
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", nil
+	}
+}
+
+// resolvePQLCreatedByValue maps one created_by value token: `me`
+// to the actor, `none` to a 400 (never a silent empty list —
+// created_by is UUID NOT NULL, so every issue has an author),
+// anything else to a workspace member id resolved by name or
+// email (case-insensitive) via resolvePQLIDs, so an ambiguous
+// name is a 400, never a first-match pick. This is the
+// resolvePQLAssigneeValue shape minus the `none` arm.
+func resolvePQLCreatedByValue(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, v pqlValue) (string, error) {
+	lower := strings.ToLower(v.Text)
+	if lower == "me" {
+		return actorID, nil
+	}
+	if lower == "none" {
+		return "", pqlErr(v.Pos, "created_by = none is not valid: every issue has an author (created_by is never NULL)")
+	}
+	got, err := resolvePQLIDs(ctx, pool,
+		`SELECT u.id::text FROM users u JOIN workspace_members m ON m.user_id = u.id
+		 WHERE m.workspace_id = $1::uuid AND (lower(u.name) = lower($2) OR lower(u.email) = lower($2))`,
+		wsID, v.Text, v.Pos, "created_by", "workspace")
+	if err != nil {
+		return "", err
+	}
+	return got[0], nil
+}
+
+// translatePQLCreatedBy resolves created_by names on the DIRECT
+// issues.created_by column (C118T0) — simpler than the assignee
+// junction shape: = / != are scalar comparisons, in is ANY.
+// != uses plain <> (not IS DISTINCT FROM): created_by is NOT
+// NULL, so no NULL arm can ever make <> drop a row, unlike
+// release != where NULL release_id counts as "not this
+// release".
+//
+// Workspace scope (MyWork) uses this SAME translator, not a
+// separate workspace variant — verified against
+// projectAccessibleSQL rather than assumed. The C117 release
+// rule (a name existing only in an unreachable project must
+// 400 unknown, lest the match/400 difference leak that
+// project's taxonomy) does not apply here, for two reasons:
+// (1) the resolution domain is workspace membership, which is
+// not project taxonomy — a workspace member's name resolving
+// reveals only that they are a workspace member, a fact every
+// workspace member can already see in the member list; and
+// (2) the translated predicate still ANDs with the list
+// query's own confinement — the project predicate on
+// project-scoped lists, projectAccessibleSQL on MyWork — so
+// an author whose issues live only in a private project the
+// actor cannot reach yields no rows for that actor even
+// though the name resolves. The assignee field works exactly
+// this way (one translator, both scopes); created_by follows
+// it.
+func translatePQLCreatedBy(ctx context.Context, pool *pgxpool.Pool, wsID, actorID string, n *pqlNode, arg func(any) string) (string, error) {
+	ids := make([]string, 0, len(n.Values))
+	for _, v := range n.Values {
+		id, err := resolvePQLCreatedByValue(ctx, pool, wsID, actorID, v)
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, id)
+	}
+	switch n.Op {
+	case "=":
+		return "i.created_by = " + arg(ids[0]) + "::uuid", nil
+	case "!=":
+		return "i.created_by <> " + arg(ids[0]) + "::uuid", nil
+	default: // in
+		return "i.created_by = ANY(" + arg(ids) + "::uuid[])", nil
 	}
 }
 
