@@ -356,7 +356,8 @@ export default function Issues() {
 
   // Opened from the command palette ("Create issue" action) or from the
   // board's inline quick-add expand button (prefills title + state, and
-  // priority when the board is grouped by priority) — or from the
+  // priority when the board is grouped by priority, and the member id
+  // when grouped by assignees — attached after create, C129T1) — or from the
   // calendar's day-cell quick-add (C26T3: prefills the target/due date).
   useEffect(() => {
     const st = location.state as {
@@ -366,6 +367,7 @@ export default function Issues() {
       newIssuePriority?: number;
       newIssueStartDate?: string;
       newIssueTargetDate?: string;
+      newIssueAssigneeId?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -373,6 +375,13 @@ export default function Issues() {
         setNewStateId(st.newIssueStateId);
       if (typeof st.newIssuePriority === "number")
         setNewPriority(st.newIssuePriority);
+      // C129T1: board assignee-column expand carries the member id
+      // here; the create dialog has no assignee field, so it rides
+      // pendingAssigneeRef and attaches after create (same rule as
+      // the list's own assignee-group expand — see createMutation's
+      // onSuccess). The dialog-close handler clears it on cancel.
+      if (typeof st.newIssueAssigneeId === "string")
+        pendingAssigneeRef.current = st.newIssueAssigneeId;
       if (typeof st.newIssueStartDate === "string")
         setNewStartDate(st.newIssueStartDate);
       if (typeof st.newIssueTargetDate === "string")
