@@ -8,10 +8,10 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * transport (api + queryClient); this module owns the rules, so the
  * pipeline is unit-testable without dnd-kit or a rendered page.
  *
- * Enable rule (plan §Scope, C128T0, extended C129T0): drag exists ONLY when the visual
+ * Enable rule (plan §Scope, C128T0, extended C129T0, C130T0): drag exists ONLY when the visual
  * stack order equals a sort_order sequence — Manual rank order, visual
  * mode (no PQL ORDER BY winning server-side), and an EFFECTIVE
- * grouping of none, state, priority, epic, or assignees. The caller passes the
+ * grouping of none, state, priority, epic, assignees, or labels. The caller passes the
  * effective grouping, not the raw setting: a priority/state grouping
  * skipped by its single-value filter renders flat, so it counts as
  * flat here. Priority/epic/assignee grouping mixes states inside one stack
@@ -19,7 +19,9 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * stack-local and grouping-agnostic — the stack's rows are resolved
  * through the page's listDragMaps appearance → issue mapping, and a
  * reorder PATCHes only {sort_order}, never a group dimension — so
- * those groupings are admitted exactly like state. sort_order is
+ * those groupings are admitted exactly like state. Label stacks mix
+ * states exactly like assignee stacks, so the C128 mixed-state
+ * recovery applies verbatim. sort_order is
  * GLOBAL per issue (one column): a reorder in any stack changes
  * Manual-rank display everywhere that row appears; that is C126's
  * already-accepted semantics, not a per-group rank model (no such
@@ -38,7 +40,8 @@ export function isListDragEnabled(args: {
       args.groupBy === "state" ||
       args.groupBy === "priority" ||
       args.groupBy === "epic" ||
-      args.groupBy === "assignees")
+      args.groupBy === "assignees" ||
+      args.groupBy === "labels")
   );
 }
 

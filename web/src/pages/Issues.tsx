@@ -101,6 +101,7 @@ import {
 } from "../components/issue/subGroup";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
+import { groupIssuesByLabel } from "../components/issue/groupByLabel";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -407,6 +408,14 @@ export default function Issues() {
   // the render that opened the dialog, and the dialog-close handler
   // clears it on cancel so it never leaks into the next create.
   const pendingAssigneeRef = useRef<string | null>(null);
+  // C130T0: label carried from a label group's expand-to-full-
+  // form (the create dialog has no label field, so the label is
+  // attached right after a successful create — see createMutation's
+  // onSuccess). Same ref-not-state rule as pendingAssigneeRef:
+  // onSuccess must read the value from the render that opened the
+  // dialog, and the dialog-close handler clears it on cancel so it
+  // never leaks into the next create.
+  const pendingLabelRef = useRef<string | null>(null);
   // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
   // calendar's day-cell quick-add via location.state.
   const [newStartDate, setNewStartDate] = useState("");
@@ -759,6 +768,10 @@ export default function Issues() {
       // assignee field, the member is attached right after create.
       const pendingAssigneeId = pendingAssigneeRef.current;
       pendingAssigneeRef.current = null;
+      // C130T0: a label-group expand carries the group label here
+      // (same rule as the assignee carry above).
+      const pendingLabelId = pendingLabelRef.current;
+      pendingLabelRef.current = null;
       resetCreateForm();
       // "Create more" keeps the dialog open for rapid entry; otherwise
       // the dialog closes and the toast is the confirmation.
@@ -790,6 +803,32 @@ export default function Issues() {
               type: "error",
               description:
                 e instanceof Error ? e.message : "Failed to assign issue",
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            });
+          });
+      }
+      if (pendingLabelId) {
+        // C130T0: same rule as the assignee carry above — the label
+        // endpoint is idempotent with no body, and an attach failure
+        // surfaces honestly while the row lands in Ungrouped after
+        // invalidation.
+        void api
+          .post(
+            `${base}/issues/${issue.id}/labels/${encodeURIComponent(pendingLabelId)}`,
+          )
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            }),
+          )
+          .catch((e) => {
+            toast.add({
+              title: "Issue created but not labeled",
+              type: "error",
+              description:
+                e instanceof Error ? e.message : "Failed to label issue",
             });
             void queryClient.invalidateQueries({
               queryKey: ["issues", slug, identifier],
@@ -926,12 +965,15 @@ export default function Issues() {
    *  member attaches after create (C129T0, board epic quick-add
    *  precedent): an attach failure surfaces (QuickAdd shows the
    *  thrown error) and the row lands in Ungrouped after invalidation.
-   *  Ungrouped quick-add (no member) is a plain create. */
+   *  C130T0: under label grouping, the group label attaches the same
+   *  way (POST .../labels/{id}, idempotent, no body). Ungrouped
+   *  quick-add (no member / no label) is a plain create. */
   async function quickCreate(
     stateId: string,
     name: string,
     priority?: number,
     assigneeId?: string,
+    labelId?: string,
   ): Promise<void> {
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
@@ -950,6 +992,18 @@ export default function Issues() {
         throw e;
       }
     }
+    if (labelId) {
+      try {
+        await api.post(
+          `${base}/issues/${created.id}/labels/${encodeURIComponent(labelId)}`,
+        );
+      } catch (e) {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        throw e;
+      }
+    }
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
@@ -958,17 +1012,25 @@ export default function Issues() {
   /** Expand an inline quick-add into the full create form, keeping the
    *  typed title, the group's state/priority, and — under assignee
    *  grouping — the group member (attached after create, since the
-   *  dialog has no assignee field; see createMutation's onSuccess). */
+   *  dialog has no assignee field; see createMutation's onSuccess).
+   *  C130T0: under label grouping the group label rides the same
+   *  way — the dialog has no label field either (verified: the
+   *  create form renders Priority, State, Estimate, dates, Parent,
+   *  and custom fields, but no label picker), so the label attaches
+   *  after create via pendingLabelRef rather than a prefilled field.
+   *  Title + group label are therefore both kept, via attach. */
   function expandQuickAdd(
     stateId: string,
     name: string,
     priority?: number,
     assigneeId?: string,
+    labelId?: string,
   ) {
     setName(name);
     setNewStateId(stateId);
     if (priority !== undefined) setNewPriority(priority);
     pendingAssigneeRef.current = assigneeId ?? null;
+    pendingLabelRef.current = labelId ?? null;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -1028,8 +1090,15 @@ export default function Issues() {
   // C129T0: assignee grouping needs no skip either — assignees ride on
   // the list rows themselves, exactly like epic memberships.
   const groupByAssignees = settings.groupBy === "assignees";
+  // C130T0: label grouping needs no skip either — labels ride on
+  // the list rows themselves, exactly like assignee memberships.
+  const groupByLabels = settings.groupBy === "labels";
   const groupingActive =
-    groupByState || groupByPriority || groupByEpic || groupByAssignees;
+    groupByState ||
+    groupByPriority ||
+    groupByEpic ||
+    groupByAssignees ||
+    groupByLabels;
 
   interface IssueGroup {
     key: string;
@@ -1056,6 +1125,10 @@ export default function Issues() {
      *  above — the key IS the assignee id verbatim for member groups. */
     targetAssigneeId?: string;
     isUngroupedAssignee?: boolean;
+    /** C130T0: label drop-target values, mirroring the assignee pair
+     *  above — the key IS the label id verbatim for member groups. */
+    targetLabelId?: string;
+    isUngroupedLabel?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -1112,6 +1185,21 @@ export default function Issues() {
         targetAssigneeId: g.isUngrouped ? undefined : g.key,
         isUngroupedAssignee: g.isUngrouped,
       }));
+    } else if (groupByLabels) {
+      // C130T0: group by label membership (see groupByLabel.ts
+      // for the multi-appearance + Ungrouped-last semantics). The
+      // header renders the label's color dot — the same dot the
+      // row label chips use (IssueCard) — plus name + count, and
+      // no breakdown bar (the helper carries no byGroup).
+      gs = groupIssuesByLabel(issues).map((g) => ({
+        key: g.key,
+        title: g.title,
+        color: g.color,
+        issues: g.issues,
+        stateId: sortedStates[0]?.id,
+        targetLabelId: g.isUngrouped ? undefined : g.key,
+        isUngroupedLabel: g.isUngrouped,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1121,6 +1209,7 @@ export default function Issues() {
     groupByPriority,
     groupByEpic,
     groupByAssignees,
+    groupByLabels,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1209,7 +1298,13 @@ export default function Issues() {
   // C126T0: list drag-to-reorder. The effective grouping is what
   // renders (a grouping skipped by its single-value filter renders
   // flat), so the enable rule reads groupByState/groupByPriority/
-  // groupByEpic/groupByAssignees, not the raw setting. The drop pipeline lives in
+  // groupByEpic/groupByAssignees/groupByLabels, not the raw setting.
+  // C130T0 keyboard boundary: pointer/touch drag is the deliverable;
+  // keyboard reorder/drag under label grouping inherits the C128
+  // boundary (no dedicated test under any grouping — ListDragRoot's
+  // keyboard sensor is grouping-agnostic, per-stack coordinates),
+  // and keyboard drag to a header stays out of scope per C127.
+  // The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
   // reorder never reassigns state. Pagination caveat (plan): drop
@@ -1217,15 +1312,17 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByAssignees
-    ? "assignees"
-    : groupByEpic
-      ? "epic"
-      : groupByPriority
-        ? "priority"
-        : groupByState
-          ? "state"
-          : "none";
+  const effectiveGroupBy = groupByLabels
+    ? "labels"
+    : groupByAssignees
+      ? "assignees"
+      : groupByEpic
+        ? "epic"
+        : groupByPriority
+          ? "priority"
+          : groupByState
+            ? "state"
+            : "none";
   const dragEnabled = isListDragEnabled({
     orderBy: settings.orderBy,
     pqlMode,
@@ -1296,6 +1393,8 @@ export default function Issues() {
   // remove side of an epic move — see listHeaderDrop). C129T0: the
   // assignee appearance mirrors it — the primary assignee group,
   // else none (sub-sections are never assignee this cycle).
+  // C130T0: the label appearance mirrors it — the primary label
+  // group, else none (sub-sections are never labels this cycle).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -1304,12 +1403,14 @@ export default function Issues() {
       rows: Issue[],
       sourceEpicId: string | null,
       sourceAssigneeId: string | null = null,
+      sourceLabelId: string | null = null,
     ): ListDragStackRef => {
       const stack: ListDragStackRef = {
         stackKey,
         rows,
         sourceEpicId,
         sourceAssigneeId,
+        sourceLabelId,
       };
       for (const issue of rows) {
         sortableMap.set(listSortableId(stackKey, issue.id), {
@@ -1347,6 +1448,11 @@ export default function Issues() {
             ? null
             : (g.targetAssigneeId ?? null)
           : null;
+        const primaryLabelId = groupByLabels
+          ? g.isUngroupedLabel
+            ? null
+            : (g.targetLabelId ?? null)
+          : null;
         if (subSectionsByGroup) {
           registerHeader(g.key, g, g.issues);
           for (const sub of subSectionsByGroup.get(g.key) ?? []) {
@@ -1358,13 +1464,26 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            // Sub-sections are never assignee this cycle, so the
-            // source is the primary assignee group, else none.
-            registerStack(subKey, sub.issues, sourceEpicId, primaryAssigneeId);
+            // Sub-sections are never assignee or label this cycle,
+            // so the source is the primary assignee/label group,
+            // else none.
+            registerStack(
+              subKey,
+              sub.issues,
+              sourceEpicId,
+              primaryAssigneeId,
+              primaryLabelId,
+            );
             registerHeader(subKey, sub, sub.issues);
           }
         } else {
-          registerStack(g.key, g.issues, primaryEpicId, primaryAssigneeId);
+          registerStack(
+            g.key,
+            g.issues,
+            primaryEpicId,
+            primaryAssigneeId,
+            primaryLabelId,
+          );
           registerHeader(g.key, g, g.issues);
         }
       }
@@ -1377,16 +1496,17 @@ export default function Issues() {
     issues,
     groupByEpic,
     groupByAssignees,
+    groupByLabels,
     effectiveSubGroup,
   ]);
 
   // C127T0: one header drop — resolve to the exact call sequence,
-  // execute it (add-before-remove + sort PATCH for epic/assignee
-  // moves), and invalidate so the moved row appears in its new group
-  // from the server's state. No optimistic group-move rendering (the
-  // simpler correct choice the plan allows); on failure the row stays
-  // visibly in its old group after refetch and the error surfaces
-  // via the existing reorderError Alert.
+  // execute it (add-before-remove + sort PATCH for epic/assignee/
+  // label moves), and invalidate so the moved row appears in its new
+  // group from the server's state. No optimistic group-move rendering
+  // (the simpler correct choice the plan allows); on failure the row
+  // stays visibly in its old group after refetch and the error
+  // surfaces via the existing reorderError Alert.
   async function handleHeaderDrop(
     dragged: ListDragRowRef,
     info: ListHeaderDropInfo,
@@ -1396,6 +1516,7 @@ export default function Issues() {
       dragged: dragged.issue,
       sourceEpicId: dragged.stack.sourceEpicId,
       sourceAssigneeId: dragged.stack.sourceAssigneeId,
+      sourceLabelId: dragged.stack.sourceLabelId,
       target: info.target,
       targetRows: info.targetRows,
     });
@@ -1419,6 +1540,16 @@ export default function Issues() {
       removeFromAssignee: (assigneeId, issueId) =>
         api.del(
           `${base}/issues/${issueId}/assignees/${encodeURIComponent(assigneeId)}`,
+        ),
+      // C130T0: label membership endpoints carry no body — the
+      // label id rides the path, and both calls are idempotent.
+      addToLabel: (labelId, issueId) =>
+        api.post(
+          `${base}/issues/${issueId}/labels/${encodeURIComponent(labelId)}`,
+        ),
+      removeFromLabel: (labelId, issueId) =>
+        api.del(
+          `${base}/issues/${issueId}/labels/${encodeURIComponent(labelId)}`,
         ),
       invalidate: () =>
         queryClient.invalidateQueries({
@@ -1583,6 +1714,8 @@ export default function Issues() {
                 setTemplateNote(null);
                 // C129T0: same rule for a carried assignee group member.
                 pendingAssigneeRef.current = null;
+                // C130T0: same rule for a carried label group label.
+                pendingLabelRef.current = null;
               }
             }}
           >
@@ -1998,6 +2131,16 @@ export default function Issues() {
                     ) : g.priority !== undefined ? (
                       <PriorityBars priority={g.priority} />
                     ) : null}
+                    {/* C130T0: label groups render the label's color
+                        dot — the same dot the row label chips use
+                        (IssueCard) — plus name + count below. */}
+                    {groupByLabels && g.color ? (
+                      <span
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: g.color }}
+                        aria-hidden
+                      />
+                    ) : null}
                     <h2 className="text-[12px] font-semibold text-ink">
                       {g.title}
                     </h2>
@@ -2124,6 +2267,7 @@ export default function Issues() {
                         name,
                         g.priority,
                         g.targetAssigneeId,
+                        g.targetLabelId,
                       )
                     }
                     onExpand={(name) =>
@@ -2132,6 +2276,7 @@ export default function Issues() {
                         name,
                         g.priority,
                         g.targetAssigneeId,
+                        g.targetLabelId,
                       )
                     }
                   />
