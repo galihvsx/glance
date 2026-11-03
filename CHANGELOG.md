@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by state-groups in the list and board views (cycle 139)**
+
+- Plane's Sub-group by offers State (among other dimensions);
+  glance offered none, state, priority, epic, assignees,
+  labels, created-by. The Display panel's Sub-group by now
+  includes State groups for the list and the board: one
+  sub-section per state group inside each primary group/column,
+  single-appearance (an issue carries exactly one state, and
+  every state belongs to exactly one group), sections always
+  in backend-fixed canonical order (triage, backlog,
+  unstarted, started, completed, cancelled), no backend
+  change. Issues whose state is missing or unloaded collapse
+  into one Unknown sub-section, last and hidden when empty.
+  "Show empty groups" synthesizes all six canonical groups
+  (closed set, unlike created-by). The sub-group value is
+  "stateGroups", identical to the primary Group by literal, so
+  the same-dimension rule renders it flat under primary
+  State-groups grouping.
+- Drop semantics: none, by design. A state group holds several
+  states, so a cross-group drop has no single target state —
+  state-group sub-headers carry no drop-target fields and are
+  never drop targets in either view: list headers render as
+  plain divs, board drops resolve by primary column as before.
+  No compound drag ids either: single-appearance means one
+  card copy per column.
+
 **Sub-group by created-by in the list and board views (cycle 138)**
 
 - Plane's Sub-group by offers Created By (among other
