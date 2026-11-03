@@ -5,6 +5,33 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by labels in the list and board views (cycle 137)**
+
+- Plane's Sub-group by offers Labels (among other
+  dimensions); glance offered none, state, priority, epic,
+  assignees. The Display panel's Sub-group by now includes
+  Labels for the list and the board: one sub-section per
+  label inside each primary group/column, multi-appearance
+  (an issue carrying N labels appears under every label's
+  sub-section — dropping one side would silently hide work
+  from a label view), names and colors riding the row with
+  no extra fetch, no backend change. Issues with no labels
+  land in an Ungrouped sub-section, last and hidden when
+  empty. "Show empty groups" cannot synthesize label
+  sub-sections (no closed set, unlike state groups). The
+  sub-group value is "labels", identical to the primary
+  Group by literal, so the same-dimension rule renders it
+  flat under primary Labels grouping.
+- Drop semantics diverge by view, by established precedent:
+  list label sub-headers ARE drop targets and move the
+  sub-dimension only (the existing label-move /
+  label-ungroup pipeline — add-before-remove + sort PATCH,
+  never the primary group); board sub-sections are visual
+  only (drops resolve by primary column, as epic and
+  assignee sub-group drops do), with compound card drag ids
+  keeping multi-appearance copies distinct inside a column.
+  No per-sub-section quick-add in either view.
+
 **Sub-group by assignees in the list and board views (cycle 136)**
 
 - Plane's Sub-group by offers Assignees (among other
