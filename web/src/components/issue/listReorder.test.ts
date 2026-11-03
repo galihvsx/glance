@@ -86,6 +86,32 @@ describe("isListDragEnabled", () => {
       ).toBe(true);
     }
   });
+  it("enables for assignee grouping under Manual rank in visual mode (C129T0)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "assignees",
+      }),
+    ).toBe(true);
+  });
+  it("disables assignee grouping under non-Manual order or PQL mode (C129T0)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "-updated_at",
+        groupBy: "assignees",
+      }),
+    ).toBe(false);
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "assignees",
+        pqlMode: true,
+      }),
+    ).toBe(false);
+  });
   it("disables priority/epic grouping under non-Manual order or PQL mode", () => {
     for (const groupBy of ["priority", "epic"] as GroupBy[]) {
       expect(
@@ -494,6 +520,78 @@ describe("C128T0: within-stack reorder under priority/epic grouping", () => {
     await applyListDrop(collapsed, "c", "b", deps);
     expect(calls.rebalance).toEqual([{ state_id: "s-todo" }]);
     expect(calls.patch).toEqual([["c", { sort_order: 1536 }]]);
+    expect(calls.invalidate).toHaveLength(1);
+    expect(calls.errors).toHaveLength(0);
+  });
+});
+
+describe("C129T0: within-stack reorder under assignee grouping", () => {
+  it("PATCHes ONLY {sort_order} under a mixed-state assignee stack", async () => {
+    // An assignee stack mixes states exactly like a priority/epic
+    // stack: reorder must never reassign assignees — the body is
+    // exactly {sort_order}.
+    const stack = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const data = pagesOf(stack, [3]);
+    const { deps, calls } = stubDeps(data);
+    await applyListDrop(stack, "a", "c", deps);
+    expect(calls.patch).toEqual([["a", { sort_order: 4096 }]]);
+    expect(Object.keys((calls.patch[0] as unknown[])[1] as object)).toEqual([
+      "sort_order",
+    ]);
+    expect(calls.invalidate).toHaveLength(1);
+    expect(calls.errors).toHaveLength(0);
+  });
+
+  it("assignee multi-appearance: optimistic splice moves the single flat entry once — no duplicate, no lost row", async () => {
+    const stack = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const flat = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("m", 1024, "s-doing"), // another assignee stack's row
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const data = pagesOf(flat, [4]);
+    const { deps, calls, getCurrent } = stubDeps(data);
+    await applyListDrop(stack, "a", "c", deps);
+    expect(calls.setData[0]).toEqual(["m", "b", "c", "a"]);
+    const ids = getCurrent().pages[0].results.map((i) => i.id);
+    expect(ids).toEqual(["m", "b", "c", "a"]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(calls.patch).toEqual([["a", { sort_order: 4096 }]]);
+  });
+
+  it("mixed-state gap collapse under an assignee stack: C128 recovery verbatim (two rebalances, retry once)", async () => {
+    const collapsed = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 1 + REBALANCE_GAP / 2, "s-doing"),
+      mkIssue("d", 5, "s-todo"),
+    ];
+    const data = pagesOf(collapsed, [3]);
+    const fresh = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("d", 3072, "s-todo"),
+    ];
+    const { deps, calls } = stubDeps(data, {
+      refetchFlat: async () => fresh,
+    });
+    // Drag d over b: lands between collapsed a (s-todo) and b
+    // (s-doing) → null. Both neighbor states rebalance, sequential,
+    // then one retry — never a loop, never an N-PATCH re-space.
+    await applyListDrop(collapsed, "d", "b", deps);
+    expect(calls.rebalance).toEqual([
+      { state_id: "s-todo" },
+      { state_id: "s-doing" },
+    ]);
+    expect(calls.patch).toEqual([["d", { sort_order: 1536 }]]);
     expect(calls.invalidate).toHaveLength(1);
     expect(calls.errors).toHaveLength(0);
   });

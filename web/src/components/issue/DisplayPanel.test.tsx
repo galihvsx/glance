@@ -315,3 +315,48 @@ describe("DisplayPanel order by Manual rank (C125T0)", () => {
     ).toBeNull();
   });
 });
+
+describe("DisplayPanel Group by Assignees (C129T0)", () => {
+  function renderGroupBy(settings: DisplaySettings = DEFAULT_DISPLAY_SETTINGS) {
+    const onUpdate = vi.fn();
+    render(
+      <DisplayPanel
+        settings={settings}
+        onUpdate={onUpdate}
+        onUpdateFields={vi.fn()}
+        onReset={vi.fn()}
+        view="list"
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    const group = screen.getByRole("radiogroup", { name: "Group by" });
+    const radios = Array.from(group.querySelectorAll('[role="radio"]'));
+    return {
+      onUpdate,
+      labels: radios.map((el) => el.textContent),
+      radio: (name: string) =>
+        radios.find((el) => el.textContent === name) as HTMLElement,
+    };
+  }
+
+  it("offers Assignees after Epic, before None — old options unreordered", () => {
+    const { labels } = renderGroupBy();
+    expect(labels).toEqual(["State", "Priority", "Epic", "Assignees", "None"]);
+  });
+
+  it("selecting Assignees reports groupBy assignees", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Assignees"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "assignees" });
+  });
+
+  it("marks Assignees checked when it is the active grouping", () => {
+    const { radio } = renderGroupBy({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "assignees",
+    });
+    expect(radio("Assignees")).toHaveAttribute("aria-checked", "true");
+  });
+});

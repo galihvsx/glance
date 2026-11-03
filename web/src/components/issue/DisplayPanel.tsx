@@ -41,6 +41,7 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "state", label: "State" },
   { value: "priority", label: "Priority" },
   { value: "epic", label: "Epic" },
+  { value: "assignees", label: "Assignees" },
   { value: "none", label: "None" },
 ];
 
