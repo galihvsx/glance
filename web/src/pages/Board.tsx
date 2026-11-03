@@ -188,7 +188,9 @@ function columnIssues(all: Issue[], stateId: string): Issue[] {
  *  section: `subgroup-card:<sectionKey>:<issueId>`. Epic sub-sections
  *  are multi-appearance (one issue renders in several sections of one
  *  column), so plain issue ids would collide as sortable ids — the
- *  compound id keeps each copy draggable. The drop pipeline unwraps it
+ *  compound id keeps each copy draggable. C136T2: assignee sub-sections
+ *  take the same compound id on the same branch (same multi-appearance
+ *  shape). The drop pipeline unwraps it
  *  (subgroupDragIssueId) before resolving the target, so drag semantics
  *  stay primary-dimension-only: sub-group sections are visual only,
  *  never drop targets that re-stamp the sub-dimension. Issue ids are
@@ -725,9 +727,15 @@ function BoardColumn({
   });
   /** C123T0: sortable id per card. Epic sub-sections need the compound
    *  id (one issue, several section copies); every other mode keeps
-   *  today's id (epic-column compound ids included). */
+   *  today's id (epic-column compound ids included). C136T2: assignee
+   *  sub-sections are multi-appearance the same way, so they take the
+   *  compound id on the same branch — no second unwrapper is needed,
+   *  subgroupDragIssueId strips the prefix generically (last colon
+   *  separates the issue id, which also covers the Ungrouped section
+   *  key "assignee:ungrouped"). */
   const cardDragId = (issue: Issue, sectionKey?: string) =>
-    subGroup === "epic" && sectionKey !== undefined
+    (subGroup === "epic" || subGroup === "assignees") &&
+    sectionKey !== undefined
       ? `${SUBGROUP_CARD_PREFIX}${sectionKey}:${issue.id}`
       : (getCardDragId?.(issue) ?? issue.id);
   // Header expand tool: widen this column for a closer look.

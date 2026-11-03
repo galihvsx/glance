@@ -324,3 +324,131 @@ describe("board sub-group by (C123T0)", () => {
     ).toBeNull();
   });
 });
+
+describe("board sub-group by assignees (C136T2)", () => {
+  const ALICE = { id: "u-alice", name: "Alice" };
+  const BOB = { id: "u-bob", name: "Bob" };
+
+  // Todo column: Alice ×2 (one shared with Bob), Bob ×1 + shared,
+  // Ungrouped ×1; Done column: Bob ×1, no Ungrouped.
+  const assigneePayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      assignees: [ALICE],
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      assignees: [],
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      assignees: [ALICE, BOB],
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      assignees: [BOB],
+    }),
+  ];
+
+  /** Every sub-section key holding a copy of this card (multi-
+   *  appearance issues appear once per section). */
+  function sectionKeysOfCard(issueId: string): string[] {
+    return Array.from(
+      document.querySelectorAll(`[data-board-card="${issueId}"]`),
+    ).map(
+      (card) =>
+        card.closest("[data-sub-group-section]")?.getAttribute(
+          "data-sub-group-section",
+        ) ?? "",
+    );
+  }
+
+  it("renders assignee sub-sections inside a column, Ungrouped last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "assignees",
+      showEmptyGroups: true,
+    });
+    renderBoard(assigneePayload);
+    await screen.findByText("Fix login");
+    // Todo: Alice, Bob, Ungrouped (first-appearance order, Ungrouped
+    // last); Done: Bob only — no Ungrouped section when empty.
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["u-alice", "u-bob", "assignee:ungrouped", "u-bob"]);
+    const alice = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "u-alice",
+    );
+    expect(alice).toHaveLength(1);
+    expect(sectionHeader(alice[0])).toEqual(["Alice", "2"]);
+    const ungrouped = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "assignee:ungrouped",
+    );
+    expect(ungrouped).toHaveLength(1);
+    expect(sectionHeader(ungrouped[0])).toEqual(["Ungrouped", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("assignee:ungrouped");
+  });
+
+  it("multi-appearance card copies sit in distinct sections, so their compound drag ids are distinct", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "assignees",
+      showEmptyGroups: true,
+    });
+    renderBoard(assigneePayload);
+    // Multi-appearance means two matching texts by design.
+    expect(await screen.findAllByText("Ship feature")).toHaveLength(2);
+    // The two-assignee Todo issue renders twice in its column, once
+    // per assignee section. cardDragId builds the sortable id as
+    // `subgroup-card:<sectionKey>:<issueId>`, so copies in distinct
+    // sections carry distinct compound ids — no two draggables share
+    // one id (the ids themselves live inside dnd-kit's SortableContext,
+    // not the DOM, so distinct sections are the page-level proof).
+    expect(
+      document.querySelectorAll('[data-board-card="i-c"]'),
+    ).toHaveLength(2);
+    expect(sectionKeysOfCard("i-c")).toEqual(["u-alice", "u-bob"]);
+    // The Done issue's single-assignee copy stays single.
+    expect(
+      document.querySelectorAll('[data-board-card="i-d"]'),
+    ).toHaveLength(1);
+  });
+
+  it("same-dimension (primary assignees + sub-group assignees) renders flat", async () => {
+    storeSettings({
+      groupBy: "assignees",
+      subGroupBy: "assignees",
+      showEmptyGroups: true,
+    });
+    renderBoard(assigneePayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("assignee sub-sections are visual only: no per-section quick-add or drop affordance", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "assignees",
+      showEmptyGroups: true,
+    });
+    renderBoard(assigneePayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only
+    // and never re-stamps assignees. Pointer-drag drop resolution has
+    // no simulation in this repo (C129 precedent); the live browser
+    // drag is the plan matrix's final verifier, as for epic drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
