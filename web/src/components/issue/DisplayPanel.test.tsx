@@ -358,6 +358,7 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       "Modules",
       "Cycles",
       "Releases",
+      "Created by",
       "None",
     ]);
   });
@@ -442,5 +443,77 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       groupBy: "assignees",
     });
     expect(radio("Assignees")).toHaveAttribute("aria-checked", "true");
+  });
+});
+
+describe("DisplayPanel Group by Created by (C134T1)", () => {
+  function renderGroupBy(settings: DisplaySettings = DEFAULT_DISPLAY_SETTINGS) {
+    const onUpdate = vi.fn();
+    render(
+      <DisplayPanel
+        settings={settings}
+        onUpdate={onUpdate}
+        onUpdateFields={vi.fn()}
+        onReset={vi.fn()}
+        view="list"
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    const group = screen.getByRole("radiogroup", { name: "Group by" });
+    const radios = Array.from(group.querySelectorAll('[role="radio"]'));
+    const subGroup = screen.getByRole("radiogroup", {
+      name: "Sub-group by",
+    });
+    const subRadios = Array.from(
+      subGroup.querySelectorAll('[role="radio"]'),
+    );
+    return {
+      onUpdate,
+      labels: radios.map((el) => el.textContent),
+      radio: (name: string) =>
+        radios.find((el) => el.textContent === name) as HTMLElement,
+      subLabels: subRadios.map((el) => el.textContent),
+    };
+  }
+
+  it("offers Created by after Releases, before None — old options unreordered", () => {
+    const { labels } = renderGroupBy();
+    const idx = (name: string) => labels.indexOf(name);
+    expect(idx("Created by")).toBeGreaterThan(idx("Releases"));
+    expect(idx("Created by")).toBeLessThan(idx("None"));
+    expect(labels).toEqual([
+      "State",
+      "Priority",
+      "Epic",
+      "Assignees",
+      "Labels",
+      "Modules",
+      "Cycles",
+      "Releases",
+      "Created by",
+      "None",
+    ]);
+  });
+
+  it("selecting Created by reports groupBy createdBy", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Created by"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "createdBy" });
+  });
+
+  it("marks Created by checked when it is the active grouping", () => {
+    const { radio } = renderGroupBy({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "createdBy",
+    });
+    expect(radio("Created by")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does NOT add Created by to the Sub-group by options", () => {
+    const { subLabels } = renderGroupBy();
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic"]);
+    expect(subLabels).not.toContain("Created by");
   });
 });

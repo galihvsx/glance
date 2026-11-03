@@ -123,6 +123,33 @@ describe("isListDragEnabled", () => {
     ).toBe(true);
   });
 
+  it("enables for created-by grouping under Manual rank in visual mode (C134T1)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "createdBy",
+      }),
+    ).toBe(true);
+  });
+  it("disables created-by grouping under non-Manual order or PQL mode (C134T1)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "-updated_at",
+        groupBy: "createdBy",
+      }),
+    ).toBe(false);
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "createdBy",
+        pqlMode: true,
+      }),
+    ).toBe(false);
+  });
+
   it("disables cycle grouping under non-Manual order or PQL mode (C132T1)", () => {
     expect(
       isListDragEnabled({
