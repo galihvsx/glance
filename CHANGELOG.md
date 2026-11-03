@@ -5,6 +5,37 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by state groups in the list and board views (cycle 135)**
+
+- Plane's Group by offers State groups (among other dimensions);
+  glance offered state, priority, epic, assignees, labels,
+  modules, cycles, releases, created-by, none. The Display
+  panel's Group by now includes State groups for the list and
+  the board: one group/column per workflow phase in the
+  backend-fixed order (Triage, Backlog, Unstarted, Started,
+  Completed, Cancelled), single-appearance (an issue carries
+  exactly one state, and every state carries exactly one
+  group), groups resolving from the already-loaded project
+  states — no backend change, no new fetch. States with no
+  loaded state collapse into one Unknown group/column, last
+  and hidden when empty, and a raw state id is never rendered
+  as a label. State-group headers render name + count with
+  no color dot (groups have no color) and no breakdown bar.
+  "Show empty groups" synthesizes all six canonical groups
+  (a closed set, unlike creators).
+- One deliberate divergence from the cycle 132/133 move
+  pipelines, forced by the data model: there is NO move
+  pipeline for state groups. A group holds several states, so
+  a cross-group drop has no single target state — picking
+  one would silently change an issue's workflow state — so
+  list group headers are not drop targets, board cross-column
+  drops are a deliberate no-op (no state change, no
+  membership call, no sort PATCH), and within-group reorder
+  by `sort_order` only is allowed. Per-group / per-column
+  quick-add stays enabled with the first-by-sequence state
+  in the group as default, so the new row stays in the group
+  (disabled only for groups with no states at all).
+
 **Group by created-by in the list and board views (cycle 134)**
 
 - Plane's Group by offers Created by (among other dimensions);
