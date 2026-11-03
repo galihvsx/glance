@@ -200,6 +200,15 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(result.current.settings.subGroupBy).toBe("priority");
   });
 
+  it("keeps a stored assignees sub-group value (C136T1 whitelist)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "assignees" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("assignees");
+  });
+
   it("falls back to none for an unknown stored value", () => {
     localStorage.setItem(
       KEY,

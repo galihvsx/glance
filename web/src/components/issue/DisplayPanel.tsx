@@ -65,6 +65,7 @@ const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
   { value: "state", label: "State" },
   { value: "priority", label: "Priority" },
   { value: "epic", label: "Epic" },
+  { value: "assignees", label: "Assignees" },
 ];
 
 const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [

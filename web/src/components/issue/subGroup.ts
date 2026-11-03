@@ -9,8 +9,12 @@
 // showEmptyGroups on renders them and a caller with it off drops them.
 // Epic sections come from the existing groupByEpic helper (never
 // reimplemented here): multi-appearance, archived exclusion, and
-// Ungrouped-last are inherited verbatim.
+// Ungrouped-last are inherited verbatim. Assignee sections come from
+// the existing groupByAssignee helper the same way (C136T1):
+// multi-appearance, first-appearance order, and Ungrouped-last
+// (hidden when empty) are inherited verbatim.
 
+import { groupIssuesByAssignee } from "./groupByAssignee";
 import { groupIssuesByEpic } from "./groupByEpic";
 import type {
   DisplaySettings,
@@ -37,9 +41,17 @@ export interface SubGroupSection {
   targetPriority?: number;
   targetEpicId?: string;
   isUngroupedEpic?: boolean;
+  targetAssigneeId?: string;
+  isUngroupedAssignee?: boolean;
 }
 
-const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
+const SUB_GROUP_BYS: SubGroupBy[] = [
+  "none",
+  "state",
+  "priority",
+  "epic",
+  "assignees",
+];
 
 /** Ungrouped section key for state sub-grouping (issues whose state
  *  is missing from the loaded states). Epic Ungrouped reuses
@@ -69,6 +81,9 @@ export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
  *  - epic: multi-appearance via groupByEpic (an issue with N live
  *    epics appears under every epic sub-section; Ungrouped last,
  *    hidden when empty by groupByEpic itself).
+ *  - assignees: multi-appearance via groupByAssignee (an issue with
+ *    N assignees appears under every assignee sub-section; Ungrouped
+ *    last, hidden when empty by groupByAssignee itself).
  *  - none: a single section carrying all issues unchanged. */
 export function buildSubGroupSections(
   issues: Issue[],
@@ -124,6 +139,21 @@ export function buildSubGroupSections(
       title: priorityLabel(p),
       issues: issues.filter((i) => i.priority === p),
       targetPriority: p,
+    }));
+  }
+  // assignees: reuse groupByAssignee — multi-appearance,
+  // first-appearance order, Ungrouped last (hidden when empty).
+  // The assignee id IS the key verbatim; the target field is mapped
+  // once here, never parsed from the key at drop time. Ungrouped
+  // headers carry no target field — they resolve to assignee-ungroup
+  // via toHeaderTarget, never to a member.
+  if (subGroupBy === "assignees") {
+    return groupIssuesByAssignee(issues).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
+      targetAssigneeId: g.isUngrouped ? undefined : g.key,
+      isUngroupedAssignee: g.isUngrouped,
     }));
   }
   // epic: reuse groupByEpic — multi-appearance, archived exclusion,
