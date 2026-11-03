@@ -47,6 +47,7 @@ function mkStack(
   sourceAssigneeId: string | null = null,
   sourceLabelId: string | null = null,
   sourceModuleId: string | null = null,
+  sourceCycleId: string | null = null,
 ): ListDragStackRef {
   return {
     stackKey,
@@ -55,6 +56,7 @@ function mkStack(
     sourceAssigneeId,
     sourceLabelId,
     sourceModuleId,
+    sourceCycleId,
   };
 }
 
@@ -383,6 +385,14 @@ describe("executeListHeaderDrop", () => {
           events.push(`removeModule:${moduleId}`);
           return Promise.resolve();
         }),
+        addToCycle: vi.fn((cycleId: string) => {
+          events.push(`addCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        removeFromCycle: vi.fn((cycleId: string) => {
+          events.push(`removeCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -524,6 +534,14 @@ describe("assignee header drops (C129T0)", () => {
         removeFromModule: vi.fn(() => Promise.resolve()),
         invalidate: vi.fn(() => {
           events.push("invalidate");
+          return Promise.resolve();
+        }),
+        addToCycle: vi.fn((cycleId: string) => {
+          events.push(`addCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        removeFromCycle: vi.fn((cycleId: string) => {
+          events.push(`removeCycle:${cycleId}`);
           return Promise.resolve();
         }),
         onError: vi.fn((m: string) => {
@@ -959,6 +977,14 @@ describe("label header drops (C130T0)", () => {
           events.push("invalidate");
           return Promise.resolve();
         }),
+        addToCycle: vi.fn((cycleId: string) => {
+          events.push(`addCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        removeFromCycle: vi.fn((cycleId: string) => {
+          events.push(`removeCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
         onError: vi.fn((m: string) => {
           events.push(`error:${m}`);
         }),
@@ -1276,6 +1302,14 @@ describe("module header drops (C131T0)", () => {
           events.push(`removeModule:${moduleId}`);
           return Promise.resolve();
         }),
+        addToCycle: vi.fn((cycleId: string) => {
+          events.push(`addCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        removeFromCycle: vi.fn((cycleId: string) => {
+          events.push(`removeCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -1554,6 +1588,313 @@ describe("module header drops (C131T0)", () => {
       headerMap: new Map(),
       activeSortableId: "row:module:m-1:m",
       overId: "row:module:m-2:z",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+  });
+});
+
+// C132T1: cycle header drops — the module pipeline mirrored exactly
+// (add-before-remove + sort PATCH; Ungrouped = remove the displayed
+// cycle only, no PATCH), adapted from multi-appearance to
+// single-appearance: Issue.project_structure.cycle is NamedRef |
+// null, so membership IS appearance and the own-group and
+// already-member no-ops coincide.
+describe("cycle header drops (C132T1)", () => {
+  const targetRows = [
+    mkIssue("t1", { sort_order: 1024 }),
+    mkIssue("t2", { sort_order: 2048 }),
+  ];
+
+  function mockCycleDeps() {
+    const events: string[] = [];
+    return {
+      events,
+      deps: {
+        patch: vi.fn((_id: string, body: unknown) => {
+          events.push(`patch:${JSON.stringify(body)}`);
+          return Promise.resolve();
+        }),
+        addToEpic: vi.fn(() => Promise.resolve()),
+        removeFromEpic: vi.fn(() => Promise.resolve()),
+        addToAssignee: vi.fn(() => Promise.resolve()),
+        removeFromAssignee: vi.fn(() => Promise.resolve()),
+        addToLabel: vi.fn(() => Promise.resolve()),
+        removeFromLabel: vi.fn(() => Promise.resolve()),
+        addToModule: vi.fn(() => Promise.resolve()),
+        removeFromModule: vi.fn(() => Promise.resolve()),
+        addToCycle: vi.fn((cycleId: string) => {
+          events.push(`addCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        removeFromCycle: vi.fn((cycleId: string) => {
+          events.push(`removeCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        invalidate: vi.fn(() => {
+          events.push("invalidate");
+          return Promise.resolve();
+        }),
+        onError: vi.fn((m: string) => {
+          events.push(`error:${m}`);
+        }),
+      },
+    };
+  }
+
+  const withCycle = (id: string, cycle: { id: string; name: string }) =>
+    mkIssue(id, {
+      sort_order: 512,
+      project_structure: { cycle },
+    } as Partial<Issue>);
+
+  it("toHeaderTarget maps cycle fields", () => {
+    expect(toHeaderTarget({ targetCycleId: "c-1" })).toEqual({
+      kind: "cycle",
+      cycleId: "c-1",
+    });
+    expect(toHeaderTarget({ isUngroupedCycle: true })).toEqual({
+      kind: "cycle-ungrouped",
+    });
+  });
+
+  it("header ids are namespaced and disjoint from row ids", () => {
+    const h = headerDropId("c-1", { kind: "cycle", cycleId: "c-2" });
+    const u = headerDropId("cycle:ungrouped", { kind: "cycle-ungrouped" });
+    expect(h).toBe("header:c-1:cycle:c-2");
+    expect(u).toBe("header:cycle:ungrouped:cycle:ungrouped");
+    expect(h.startsWith("header:")).toBe(true);
+    expect(listSortableId("c-1", "i-1")).not.toBe(h);
+  });
+
+  it("cycle header: add-before-remove + sort PATCH, from a cycle source", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withCycle("d", { id: "c-1", name: "Sprint 1" }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      sourceCycleId: "c-1",
+      target: { kind: "cycle", cycleId: "c-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "cycle-move",
+      addCycleId: "c-2",
+      removeCycleId: "c-1",
+      sortOrder: 3072,
+    });
+  });
+
+  it("cycle header: no remove when the appearance came from Ungrouped", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", { sort_order: 512 }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      sourceCycleId: null,
+      target: { kind: "cycle", cycleId: "c-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "cycle-move",
+      addCycleId: "c-2",
+      removeCycleId: null,
+      sortOrder: 3072,
+    });
+  });
+
+  it("cycle header: own-group appearance is a silent no-op", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withCycle("d", { id: "c-2", name: "Sprint 2" }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      sourceCycleId: "c-2",
+      target: { kind: "cycle", cycleId: "c-2" },
+      targetRows,
+    });
+    // Already carries the target cycle: silent no-op, not a move.
+    expect(plan).toBeNull();
+  });
+
+  it("cycle header: already carrying the target cycle is a silent no-op, even from another cycle group", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: withCycle("d", { id: "c-2", name: "Sprint 2" }),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: null,
+        sourceModuleId: null,
+        sourceCycleId: "c-1",
+        target: { kind: "cycle", cycleId: "c-2" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("cycle Ungrouped: removes the displayed cycle only, no sort PATCH", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withCycle("d", { id: "c-1", name: "Sprint 1" }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      sourceCycleId: "c-1",
+      target: { kind: "cycle-ungrouped" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "cycle-ungroup",
+      removeCycleIds: ["c-1"],
+    });
+  });
+
+  it("cycle Ungrouped: already-cycleless is a silent no-op", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {}),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: null,
+        sourceModuleId: null,
+        sourceCycleId: null,
+        target: { kind: "cycle-ungrouped" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("execute cycle-move: add, then remove, then PATCH {sort_order} only, then invalidate", async () => {
+    const { events, deps } = mockCycleDeps();
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "cycle-move",
+        addCycleId: "c-2",
+        removeCycleId: "c-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addCycle:c-2",
+      "removeCycle:c-1",
+      'patch:{"sort_order":3072}',
+      "invalidate",
+    ]);
+    // The sort PATCH body carries exactly {sort_order} — never a cycle id.
+    expect(deps.patch).toHaveBeenCalledWith("d", { sort_order: 3072 });
+  });
+
+  it("execute cycle-move: an add failure aborts remove and PATCH, surfaces honestly", async () => {
+    const { events, deps } = mockCycleDeps();
+    deps.addToCycle.mockRejectedValueOnce(new Error("add boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "cycle-move",
+        addCycleId: "c-2",
+        removeCycleId: "c-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual(["error:add boom", "invalidate"]);
+    expect(deps.removeFromCycle).not.toHaveBeenCalled();
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute cycle-move: a remove failure after a successful add aborts the PATCH and surfaces honestly", async () => {
+    const { events, deps } = mockCycleDeps();
+    deps.removeFromCycle.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "cycle-move",
+        addCycleId: "c-2",
+        removeCycleId: "c-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    // The row is now in both cycles — reported, never hidden,
+    // never silently retried.
+    expect(events).toEqual([
+      "addCycle:c-2",
+      "error:remove boom",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute cycle-ungroup: one remove for the displayed cycle, no PATCH", async () => {
+    const { events, deps } = mockCycleDeps();
+    await executeListHeaderDrop(
+      "d",
+      { type: "cycle-ungroup", removeCycleIds: ["c-1"] },
+      deps,
+    );
+    expect(events).toEqual(["removeCycle:c-1", "invalidate"]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute cycle-ungroup: a failed remove surfaces honestly", async () => {
+    const { events, deps } = mockCycleDeps();
+    deps.removeFromCycle.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      { type: "cycle-ungroup", removeCycleIds: ["c-1"] },
+      deps,
+    );
+    expect(events).toEqual(["error:remove boom", "invalidate"]);
+    expect(deps.removeFromCycle).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch routes a cycle header drop to the reassignment pipeline regardless of the reorder gate", () => {
+    const stack = mkStack("c-1", [mkIssue("a")], null, null, null, null, "c-1");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:c-1:a", mkRef("a", mkIssue("a"), stack)],
+    ]);
+    const headerMap = new Map<string, ListHeaderDropInfo>([
+      [
+        "header:c-2:cycle:c-2",
+        {
+          target: { kind: "cycle", cycleId: "c-2" },
+          targetRows: [],
+        },
+      ],
+    ]);
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:c-1:a",
+      overId: "header:c-2:cycle:c-2",
+      sortableMap,
+      headerMap,
+      reorderEnabled: false,
+      onRowDrop: vi.fn(),
+      onHeaderDrop,
+    });
+    expect(onHeaderDrop).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch keeps a cross-stack row drop a no-op under cycle grouping", () => {
+    const stackA = mkStack("c-1", [mkIssue("a")], null, null, null, null, "c-1");
+    const stackB = mkStack("c-2", [mkIssue("b")], null, null, null, null, "c-2");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:c-1:a", mkRef("a", mkIssue("a"), stackA)],
+      ["row:c-2:b", mkRef("b", mkIssue("b"), stackB)],
+    ]);
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:c-1:a",
+      overId: "row:c-2:b",
+      sortableMap,
+      headerMap: new Map(),
       reorderEnabled: true,
       onRowDrop,
       onHeaderDrop: vi.fn(),

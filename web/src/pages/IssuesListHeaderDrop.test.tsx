@@ -493,3 +493,258 @@ describe("assignee grouping (C129T0)", () => {
     expect(postSpy.mock.calls[0][0]).toBe(`${ENG}/issues`);
   });
 });
+
+describe("cycle grouping (C132T1)", () => {
+  const SPRINT_1 = { id: "c-1", name: "Sprint 1" };
+  const SPRINT_2 = { id: "c-2", name: "Sprint 2" };
+
+  function cycleIssues() {
+    return [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { cycle: SPRINT_1, modules: [] },
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        project_structure: { cycle: SPRINT_2, modules: [] },
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
+        project_structure: { cycle: null, modules: [] },
+      }),
+    ];
+  }
+
+  it("cycle grouping: single-appearance rows, one grip each, headers in first-appearance order", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // Single-appearance: each issue grips exactly once (3, not 4).
+    expect(grips()).toHaveLength(3);
+    expect(screen.getByRole("heading", { name: "Sprint 1" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sprint 2" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ungrouped" })).toBeInTheDocument();
+  });
+
+  it("cycle grouping: cycle + Ungrouped headers are droppable, with no color dot", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:c-1:cycle:c-1",
+      "header:c-2:cycle:c-2",
+      "header:cycle:ungrouped:cycle:ungrouped",
+    ]);
+  });
+
+  it("cycle grouping: no Ungrouped header when every issue has a cycle", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { cycle: SPRINT_1, modules: [] },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("First");
+    expect(dropIds()).toEqual(["header:c-1:cycle:c-1"]);
+    expect(
+      screen.queryByRole("heading", { name: "Ungrouped" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("cycle grouping: grips appear even under a non-Manual order (reassign-only)", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "-updated_at",
+    });
+    mockState.issues = cycleIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(grips()).toHaveLength(3);
+  });
+
+  it("cycle grouping: PQL mode disables grips and droppables (unchanged rule)", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    renderIssues("/w/acme/p/ENG?pql=state%20%3D%20Todo");
+    await screen.findByText("Third");
+    expect(grips()).toHaveLength(0);
+    expect(dropIds()).toHaveLength(0);
+  });
+
+  it("sub-grouped cycles+state: primary cycle headers and state sub-headers are droppable", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "state",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // 3 primary cycle headers (incl. Ungrouped) + 2 state sub-headers
+    // per primary group (Todo, Doing — showEmptyGroups renders empties).
+    expect(dropIds()).toHaveLength(9);
+    expect(dropIds()).toContain("header:c-1:cycle:c-1");
+    expect(dropIds()).toContain("header:cycle:ungrouped:cycle:ungrouped");
+    expect(dropIds()).toContain("header:c-1::s-todo:state:s-todo");
+    // A state sub-header renders inside a drop zone.
+    const todo = screen.getAllByRole("heading", { name: "Todo" })[0];
+    expect(todo.closest('[data-testid="header-dropzone"]')).not.toBeNull();
+  });
+
+  it("cycle group quick-add: create, then POST to the group cycle; attach failure surfaces an error", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/cycles/c-1/issues`)
+        return Promise.reject(new Error("attach boom"));
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    // First group's (Sprint 1's) quick-add.
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByText("attach boom");
+    expect(postSpy).toHaveBeenCalledWith(
+      `${ENG}/cycles/c-1/issues`,
+      expect.objectContaining({ issue_ids: ["i-new"] }),
+    );
+  });
+
+  it("cycle group quick-add: success attaches to the group cycle", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/cycles/c-1/issues`)
+        return Promise.resolve({ added: 1 });
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith(
+        `${ENG}/cycles/c-1/issues`,
+        { issue_ids: ["i-new"] },
+      ),
+    );
+  });
+
+  it("cycle Ungrouped quick-add: plain create, no attach call", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = cycleIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    // Last group's (Ungrouped's) quick-add.
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[buttons.length - 1]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(1));
+    expect(postSpy.mock.calls[0][0]).toBe(`${ENG}/issues`);
+  });
+});
+
+describe("cycle expand-to-full-form (C132T1)", () => {
+  it("expand keeps title + group cycle via the pendingCycleRef attach-after-create path", async () => {
+    setSettings({
+      groupBy: "cycles",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: {
+          cycle: { id: "c-1", name: "Sprint 1" },
+          modules: [],
+        },
+      }),
+    ];
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/cycles/c-1/issues`)
+        return Promise.resolve({ added: 1 });
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("First");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open full create form" }));
+    // The full form opens with the typed title kept.
+    const title = screen.getByLabelText("Title") as HTMLInputElement;
+    expect(title.value).toBe("Brand new");
+    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith(
+        `${ENG}/cycles/c-1/issues`,
+        { issue_ids: ["i-new"] },
+      ),
+    );
+  });
+});
