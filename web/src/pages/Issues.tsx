@@ -109,6 +109,7 @@ import {
   groupIssuesByCreatedBy,
   type CreatorLookupEntry,
 } from "../components/issue/groupByCreatedBy";
+import { groupIssuesByStateGroup } from "../components/issue/groupByStateGroup";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -1369,6 +1370,16 @@ export default function Issues() {
   // groupingMembersReady) so first paint never flashes every group
   // as "Unknown" and never renders a raw creator id as a label.
   const groupByCreatedBy = settings.groupBy === "createdBy";
+  // C135T1: state-group grouping needs no skip either — the group
+  // resolves from the loaded project states (IssueState.group);
+  // states load with the page, so unlike created-by there is no
+  // pending-lookup flash to gate on. The state-by-id lookup below
+  // feeds groupIssuesByStateGroup (state id -> group string).
+  const groupByStateGroups = settings.groupBy === "stateGroups";
+  const stateGroupById = useMemo(
+    () => new Map((statesQuery.data ?? []).map((s) => [s.id, s.group])),
+    [statesQuery.data],
+  );
   const membersById = useMemo(
     () =>
       new Map<string, CreatorLookupEntry>(
@@ -1394,7 +1405,8 @@ export default function Issues() {
     groupByModules ||
     groupByCycles ||
     groupByReleases ||
-    groupByCreatedBy;
+    groupByCreatedBy ||
+    groupByStateGroups;
 
   interface IssueGroup {
     key: string;
@@ -1588,6 +1600,41 @@ export default function Issues() {
             stateId: sortedStates[0]?.id,
           }))
         : [];
+    } else if (groupByStateGroups) {
+      // C135T1: group by state group (see groupByStateGroup.ts for
+      // the single-appearance + canonical-six-order +
+      // Unknown-last/hidden-when-empty semantics). The header
+      // renders name + count with NO color dot (groups have no
+      // color — no color/stateGroup field is set, so the state-dot
+      // branch stays off) and NO breakdown bar (no byGroup).
+      // Deliberately NO target*/isUngrouped* fields: a group holds
+      // several states, so a cross-group drop has no single target
+      // state — toHeaderTarget returns null and these headers are
+      // NOT drop targets (no move pipeline). Per-group quick-add
+      // IS enabled: the default state is the first-by-sequence
+      // state in the group (sortedStates is sequence-sorted), so
+      // the new row STAYS in the group. A group with no states at
+      // all (possible under "Show empty groups" synthesis, or the
+      // Unknown group whose states are not loaded) gets stateId
+      // undefined, and the QuickAdd row below renders disabled.
+      // "Show empty groups" synthesizes all six canonical groups
+      // via the helper's includeEmptyGroups option (closed set);
+      // Unknown renders only when it has rows, in both modes.
+      // Sub-group sections under state-group primaries use the
+      // existing C123 splitter exactly as under created-by
+      // primaries; a sub-group header keeps its OWN dimension's
+      // drop behavior (state/priority/epic) — that pipeline moves
+      // the sub-dimension, never the group.
+      gs = groupIssuesByStateGroup(issues, stateGroupById, {
+        includeEmptyGroups: settings.showEmptyGroups,
+      }).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        stateId: g.isUnknown
+          ? undefined
+          : sortedStates.find((s) => s.group === g.group)?.id,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1602,8 +1649,10 @@ export default function Issues() {
     groupByCycles,
     groupByReleases,
     groupByCreatedBy,
+    groupByStateGroups,
     groupingMembersReady,
     membersById,
+    stateGroupById,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1714,6 +1763,13 @@ export default function Issues() {
   // deliverable (a pure sort_order PATCH, no creator change);
   // cross-group reorder stays disabled (dispatch keeps row drops
   // stack-local) and headers are not drop targets at all.
+  // C135T1: the same boundary holds under state-group grouping —
+  // pointer/touch within-group reorder is the deliverable (a pure
+  // sort_order PATCH, no state change, with the C128 mixed-state
+  // gap-collapse recovery); cross-group reorder stays disabled
+  // (dispatch keeps row drops stack-local) and headers are not
+  // drop targets at all (a group holds several states, so a
+  // cross-group drop has no single target state).
   // Nested subtask rows are NOT draggable (C124/C126
   // precedent, unchanged — they render via NestedListSubtaskRow
   // outside any SortableIssueRow).
@@ -1725,7 +1781,9 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByCreatedBy
+  const effectiveGroupBy = groupByStateGroups
+    ? "stateGroups"
+    : groupByCreatedBy
     ? "createdBy"
     : groupByReleases
     ? "releases"
@@ -1826,6 +1884,11 @@ export default function Issues() {
   // immutable, so no sourceCreatorId exists and no move entries are
   // registered for created-by groups (their headers carry no target
   // fields, so registerHeader no-ops for them).
+  // C135T1: there is NO state-group appearance either — a group
+  // holds several states, so no single target state exists and no
+  // move entries are registered for state-group groups (their
+  // headers carry no target fields, so registerHeader no-ops for
+  // them, exactly as for created-by groups).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -2782,10 +2845,19 @@ export default function Issues() {
                       creator's group would immediately leave that
                       group. The global add (page header) stays
                       available; expand-to-full-form carries nothing
-                      for created-by. */}
+                      for created-by.
+                      C135T1: per-group quick-add is ENABLED under
+                      state-group grouping — the group's stateId is
+                      the first-by-sequence state in the group, so
+                      the new row stays in the group. It renders
+                      DISABLED only for a group with no states at
+                      all (stateless synthesized groups, and the
+                      Unknown group whose states are not loaded):
+                      there is no state to default to. */}
                   {!groupByCreatedBy && (
                   <QuickAdd
                     className="mt-1"
+                    disabled={groupByStateGroups && !g.stateId}
                     onCreate={(name) =>
                       quickCreate(
                         g.stateId ?? "",

@@ -60,7 +60,19 @@ export interface DisplayFields {
  * hidden when empty). Creator groups carry no color — headers render
  * name + count with no color dot. The creator NAME does not ride the
  * row: it resolves from the workspace members lookup (see
- * groupByCreatedBy.ts), never from a raw user id. */
+ * groupByCreatedBy.ts), never from a raw user id.
+ * C135T1: "stateGroups" groups list rows by state group
+ * (SINGLE-appearance: an issue carries exactly one state_id, and
+ * every state carries exactly one group; the group resolves from a
+ * state-by-id lookup, see groupByStateGroup.ts). The canonical six
+ * groups emit in backend-fixed order (triage, backlog, unstarted,
+ * started, completed, cancelled); states with no loaded state
+ * collapse into ONE "Unknown" group, last, hidden when empty.
+ * State-group headers render name + count with no color dot and
+ * no breakdown bar. A group holds several states, so cross-group
+ * drops have no single target state: headers are NOT drop targets
+ * (no move pipeline), while within-group reorder by sort_order
+ * only is allowed. */
 export type GroupBy =
   | "state"
   | "priority"
@@ -71,6 +83,7 @@ export type GroupBy =
   | "cycles"
   | "releases"
   | "createdBy"
+  | "stateGroups"
   | "none";
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
@@ -138,6 +151,7 @@ const GROUP_BYS: GroupBy[] = [
   "cycles",
   "releases",
   "createdBy",
+  "stateGroups",
   "none",
 ];
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];

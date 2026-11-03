@@ -359,6 +359,7 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       "Cycles",
       "Releases",
       "Created by",
+      "State groups",
       "None",
     ]);
   });
@@ -482,7 +483,8 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
     const { labels } = renderGroupBy();
     const idx = (name: string) => labels.indexOf(name);
     expect(idx("Created by")).toBeGreaterThan(idx("Releases"));
-    expect(idx("Created by")).toBeLessThan(idx("None"));
+    expect(idx("Created by")).toBeLessThan(idx("State groups"));
+    expect(idx("State groups")).toBeLessThan(idx("None"));
     expect(labels).toEqual([
       "State",
       "Priority",
@@ -493,6 +495,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
       "Cycles",
       "Releases",
       "Created by",
+      "State groups",
       "None",
     ]);
   });
@@ -515,5 +518,25 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
     const { subLabels } = renderGroupBy();
     expect(subLabels).toEqual(["None", "State", "Priority", "Epic"]);
     expect(subLabels).not.toContain("Created by");
+  });
+
+  it("selecting State groups reports groupBy stateGroups", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("State groups"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "stateGroups" });
+  });
+
+  it("marks State groups checked when it is the active grouping", () => {
+    const { radio } = renderGroupBy({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "stateGroups",
+    });
+    expect(radio("State groups")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does NOT add State groups to the Sub-group by options", () => {
+    const { subLabels } = renderGroupBy();
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic"]);
+    expect(subLabels).not.toContain("State groups");
   });
 });

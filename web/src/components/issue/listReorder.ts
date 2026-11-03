@@ -8,10 +8,10 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * transport (api + queryClient); this module owns the rules, so the
  * pipeline is unit-testable without dnd-kit or a rendered page.
  *
- * Enable rule (plan §Scope, C128T0, extended C129T0, C130T0, C131T0, C132T1, C133T1, C134T1): drag exists ONLY when the visual
+ * Enable rule (plan §Scope, C128T0, extended C129T0, C130T0, C131T0, C132T1, C133T1, C134T1, C135T1): drag exists ONLY when the visual
  * stack order equals a sort_order sequence — Manual rank order, visual
  * mode (no PQL ORDER BY winning server-side), and an EFFECTIVE
- * grouping of none, state, priority, epic, assignees, labels, modules, cycles, releases, or createdBy. The caller passes the
+ * grouping of none, state, priority, epic, assignees, labels, modules, cycles, releases, createdBy, or stateGroups. The caller passes the
  * effective grouping, not the raw setting: a priority/state grouping
  * skipped by its single-value filter renders flat, so it counts as
  * flat here. Priority/epic/assignee grouping mixes states inside one stack
@@ -34,7 +34,13 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * single-appearance but mix states exactly like release stacks, so
  * the same recovery applies verbatim (C134T1) — a within-group
  * reorder PATCHes only {sort_order}, never the creator, which is
- * immutable and has no reassignment pipeline.
+ * immutable and has no reassignment pipeline. State-group stacks
+ * are single-appearance but mix states exactly like created-by
+ * stacks, so the same recovery applies verbatim (C135T1) — a
+ * within-group reorder PATCHes only {sort_order}, never the state
+ * group (a group holds several states, so a cross-group drop has
+ * no single target state and stays disabled: dispatch keeps row
+ * drops stack-local and the headers carry no drop-target fields).
  */
 export function isListDragEnabled(args: {
   orderBy: OrderBy;
@@ -54,7 +60,8 @@ export function isListDragEnabled(args: {
       args.groupBy === "modules" ||
       args.groupBy === "cycles" ||
       args.groupBy === "releases" ||
-      args.groupBy === "createdBy")
+      args.groupBy === "createdBy" ||
+      args.groupBy === "stateGroups")
   );
 }
 
