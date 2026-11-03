@@ -5,6 +5,45 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by cycle in the list and board views, including the backend remove endpoint (cycle 132)**
+
+- Plane's Group by offers Cycle (among other dimensions);
+  glance offered state, priority, epic, assignees, labels,
+  modules, none. The Display panel's Group by now includes
+  Cycles for the list and the board: one group/column per
+  cycle in first-appearance order, single-appearance (an issue
+  carries exactly one displayed cycle — the server resolves
+  the alphabetically-first cycle name among the issue's
+  cycle memberships — or none), Ungrouped last and hidden
+  when empty, names taken from the row itself. Cycles have
+  no color, so headers render name + count with no color
+  dot — nothing invented.
+- Backend: the cycle API was add-only, so this cycle adds
+  the missing `DELETE /cycles/:cycleID/issues` endpoint
+  (idempotent, Member 15+, no partial deletes on a bad id),
+  mirroring the module unassign endpoint, plus its OpenAPI
+  entry. Without it, cycle grouping could only offer
+  attach-only drops.
+- List: header drops move, mirroring the cycle 130/131
+  pipeline — add target cycle, remove the dragged row's
+  source cycle, PATCH bottom `sort_order`; the Ungrouped
+  header removes the displayed cycle only, with no sort
+  PATCH. Reorder is enabled under cycle grouping with the
+  cycle 128 mixed-state gap-collapse recovery. Per-group
+  quick-add attaches the cycle after create; expand-to-
+  full-form carries the cycle the same way.
+- Board: columns per cycle with compound card ids; cross-
+  column drops MOVE (add target, then remove source) — a
+  deliberate divergence from the label/module attach-only
+  precedent, forced by the single-value row data: attach-
+  only would leave the card displayed under the wrong
+  cycle. Ungrouped drops stay a deliberate no-op, as for
+  every other board dimension. Within-column drags reorder
+  by `sort_order` only. Drops never change state, so no
+  workflow transition guard applies. Per-column quick-add
+  attaches the cycle after create; expand-to-full-form
+  carries the cycle via the list page's bridge.
+
 **Group by modules in the list and board views (cycle 131)**
 
 - Plane's Group by offers Module (among other dimensions);
