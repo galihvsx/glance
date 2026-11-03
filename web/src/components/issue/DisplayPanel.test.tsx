@@ -343,7 +343,35 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
 
   it("offers Assignees after Epic, before None — old options unreordered", () => {
     const { labels } = renderGroupBy();
-    expect(labels).toEqual(["State", "Priority", "Epic", "Assignees", "None"]);
+    expect(labels).toEqual([
+      "State",
+      "Priority",
+      "Epic",
+      "Assignees",
+      "Labels",
+      "None",
+    ]);
+  });
+
+  it("offers Labels after Assignees, before None", () => {
+    const { labels } = renderGroupBy();
+    const idx = (name: string) => labels.indexOf(name);
+    expect(idx("Labels")).toBeGreaterThan(idx("Assignees"));
+    expect(idx("Labels")).toBeLessThan(idx("None"));
+  });
+
+  it("selecting Labels reports groupBy labels", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Labels"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "labels" });
+  });
+
+  it("marks Labels checked when it is the active grouping", () => {
+    const { radio } = renderGroupBy({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "labels",
+    });
+    expect(radio("Labels")).toHaveAttribute("aria-checked", "true");
   });
 
   it("selecting Assignees reports groupBy assignees", () => {

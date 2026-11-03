@@ -2,10 +2,12 @@ import { SORT_ORDER_STEP } from "../../lib/sortOrder";
 import type { Issue } from "../../lib/types";
 import { assigneesOf } from "./groupByAssignee";
 import { liveEpics } from "./groupByEpic";
+import { labelsOf } from "./groupByLabel";
 
 /**
  * List-view group-header drop targets (C127T0, extended C129T0 with
- * assignee targets mirroring the epic ones exactly). The page component owns
+ * assignee targets mirroring the epic ones exactly, C130T0 with
+ * label targets mirroring the assignee ones exactly). The page component owns
  * transport (api + queryClient); this module owns the rules, so the
  * reassignment pipeline is unit-testable without dnd-kit or a rendered
  * page — the listReorder.ts (C126) split, applied to the second drag
@@ -29,10 +31,12 @@ export type HeaderTarget =
   | { kind: "epic"; epicId: string }
   | { kind: "epic-ungrouped" }
   | { kind: "assignee"; assigneeId: string }
-  | { kind: "assignee-ungrouped" };
+  | { kind: "assignee-ungrouped" }
+  | { kind: "label"; labelId: string }
+  | { kind: "label-ungrouped" };
 
 /** Explicit target-value fields carried on IssueGroup / SubGroupSection
- *  (C127T0, extended C129T0). A section with none of these names no assignable value —
+ *  (C127T0, extended C129T0, C130T0). A section with none of these names no assignable value —
  *  today only the state-Ungrouped sub-header — and is never droppable. */
 export interface HeaderTargetFields {
   targetStateId?: string;
@@ -41,6 +45,8 @@ export interface HeaderTargetFields {
   isUngroupedEpic?: boolean;
   targetAssigneeId?: string;
   isUngroupedAssignee?: boolean;
+  targetLabelId?: string;
+  isUngroupedLabel?: boolean;
 }
 
 /** Map a group/section's target fields to its header target, or null
@@ -50,6 +56,7 @@ export function toHeaderTarget(
 ): HeaderTarget | null {
   if (fields.isUngroupedEpic) return { kind: "epic-ungrouped" };
   if (fields.isUngroupedAssignee) return { kind: "assignee-ungrouped" };
+  if (fields.isUngroupedLabel) return { kind: "label-ungrouped" };
   if (fields.targetStateId !== undefined)
     return { kind: "state", stateId: fields.targetStateId };
   if (fields.targetPriority !== undefined)
@@ -58,6 +65,8 @@ export function toHeaderTarget(
     return { kind: "epic", epicId: fields.targetEpicId };
   if (fields.targetAssigneeId !== undefined)
     return { kind: "assignee", assigneeId: fields.targetAssigneeId };
+  if (fields.targetLabelId !== undefined)
+    return { kind: "label", labelId: fields.targetLabelId };
   return null;
 }
 
@@ -102,6 +111,10 @@ export function headerDropId(
       return `header:${sectionKey}:assignee:${target.assigneeId}`;
     case "assignee-ungrouped":
       return `header:${sectionKey}:assignee:ungrouped`;
+    case "label":
+      return `header:${sectionKey}:label:${target.labelId}`;
+    case "label-ungrouped":
+      return `header:${sectionKey}:label:ungrouped`;
   }
 }
 
@@ -153,7 +166,16 @@ export type ListHeaderDropPlan =
       removeAssigneeId: string | null;
       sortOrder: number;
     }
-  | { type: "assignee-ungroup"; removeAssigneeIds: string[] };
+  | { type: "assignee-ungroup"; removeAssigneeIds: string[] }
+  | {
+      type: "label-move";
+      addLabelId: string;
+      /** Null when the dragged appearance came from Ungrouped or
+       *  from a non-label grouping (nothing to remove). */
+      removeLabelId: string | null;
+      sortOrder: number;
+    }
+  | { type: "label-ungroup"; removeLabelIds: string[] };
 
 /**
  * Resolve a header drop to its exact call sequence (C127T0). All
@@ -177,6 +199,13 @@ export type ListHeaderDropPlan =
  *   appearance came from an assignee group different from the target.
  * - assignee Ungrouped: remove from ALL current assignees, NO
  *   sort_order PATCH (same rationale as epic Ungrouped).
+ * - label (C130T0): mirrors the assignee case exactly — add-before-
+ *   remove + sort PATCH; no-op when already labeled with the target
+ *   label (multi-label rows included — membership, not
+ *   appearance, decides). Remove runs only when the dragged
+ *   appearance came from a label group different from the target.
+ * - label Ungrouped: remove from ALL current labels, NO
+ *   sort_order PATCH (same rationale as epic/assignee Ungrouped).
  */
 export function resolveListHeaderDrop(args: {
   dragged: Issue;
@@ -186,11 +215,21 @@ export function resolveListHeaderDrop(args: {
   /** Assignee group the dragged appearance came from, or null
    *  (non-assignee grouping, or an Ungrouped appearance). */
   sourceAssigneeId?: string | null;
+  /** Label group the dragged appearance came from, or null
+   *  (non-label grouping, or an Ungrouped appearance). */
+  sourceLabelId?: string | null;
   target: HeaderTarget;
   /** The header section's loaded rows (for the bottom-append math). */
   targetRows: Issue[];
 }): ListHeaderDropPlan | null {
-  const { dragged, sourceEpicId, sourceAssigneeId, target, targetRows } = args;
+  const {
+    dragged,
+    sourceEpicId,
+    sourceAssigneeId,
+    sourceLabelId,
+    target,
+    targetRows,
+  } = args;
   switch (target.kind) {
     case "state":
       if (dragged.state_id === target.stateId) return null;
@@ -248,6 +287,26 @@ export function resolveListHeaderDrop(args: {
         removeAssigneeIds: current.map((a) => a.id),
       };
     }
+    case "label": {
+      if (labelsOf(dragged).some((l) => l.id === target.labelId)) return null;
+      return {
+        type: "label-move",
+        addLabelId: target.labelId,
+        removeLabelId:
+          sourceLabelId != null && sourceLabelId !== target.labelId
+            ? sourceLabelId
+            : null,
+        sortOrder: bottomSortOrder(targetRows, dragged),
+      };
+    }
+    case "label-ungrouped": {
+      const current = labelsOf(dragged);
+      if (current.length === 0) return null;
+      return {
+        type: "label-ungroup",
+        removeLabelIds: current.map((l) => l.id),
+      };
+    }
   }
 }
 
@@ -269,6 +328,10 @@ export interface ListHeaderDropDeps {
     assigneeId: string,
     issueId: string,
   ) => Promise<unknown>;
+  /** POST .../issues/{id}/labels/{labelId} (idempotent, no body). */
+  addToLabel: (labelId: string, issueId: string) => Promise<unknown>;
+  /** DELETE .../issues/{id}/labels/{labelId} (idempotent, no body). */
+  removeFromLabel: (labelId: string, issueId: string) => Promise<unknown>;
   /** Invalidate ["issues", slug, identifier] so the moved row appears
    *  in its new group from the server's state, not local optimism. */
   invalidate: () => Promise<unknown>;
@@ -277,14 +340,16 @@ export interface ListHeaderDropDeps {
 }
 
 /**
- * Execute a resolved header-drop plan (C127T0, extended C129T0). Call order is the
- * contract: epic/assignee add BEFORE remove, sort PATCH last. Any failure
- * aborts the remaining calls and surfaces honestly — a remove failure
- * after a successful add leaves the row in both epics / assigned to
- * both members, reported, never hidden or silently retried. Invalidation runs after success
- * AND after failure so the list shows the server's state either way.
- * No optimistic group-move rendering: the page waits for refetch
- * (the simpler correct choice the plan allows).
+ * Execute a resolved header-drop plan (C127T0, extended C129T0,
+ * C130T0). Call order is the contract: epic/assignee/label add
+ * BEFORE remove, sort PATCH last. Any failure aborts the remaining
+ * calls and surfaces honestly — a remove failure after a successful
+ * add leaves the row in both epics / assigned to both members /
+ * labeled with both labels, reported, never hidden or silently
+ * retried. Invalidation runs after success AND after failure so
+ * the list shows the server's state either way. No optimistic
+ * group-move rendering: the page waits for refetch (the simpler
+ * correct choice the plan allows).
  */
 export async function executeListHeaderDrop(
   issueId: string,
@@ -306,6 +371,16 @@ export async function executeListHeaderDrop(
         await deps.removeFromAssignee(plan.removeAssigneeId, issueId);
       }
       await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "label-move") {
+      await deps.addToLabel(plan.addLabelId, issueId);
+      if (plan.removeLabelId !== null) {
+        await deps.removeFromLabel(plan.removeLabelId, issueId);
+      }
+      await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "label-ungroup") {
+      for (const labelId of plan.removeLabelIds) {
+        await deps.removeFromLabel(labelId, issueId);
+      }
     } else if (plan.type === "assignee-ungroup") {
       for (const assigneeId of plan.removeAssigneeIds) {
         await deps.removeFromAssignee(assigneeId, issueId);
@@ -323,13 +398,15 @@ export async function executeListHeaderDrop(
   await deps.invalidate();
 }
 
-/** One rendered row stack: its rows, and the epic/assignee group its
- *  appearances belong to (null unless epic-/assignee-grouped). */
+/** One rendered row stack: its rows, and the epic/assignee/label
+ *  group its appearances belong to (null unless epic-/assignee-/
+ *  label-grouped). */
 export interface ListDragStackRef {
   stackKey: string;
   rows: Issue[];
   sourceEpicId: string | null;
   sourceAssigneeId: string | null;
+  sourceLabelId: string | null;
 }
 
 /** One draggable row appearance, as the page's drop maps record it. */

@@ -45,8 +45,9 @@ function mkStack(
   rows: Issue[],
   sourceEpicId: string | null = null,
   sourceAssigneeId: string | null = null,
+  sourceLabelId: string | null = null,
 ): ListDragStackRef {
-  return { stackKey, rows, sourceEpicId, sourceAssigneeId };
+  return { stackKey, rows, sourceEpicId, sourceAssigneeId, sourceLabelId };
 }
 
 function mkRef(
@@ -358,6 +359,14 @@ describe("executeListHeaderDrop", () => {
           events.push(`removeAssignee:${assigneeId}`);
           return Promise.resolve();
         }),
+        addToLabel: vi.fn((labelId: string) => {
+          events.push(`addLabel:${labelId}`);
+          return Promise.resolve();
+        }),
+        removeFromLabel: vi.fn((labelId: string) => {
+          events.push(`removeLabel:${labelId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -485,6 +494,14 @@ describe("assignee header drops (C129T0)", () => {
         }),
         removeFromAssignee: vi.fn((assigneeId: string) => {
           events.push(`removeAssignee:${assigneeId}`);
+          return Promise.resolve();
+        }),
+        addToLabel: vi.fn((labelId: string) => {
+          events.push(`addLabel:${labelId}`);
+          return Promise.resolve();
+        }),
+        removeFromLabel: vi.fn((labelId: string) => {
+          events.push(`removeLabel:${labelId}`);
           return Promise.resolve();
         }),
         invalidate: vi.fn(() => {
@@ -884,5 +901,324 @@ describe("dispatchListDragEnd", () => {
     dispatchListDragEnd({ ...args, activeSortableId: "row:nope:x", overId: "row:s-todo:b" });
     expect(onRowDrop).not.toHaveBeenCalled();
     expect(onHeaderDrop).not.toHaveBeenCalled();
+  });
+});
+
+// C130T0: label header drops — the assignee pipeline mirrored exactly
+// (add-before-remove + sort PATCH; Ungrouped = remove-all, no PATCH).
+describe("label header drops (C130T0)", () => {
+  const targetRows = [
+    mkIssue("t1", { sort_order: 1024 }),
+    mkIssue("t2", { sort_order: 2048 }),
+  ];
+
+  // Local copy of the execute describe's mock factory (that one is
+  // scoped to its own describe block).
+  function mockLabelDeps() {
+    const events: string[] = [];
+    return {
+      events,
+      deps: {
+        patch: vi.fn((_id: string, body: unknown) => {
+          events.push(`patch:${JSON.stringify(body)}`);
+          return Promise.resolve();
+        }),
+        addToEpic: vi.fn(() => Promise.resolve()),
+        removeFromEpic: vi.fn(() => Promise.resolve()),
+        addToAssignee: vi.fn(() => Promise.resolve()),
+        removeFromAssignee: vi.fn(() => Promise.resolve()),
+        addToLabel: vi.fn((labelId: string) => {
+          events.push(`addLabel:${labelId}`);
+          return Promise.resolve();
+        }),
+        removeFromLabel: vi.fn((labelId: string) => {
+          events.push(`removeLabel:${labelId}`);
+          return Promise.resolve();
+        }),
+        invalidate: vi.fn(() => {
+          events.push("invalidate");
+          return Promise.resolve();
+        }),
+        onError: vi.fn((m: string) => {
+          events.push(`error:${m}`);
+        }),
+      },
+    };
+  }
+
+  it("toHeaderTarget maps label fields", () => {
+    expect(toHeaderTarget({ targetLabelId: "l-1" })).toEqual({
+      kind: "label",
+      labelId: "l-1",
+    });
+    expect(toHeaderTarget({ isUngroupedLabel: true })).toEqual({
+      kind: "label-ungrouped",
+    });
+  });
+
+  it("header ids are namespaced and disjoint from row ids", () => {
+    const h = headerDropId("l-1", { kind: "label", labelId: "l-2" });
+    const u = headerDropId("label:ungrouped", { kind: "label-ungrouped" });
+    expect(h).toBe("header:l-1:label:l-2");
+    expect(u).toBe("header:label:ungrouped:label:ungrouped");
+    expect(h.startsWith("header:")).toBe(true);
+    expect(listSortableId("l-1", "i-1")).not.toBe(h);
+  });
+
+  it("label header: add-before-remove + sort PATCH, from a label source", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        sort_order: 512,
+        labels: [{ id: "l-1", name: "Bug", color: "#e22718" }],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: "l-1",
+      target: { kind: "label", labelId: "l-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "label-move",
+      addLabelId: "l-2",
+      removeLabelId: "l-1",
+      sortOrder: 3072,
+    });
+  });
+
+  it("label header: no remove when the appearance came from Ungrouped", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", { sort_order: 512 }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      target: { kind: "label", labelId: "l-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "label-move",
+      addLabelId: "l-2",
+      removeLabelId: null,
+      sortOrder: 3072,
+    });
+  });
+
+  it("label header: no remove when the source equals the target (own-group appearance)", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        sort_order: 512,
+        labels: [{ id: "l-2", name: "Feature", color: "#0066b1" }],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: "l-2",
+      target: { kind: "label", labelId: "l-2" },
+      targetRows,
+    });
+    // Already a member of the target: silent no-op, not a move.
+    expect(plan).toBeNull();
+  });
+
+  it("label header: already labeled with the target is a silent no-op, even from another label group", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {
+          labels: [
+            { id: "l-1", name: "Bug", color: "#e22718" },
+            { id: "l-2", name: "Feature", color: "#0066b1" },
+          ],
+        }),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: "l-1",
+        target: { kind: "label", labelId: "l-2" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("label Ungrouped: removes ALL current labels, no sort PATCH", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        labels: [
+          { id: "l-1", name: "Bug", color: "#e22718" },
+          { id: "l-2", name: "Feature", color: "#0066b1" },
+        ],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: "l-1",
+      target: { kind: "label-ungrouped" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "label-ungroup",
+      removeLabelIds: ["l-1", "l-2"],
+    });
+  });
+
+  it("label Ungrouped: already-unlabeled is a silent no-op", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {}),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: null,
+        target: { kind: "label-ungrouped" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("execute label-move: add, then remove, then PATCH {sort_order} only, then invalidate", async () => {
+    const { events, deps } = mockLabelDeps();
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "label-move",
+        addLabelId: "l-2",
+        removeLabelId: "l-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addLabel:l-2",
+      "removeLabel:l-1",
+      'patch:{"sort_order":3072}',
+      "invalidate",
+    ]);
+    // The sort PATCH body carries exactly {sort_order} — never a label id.
+    expect(deps.patch).toHaveBeenCalledWith("d", { sort_order: 3072 });
+  });
+
+  it("execute label-move: an add failure aborts remove and PATCH, surfaces honestly", async () => {
+    const { events, deps } = mockLabelDeps();
+    deps.addToLabel.mockRejectedValueOnce(new Error("add boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "label-move",
+        addLabelId: "l-2",
+        removeLabelId: "l-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual(["error:add boom", "invalidate"]);
+    expect(deps.removeFromLabel).not.toHaveBeenCalled();
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute label-move: a remove failure after a successful add aborts the PATCH and surfaces honestly", async () => {
+    const { events, deps } = mockLabelDeps();
+    deps.removeFromLabel.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "label-move",
+        addLabelId: "l-2",
+        removeLabelId: "l-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addLabel:l-2",
+      "error:remove boom",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute label-ungroup: sequential removes in order, no PATCH", async () => {
+    const { events, deps } = mockLabelDeps();
+    await executeListHeaderDrop(
+      "d",
+      { type: "label-ungroup", removeLabelIds: ["l-1", "l-2"] },
+      deps,
+    );
+    expect(events).toEqual([
+      "removeLabel:l-1",
+      "removeLabel:l-2",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute label-ungroup: a failed remove aborts the rest and surfaces honestly", async () => {
+    const { events, deps } = mockLabelDeps();
+    deps.removeFromLabel.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      { type: "label-ungroup", removeLabelIds: ["l-1", "l-2", "l-3"] },
+      deps,
+    );
+    expect(events).toEqual(["error:remove boom", "invalidate"]);
+    expect(deps.removeFromLabel).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch routes a label header drop to the reassignment pipeline regardless of the reorder gate", () => {
+    const stack = mkStack("l-1", [mkIssue("a")], null, null, "l-1");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:l-1:a", mkRef("a", mkIssue("a"), stack)],
+    ]);
+    const headerMap = new Map<string, ListHeaderDropInfo>([
+      [
+        "header:l-2:label:l-2",
+        {
+          target: { kind: "label", labelId: "l-2" },
+          targetRows: [],
+        },
+      ],
+    ]);
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:l-1:a",
+      overId: "header:l-2:label:l-2",
+      sortableMap,
+      headerMap,
+      reorderEnabled: false,
+      onRowDrop: vi.fn(),
+      onHeaderDrop,
+    });
+    expect(onHeaderDrop).toHaveBeenCalledTimes(1);
+    expect(onHeaderDrop.mock.calls[0][0].stack.sourceLabelId).toBe("l-1");
+  });
+
+  it("dispatch: label multi-appearance — one appearance reorders within its own stack only", () => {
+    // Issue "m" carries two labels, so it appears once in each label
+    // stack under distinct stack-scoped sortable ids. The label-1
+    // appearance routes to the label-1 stack's rows, and the same
+    // appearance over a label-2 row is a cross-stack no-op.
+    const label1 = mkStack("label:l-1", [mkIssue("a"), mkIssue("m")], null, null, "l-1");
+    const label2 = mkStack("label:l-2", [mkIssue("m"), mkIssue("z")], null, null, "l-2");
+    const maps = new Map<string, ListDragRowRef>([
+      ["row:label:l-1:a", mkRef("a", mkIssue("a"), label1)],
+      ["row:label:l-1:m", mkRef("m", mkIssue("m"), label1)],
+      ["row:label:l-2:m", mkRef("m", mkIssue("m"), label2)],
+      ["row:label:l-2:z", mkRef("z", mkIssue("z"), label2)],
+    ]);
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:label:l-1:m",
+      overId: "row:label:l-1:a",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).toHaveBeenCalledWith(label1.rows, "m", "a");
+    onRowDrop.mockClear();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:label:l-1:m",
+      overId: "row:label:l-2:z",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
   });
 });

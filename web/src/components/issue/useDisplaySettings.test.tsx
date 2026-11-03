@@ -160,6 +160,12 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(DEFAULT_DISPLAY_SETTINGS.subGroupBy).toBe("none");
   });
 
+  it("keeps a stored labels groupBy value (C130T0 whitelist)", () => {
+    localStorage.setItem(KEY, JSON.stringify({ groupBy: "labels" }));
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.groupBy).toBe("labels");
+  });
+
   it("gives pre-existing stored settings the key as none (no migration)", () => {
     localStorage.setItem(
       KEY,
