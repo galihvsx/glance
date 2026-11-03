@@ -889,3 +889,428 @@ describe("board sub-group by state-groups (C139T2)", () => {
     }
   });
 });
+
+describe("board sub-group by cycles (C140T2)", () => {
+  const CYC_A = { id: "c-a", name: "Sprint 1" };
+  const CYC_B = { id: "c-b", name: "Sprint 2" };
+
+  // Todo column: Sprint 2 ×2, Sprint 1 ×1, Ungrouped ×1;
+  // Done column: Sprint 1 ×1, no Ungrouped.
+  const cyclePayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      project_structure: { cycle: CYC_B, modules: [], release: null },
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      project_structure: { cycle: null, modules: [], release: null },
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      project_structure: { cycle: CYC_A, modules: [], release: null },
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      project_structure: { cycle: CYC_A, modules: [], release: null },
+    }),
+    makeIssue("i-e", "ENG-5", "Second sprint2 task", "s-todo", 5, {
+      project_structure: { cycle: CYC_B, modules: [], release: null },
+    }),
+  ];
+
+  it("renders cycle sub-sections inside a column, Ungrouped last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard(cyclePayload);
+    await screen.findByText("Fix login");
+    // Todo: Sprint 2, Sprint 1, Ungrouped (first-appearance order,
+    // Ungrouped last); Done: Sprint 1 only — no Ungrouped section
+    // when empty (groupByCycle never emits an empty Ungrouped).
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["c-b", "c-a", "cycle:ungrouped", "c-a"]);
+    const sprint2 = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "c-b",
+    );
+    expect(sprint2).toHaveLength(1);
+    expect(sectionHeader(sprint2[0])).toEqual(["Sprint 2", "2"]);
+    const ungrouped = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") === "cycle:ungrouped",
+    );
+    expect(ungrouped).toHaveLength(1);
+    expect(sectionHeader(ungrouped[0])).toEqual(["Ungrouped", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("cycle:ungrouped");
+    // Titles are names, never raw ids.
+    expect(screen.queryByText("c-a")).toBeNull();
+    expect(screen.queryByText("c-b")).toBeNull();
+  });
+
+  it("single-appearance: every card carries a PLAIN issue id, exactly one copy per column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard(cyclePayload);
+    await screen.findByText("Fix login");
+    // Cycles are single-appearance (one displayed cycle per issue),
+    // so unlike epic/assignee/label/module sub-groups there is
+    // exactly one card copy per column and NO compound drag id
+    // branch: the card's DOM id is the plain issue id.
+    for (const id of ["i-a", "i-b", "i-c", "i-d", "i-e"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-a")).toBe("c-b");
+    expect(sectionKeyOfCard("i-c")).toBe("c-a");
+    expect(sectionKeyOfCard("i-d")).toBe("c-a");
+    expect(sectionKeyOfCard("i-e")).toBe("c-b");
+  });
+
+  it("hides Ungrouped when every issue has a cycle", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard([
+      makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+        project_structure: { cycle: CYC_B, modules: [], release: null },
+      }),
+      makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+        project_structure: { cycle: CYC_A, modules: [], release: null },
+      }),
+    ]);
+    await screen.findByText("Fix login");
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["c-b", "c-a"]);
+  });
+
+  it("same-dimension (primary cycles + sub-group cycles) renders flat", async () => {
+    storeSettings({
+      groupBy: "cycles",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard(cyclePayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("cycle sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard(cyclePayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only
+    // and never re-stamps cycles, even though the shared branch
+    // carries targetCycleId for the list's droppable headers.
+    // Pointer-drag drop resolution has no simulation in this repo
+    // (C129 precedent); the live browser drag is the plan matrix's
+    // final verifier, as for epic, assignee, and label drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
+
+describe("board sub-group by modules (C140T2)", () => {
+  const MOD_A = { id: "m-a", name: "Auth" };
+  const MOD_B = { id: "m-b", name: "Billing" };
+
+  // Todo column: Auth ×2 (one shared with Billing), Billing ×1 +
+  // shared, Ungrouped ×1; Done column: Billing ×1, no Ungrouped.
+  const modulePayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      project_structure: { cycle: null, modules: [MOD_A], release: null },
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      project_structure: { cycle: null, modules: [], release: null },
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      project_structure: {
+        cycle: null,
+        modules: [MOD_A, MOD_B],
+        release: null,
+      },
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      project_structure: { cycle: null, modules: [MOD_B], release: null },
+    }),
+  ];
+
+  /** Every sub-section key holding a copy of this card (multi-
+   *  appearance issues appear once per section). */
+  function sectionKeysOfCard(issueId: string): string[] {
+    return Array.from(
+      document.querySelectorAll(`[data-board-card="${issueId}"]`),
+    ).map(
+      (card) =>
+        card.closest("[data-sub-group-section]")?.getAttribute(
+          "data-sub-group-section",
+        ) ?? "",
+    );
+  }
+
+  it("renders module sub-sections inside a column, Ungrouped last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "modules",
+      showEmptyGroups: true,
+    });
+    renderBoard(modulePayload);
+    await screen.findByText("Fix login");
+    // Todo: Auth, Billing, Ungrouped (first-appearance order,
+    // Ungrouped last); Done: Billing only — no Ungrouped section
+    // when empty (groupByModule never emits an empty Ungrouped).
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["m-a", "m-b", "module:ungrouped", "m-b"]);
+    const auth = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "m-a",
+    );
+    expect(auth).toHaveLength(1);
+    expect(sectionHeader(auth[0])).toEqual(["Auth", "2"]);
+    const ungrouped = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "module:ungrouped",
+    );
+    expect(ungrouped).toHaveLength(1);
+    expect(sectionHeader(ungrouped[0])).toEqual(["Ungrouped", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("module:ungrouped");
+    // Titles are names, never raw ids.
+    expect(screen.queryByText("m-a")).toBeNull();
+    expect(screen.queryByText("m-b")).toBeNull();
+  });
+
+  it("multi-appearance: the same row renders under several sub-sections in one column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "modules",
+      showEmptyGroups: true,
+    });
+    renderBoard(modulePayload);
+    // Multi-appearance means two matching texts by design.
+    expect(await screen.findAllByText("Ship feature")).toHaveLength(2);
+    // The two-module Todo issue renders twice in its column, once
+    // per module section. Per this task's scope the board takes NO
+    // compound drag id branch for modules (visual-only sections,
+    // drop resolves by primary column), so the page-level proof is
+    // the distinct sections, not distinct sortable ids — see the
+    // task report for the live-drag note on duplicated cards.
+    expect(
+      document.querySelectorAll('[data-board-card="i-c"]'),
+    ).toHaveLength(2);
+    expect(sectionKeysOfCard("i-c")).toEqual(["m-a", "m-b"]);
+    // The Done issue's single-module copy stays single.
+    expect(
+      document.querySelectorAll('[data-board-card="i-d"]'),
+    ).toHaveLength(1);
+  });
+
+  it("same-dimension (primary modules + sub-group modules) renders flat", async () => {
+    storeSettings({
+      groupBy: "modules",
+      subGroupBy: "modules",
+      showEmptyGroups: true,
+    });
+    renderBoard(modulePayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("module sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "modules",
+      showEmptyGroups: true,
+    });
+    renderBoard(modulePayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only
+    // and never re-stamps modules, even though the shared branch
+    // carries targetModuleId for the list's droppable headers.
+    // Pointer-drag drop resolution has no simulation in this repo
+    // (C129 precedent); the live browser drag is the plan matrix's
+    // final verifier, as for epic, assignee, and label drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
+
+describe("board sub-group by releases (C140T2)", () => {
+  const REL_A = { id: "r-a", name: "v1.0" };
+  const REL_B = { id: "r-b", name: "v2.0" };
+
+  // Todo column: v2.0 ×2, v1.0 ×1, Ungrouped ×1;
+  // Done column: v1.0 ×1, no Ungrouped.
+  const releasePayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      project_structure: { cycle: null, modules: [], release: REL_B },
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      project_structure: { cycle: null, modules: [], release: null },
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      project_structure: { cycle: null, modules: [], release: REL_A },
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      project_structure: { cycle: null, modules: [], release: REL_A },
+    }),
+    makeIssue("i-e", "ENG-5", "Second v2 task", "s-todo", 5, {
+      project_structure: { cycle: null, modules: [], release: REL_B },
+    }),
+  ];
+
+  it("renders release sub-sections inside a column, Ungrouped last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard(releasePayload);
+    await screen.findByText("Fix login");
+    // Todo: v2.0, v1.0, Ungrouped (first-appearance order,
+    // Ungrouped last); Done: v1.0 only — no Ungrouped section
+    // when empty (groupByRelease never emits an empty Ungrouped).
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["r-b", "r-a", "release:ungrouped", "r-a"]);
+    const v2 = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "r-b",
+    );
+    expect(v2).toHaveLength(1);
+    expect(sectionHeader(v2[0])).toEqual(["v2.0", "2"]);
+    const ungrouped = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "release:ungrouped",
+    );
+    expect(ungrouped).toHaveLength(1);
+    expect(sectionHeader(ungrouped[0])).toEqual(["Ungrouped", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("release:ungrouped");
+    // Titles are names, never raw ids.
+    expect(screen.queryByText("r-a")).toBeNull();
+    expect(screen.queryByText("r-b")).toBeNull();
+  });
+
+  it("single-appearance: every card carries a PLAIN issue id, exactly one copy per column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard(releasePayload);
+    await screen.findByText("Fix login");
+    // Releases are single-appearance (one displayed release per
+    // issue), so unlike epic/assignee/label/module sub-groups there
+    // is exactly one card copy per column and NO compound drag id
+    // branch: the card's DOM id is the plain issue id.
+    for (const id of ["i-a", "i-b", "i-c", "i-d", "i-e"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-a")).toBe("r-b");
+    expect(sectionKeyOfCard("i-c")).toBe("r-a");
+    expect(sectionKeyOfCard("i-d")).toBe("r-a");
+    expect(sectionKeyOfCard("i-e")).toBe("r-b");
+  });
+
+  it("hides Ungrouped when every issue has a release", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard([
+      makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+        project_structure: { cycle: null, modules: [], release: REL_B },
+      }),
+      makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+        project_structure: { cycle: null, modules: [], release: REL_A },
+      }),
+    ]);
+    await screen.findByText("Fix login");
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["r-b", "r-a"]);
+  });
+
+  it("same-dimension (primary releases + sub-group releases) renders flat", async () => {
+    storeSettings({
+      groupBy: "releases",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard(releasePayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("release sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard(releasePayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only
+    // and never re-stamps releases, even though the shared branch
+    // carries targetReleaseId for the list's droppable headers.
+    // Pointer-drag drop resolution has no simulation in this repo
+    // (C129 precedent); the live browser drag is the plan matrix's
+    // final verifier, as for epic, assignee, and label drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
