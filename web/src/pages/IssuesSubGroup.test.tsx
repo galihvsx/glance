@@ -26,7 +26,7 @@ import type {
   DisplaySettings,
   SubGroupBy,
 } from "../components/issue/useDisplaySettings";
-import type { Issue, IssueState } from "../lib/types";
+import type { Issue, IssueProjectStructure, IssueState } from "../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -607,6 +607,192 @@ describe("list sub-group sections (C123T1)", () => {
     expect(subTitles).toContain("None");
     expect(subTitles).toEqual(["Urgent", "High", "Medium", "Low", "None"]);
   });
+
+  // C140T1: cycle / module / release sub-sections in the list view.
+  // project_structure rides the mocked rows directly (the page
+  // reads it off the row, no lookup fetch). Sub-headers are
+  // dropzones with the right target kind — the marker mock exposes
+  // the droppable id, so the target mapping is observable here;
+  // the call sequences behind those targets are covered by the
+  // listHeaderDrop unit tests.
+  function dropIds(): string[] {
+    return screen
+      .queryAllByTestId("header-dropzone")
+      .map((el) => el.getAttribute("data-drop-id") ?? "");
+  }
+
+  it("renders module sub-sections with multi-appearance, Ungrouped last, droppable headers (C140T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "modules" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        project_structure: {
+          modules: [
+            { id: "m-a", name: "Auth" },
+            { id: "m-b", name: "Billing" },
+          ],
+        },
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0, {
+        project_structure: { modules: [] },
+      }),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        project_structure: { modules: [{ id: "m-a", name: "Auth" }] },
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(subTitles).toEqual(["Auth", "Billing", "Ungrouped"]);
+    // Multi-appearance: Alpha renders under both module sub-sections.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(2);
+    // Every sub-header is a dropzone with its module target kind;
+    // the Ungrouped sub-header resolves to module-ungrouped.
+    // (showEmptyGroups on renders the empty Doing/Done primary
+    // headers too — they carry no sub-sections.)
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing:state:s-doing",
+      "header:s-done:state:s-done",
+      "header:s-todo::m-a:module:m-a",
+      "header:s-todo::m-b:module:m-b",
+      "header:s-todo::module:ungrouped:module:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+    // Reorder stays stack-local: each appearance lives in its own
+    // sub-section stack, so a row drop can only reorder within the
+    // appearance it was dragged from (dispatch stackKey rule —
+    // no new reorder target is introduced by the sub-group).
+    const authSection = todo.getByRole("heading", { level: 3, name: "Auth" });
+    expect(authSection.closest('[data-testid="header-dropzone"]')).not.toBeNull();
+  });
+
+  it("module sub-group hides Ungrouped when every issue has a module (C140T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "modules" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        project_structure: { modules: [{ id: "m-a", name: "Auth" }] },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(
+      screen.queryByRole("heading", { level: 3, name: "Ungrouped" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Auth" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders cycle sub-sections with single-appearance, Ungrouped last, droppable headers (C140T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "cycles" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        project_structure: { modules: [], cycle: { id: "c-b", name: "Sprint 2" } },
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0, {
+        project_structure: { modules: [], cycle: null },
+      }),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        project_structure: { modules: [], cycle: { id: "c-a", name: "Sprint 1" } },
+      }),
+      mkIssue("i-4", "ENG-4", "Delta issue", "s-todo", 0, {
+        project_structure: { modules: [], cycle: { id: "c-b", name: "Sprint 2" } },
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    // First-appearance order across the primary group's issues.
+    expect(subTitles).toEqual(["Sprint 2", "Sprint 1", "Ungrouped"]);
+    // Single-appearance: no issue renders twice.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(1);
+    expect(screen.getAllByText("Delta issue")).toHaveLength(1);
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing:state:s-doing",
+      "header:s-done:state:s-done",
+      "header:s-todo::c-a:cycle:c-a",
+      "header:s-todo::c-b:cycle:c-b",
+      "header:s-todo::cycle:ungrouped:cycle:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+  });
+
+  it("renders release sub-sections with single-appearance, Ungrouped last, droppable headers (C140T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "releases" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        project_structure: { modules: [], release: { id: "r-b", name: "v2.0" } },
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0, {
+        project_structure: { modules: [], release: null },
+      }),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        project_structure: { modules: [], release: { id: "r-a", name: "v1.0" } },
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(subTitles).toEqual(["v2.0", "v1.0", "Ungrouped"]);
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(1);
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing:state:s-doing",
+      "header:s-done:state:s-done",
+      "header:s-todo::r-a:release:r-a",
+      "header:s-todo::r-b:release:r-b",
+      "header:s-todo::release:ungrouped:release:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+  });
+
+  it.each([
+    ["cycles", { modules: [], cycle: { id: "c-a", name: "Sprint 1" } }],
+    ["modules", { modules: [{ id: "m-a", name: "Auth" }] }],
+    ["releases", { modules: [], release: { id: "r-a", name: "v1.0" } }],
+  ] as [SubGroupBy, IssueProjectStructure][])(
+    "%s sub-group hides Ungrouped when every issue resolves (C140T1)",
+    async (subGroupBy, projectStructure) => {
+      setSettings({ groupBy: "state", subGroupBy });
+      mockState.issues = [
+        mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+          project_structure: projectStructure,
+        }),
+      ];
+      renderIssues();
+      await screen.findByText("Alpha issue");
+      expect(
+        screen.queryByRole("heading", { level: 3, name: "Ungrouped" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["cycles", "modules", "releases"] as const)(
+    "%s primary + %s sub-group renders flat (same-dimension rule, C140T1)",
+    async (dim) => {
+      setSettings({ groupBy: dim, subGroupBy: dim });
+      mockState.issues = [
+        mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+          project_structure: {
+            cycle: { id: "c-a", name: "Sprint 1" },
+            modules: [{ id: "m-a", name: "Auth" }],
+            release: { id: "r-a", name: "v1.0" },
+          },
+        }),
+      ];
+      renderIssues();
+      await screen.findByText("Alpha issue");
+      // The shared literal makes this automatic: no sub-headers.
+      expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+    },
+  );
 
   it("row order and j/k selection follow the flattened sub-group order", async () => {
     setSettings({ groupBy: "state", subGroupBy: "priority" });

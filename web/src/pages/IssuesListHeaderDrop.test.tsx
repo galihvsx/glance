@@ -544,13 +544,13 @@ describe("cycle grouping (C132T1)", () => {
   function cycleIssues() {
     return [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
-        project_structure: { cycle: SPRINT_1, modules: [] },
+        project_structure: { modules: [], cycle: SPRINT_1 },
       }),
       mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
-        project_structure: { cycle: SPRINT_2, modules: [] },
+        project_structure: { modules: [], cycle: SPRINT_2 },
       }),
       mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
-        project_structure: { cycle: null, modules: [] },
+        project_structure: { modules: [], cycle: null },
       }),
     ];
   }
@@ -595,7 +595,7 @@ describe("cycle grouping (C132T1)", () => {
     });
     mockState.issues = [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
-        project_structure: { cycle: SPRINT_1, modules: [] },
+        project_structure: { modules: [], cycle: SPRINT_1 },
       }),
     ];
     renderIssues();
@@ -799,13 +799,13 @@ describe("release grouping (C133T1)", () => {
   function releaseIssues() {
     return [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
-        project_structure: { release: REL_1, modules: [] },
+        project_structure: { modules: [], release: REL_1 },
       }),
       mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
-        project_structure: { release: REL_2, modules: [] },
+        project_structure: { modules: [], release: REL_2 },
       }),
       mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
-        project_structure: { release: null, modules: [] },
+        project_structure: { modules: [], release: null },
       }),
     ];
   }
@@ -849,7 +849,7 @@ describe("release grouping (C133T1)", () => {
     });
     mockState.issues = [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
-        project_structure: { release: REL_1, modules: [] },
+        project_structure: { modules: [], release: REL_1 },
       }),
     ];
     renderIssues();
@@ -1071,6 +1071,119 @@ describe("label sub-grouping (C137T1)", () => {
     // a row dragged from the Bug sub-section carries Bug as its
     // source, so dropping it on Feature removes Bug; dropping it
     // on Ungrouped removes all current labels.
+  });
+
+  it("state primary + modules sub-group: module sub-headers are droppable (C140T1)", async () => {
+    setSettings({
+      groupBy: "state",
+      subGroupBy: "modules",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: {
+          modules: [
+            { id: "m-a", name: "Auth" },
+            { id: "m-b", name: "Billing" },
+          ],
+        },
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        project_structure: { modules: [{ id: "m-b", name: "Billing" }] },
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
+        project_structure: { modules: [] },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Third");
+    // Primary state headers + module sub-headers nested under them.
+    // Module sub-sections are member-only (no empty sections), so
+    // Doing gets Billing only; Todo gets Auth, Billing, Ungrouped.
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing::m-b:module:m-b",
+      "header:s-doing:state:s-doing",
+      "header:s-todo::m-a:module:m-a",
+      "header:s-todo::m-b:module:m-b",
+      "header:s-todo::module:ungrouped:module:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+    // The sub-header targets feed the existing module-move /
+    // module-ungroup pipeline (resolveListHeaderDrop unit tests):
+    // a row dragged from the Auth sub-section carries Auth as its
+    // source (C140T1 source-block mirror of the C137 label fix),
+    // so dropping it on Billing removes Auth; dropping it on
+    // Ungrouped removes all current modules. Without the
+    // sub-source, the move would add Billing without removing
+    // Auth — a copy, not a move.
+  });
+
+  it("state primary + cycles sub-group: cycle sub-headers are droppable (C140T1)", async () => {
+    setSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { modules: [], cycle: { id: "c-a", name: "Sprint 1" } },
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        project_structure: { modules: [], cycle: { id: "c-b", name: "Sprint 2" } },
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
+        project_structure: { modules: [], cycle: null },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing::c-b:cycle:c-b",
+      "header:s-doing:state:s-doing",
+      "header:s-todo::c-a:cycle:c-a",
+      "header:s-todo::cycle:ungrouped:cycle:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+    // The sub-header targets feed the existing cycle-move /
+    // cycle-ungroup pipeline: a row dragged from the Sprint 1
+    // sub-section carries Sprint 1 as its source (C140T1
+    // source-block mirror), so dropping it on Sprint 2 removes
+    // Sprint 1 — the server-side add is a non-exclusive junction
+    // insert, so without the sub-source the old membership would
+    // linger and the displayed cycle would stay the
+    // alphabetically-first of the two.
+  });
+
+  it("state primary + releases sub-group: release sub-headers are droppable (C140T1)", async () => {
+    setSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { modules: [], release: { id: "r-a", name: "v1.0" } },
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        project_structure: { modules: [], release: { id: "r-b", name: "v2.0" } },
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
+        project_structure: { modules: [], release: null },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing::r-b:release:r-b",
+      "header:s-doing:state:s-doing",
+      "header:s-todo::r-a:release:r-a",
+      "header:s-todo::release:ungrouped:release:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+    // The sub-header targets feed the existing single-assign
+    // release-move / release-ungroup pipeline: the move overwrites
+    // release_id, so no remove side — and no sub-source — is
+    // needed for a release drop.
   });
 
   it("labels primary + labels sub-group: no label sub-headers, renders flat", async () => {

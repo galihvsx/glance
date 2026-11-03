@@ -227,6 +227,21 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(result.current.settings.subGroupBy).toBe("createdBy");
   });
 
+  it("keeps stored cycles/modules/releases sub-group values (C140T1 whitelist)", () => {
+    for (const subGroupBy of ["cycles", "modules", "releases"] as const) {
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({ groupBy: "state", subGroupBy }),
+      );
+      const { result, unmount } = renderHook(() =>
+        useDisplaySettings("acme", "ENG"),
+      );
+      expect(result.current.settings.subGroupBy).toBe(subGroupBy);
+      unmount();
+      localStorage.clear();
+    }
+  });
+
   it("falls back to none for the singular label stored value (C137T1 literal)", () => {
     localStorage.setItem(
       KEY,

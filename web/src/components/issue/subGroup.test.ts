@@ -11,8 +11,11 @@ import {
   effectiveSubGroupBy,
 } from "./subGroup";
 import { UNGROUPED_ASSIGNEE_KEY } from "./groupByAssignee";
+import { UNGROUPED_CYCLE_KEY } from "./groupByCycle";
 import { UNGROUPED_EPIC_KEY } from "./groupByEpic";
 import { UNGROUPED_LABEL_KEY } from "./groupByLabel";
+import { UNGROUPED_MODULE_KEY } from "./groupByModule";
+import { UNGROUPED_RELEASE_KEY } from "./groupByRelease";
 import { UNKNOWN_CREATOR_KEY } from "./groupByCreatedBy";
 import { UNKNOWN_STATE_GROUP_KEY } from "./groupByStateGroup";
 import type { Issue, IssueState } from "../../lib/types";
@@ -53,6 +56,11 @@ function mkIssue(
   assignees: { id: string; name: string }[] = [],
   labels: { id: string; name: string; color: string }[] = [],
   createdBy = "u",
+  projectStructure?: {
+    modules?: { id: string; name: string }[];
+    cycle?: { id: string; name: string } | null;
+    release?: { id: string; name: string } | null;
+  },
 ): Issue {
   return {
     id,
@@ -70,6 +78,7 @@ function mkIssue(
     assignees,
     labels,
     epics,
+    project_structure: projectStructure,
   } as Issue;
 }
 
@@ -148,6 +157,30 @@ describe("effectiveSubGroupBy", () => {
     expect(
       effectiveSubGroupBy(settingsWith("stateGroups", "stateGroups")),
     ).toBe("none");
+  });
+
+  it("passes cycles/modules/releases through when they differ from groupBy (C140T1)", () => {
+    expect(effectiveSubGroupBy(settingsWith("state", "cycles"))).toBe(
+      "cycles",
+    );
+    expect(effectiveSubGroupBy(settingsWith("state", "modules"))).toBe(
+      "modules",
+    );
+    expect(effectiveSubGroupBy(settingsWith("state", "releases"))).toBe(
+      "releases",
+    );
+  });
+
+  it("renders cycles/modules/releases same-as-primary as none (C140T1)", () => {
+    expect(effectiveSubGroupBy(settingsWith("cycles", "cycles"))).toBe(
+      "none",
+    );
+    expect(effectiveSubGroupBy(settingsWith("modules", "modules"))).toBe(
+      "none",
+    );
+    expect(effectiveSubGroupBy(settingsWith("releases", "releases"))).toBe(
+      "none",
+    );
   });
 
   it("renders none when groupBy is none, whatever is stored", () => {
@@ -631,6 +664,199 @@ describe("buildSubGroupSections", () => {
     for (const s of sections.slice(0, 6)) expect(s.issues).toEqual([]);
     expect(sections[6].issues.map((i) => i.id)).toEqual(["1", "2"]);
     expect(sections[6].title).toBe("Unknown");
+  });
+
+  // C140T1: cycle / module / release sub-sections. All three ride
+  // the row's project_structure (NamedRef id + name only): NO color,
+  // NO breakdown bar, titles from the row, first-appearance row
+  // wins on a shared id's name.
+  const MOD_A = { id: "m-a", name: "Auth" };
+  const MOD_B = { id: "m-b", name: "Billing" };
+  const CYC_A = { id: "c-a", name: "Sprint 1" };
+  const CYC_B = { id: "c-b", name: "Sprint 2" };
+  const REL_A = { id: "r-a", name: "v1.0" };
+  const REL_B = { id: "r-b", name: "v2.0" };
+
+  it("cycles: single-appearance via groupByCycle, first-appearance order, Ungrouped last, target fields (C140T1)", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u", { cycle: CYC_B }),
+      mkIssue("2", "s-todo", 3, [], [], [], "u", { cycle: null }),
+      mkIssue("3", "s-todo", 3, [], [], [], "u", { cycle: CYC_A }),
+      mkIssue("4", "s-todo", 3, [], [], [], "u", { cycle: CYC_B }),
+    ];
+    const sections = buildSubGroupSections(issues, "cycles", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([
+      "c-b",
+      "c-a",
+      UNGROUPED_CYCLE_KEY,
+    ]);
+    expect(sections.map((s) => s.title)).toEqual([
+      "Sprint 2",
+      "Sprint 1",
+      "Ungrouped",
+    ]);
+    // Single-appearance: each issue under exactly one section, even
+    // when the primary group holds many cycles.
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "4"]);
+    expect(sections[1].issues.map((i) => i.id)).toEqual(["3"]);
+    expect(sections[2].issues.map((i) => i.id)).toEqual(["2"]);
+    expect(sections.flatMap((s) => s.issues)).toHaveLength(4);
+    // NO color, NO breakdown bar; target fields map the id verbatim
+    // for member sections, flag-only for Ungrouped.
+    for (const s of sections) {
+      expect(s.color).toBeUndefined();
+      expect(s.byGroup).toBeUndefined();
+    }
+    expect(sections[0].targetCycleId).toBe("c-b");
+    expect(sections[0].isUngroupedCycle).toBe(false);
+    expect(sections[1].targetCycleId).toBe("c-a");
+    expect(sections[2].targetCycleId).toBeUndefined();
+    expect(sections[2].isUngroupedCycle).toBe(true);
+  });
+
+  it("cycles: Ungrouped hidden when empty; missing project_structure → Ungrouped, no crash (C140T1)", () => {
+    const sections = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3, [], [], [], "u", { cycle: CYC_A })],
+      "cycles",
+      { states, stateById },
+    );
+    expect(sections.map((s) => s.key)).toEqual(["c-a"]);
+    const missing = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3)],
+      "cycles",
+      { states, stateById },
+    );
+    expect(missing.map((s) => s.key)).toEqual([UNGROUPED_CYCLE_KEY]);
+    expect(missing[0].issues.map((i) => i.id)).toEqual(["1"]);
+  });
+
+  it("cycles: first-appearance row wins on a shared cycle's name (C140T1)", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u", { cycle: CYC_A }),
+      mkIssue("2", "s-todo", 3, [], [], [], "u", {
+        cycle: { id: "c-a", name: "Renamed" },
+      }),
+    ];
+    const sections = buildSubGroupSections(issues, "cycles", {
+      states,
+      stateById,
+    });
+    expect(sections).toHaveLength(1);
+    expect(sections[0].title).toBe("Sprint 1");
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "2"]);
+  });
+
+  it("modules: multi-appearance via groupByModule, first-appearance order, Ungrouped last, target fields (C140T1)", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u", {
+        modules: [MOD_A, MOD_B],
+      }),
+      mkIssue("2", "s-todo", 3, [], [], [], "u", { modules: [] }),
+      mkIssue("3", "s-todo", 3, [], [], [], "u", { modules: [MOD_A] }),
+    ];
+    const sections = buildSubGroupSections(issues, "modules", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([
+      "m-a",
+      "m-b",
+      UNGROUPED_MODULE_KEY,
+    ]);
+    expect(sections.map((s) => s.title)).toEqual([
+      "Auth",
+      "Billing",
+      "Ungrouped",
+    ]);
+    // Multi-appearance: issue 1 renders under both module sections.
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "3"]);
+    expect(sections[1].issues.map((i) => i.id)).toEqual(["1"]);
+    expect(sections[2].issues.map((i) => i.id)).toEqual(["2"]);
+    // NO color, NO breakdown bar; target fields map the id verbatim
+    // for member sections, flag-only for Ungrouped.
+    for (const s of sections) {
+      expect(s.color).toBeUndefined();
+      expect(s.byGroup).toBeUndefined();
+    }
+    expect(sections[0].targetModuleId).toBe("m-a");
+    expect(sections[0].isUngroupedModule).toBe(false);
+    expect(sections[1].targetModuleId).toBe("m-b");
+    expect(sections[2].targetModuleId).toBeUndefined();
+    expect(sections[2].isUngroupedModule).toBe(true);
+  });
+
+  it("modules: Ungrouped hidden when empty; missing project_structure → Ungrouped, no crash (C140T1)", () => {
+    const sections = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3, [], [], [], "u", { modules: [MOD_A] })],
+      "modules",
+      { states, stateById },
+    );
+    expect(sections.map((s) => s.key)).toEqual(["m-a"]);
+    const missing = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3)],
+      "modules",
+      { states, stateById },
+    );
+    expect(missing.map((s) => s.key)).toEqual([UNGROUPED_MODULE_KEY]);
+    expect(missing[0].issues.map((i) => i.id)).toEqual(["1"]);
+  });
+
+  it("releases: single-appearance via groupByRelease, first-appearance order, Ungrouped last, target fields (C140T1)", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u", { release: REL_B }),
+      mkIssue("2", "s-todo", 3, [], [], [], "u", { release: null }),
+      mkIssue("3", "s-todo", 3, [], [], [], "u", { release: REL_A }),
+      mkIssue("4", "s-todo", 3, [], [], [], "u", { release: REL_B }),
+    ];
+    const sections = buildSubGroupSections(issues, "releases", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([
+      "r-b",
+      "r-a",
+      UNGROUPED_RELEASE_KEY,
+    ]);
+    expect(sections.map((s) => s.title)).toEqual([
+      "v2.0",
+      "v1.0",
+      "Ungrouped",
+    ]);
+    // Single-appearance: each issue under exactly one section.
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "4"]);
+    expect(sections[1].issues.map((i) => i.id)).toEqual(["3"]);
+    expect(sections[2].issues.map((i) => i.id)).toEqual(["2"]);
+    expect(sections.flatMap((s) => s.issues)).toHaveLength(4);
+    // NO color, NO breakdown bar; target fields map the id verbatim
+    // for member sections, flag-only for Ungrouped.
+    for (const s of sections) {
+      expect(s.color).toBeUndefined();
+      expect(s.byGroup).toBeUndefined();
+    }
+    expect(sections[0].targetReleaseId).toBe("r-b");
+    expect(sections[0].isUngroupedRelease).toBe(false);
+    expect(sections[1].targetReleaseId).toBe("r-a");
+    expect(sections[2].targetReleaseId).toBeUndefined();
+    expect(sections[2].isUngroupedRelease).toBe(true);
+  });
+
+  it("releases: Ungrouped hidden when empty; missing project_structure → Ungrouped, no crash (C140T1)", () => {
+    const sections = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3, [], [], [], "u", { release: REL_A })],
+      "releases",
+      { states, stateById },
+    );
+    expect(sections.map((s) => s.key)).toEqual(["r-a"]);
+    const missing = buildSubGroupSections(
+      [mkIssue("1", "s-todo", 3)],
+      "releases",
+      { states, stateById },
+    );
+    expect(missing.map((s) => s.key)).toEqual([UNGROUPED_RELEASE_KEY]);
+    expect(missing[0].issues.map((i) => i.id)).toEqual(["1"]);
   });
 
   it("stateGroups: degenerate under primary state — exactly one non-empty section, its own group (C139T1)", () => {

@@ -28,14 +28,46 @@
 // State-group sections carry NO color, NO breakdown bar, and NO
 // target fields: a group holds several states, so a cross-group drop
 // has no single target state and the headers are never droppable.
+// Cycle sections come from the existing groupByCycle helper the same
+// way (C140T1): single-appearance, first-appearance order, and
+// Ungrouped-last (hidden when empty) are inherited verbatim. Cycle
+// sections carry NO color (NamedRef carries id + name only) and NO
+// breakdown bar; they DO carry target fields (targetCycleId /
+// isUngroupedCycle), so list sub-headers are droppable with the
+// existing cycle-move / cycle-ungroup pipeline, while board
+// sub-sections stay visual-only (the board renderer ignores target
+// fields, as it does for epic/assignee/label today).
+// Module sections come from the existing groupByModule helper the
+// same way (C140T1): multi-appearance, first-appearance order, and
+// Ungrouped-last (hidden when empty) are inherited verbatim. Module
+// sections carry NO color (NamedRef carries id + name only) and NO
+// breakdown bar; they DO carry target fields (targetModuleId /
+// isUngroupedModule), so list sub-headers are droppable with the
+// existing module-move / module-ungroup pipeline. The list page
+// records the module sub-section as the dragged stack's source
+// module (C137 label precedent) — without it a move from a module
+// sub-section would add the target without removing the source
+// appearance, turning a move into a copy.
+// Release sections come from the existing groupByRelease helper the
+// same way (C140T1): single-appearance, first-appearance order, and
+// Ungrouped-last (hidden when empty) are inherited verbatim.
+// Release sections carry NO color (NamedRef carries id + name only)
+// and NO breakdown bar; they DO carry target fields
+// (targetReleaseId / isUngroupedRelease), so list sub-headers are
+// droppable with the existing single-assign release-move /
+// release-ungroup pipeline (the move overwrites release_id, so no
+// remove side exists and no source field is needed for it).
 
 import { groupIssuesByAssignee } from "./groupByAssignee";
 import {
   groupIssuesByCreatedBy,
   type CreatorLookupEntry,
 } from "./groupByCreatedBy";
+import { groupIssuesByCycle } from "./groupByCycle";
 import { groupIssuesByEpic } from "./groupByEpic";
 import { groupIssuesByLabel } from "./groupByLabel";
+import { groupIssuesByModule } from "./groupByModule";
+import { groupIssuesByRelease } from "./groupByRelease";
 import { groupIssuesByStateGroup } from "./groupByStateGroup";
 import type {
   DisplaySettings,
@@ -66,6 +98,12 @@ export interface SubGroupSection {
   isUngroupedAssignee?: boolean;
   targetLabelId?: string;
   isUngroupedLabel?: boolean;
+  targetModuleId?: string;
+  isUngroupedModule?: boolean;
+  targetCycleId?: string;
+  isUngroupedCycle?: boolean;
+  targetReleaseId?: string;
+  isUngroupedRelease?: boolean;
 }
 
 const SUB_GROUP_BYS: SubGroupBy[] = [
@@ -77,6 +115,9 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "labels",
   "createdBy",
   "stateGroups",
+  "cycles",
+  "modules",
+  "releases",
 ];
 
 /** Ungrouped section key for state sub-grouping (issues whose state
@@ -134,6 +175,33 @@ export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
  *    the headers are never droppable. A missing stateGroupById
  *    reads as "no state matches" — every issue collapses to
  *    Unknown, never a raw state id label.
+ *  - cycles: single-appearance via groupByCycle (an issue appears
+ *    under exactly one cycle section; Ungrouped last, hidden when
+ *    empty by groupByCycle itself). Cycle sections carry NO color
+ *    (NamedRef carries id + name only) and NO breakdown bar, but
+ *    DO carry target fields (targetCycleId / isUngroupedCycle):
+ *    the list sub-headers are droppable with the existing
+ *    cycle-move / cycle-ungroup pipeline. A missing
+ *    project_structure reads as no cycle — Ungrouped, never a
+ *    crash, never a raw id label.
+ *  - modules: multi-appearance via groupByModule (an issue with N
+ *    modules appears under every module sub-section; Ungrouped
+ *    last, hidden when empty by groupByModule itself). Module
+ *    sections carry NO color (NamedRef carries id + name only)
+ *    and NO breakdown bar, but DO carry target fields
+ *    (targetModuleId / isUngroupedModule): the list sub-headers
+ *    are droppable with the existing module-move /
+ *    module-ungroup pipeline. A missing project_structure reads
+ *    as no modules — Ungrouped, never a crash.
+ *  - releases: single-appearance via groupByRelease (an issue
+ *    appears under exactly one release section; Ungrouped last,
+ *    hidden when empty by groupByRelease itself). Release sections
+ *    carry NO color (NamedRef carries id + name only) and NO
+ *    breakdown bar, but DO carry target fields (targetReleaseId
+ *    / isUngroupedRelease): the list sub-headers are droppable
+ *    with the existing single-assign release-move /
+ *    release-ungroup pipeline. A missing project_structure reads
+ *    as no release — Ungrouped, never a crash.
  *  - none: a single section carrying all issues unchanged. */
 export function buildSubGroupSections(
   issues: Issue[],
@@ -261,6 +329,51 @@ export function buildSubGroupSections(
       key: g.key,
       title: g.title,
       issues: g.issues,
+    }));
+  }
+  // cycles: reuse groupByCycle — single-appearance,
+  // first-appearance order, Ungrouped last (hidden when empty).
+  // The cycle id IS the key verbatim; the target field is mapped
+  // once here, never parsed from the key at drop time. Ungrouped
+  // headers carry no target field — they resolve to cycle-ungroup
+  // via toHeaderTarget, never to a cycle.
+  if (subGroupBy === "cycles") {
+    return groupIssuesByCycle(issues).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
+      targetCycleId: g.isUngrouped ? undefined : g.key,
+      isUngroupedCycle: g.isUngrouped,
+    }));
+  }
+  // modules: reuse groupByModule — multi-appearance,
+  // first-appearance order, Ungrouped last (hidden when empty).
+  // The module id IS the key verbatim; the target field is mapped
+  // once here, never parsed from the key at drop time. Ungrouped
+  // headers carry no target field — they resolve to module-ungroup
+  // via toHeaderTarget, never to a module.
+  if (subGroupBy === "modules") {
+    return groupIssuesByModule(issues).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
+      targetModuleId: g.isUngrouped ? undefined : g.key,
+      isUngroupedModule: g.isUngrouped,
+    }));
+  }
+  // releases: reuse groupByRelease — single-appearance,
+  // first-appearance order, Ungrouped last (hidden when empty).
+  // The release id IS the key verbatim; the target field is mapped
+  // once here, never parsed from the key at drop time. Ungrouped
+  // headers carry no target field — they resolve to release-ungroup
+  // via toHeaderTarget, never to a release.
+  if (subGroupBy === "releases") {
+    return groupIssuesByRelease(issues).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
+      targetReleaseId: g.isUngrouped ? undefined : g.key,
+      isUngroupedRelease: g.isUngrouped,
     }));
   }
   // epic: reuse groupByEpic — multi-appearance, archived exclusion,
