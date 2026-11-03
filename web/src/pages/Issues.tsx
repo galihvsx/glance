@@ -1177,8 +1177,10 @@ export default function Issues() {
   // reorder gate: enabled whenever grouping is active and not PQL
   // mode, under ANY orderBy (a reassignment persists regardless of
   // display order; the appended sort_order only affects Manual-rank
-  // display). Under priority/epic grouping it is the only drag (row
-  // drops there stay no-ops). One DndContext owns the whole list
+  // display). Since C128 both drags coexist under priority/epic
+  // grouping too (row drops reorder within their stack, header drops
+  // reassign), exactly as they already did under state grouping.
+  // One DndContext owns the whole list
   // (ListDragRoot) — per-stack contexts could not receive cross-group
   // header drops — and dispatch, not context isolation, keeps row
   // drops stack-local. A drag is active when either mode holds.

@@ -11,6 +11,7 @@ import { REBALANCE_GAP } from "../../lib/sortOrder";
 import {
   applyListDrop,
   applyStackOrderToFlat,
+  dropNeighborStateIds,
   isListDragEnabled,
   reorderInfinitePages,
   type ListDropDeps,
@@ -78,15 +79,25 @@ describe("isListDragEnabled", () => {
       isListDragEnabled({ ...base, orderBy: "sort_order", pqlMode: true }),
     ).toBe(false);
   });
-  it("enables for flat and state grouping, disables priority/epic", () => {
-    for (const groupBy of ["none", "state"] as GroupBy[]) {
+  it("enables for flat, state, priority, and epic grouping (C128T0)", () => {
+    for (const groupBy of ["none", "state", "priority", "epic"] as GroupBy[]) {
       expect(
         isListDragEnabled({ ...base, orderBy: "sort_order", groupBy }),
       ).toBe(true);
     }
+  });
+  it("disables priority/epic grouping under non-Manual order or PQL mode", () => {
     for (const groupBy of ["priority", "epic"] as GroupBy[]) {
       expect(
-        isListDragEnabled({ ...base, orderBy: "sort_order", groupBy }),
+        isListDragEnabled({ ...base, orderBy: "-updated_at", groupBy }),
+      ).toBe(false);
+      expect(
+        isListDragEnabled({
+          ...base,
+          orderBy: "sort_order",
+          groupBy,
+          pqlMode: true,
+        }),
       ).toBe(false);
     }
   });
@@ -222,7 +233,14 @@ describe("applyListDrop", () => {
     expect(calls.invalidate).toHaveLength(0);
   });
 
-  it("rebalances the dragged row's state and retries once on a collapsed gap", async () => {
+  it("rebalances the drop neighbors' state and retries once on a collapsed gap", async () => {
+    // C128T0 note: this stack mixes states (dragged d is s-doing,
+    // neighbors a/b are s-todo), so the neighbor-state rule applies:
+    // rebalancing s-doing alone could never re-open the a/b gap —
+    // only the neighbors' state (s-todo) can. Under a true
+    // same-state stack the neighbors' state IS the dragged row's
+    // state, so the C126 call is identical there (see the same-state
+    // regression test below).
     const collapsed = [
       mkIssue("a", 1),
       mkIssue("b", 1 + REBALANCE_GAP / 2),
@@ -242,7 +260,7 @@ describe("applyListDrop", () => {
     });
     // Drag d over b: first attempt lands between collapsed a/b → null.
     await applyListDrop(collapsed, "d", "b", deps);
-    expect(calls.rebalance).toEqual([{ state_id: "s-doing" }]);
+    expect(calls.rebalance).toEqual([{ state_id: "s-todo" }]);
     // Retry against the fresh stack: [a, d, b, c] → midpoint(1024, 2048).
     expect(calls.patch).toEqual([["d", { sort_order: 1536 }]]);
     expect(calls.invalidate).toHaveLength(1);
@@ -295,6 +313,188 @@ describe("applyListDrop", () => {
     expect(calls.patch).toHaveLength(0);
     expect(calls.rebalance).toHaveLength(0);
     expect(calls.setData).toHaveLength(0);
+    expect(calls.errors).toHaveLength(0);
+  });
+});
+
+describe("C128T0: within-stack reorder under priority/epic grouping", () => {
+  it("PATCHes ONLY {sort_order} under a mixed-state priority stack", async () => {
+    // Priority stack mixing states: reorder must never reassign
+    // state, priority, or epic membership — the body is exactly
+    // {sort_order}, as under state grouping.
+    const stack = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const data = pagesOf(stack, [3]);
+    const { deps, calls } = stubDeps(data);
+    await applyListDrop(stack, "a", "c", deps);
+    expect(calls.patch).toEqual([["a", { sort_order: 4096 }]]);
+    expect(Object.keys((calls.patch[0] as unknown[])[1] as object)).toEqual([
+      "sort_order",
+    ]);
+    expect(calls.invalidate).toHaveLength(1);
+    expect(calls.errors).toHaveLength(0);
+  });
+
+  it("PATCHes ONLY {sort_order} under an epic stack", async () => {
+    const stack = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-doing"),
+    ];
+    const data = pagesOf(stack, [3]);
+    const { deps, calls } = stubDeps(data);
+    // Drag b over a: final [b, a, c] → before 1024.
+    await applyListDrop(stack, "b", "a", deps);
+    expect(calls.patch).toEqual([["b", { sort_order: 0 }]]);
+    expect(Object.keys((calls.patch[0] as unknown[])[1] as object)).toEqual([
+      "sort_order",
+    ]);
+    expect(calls.invalidate).toHaveLength(1);
+  });
+
+  it("epic multi-appearance: optimistic splice moves the single flat entry once — no duplicate, no lost row", async () => {
+    // The epic stack shows one appearance of the row; the flat
+    // loaded list holds it exactly once. Dragging that appearance
+    // must splice the one flat entry, leaving every other row
+    // (including rows from other epic stacks) untouched. Optimism
+    // is KEPT for epic stacks: the flat list holds the row once,
+    // so the splice cannot duplicate or drop it.
+    const stack = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const flat = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("m", 1024, "s-doing"), // another epic stack's row
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const data = pagesOf(flat, [4]);
+    const { deps, calls, getCurrent } = stubDeps(data);
+    await applyListDrop(stack, "a", "c", deps);
+    expect(calls.setData[0]).toEqual(["m", "b", "c", "a"]);
+    const ids = getCurrent().pages[0].results.map((i) => i.id);
+    expect(ids).toEqual(["m", "b", "c", "a"]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(calls.patch).toEqual([["a", { sort_order: 4096 }]]);
+  });
+
+  it("dropNeighborStateIds resolves the drop's two neighbors, deduped", () => {
+    const stack = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 2, "s-doing"),
+      mkIssue("d", 5, "s-todo"),
+    ];
+    // Drag d over b → final [a, d, b]: neighbors a (s-todo), b (s-doing).
+    expect(
+      dropNeighborStateIds(stack, { orderedIds: ["a", "d", "b"] }, "d"),
+    ).toEqual(["s-todo", "s-doing"]);
+    // Drag d over a → final [d, a, b]: single neighbor a (s-todo).
+    expect(
+      dropNeighborStateIds(stack, { orderedIds: ["d", "a", "b"] }, "d"),
+    ).toEqual(["s-todo"]);
+  });
+
+  it("mixed-state gap collapse: two rebalances (one per neighbor state), retry, success", async () => {
+    const collapsed = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 1 + REBALANCE_GAP / 2, "s-doing"),
+      mkIssue("d", 5, "s-todo"),
+    ];
+    const data = pagesOf(collapsed, [3]);
+    const fresh = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-doing"),
+      mkIssue("d", 3072, "s-todo"),
+    ];
+    const { deps, calls } = stubDeps(data, {
+      refetchFlat: async () => fresh,
+    });
+    // Drag d over b: lands between collapsed a (s-todo) and b
+    // (s-doing) → null. Both neighbor states rebalance, sequential.
+    await applyListDrop(collapsed, "d", "b", deps);
+    expect(calls.rebalance).toEqual([
+      { state_id: "s-todo" },
+      { state_id: "s-doing" },
+    ]);
+    // Retry: [a, d, b] → midpoint(1024, 2048).
+    expect(calls.patch).toEqual([["d", { sort_order: 1536 }]]);
+    expect(calls.invalidate).toHaveLength(1);
+    expect(calls.errors).toHaveLength(0);
+  });
+
+  it("mixed-state gap collapse: retry once, then honest error, no further retries, nothing written", async () => {
+    const collapsed = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 1 + REBALANCE_GAP / 2, "s-doing"),
+      mkIssue("d", 5, "s-todo"),
+    ];
+    const data = pagesOf(collapsed, [3]);
+    const { deps, calls } = stubDeps(data, {
+      // Grid collision after re-spacing: still collapsed.
+      refetchFlat: async () => collapsed,
+    });
+    await applyListDrop(collapsed, "d", "b", deps);
+    // Exactly the two neighbor-state rebalances — no second round,
+    // no retry loop — and no PATCH at all.
+    expect(calls.rebalance).toEqual([
+      { state_id: "s-todo" },
+      { state_id: "s-doing" },
+    ]);
+    expect(calls.rebalance).toHaveLength(2);
+    expect(calls.patch).toHaveLength(0);
+    expect(calls.setData).toHaveLength(0);
+    expect(calls.errors).toEqual([
+      "Couldn't place the issue even after rebalancing.",
+    ]);
+  });
+
+  it("same-state neighbors under a priority stack: exactly one rebalance (C126 path)", async () => {
+    const collapsed = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 1 + REBALANCE_GAP / 2, "s-todo"),
+      mkIssue("d", 5, "s-doing"),
+    ];
+    const data = pagesOf(collapsed, [3]);
+    const fresh = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-todo"),
+      mkIssue("d", 3072, "s-doing"),
+    ];
+    const { deps, calls } = stubDeps(data, {
+      refetchFlat: async () => fresh,
+    });
+    await applyListDrop(collapsed, "d", "b", deps);
+    expect(calls.rebalance).toEqual([{ state_id: "s-todo" }]);
+    expect(calls.patch).toEqual([["d", { sort_order: 1536 }]]);
+    expect(calls.errors).toHaveLength(0);
+  });
+
+  it("same-state stack regression: C126 reorder still rebalances once and PATCHes {sort_order}", async () => {
+    const collapsed = [
+      mkIssue("a", 1, "s-todo"),
+      mkIssue("b", 1 + REBALANCE_GAP / 2, "s-todo"),
+      mkIssue("c", 5, "s-todo"),
+    ];
+    const data = pagesOf(collapsed, [3]);
+    const fresh = [
+      mkIssue("a", 1024, "s-todo"),
+      mkIssue("b", 2048, "s-todo"),
+      mkIssue("c", 3072, "s-todo"),
+    ];
+    const { deps, calls } = stubDeps(data, {
+      refetchFlat: async () => fresh,
+    });
+    // Drag c over b: lands between collapsed a/b → null, rebalance
+    // the one shared state, retry → midpoint(1024, 2048).
+    await applyListDrop(collapsed, "c", "b", deps);
+    expect(calls.rebalance).toEqual([{ state_id: "s-todo" }]);
+    expect(calls.patch).toEqual([["c", { sort_order: 1536 }]]);
+    expect(calls.invalidate).toHaveLength(1);
     expect(calls.errors).toHaveLength(0);
   });
 });

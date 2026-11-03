@@ -8,14 +8,22 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * transport (api + queryClient); this module owns the rules, so the
  * pipeline is unit-testable without dnd-kit or a rendered page.
  *
- * Enable rule (plan §Scope): drag exists ONLY when the visual stack
- * order equals a sort_order sequence — Manual rank order, visual mode
- * (no PQL ORDER BY winning server-side), and an EFFECTIVE grouping of
- * none or state. The caller passes the effective grouping, not the raw
- * setting: a priority/state grouping skipped by its single-value
- * filter renders flat, so it counts as flat here. Priority/epic
- * grouping mixes states inside one stack (and epic multi-appears
- * rows), so drag stays disabled for those.
+ * Enable rule (plan §Scope, C128T0): drag exists ONLY when the visual
+ * stack order equals a sort_order sequence — Manual rank order, visual
+ * mode (no PQL ORDER BY winning server-side), and an EFFECTIVE
+ * grouping of none, state, priority, or epic. The caller passes the
+ * effective grouping, not the raw setting: a priority/state grouping
+ * skipped by its single-value filter renders flat, so it counts as
+ * flat here. Priority/epic grouping mixes states inside one stack
+ * (and epic multi-appears rows), but the reorder pipeline is
+ * stack-local and grouping-agnostic — the stack's rows are resolved
+ * through the page's listDragMaps appearance → issue mapping, and a
+ * reorder PATCHes only {sort_order}, never a group dimension — so
+ * those groupings are admitted exactly like state. sort_order is
+ * GLOBAL per issue (one column): a reorder in any stack changes
+ * Manual-rank display everywhere that row appears; that is C126's
+ * already-accepted semantics, not a per-group rank model (no such
+ * model exists and this cycle adds none).
  */
 export function isListDragEnabled(args: {
   orderBy: OrderBy;
@@ -26,7 +34,10 @@ export function isListDragEnabled(args: {
   return (
     args.orderBy === "sort_order" &&
     !args.pqlMode &&
-    (args.groupBy === "none" || args.groupBy === "state")
+    (args.groupBy === "none" ||
+      args.groupBy === "state" ||
+      args.groupBy === "priority" ||
+      args.groupBy === "epic")
   );
 }
 
@@ -122,13 +133,54 @@ export interface ListDropDeps {
 }
 
 /**
+ * Distinct state_ids of the drop's two neighbors in the post-move
+ * stack order (C128T0). The neighbors are the rows the dragged row
+ * lands between; under state grouping both are the dragged row's own
+ * state, under priority/epic grouping they can be in different
+ * states. Returns [] only when the drop has no neighbors at all
+ * (top/bottom append of a lone row) — an append never collapses, so
+ * that case never reaches the rebalance path.
+ */
+export function dropNeighborStateIds(
+  stack: Issue[],
+  drop: { orderedIds: string[] },
+  activeId: string,
+): string[] {
+  const pos = drop.orderedIds.indexOf(activeId);
+  if (pos === -1) return [];
+  const byId = new Map(stack.map((i) => [i.id, i]));
+  const states: string[] = [];
+  for (const neighborId of [
+    pos > 0 ? drop.orderedIds[pos - 1] : undefined,
+    pos < drop.orderedIds.length - 1
+      ? drop.orderedIds[pos + 1]
+      : undefined,
+  ]) {
+    const stateId = neighborId === undefined ? undefined : byId.get(neighborId)?.state_id;
+    if (stateId !== undefined && !states.includes(stateId)) {
+      states.push(stateId);
+    }
+  }
+  return states;
+}
+
+/**
  * Full list drop pipeline (C126T0, board's applyDrop precedent):
  * stackDropSortOrder → optimistic reorder + PATCH {sort_order} →
- * invalidate. A collapsed gap rebalances the dragged row's state,
- * refetches, and retries the drop once — then gives up with an honest
- * error, never writing a bogus value. A PATCH failure reverts the
- * optimistic order (snapshot restore) and surfaces the error.
- * A no-op drop writes nothing and touches no cache.
+ * invalidate. A collapsed gap rebalances, refetches, and retries the
+ * drop once — then gives up with an honest error, never writing a
+ * bogus value. Which states get rebalanced is the C128T0 binding
+ * story: the DISTINCT states among the drop's two neighbors,
+ * sequential, one call when they share a state (under state grouping
+ * that is exactly the C126 dragged-row-state call — the stack's
+ * neighbors are all in the dragged row's state there, so the C126
+ * path is untouched). Two calls when the neighbors differ; the
+ * retry happens exactly once, and if the gap is STILL collapsed
+ * after it, the pipeline surfaces an honest error and writes
+ * NOTHING — no second retry, no retry loop, no stack re-space via
+ * N PATCHes. A PATCH failure reverts the optimistic order (snapshot
+ * restore) and surfaces the error. A no-op drop writes nothing and
+ * touches no cache.
  */
 export async function applyListDrop(
   stack: Issue[],
@@ -166,16 +218,32 @@ export async function applyListDrop(
     await attempt(stack);
     return;
   }
-  // Gap collapsed: rebalance the dragged row's state, refetch, retry
-  // once against the fresh stack (same membership, re-spaced values).
+  // Gap collapsed (C128T0): rebalance each DISTINCT state among the
+  // drop's two neighbors, sequential — one call when they share a
+  // state, two when they differ. Rebalancing a state re-spaces only
+  // that state's rows, so rebalancing the dragged row's state alone
+  // cannot re-open a mixed-state gap. Any rebalance failure aborts
+  // the remaining calls and surfaces honestly, writing nothing.
+  // Defensive fallback (unreachable in practice: an append never
+  // collapses, so a collapsed drop always has two neighbors): the
+  // dragged row's own state, preserving the C126 behavior.
+  const neighborStates = dropNeighborStateIds(stack, drop0, activeId);
+  const statesToRebalance =
+    neighborStates.length > 0 ? neighborStates : [dragged.state_id];
   try {
-    await deps.rebalance({ state_id: dragged.state_id });
+    for (const stateId of statesToRebalance) {
+      await deps.rebalance({ state_id: stateId });
+    }
   } catch (e) {
     deps.onError(
       e instanceof Error ? e.message : "Failed to rebalance column",
     );
     return;
   }
+  // Refetch, retry once against the fresh stack (same membership,
+  // re-spaced values). attempt() itself never rebalances, so this
+  // is the single permitted retry; a still-collapsed gap falls
+  // through to the honest error below.
   const freshFlat = await deps.refetchFlat();
   const stackIds = new Set(stack.map((i) => i.id));
   const freshStack = freshFlat.filter((i) => stackIds.has(i.id));

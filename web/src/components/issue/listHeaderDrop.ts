@@ -9,11 +9,13 @@ import { liveEpics } from "./groupByEpic";
  * page — the listReorder.ts (C126) split, applied to the second drag
  * mode.
  *
- * Two modes coexist under state grouping (drop on a row = C126
- * reorder, drop on a header = reassign) and reassign is the ONLY drag
- * under priority/epic grouping (drop on a row there = silent no-op,
- * never a reorder, never an error). A header drop changes EXACTLY
- * that header's dimension and nothing else.
+ * Two modes coexist under every admitted grouping (drop on a row =
+ * C126/C128 reorder, drop on a header = reassign): since C128, row
+ * drops reorder within their stack under priority/epic grouping too,
+ * exactly as they already did under state grouping. A header drop
+ * changes EXACTLY that header's dimension and nothing else, and a
+ * reorder PATCHes only {sort_order} — neither mode ever touches the
+ * other's dimension.
  */
 
 /** A group/sub-group header's reassignment target — explicit fields,
@@ -278,9 +280,9 @@ export interface ListHeaderDropInfo {
  * the layout renders, so dispatch reads maps, never parses an id:
  * - over a header id → the reassignment pipeline (never the reorder
  *   pipeline), regardless of the reorder gate;
- * - over a row id in the SAME stack → the C126 reorder pipeline,
- *   and only when the reorder gate holds (under priority/epic
- *   grouping, or any non-Manual order, a row drop is a silent no-op);
+ * - over a row id in the SAME stack → the C126/C128 reorder
+ *   pipeline, and only when the reorder gate holds (non-Manual
+ *   order or PQL mode: a row drop is a silent no-op);
  * - over a row id in another stack → silent no-op (never a reorder);
  * - no over, same-id, or unknown ids → silent no-op.
  */
