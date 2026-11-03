@@ -190,7 +190,8 @@ function columnIssues(all: Issue[], stateId: string): Issue[] {
  *  column), so plain issue ids would collide as sortable ids — the
  *  compound id keeps each copy draggable. C136T2: assignee sub-sections
  *  take the same compound id on the same branch (same multi-appearance
- *  shape). The drop pipeline unwraps it
+ *  shape). C137T2: label sub-sections take it too (same shape). The
+ *  drop pipeline unwraps it
  *  (subgroupDragIssueId) before resolving the target, so drag semantics
  *  stay primary-dimension-only: sub-group sections are visual only,
  *  never drop targets that re-stamp the sub-dimension. Issue ids are
@@ -732,9 +733,14 @@ function BoardColumn({
    *  compound id on the same branch — no second unwrapper is needed,
    *  subgroupDragIssueId strips the prefix generically (last colon
    *  separates the issue id, which also covers the Ungrouped section
-   *  key "assignee:ungrouped"). */
+   *  key "assignee:ungrouped"). C137T2: label sub-sections are
+   *  multi-appearance the same way, so they join the same branch —
+   *  the generic last-colon strip also covers the Ungrouped section
+   *  key "label:ungrouped". */
   const cardDragId = (issue: Issue, sectionKey?: string) =>
-    (subGroup === "epic" || subGroup === "assignees") &&
+    (subGroup === "epic" ||
+      subGroup === "assignees" ||
+      subGroup === "labels") &&
     sectionKey !== undefined
       ? `${SUBGROUP_CARD_PREFIX}${sectionKey}:${issue.id}`
       : (getCardDragId?.(issue) ?? issue.id);
