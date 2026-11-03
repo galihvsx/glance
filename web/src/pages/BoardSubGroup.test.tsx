@@ -452,3 +452,138 @@ describe("board sub-group by assignees (C136T2)", () => {
     }
   });
 });
+
+describe("board sub-group by labels (C137T2)", () => {
+  const BUG = { id: "lab-bug", name: "Bug", color: "#e22718" };
+  const FEATURE = { id: "lab-feature", name: "Feature", color: "#1c69d4" };
+
+  // Todo column: Bug ×2 (one shared with Feature), Feature ×1 +
+  // shared, Ungrouped ×1; Done column: Feature ×1, no Ungrouped.
+  const labelPayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      labels: [BUG],
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      labels: [],
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      labels: [BUG, FEATURE],
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      labels: [FEATURE],
+    }),
+  ];
+
+  /** Every sub-section key holding a copy of this card (multi-
+   *  appearance issues appear once per section). */
+  function sectionKeysOfCard(issueId: string): string[] {
+    return Array.from(
+      document.querySelectorAll(`[data-board-card="${issueId}"]`),
+    ).map(
+      (card) =>
+        card.closest("[data-sub-group-section]")?.getAttribute(
+          "data-sub-group-section",
+        ) ?? "",
+    );
+  }
+
+  it("renders label sub-sections inside a column, Ungrouped last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "labels",
+      showEmptyGroups: true,
+    });
+    renderBoard(labelPayload);
+    await screen.findByText("Fix login");
+    // Todo: Bug, Feature, Ungrouped (first-appearance order,
+    // Ungrouped last); Done: Feature only — no Ungrouped section
+    // when empty (groupByLabel never emits an empty Ungrouped).
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["lab-bug", "lab-feature", "label:ungrouped", "lab-feature"]);
+    const bug = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "lab-bug",
+    );
+    expect(bug).toHaveLength(1);
+    expect(sectionHeader(bug[0])).toEqual(["Bug", "2"]);
+    const ungrouped = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") === "label:ungrouped",
+    );
+    expect(ungrouped).toHaveLength(1);
+    expect(sectionHeader(ungrouped[0])).toEqual(["Ungrouped", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("label:ungrouped");
+  });
+
+  it("multi-appearance card copies sit in distinct sections, so their compound drag ids are distinct", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "labels",
+      showEmptyGroups: true,
+    });
+    renderBoard(labelPayload);
+    // Multi-appearance means two matching texts by design.
+    expect(await screen.findAllByText("Ship feature")).toHaveLength(2);
+    // The two-label Todo issue renders twice in its column, once
+    // per label section. cardDragId builds the sortable id as
+    // `subgroup-card:<sectionKey>:<issueId>`, so copies in distinct
+    // sections carry distinct compound ids — no two draggables share
+    // one id (the ids themselves live inside dnd-kit's
+    // SortableContext, not the DOM, so distinct sections are the
+    // page-level proof). The generic last-colon unwrap in
+    // subgroupDragIssueId covers the `label:ungrouped` key too.
+    expect(
+      document.querySelectorAll('[data-board-card="i-c"]'),
+    ).toHaveLength(2);
+    expect(sectionKeysOfCard("i-c")).toEqual([
+      "lab-bug",
+      "lab-feature",
+    ]);
+    // The Done issue's single-label copy stays single.
+    expect(
+      document.querySelectorAll('[data-board-card="i-d"]'),
+    ).toHaveLength(1);
+  });
+
+  it("same-dimension (primary labels + sub-group labels) renders flat", async () => {
+    storeSettings({
+      groupBy: "labels",
+      subGroupBy: "labels",
+      showEmptyGroups: true,
+    });
+    renderBoard(labelPayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("label sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "labels",
+      showEmptyGroups: true,
+    });
+    renderBoard(labelPayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only
+    // and never re-stamps labels. Pointer-drag drop resolution has
+    // no simulation in this repo (C129 precedent); the live browser
+    // drag is the plan matrix's final verifier, as for epic and
+    // assignee drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
+
