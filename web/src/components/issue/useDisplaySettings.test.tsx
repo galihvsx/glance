@@ -209,6 +209,24 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(result.current.settings.subGroupBy).toBe("assignees");
   });
 
+  it("keeps a stored labels sub-group value (C137T1 whitelist)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "labels" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("labels");
+  });
+
+  it("falls back to none for the singular label stored value (C137T1 literal)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "label" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("none");
+  });
+
   it("falls back to none for an unknown stored value", () => {
     localStorage.setItem(
       KEY,

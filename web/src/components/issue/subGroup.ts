@@ -12,10 +12,14 @@
 // Ungrouped-last are inherited verbatim. Assignee sections come from
 // the existing groupByAssignee helper the same way (C136T1):
 // multi-appearance, first-appearance order, and Ungrouped-last
+// (hidden when empty) are inherited verbatim. Label sections come
+// from the existing groupByLabel helper the same way (C137T1):
+// multi-appearance, first-appearance order, and Ungrouped-last
 // (hidden when empty) are inherited verbatim.
 
 import { groupIssuesByAssignee } from "./groupByAssignee";
 import { groupIssuesByEpic } from "./groupByEpic";
+import { groupIssuesByLabel } from "./groupByLabel";
 import type {
   DisplaySettings,
   SubGroupBy,
@@ -43,6 +47,8 @@ export interface SubGroupSection {
   isUngroupedEpic?: boolean;
   targetAssigneeId?: string;
   isUngroupedAssignee?: boolean;
+  targetLabelId?: string;
+  isUngroupedLabel?: boolean;
 }
 
 const SUB_GROUP_BYS: SubGroupBy[] = [
@@ -51,6 +57,7 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "priority",
   "epic",
   "assignees",
+  "labels",
 ];
 
 /** Ungrouped section key for state sub-grouping (issues whose state
@@ -84,6 +91,10 @@ export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
  *  - assignees: multi-appearance via groupByAssignee (an issue with
  *    N assignees appears under every assignee sub-section; Ungrouped
  *    last, hidden when empty by groupByAssignee itself).
+ *  - labels: multi-appearance via groupByLabel (an issue with N
+ *    labels appears under every label sub-section; Ungrouped last,
+ *    hidden when empty by groupByLabel itself). Label sections carry
+ *    the group color from the row (first-appearance row wins).
  *  - none: a single section carrying all issues unchanged. */
 export function buildSubGroupSections(
   issues: Issue[],
@@ -154,6 +165,22 @@ export function buildSubGroupSections(
       issues: g.issues,
       targetAssigneeId: g.isUngrouped ? undefined : g.key,
       isUngroupedAssignee: g.isUngrouped,
+    }));
+  }
+  // labels: reuse groupByLabel — multi-appearance,
+  // first-appearance order, Ungrouped last (hidden when empty).
+  // The label id IS the key verbatim; the target field is mapped
+  // once here, never parsed from the key at drop time. Ungrouped
+  // headers carry no target field — they resolve to label-ungroup
+  // via toHeaderTarget, never to a member.
+  if (subGroupBy === "labels") {
+    return groupIssuesByLabel(issues).map((g) => ({
+      key: g.key,
+      title: g.title,
+      color: g.color,
+      issues: g.issues,
+      targetLabelId: g.isUngrouped ? undefined : g.key,
+      isUngroupedLabel: g.isUngrouped,
     }));
   }
   // epic: reuse groupByEpic — multi-appearance, archived exclusion,

@@ -1029,3 +1029,63 @@ describe("release expand-to-full-form (C133T1)", () => {
     );
   });
 });
+
+describe("label sub-grouping (C137T1)", () => {
+  const BUG = { id: "l-bug", name: "Bug", color: "#e22718" };
+  const FEAT = { id: "l-feat", name: "Feature", color: "#0066b1" };
+
+  function labelIssues() {
+    return [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        labels: [BUG, FEAT],
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        labels: [FEAT],
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072),
+    ];
+  }
+
+  it("state primary + labels sub-group: label sub-headers are droppable", async () => {
+    setSettings({
+      groupBy: "state",
+      subGroupBy: "labels",
+      orderBy: "sort_order",
+    });
+    mockState.issues = labelIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // Primary state headers + label sub-headers nested under them.
+    // Label sub-sections are member-only (no empty sections), so
+    // Doing gets Feature only; Todo gets Bug, Feature, and Ungrouped.
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing::l-feat:label:l-feat",
+      "header:s-doing:state:s-doing",
+      "header:s-todo::l-bug:label:l-bug",
+      "header:s-todo::l-feat:label:l-feat",
+      "header:s-todo::label:ungrouped:label:ungrouped",
+      "header:s-todo:state:s-todo",
+    ]);
+    // The sub-header targets feed the existing label-move /
+    // label-ungroup pipeline (resolveListHeaderDrop unit tests):
+    // a row dragged from the Bug sub-section carries Bug as its
+    // source, so dropping it on Feature removes Bug; dropping it
+    // on Ungrouped removes all current labels.
+  });
+
+  it("labels primary + labels sub-group: no label sub-headers, renders flat", async () => {
+    setSettings({
+      groupBy: "labels",
+      subGroupBy: "labels",
+      orderBy: "sort_order",
+    });
+    mockState.issues = labelIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:l-bug:label:l-bug",
+      "header:l-feat:label:l-feat",
+      "header:label:ungrouped:label:ungrouped",
+    ]);
+  });
+});

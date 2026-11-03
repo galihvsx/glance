@@ -254,6 +254,60 @@ describe("list sub-group sections (C123T1)", () => {
     expect(screen.getAllByText("Alpha issue")).toHaveLength(2);
   });
 
+  it("renders label sub-sections with multi-appearance, Ungrouped last (C137T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "labels" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        labels: [
+          { id: "l-bug", name: "Bug", color: "#e22718" },
+          { id: "l-feat", name: "Feature", color: "#0066b1" },
+        ],
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        labels: [{ id: "l-bug", name: "Bug", color: "#e22718" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(subTitles).toEqual(["Bug", "Feature", "Ungrouped"]);
+    // Multi-appearance: Alpha renders under both label sub-sections.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(2);
+  });
+
+  it("label sub-group hides Ungrouped when every issue is labeled (C137T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "labels" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        labels: [{ id: "l-bug", name: "Bug", color: "#e22718" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(
+      screen.queryByRole("heading", { level: 3, name: "Ungrouped" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Bug" }),
+    ).toBeInTheDocument();
+  });
+
+  it("labels primary + labels sub-group renders flat (same-dimension rule, C137T1)", async () => {
+    setSettings({ groupBy: "labels", subGroupBy: "labels" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        labels: [{ id: "l-bug", name: "Bug", color: "#e22718" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
   it("assignee sub-group hides Ungrouped when every issue is assigned (C136T1)", async () => {
     setSettings({ groupBy: "state", subGroupBy: "assignees" });
     mockState.issues = [

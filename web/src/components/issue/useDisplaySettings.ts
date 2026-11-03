@@ -93,7 +93,8 @@ export type SubGroupBy =
   | "state"
   | "priority"
   | "epic"
-  | "assignees";
+  | "assignees"
+  | "labels";
 
 /** Whitelisted ?order_by= values the backend accepts (internal/service/issue.go). */
 export type OrderBy =
@@ -165,6 +166,7 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "priority",
   "epic",
   "assignees",
+  "labels",
 ];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
