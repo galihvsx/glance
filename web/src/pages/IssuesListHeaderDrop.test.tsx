@@ -386,6 +386,49 @@ describe("assignee grouping (C129T0)", () => {
     expect(ids).toContain("header:u-bob::s-doing:state:s-doing");
   });
 
+  it("state primary + assignee sub-group: assignee sub-headers are droppable (C136T1)", async () => {
+    setSettings({
+      groupBy: "state",
+      subGroupBy: "assignees",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // Primary state headers + assignee sub-headers nested under them.
+    // Assignee sub-sections are member-only (no empty sections), so
+    // Doing gets Bob only; Todo gets Alice, Bob, and Ungrouped.
+    expect(dropIds().sort()).toEqual([
+      "header:s-doing::u-bob:assignee:u-bob",
+      "header:s-doing:state:s-doing",
+      "header:s-todo::assignee:ungrouped:assignee:ungrouped",
+      "header:s-todo::u-alice:assignee:u-alice",
+      "header:s-todo::u-bob:assignee:u-bob",
+      "header:s-todo:state:s-todo",
+    ]);
+    // The sub-header targets feed the existing assignee-move /
+    // assignee-ungroup pipeline (resolveListHeaderDrop unit tests):
+    // a row dragged from the Alice sub-section carries Alice as its
+    // source, so dropping it on Bob removes Alice; dropping it on
+    // Ungrouped removes all current assignees.
+  });
+
+  it("assignee primary + assignee sub-group: no assignee sub-headers, renders flat (C136T1)", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "assignees",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:assignee:ungrouped:assignee:ungrouped",
+      "header:u-alice:assignee:u-alice",
+      "header:u-bob:assignee:u-bob",
+    ]);
+  });
+
   it("PQL mode: no grips under assignee grouping even under Manual rank", async () => {
     setSettings({
       groupBy: "assignees",

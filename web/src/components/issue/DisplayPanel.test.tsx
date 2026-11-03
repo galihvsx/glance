@@ -209,7 +209,7 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     renderPanelWithUpdate();
     const { group, radio } = subGroupRadios();
     expect(group).toBeInTheDocument();
-    for (const label of ["None", "State", "Priority", "Epic"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees"]) {
       expect(radio(label)).toBeInTheDocument();
     }
     expect(radio("None")).toHaveAttribute("aria-checked", "true");
@@ -227,13 +227,24 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     expect(radio("None")).not.toBeDisabled();
   });
 
+  it("disables the Assignees sub-option under primary Assignees grouping (C136T1)", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "assignees",
+    });
+    const { radio } = subGroupRadios();
+    expect(radio("Assignees")).toBeDisabled();
+    expect(radio("Epic")).not.toBeDisabled();
+    expect(radio("None")).not.toBeDisabled();
+  });
+
   it("disables the whole control with a hint when groupBy is none", () => {
     renderPanelWithUpdate({
       ...DEFAULT_DISPLAY_SETTINGS,
       groupBy: "none",
     });
     const { radio } = subGroupRadios();
-    for (const label of ["None", "State", "Priority", "Epic"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees"]) {
       expect(radio(label)).toBeDisabled();
     }
     expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
@@ -516,7 +527,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("does NOT add Created by to the Sub-group by options", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees"]);
     expect(subLabels).not.toContain("Created by");
   });
 
@@ -536,7 +547,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("does NOT add State groups to the Sub-group by options", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees"]);
     expect(subLabels).not.toContain("State groups");
   });
 });

@@ -229,6 +229,60 @@ describe("list sub-group sections (C123T1)", () => {
     expect(text.indexOf("Ungrouped")).toBeGreaterThan(text.lastIndexOf("Checkout"));
   });
 
+  it("renders assignee sub-sections with multi-appearance, Ungrouped last (C136T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "assignees" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        assignees: [
+          { id: "u-alice", name: "Alice" },
+          { id: "u-bob", name: "Bob" },
+        ],
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        assignees: [{ id: "u-alice", name: "Alice" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(subTitles).toEqual(["Alice", "Bob", "Ungrouped"]);
+    // Multi-appearance: Alpha renders under both assignee sub-sections.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(2);
+  });
+
+  it("assignee sub-group hides Ungrouped when every issue is assigned (C136T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "assignees" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        assignees: [{ id: "u-alice", name: "Alice" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(
+      screen.queryByRole("heading", { level: 3, name: "Ungrouped" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Alice" }),
+    ).toBeInTheDocument();
+  });
+
+  it("assignee primary + assignee sub-group renders flat (same-dimension rule, C136T1)", async () => {
+    setSettings({ groupBy: "assignees", subGroupBy: "assignees" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        assignees: [{ id: "u-alice", name: "Alice" }],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
   it("same-as-primary renders flat groups (no sub-sections)", async () => {
     setSettings({ groupBy: "state", subGroupBy: "state" });
     mockState.issues = [

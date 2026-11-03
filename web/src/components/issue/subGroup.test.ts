@@ -2,6 +2,7 @@
 // rule (never equals the primary dimension) and section building for
 // state / priority / epic / none. Show-empty filtering is a call-site
 // concern and is NOT tested here (the board tests cover it).
+// C136T1: adds assignees sections (via groupByAssignee, verbatim).
 
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +10,7 @@ import {
   buildSubGroupSections,
   effectiveSubGroupBy,
 } from "./subGroup";
+import { UNGROUPED_ASSIGNEE_KEY } from "./groupByAssignee";
 import { UNGROUPED_EPIC_KEY } from "./groupByEpic";
 import type { Issue, IssueState } from "../../lib/types";
 import {
@@ -45,6 +47,7 @@ function mkIssue(
   stateId: string,
   priority: number,
   epics: { id: string; name: string; archived_at?: string | null }[] = [],
+  assignees: { id: string; name: string }[] = [],
 ): Issue {
   return {
     id,
@@ -59,7 +62,7 @@ function mkIssue(
     created_by: "u",
     created_at: "",
     updated_at: "",
-    assignees: [],
+    assignees,
     labels: [],
     epics,
   } as Issue;
@@ -98,6 +101,15 @@ describe("effectiveSubGroupBy", () => {
       "none",
     );
     expect(effectiveSubGroupBy(settingsWith("epic", "epic"))).toBe("none");
+    expect(effectiveSubGroupBy(settingsWith("assignees", "assignees"))).toBe(
+      "none",
+    );
+  });
+
+  it("passes assignees through when it differs from groupBy", () => {
+    expect(effectiveSubGroupBy(settingsWith("state", "assignees"))).toBe(
+      "assignees",
+    );
   });
 
   it("renders none when groupBy is none, whatever is stored", () => {
@@ -202,6 +214,53 @@ describe("buildSubGroupSections", () => {
       stateById,
     });
     expect(sections.map((s) => s.key)).toEqual([UNGROUPED_EPIC_KEY]);
+  });
+
+  it("assignees: multi-appearance via groupByAssignee, Ungrouped last, row names only", () => {
+    const ALICE = { id: "u-alice", name: "Alice" };
+    const BOB = { id: "u-bob", name: "Bob" };
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [ALICE, BOB]),
+      mkIssue("2", "s-todo", 3, [], []),
+      mkIssue("3", "s-todo", 3, [], [ALICE]),
+    ];
+    const sections = buildSubGroupSections(issues, "assignees", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([
+      "u-alice",
+      "u-bob",
+      UNGROUPED_ASSIGNEE_KEY,
+    ]);
+    // Titles come from the row, never fabricated.
+    expect(sections.map((s) => s.title)).toEqual([
+      "Alice",
+      "Bob",
+      "Ungrouped",
+    ]);
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "3"]);
+    expect(sections[1].issues.map((i) => i.id)).toEqual(["1"]);
+    expect(sections[2].issues.map((i) => i.id)).toEqual(["2"]);
+    // Drop-target fields: member sections carry the id, Ungrouped
+    // carries the flag and no target (assignee-ungroup via
+    // toHeaderTarget).
+    expect(sections[0].targetAssigneeId).toBe("u-alice");
+    expect(sections[0].isUngroupedAssignee).toBe(false);
+    expect(sections[1].targetAssigneeId).toBe("u-bob");
+    expect(sections[2].targetAssigneeId).toBeUndefined();
+    expect(sections[2].isUngroupedAssignee).toBe(true);
+  });
+
+  it("assignees: Ungrouped hidden when empty (no unassigned issues)", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [{ id: "u-alice", name: "Alice" }]),
+    ];
+    const sections = buildSubGroupSections(issues, "assignees", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual(["u-alice"]);
   });
 
   it("none: a single section carrying all issues unchanged", () => {

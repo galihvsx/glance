@@ -1871,7 +1871,10 @@ export default function Issues() {
   // else the epic sub-section, else none (that source decides the
   // remove side of an epic move — see listHeaderDrop). C129T0: the
   // assignee appearance mirrors it — the primary assignee group,
-  // else none (sub-sections are never assignee this cycle).
+  // else none. C136T1: the assignee sub-section joins it — the
+  // primary assignee group, else the assignee sub-section, else none
+  // (sub-sections ARE assignee now; label/module/cycle/release stay
+  // primary-only).
   // C130T0: the label appearance mirrors it — the primary label
   // group, else none (sub-sections are never labels this cycle).
   // C131T0: the module appearance mirrors it — the primary module
@@ -1979,15 +1982,24 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            // Sub-sections are never assignee, label, module,
-            // cycle, or release this cycle, so the source is the
-            // primary assignee/label/module/cycle/release group,
-            // else none.
+            // C136T1: assignee sub-sections mirror epic — the
+            // sub-section's target is the stack's source assignee
+            // (Ungrouped sub-section → null), falling back to the
+            // primary assignee group otherwise. Sub-sections are
+            // never label, module, cycle, or release, so those
+            // sources stay the primary group, else none.
+            const sourceAssigneeId =
+              primaryAssigneeId ??
+              (effectiveSubGroup === "assignees"
+                ? sub.isUngroupedAssignee
+                  ? null
+                  : (sub.targetAssigneeId ?? null)
+                : null);
             registerStack(
               subKey,
               sub.issues,
               sourceEpicId,
-              primaryAssigneeId,
+              sourceAssigneeId,
               primaryLabelId,
               primaryModuleId,
               primaryCycleId,

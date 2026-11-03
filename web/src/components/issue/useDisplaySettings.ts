@@ -88,7 +88,12 @@ export type GroupBy =
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
  *  the primary dimensions; "none" is the default (opt-in, Plane-style). */
-export type SubGroupBy = "none" | "state" | "priority" | "epic";
+export type SubGroupBy =
+  | "none"
+  | "state"
+  | "priority"
+  | "epic"
+  | "assignees";
 
 /** Whitelisted ?order_by= values the backend accepts (internal/service/issue.go). */
 export type OrderBy =
@@ -154,7 +159,13 @@ const GROUP_BYS: GroupBy[] = [
   "stateGroups",
   "none",
 ];
-const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
+const SUB_GROUP_BYS: SubGroupBy[] = [
+  "none",
+  "state",
+  "priority",
+  "epic",
+  "assignees",
+];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
   "updated_at",
