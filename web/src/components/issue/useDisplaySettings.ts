@@ -32,8 +32,11 @@ export interface DisplayFields {
 }
 
 /** C72T0: "epic" groups list rows by live epic membership (multi-appearance:
- * an issue with N live epics shows under every epic group). */
-export type GroupBy = "state" | "priority" | "epic" | "none";
+ * an issue with N live epics shows under every epic group).
+ * C129T0: "assignees" groups list rows by assignee membership
+ * (multi-appearance: an issue with N assignees shows under every
+ * assignee group; issues with none land in Ungrouped, last). */
+export type GroupBy = "state" | "priority" | "epic" | "assignees" | "none";
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
  *  the primary dimensions; "none" is the default (opt-in, Plane-style). */
@@ -90,7 +93,7 @@ export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   showSubWorkItems: true,
 };
 
-const GROUP_BYS: GroupBy[] = ["state", "priority", "epic", "none"];
+const GROUP_BYS: GroupBy[] = ["state", "priority", "epic", "assignees", "none"];
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",

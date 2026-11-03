@@ -100,6 +100,7 @@ import {
   type SubGroupSection,
 } from "../components/issue/subGroup";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -390,6 +391,13 @@ export default function Issues() {
   const [newPriority, setNewPriority] = useState(0);
   const [newStateId, setNewStateId] = useState("");
   const [newEstimatePointId, setNewEstimatePointId] = useState("");
+  // C129T0: assignee carried from an assignee group's expand-to-full-
+  // form (the create dialog has no assignee field, so the member is
+  // attached right after a successful create — see createMutation's
+  // onSuccess). A ref, not state: onSuccess must read the value from
+  // the render that opened the dialog, and the dialog-close handler
+  // clears it on cancel so it never leaks into the next create.
+  const pendingAssigneeRef = useRef<string | null>(null);
   // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
   // calendar's day-cell quick-add via location.state.
   const [newStartDate, setNewStartDate] = useState("");
@@ -736,6 +744,12 @@ export default function Issues() {
       custom_values?: Record<string, CustomValueInput>;
     }) => api.post<Issue>(`${base}/issues`, body),
     onSuccess: (issue) => {
+      // C129T0: an expand-to-full-form from an assignee group carries
+      // the group member here — captured and cleared immediately so
+      // no later create can reuse it — since the dialog has no
+      // assignee field, the member is attached right after create.
+      const pendingAssigneeId = pendingAssigneeRef.current;
+      pendingAssigneeRef.current = null;
       resetCreateForm();
       // "Create more" keeps the dialog open for rapid entry; otherwise
       // the dialog closes and the toast is the confirmation.
@@ -749,6 +763,30 @@ export default function Issues() {
         queryKey: ["calendar", slug, identifier],
       });
       showCreatedToast(issue);
+      if (pendingAssigneeId) {
+        // Attach failure surfaces honestly and the row lands in
+        // Ungrouped after invalidation (same rule as list quick-add).
+        void api
+          .post(
+            `${base}/issues/${issue.id}/assignees/${encodeURIComponent(pendingAssigneeId)}`,
+          )
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            }),
+          )
+          .catch((e) => {
+            toast.add({
+              title: "Issue created but not assigned",
+              type: "error",
+              description:
+                e instanceof Error ? e.message : "Failed to assign issue",
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            });
+          });
+      }
       if (issue.is_draft) {
         void queryClient.invalidateQueries({
           queryKey: ["drafts", slug, identifier],
@@ -875,28 +913,53 @@ export default function Issues() {
   }
 
   /** Inline quick-add: title only. The new row appears via query
-   *  invalidation — no full reload. */
+   *  invalidation — no full reload. Under assignee grouping, a group
+   *  member attaches after create (C129T0, board epic quick-add
+   *  precedent): an attach failure surfaces (QuickAdd shows the
+   *  thrown error) and the row lands in Ungrouped after invalidation.
+   *  Ungrouped quick-add (no member) is a plain create. */
   async function quickCreate(
     stateId: string,
     name: string,
     priority?: number,
+    assigneeId?: string,
   ): Promise<void> {
-    await api.post<Issue>(`${base}/issues`, {
+    const created = await api.post<Issue>(`${base}/issues`, {
       name,
       ...(stateId ? { state_id: stateId } : {}),
       ...(priority !== undefined ? { priority } : {}),
     });
+    if (assigneeId) {
+      try {
+        await api.post(
+          `${base}/issues/${created.id}/assignees/${encodeURIComponent(assigneeId)}`,
+        );
+      } catch (e) {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        throw e;
+      }
+    }
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
   }
 
   /** Expand an inline quick-add into the full create form, keeping the
-   *  typed title and the group's state/priority. */
-  function expandQuickAdd(stateId: string, name: string, priority?: number) {
+   *  typed title, the group's state/priority, and — under assignee
+   *  grouping — the group member (attached after create, since the
+   *  dialog has no assignee field; see createMutation's onSuccess). */
+  function expandQuickAdd(
+    stateId: string,
+    name: string,
+    priority?: number,
+    assigneeId?: string,
+  ) {
     setName(name);
     setNewStateId(stateId);
     if (priority !== undefined) setNewPriority(priority);
+    pendingAssigneeRef.current = assigneeId ?? null;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -953,7 +1016,11 @@ export default function Issues() {
   // C72T0: epic grouping needs no skip — epic memberships ride on the
   // list rows themselves, so filters narrow the members, not the groups.
   const groupByEpic = settings.groupBy === "epic";
-  const groupingActive = groupByState || groupByPriority || groupByEpic;
+  // C129T0: assignee grouping needs no skip either — assignees ride on
+  // the list rows themselves, exactly like epic memberships.
+  const groupByAssignees = settings.groupBy === "assignees";
+  const groupingActive =
+    groupByState || groupByPriority || groupByEpic || groupByAssignees;
 
   interface IssueGroup {
     key: string;
@@ -976,6 +1043,10 @@ export default function Issues() {
     targetPriority?: number;
     targetEpicId?: string;
     isUngroupedEpic?: boolean;
+    /** C129T0: assignee drop-target values, mirroring the epic pair
+     *  above — the key IS the assignee id verbatim for member groups. */
+    targetAssigneeId?: string;
+    isUngroupedAssignee?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -1018,6 +1089,20 @@ export default function Issues() {
         targetEpicId: g.isUngrouped ? undefined : g.key,
         isUngroupedEpic: g.isUngrouped,
       }));
+    } else if (groupByAssignees) {
+      // C129T0: group by assignee membership (see groupByAssignee.ts
+      // for the multi-appearance + Ungrouped-last semantics). No
+      // breakdown bar: the helper carries no byGroup (unlike epic
+      // groups), and the header renders the assignee name from the
+      // row — the same name the row chips use — plus the count.
+      gs = groupIssuesByAssignee(issues).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        stateId: sortedStates[0]?.id,
+        targetAssigneeId: g.isUngrouped ? undefined : g.key,
+        isUngroupedAssignee: g.isUngrouped,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1026,6 +1111,7 @@ export default function Issues() {
     groupByState,
     groupByPriority,
     groupByEpic,
+    groupByAssignees,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1114,7 +1200,7 @@ export default function Issues() {
   // C126T0: list drag-to-reorder. The effective grouping is what
   // renders (a grouping skipped by its single-value filter renders
   // flat), so the enable rule reads groupByState/groupByPriority/
-  // groupByEpic, not the raw setting. The drop pipeline lives in
+  // groupByEpic/groupByAssignees, not the raw setting. The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
   // reorder never reassigns state. Pagination caveat (plan): drop
@@ -1122,13 +1208,15 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByEpic
-    ? "epic"
-    : groupByPriority
-      ? "priority"
-      : groupByState
-        ? "state"
-        : "none";
+  const effectiveGroupBy = groupByAssignees
+    ? "assignees"
+    : groupByEpic
+      ? "epic"
+      : groupByPriority
+        ? "priority"
+        : groupByState
+          ? "state"
+          : "none";
   const dragEnabled = isListDragEnabled({
     orderBy: settings.orderBy,
     pqlMode,
@@ -1196,7 +1284,9 @@ export default function Issues() {
   // never parses an id string. The epic appearance a stack's rows
   // were dragged from is recorded per stack: the primary epic group,
   // else the epic sub-section, else none (that source decides the
-  // remove side of an epic move — see listHeaderDrop).
+  // remove side of an epic move — see listHeaderDrop). C129T0: the
+  // assignee appearance mirrors it — the primary assignee group,
+  // else none (sub-sections are never assignee this cycle).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -1204,8 +1294,14 @@ export default function Issues() {
       stackKey: string,
       rows: Issue[],
       sourceEpicId: string | null,
+      sourceAssigneeId: string | null = null,
     ): ListDragStackRef => {
-      const stack: ListDragStackRef = { stackKey, rows, sourceEpicId };
+      const stack: ListDragStackRef = {
+        stackKey,
+        rows,
+        sourceEpicId,
+        sourceAssigneeId,
+      };
       for (const issue of rows) {
         sortableMap.set(listSortableId(stackKey, issue.id), {
           rowId: issue.id,
@@ -1237,6 +1333,11 @@ export default function Issues() {
             ? null
             : (g.targetEpicId ?? null)
           : null;
+        const primaryAssigneeId = groupByAssignees
+          ? g.isUngroupedAssignee
+            ? null
+            : (g.targetAssigneeId ?? null)
+          : null;
         if (subSectionsByGroup) {
           registerHeader(g.key, g, g.issues);
           for (const sub of subSectionsByGroup.get(g.key) ?? []) {
@@ -1248,11 +1349,13 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            registerStack(subKey, sub.issues, sourceEpicId);
+            // Sub-sections are never assignee this cycle, so the
+            // source is the primary assignee group, else none.
+            registerStack(subKey, sub.issues, sourceEpicId, primaryAssigneeId);
             registerHeader(subKey, sub, sub.issues);
           }
         } else {
-          registerStack(g.key, g.issues, primaryEpicId);
+          registerStack(g.key, g.issues, primaryEpicId, primaryAssigneeId);
           registerHeader(g.key, g, g.issues);
         }
       }
@@ -1264,14 +1367,15 @@ export default function Issues() {
     subSectionsByGroup,
     issues,
     groupByEpic,
+    groupByAssignees,
     effectiveSubGroup,
   ]);
 
   // C127T0: one header drop — resolve to the exact call sequence,
-  // execute it (add-before-remove + sort PATCH for epic moves), and
-  // invalidate so the moved row appears in its new group from the
-  // server's state. No optimistic group-move rendering (the simpler
-  // correct choice the plan allows); on failure the row stays
+  // execute it (add-before-remove + sort PATCH for epic/assignee
+  // moves), and invalidate so the moved row appears in its new group
+  // from the server's state. No optimistic group-move rendering (the
+  // simpler correct choice the plan allows); on failure the row stays
   // visibly in its old group after refetch and the error surfaces
   // via the existing reorderError Alert.
   async function handleHeaderDrop(
@@ -1282,6 +1386,7 @@ export default function Issues() {
     const plan = resolveListHeaderDrop({
       dragged: dragged.issue,
       sourceEpicId: dragged.stack.sourceEpicId,
+      sourceAssigneeId: dragged.stack.sourceAssigneeId,
       target: info.target,
       targetRows: info.targetRows,
     });
@@ -1296,6 +1401,16 @@ export default function Issues() {
         api.del(`${base}/epics/${encodeURIComponent(epicId)}/issues`, {
           issue_ids: [issueId],
         }),
+      // C129T0: assignee membership endpoints carry no body — the
+      // user id rides the path, and both calls are idempotent.
+      addToAssignee: (assigneeId, issueId) =>
+        api.post(
+          `${base}/issues/${issueId}/assignees/${encodeURIComponent(assigneeId)}`,
+        ),
+      removeFromAssignee: (assigneeId, issueId) =>
+        api.del(
+          `${base}/issues/${issueId}/assignees/${encodeURIComponent(assigneeId)}`,
+        ),
       invalidate: () =>
         queryClient.invalidateQueries({
           queryKey: ["issues", slug, identifier],
@@ -1457,6 +1572,8 @@ export default function Issues() {
                 setParentIssue(null);
                 setAppliedTemplate(null);
                 setTemplateNote(null);
+                // C129T0: same rule for a carried assignee group member.
+                pendingAssigneeRef.current = null;
               }
             }}
           >
@@ -1993,10 +2110,20 @@ export default function Issues() {
                   <QuickAdd
                     className="mt-1"
                     onCreate={(name) =>
-                      quickCreate(g.stateId ?? "", name, g.priority)
+                      quickCreate(
+                        g.stateId ?? "",
+                        name,
+                        g.priority,
+                        g.targetAssigneeId,
+                      )
                     }
                     onExpand={(name) =>
-                      expandQuickAdd(g.stateId ?? "", name, g.priority)
+                      expandQuickAdd(
+                        g.stateId ?? "",
+                        name,
+                        g.priority,
+                        g.targetAssigneeId,
+                      )
                     }
                   />
                 </section>

@@ -44,8 +44,9 @@ function mkStack(
   stackKey: string,
   rows: Issue[],
   sourceEpicId: string | null = null,
+  sourceAssigneeId: string | null = null,
 ): ListDragStackRef {
-  return { stackKey, rows, sourceEpicId };
+  return { stackKey, rows, sourceEpicId, sourceAssigneeId };
 }
 
 function mkRef(
@@ -349,6 +350,14 @@ describe("executeListHeaderDrop", () => {
           events.push(`remove:${epicId}`);
           return Promise.resolve();
         }),
+        addToAssignee: vi.fn((assigneeId: string) => {
+          events.push(`addAssignee:${assigneeId}`);
+          return Promise.resolve();
+        }),
+        removeFromAssignee: vi.fn((assigneeId: string) => {
+          events.push(`removeAssignee:${assigneeId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -446,6 +455,282 @@ describe("executeListHeaderDrop", () => {
     );
     expect(events).toEqual(["error:remove boom", "invalidate"]);
     expect(deps.removeFromEpic).toHaveBeenCalledTimes(1);
+  });
+});
+
+// C129T0: assignee header drops — the epic pipeline mirrored exactly
+// (add-before-remove + sort PATCH; Ungrouped = remove-all, no PATCH).
+describe("assignee header drops (C129T0)", () => {
+  const targetRows = [
+    mkIssue("t1", { sort_order: 1024 }),
+    mkIssue("t2", { sort_order: 2048 }),
+  ];
+
+  // Local copy of the execute describe's mock factory (that one is
+  // scoped to its own describe block).
+  function mockAssigneeDeps() {
+    const events: string[] = [];
+    return {
+      events,
+      deps: {
+        patch: vi.fn((_id: string, body: unknown) => {
+          events.push(`patch:${JSON.stringify(body)}`);
+          return Promise.resolve();
+        }),
+        addToEpic: vi.fn(() => Promise.resolve()),
+        removeFromEpic: vi.fn(() => Promise.resolve()),
+        addToAssignee: vi.fn((assigneeId: string) => {
+          events.push(`addAssignee:${assigneeId}`);
+          return Promise.resolve();
+        }),
+        removeFromAssignee: vi.fn((assigneeId: string) => {
+          events.push(`removeAssignee:${assigneeId}`);
+          return Promise.resolve();
+        }),
+        invalidate: vi.fn(() => {
+          events.push("invalidate");
+          return Promise.resolve();
+        }),
+        onError: vi.fn((m: string) => {
+          events.push(`error:${m}`);
+        }),
+      },
+    };
+  }
+
+  it("toHeaderTarget maps assignee fields", () => {
+    expect(toHeaderTarget({ targetAssigneeId: "u-1" })).toEqual({
+      kind: "assignee",
+      assigneeId: "u-1",
+    });
+    expect(toHeaderTarget({ isUngroupedAssignee: true })).toEqual({
+      kind: "assignee-ungrouped",
+    });
+  });
+
+  it("header ids are namespaced and disjoint from row ids", () => {
+    const h = headerDropId("u-1", { kind: "assignee", assigneeId: "u-2" });
+    const u = headerDropId("assignee:ungrouped", {
+      kind: "assignee-ungrouped",
+    });
+    expect(h).toBe("header:u-1:assignee:u-2");
+    expect(u).toBe("header:assignee:ungrouped:assignee:ungrouped");
+    expect(h.startsWith("header:")).toBe(true);
+    expect(listSortableId("u-1", "i-1")).not.toBe(h);
+  });
+
+  it("assignee header: add-before-remove + sort PATCH, from an assignee source", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        sort_order: 512,
+        assignees: [{ id: "u-1", name: "Alice" }],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: "u-1",
+      target: { kind: "assignee", assigneeId: "u-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "assignee-move",
+      addAssigneeId: "u-2",
+      removeAssigneeId: "u-1",
+      sortOrder: 3072,
+    });
+  });
+
+  it("assignee header: no remove when the appearance came from Ungrouped", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", { sort_order: 512 }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      target: { kind: "assignee", assigneeId: "u-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "assignee-move",
+      addAssigneeId: "u-2",
+      removeAssigneeId: null,
+      sortOrder: 3072,
+    });
+  });
+
+  it("assignee header: no remove when the source equals the target (own-group appearance)", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        sort_order: 512,
+        assignees: [{ id: "u-2", name: "Bob" }],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: "u-2",
+      target: { kind: "assignee", assigneeId: "u-2" },
+      targetRows,
+    });
+    // Already a member of the target: silent no-op, not a move.
+    expect(plan).toBeNull();
+  });
+
+  it("assignee header: already assigned to the target is a silent no-op, even from another assignee group", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {
+          assignees: [
+            { id: "u-1", name: "Alice" },
+            { id: "u-2", name: "Bob" },
+          ],
+        }),
+        sourceEpicId: null,
+        sourceAssigneeId: "u-1",
+        target: { kind: "assignee", assigneeId: "u-2" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("assignee Ungrouped: removes ALL current assignees, no sort PATCH", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", {
+        assignees: [
+          { id: "u-1", name: "Alice" },
+          { id: "u-2", name: "Bob" },
+        ],
+      }),
+      sourceEpicId: null,
+      sourceAssigneeId: "u-1",
+      target: { kind: "assignee-ungrouped" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "assignee-ungroup",
+      removeAssigneeIds: ["u-1", "u-2"],
+    });
+  });
+
+  it("assignee Ungrouped: already-unassigned is a silent no-op", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {}),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        target: { kind: "assignee-ungrouped" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("execute assignee-move: add, then remove, then PATCH {sort_order} only, then invalidate", async () => {
+    const { events, deps } = mockAssigneeDeps();
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "assignee-move",
+        addAssigneeId: "u-2",
+        removeAssigneeId: "u-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addAssignee:u-2",
+      "removeAssignee:u-1",
+      'patch:{"sort_order":3072}',
+      "invalidate",
+    ]);
+    // The sort PATCH body carries exactly {sort_order} — never an assignee id.
+    expect(deps.patch).toHaveBeenCalledWith("d", { sort_order: 3072 });
+  });
+
+  it("execute assignee-move: an add failure aborts remove and PATCH, surfaces honestly", async () => {
+    const { events, deps } = mockAssigneeDeps();
+    deps.addToAssignee.mockRejectedValueOnce(new Error("add boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "assignee-move",
+        addAssigneeId: "u-2",
+        removeAssigneeId: "u-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual(["error:add boom", "invalidate"]);
+    expect(deps.removeFromAssignee).not.toHaveBeenCalled();
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute assignee-move: a remove failure after a successful add aborts the PATCH and surfaces honestly", async () => {
+    const { events, deps } = mockAssigneeDeps();
+    deps.removeFromAssignee.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "assignee-move",
+        addAssigneeId: "u-2",
+        removeAssigneeId: "u-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addAssignee:u-2",
+      "error:remove boom",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute assignee-ungroup: sequential removes in order, no PATCH", async () => {
+    const { events, deps } = mockAssigneeDeps();
+    await executeListHeaderDrop(
+      "d",
+      { type: "assignee-ungroup", removeAssigneeIds: ["u-1", "u-2"] },
+      deps,
+    );
+    expect(events).toEqual([
+      "removeAssignee:u-1",
+      "removeAssignee:u-2",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute assignee-ungroup: a failed remove aborts the rest and surfaces honestly", async () => {
+    const { events, deps } = mockAssigneeDeps();
+    deps.removeFromAssignee.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      { type: "assignee-ungroup", removeAssigneeIds: ["u-1", "u-2", "u-3"] },
+      deps,
+    );
+    expect(events).toEqual(["error:remove boom", "invalidate"]);
+    expect(deps.removeFromAssignee).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch routes an assignee header drop to the reassignment pipeline regardless of the reorder gate", () => {
+    const stack = mkStack("u-1", [mkIssue("a")], null, "u-1");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:u-1:a", mkRef("a", mkIssue("a"), stack)],
+    ]);
+    const headerMap = new Map<string, ListHeaderDropInfo>([
+      [
+        "header:u-2:assignee:u-2",
+        {
+          target: { kind: "assignee", assigneeId: "u-2" },
+          targetRows: [],
+        },
+      ],
+    ]);
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:u-1:a",
+      overId: "header:u-2:assignee:u-2",
+      sortableMap,
+      headerMap,
+      reorderEnabled: false,
+      onRowDrop: vi.fn(),
+      onHeaderDrop,
+    });
+    expect(onHeaderDrop).toHaveBeenCalledTimes(1);
+    expect(onHeaderDrop.mock.calls[0][0].stack.sourceAssigneeId).toBe("u-1");
   });
 });
 

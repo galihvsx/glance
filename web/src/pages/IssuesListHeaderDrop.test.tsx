@@ -18,7 +18,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import Issues from "./Issues";
@@ -293,5 +293,203 @@ describe("header droppable wiring (C127T0)", () => {
     renderIssues("/w/acme/p/ENG?pql=state%20%3D%20Todo");
     await screen.findByText("First");
     expect(dropIds()).toHaveLength(0);
+  });
+});
+
+describe("assignee grouping (C129T0)", () => {
+  const ALICE = { id: "u-alice", name: "Alice" };
+  const BOB = { id: "u-bob", name: "Bob" };
+
+  function assigneeIssues() {
+    return [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        assignees: [ALICE, BOB],
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        assignees: [BOB],
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072),
+    ];
+  }
+
+  it("assignee grouping: multi-appearance rows grip under every group, even under a non-Manual order", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "-updated_at",
+    });
+    mockState.issues = assigneeIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // Alice: [First]; Bob: [First, Second]; Ungrouped: [Third].
+    expect(grips()).toHaveLength(4);
+    expect(screen.getByRole("heading", { name: "Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Bob" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Ungrouped" }),
+    ).toBeInTheDocument();
+  });
+
+  it("assignee grouping: member + Ungrouped headers are droppable", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:assignee:ungrouped:assignee:ungrouped",
+      "header:u-alice:assignee:u-alice",
+      "header:u-bob:assignee:u-bob",
+    ]);
+  });
+
+  it("assignee grouping: no Ungrouped header when every issue is assigned", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        assignees: [ALICE],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("First");
+    expect(dropIds()).toEqual(["header:u-alice:assignee:u-alice"]);
+  });
+
+  it("assignee primary + state sub-group: sub-sections compose under assignee groups", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "state",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        assignees: [ALICE],
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        assignees: [BOB],
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("First");
+    const ids = dropIds();
+    // Primary assignee header stays droppable…
+    expect(ids).toContain("header:u-alice:assignee:u-alice");
+    // …and state sub-headers nest under it (section-scoped ids).
+    expect(ids).toContain("header:u-alice::s-todo:state:s-todo");
+    expect(ids).toContain("header:u-bob::s-doing:state:s-doing");
+  });
+
+  it("PQL mode: no grips under assignee grouping even under Manual rank", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    renderIssues("/w/acme/p/ENG?pql=state%20%3D%20Todo");
+    await screen.findByText("Third");
+    expect(grips()).toHaveLength(0);
+    expect(dropIds()).toHaveLength(0);
+  });
+
+  it("assignee group quick-add: create, then attach to the group member", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p.includes("/assignees/")) return Promise.resolve({});
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    // First group's (Alice's) quick-add.
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(2));
+    expect(postSpy.mock.calls[0][0]).toBe(`${ENG}/issues`);
+    expect(postSpy.mock.calls[0][1]).toEqual({
+      name: "Brand new",
+      state_id: "s-todo",
+    });
+    expect(postSpy.mock.calls[1][0]).toBe(
+      `${ENG}/issues/i-new/assignees/u-alice`,
+    );
+  });
+
+  it("assignee group quick-add: attach failure surfaces an error", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p.includes("/assignees/"))
+        return Promise.reject(new Error("attach boom"));
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    // QuickAdd shows the thrown attach error inline; the created row
+    // itself lands in Ungrouped after invalidation (server state).
+    await screen.findByText("attach boom");
+  });
+
+  it("Ungrouped quick-add: plain create, no attach call", async () => {
+    setSettings({
+      groupBy: "assignees",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = assigneeIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    // Last group's (Ungrouped's) quick-add.
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[buttons.length - 1]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(1));
+    expect(postSpy.mock.calls[0][0]).toBe(`${ENG}/issues`);
   });
 });
