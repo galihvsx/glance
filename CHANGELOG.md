@@ -5,6 +5,40 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by assignees in the list and board views (cycle 129)**
+
+- Plane's Group by offers Assignees (among other dimensions);
+  glance offered only state, priority, epic, none. The Display
+  panel's Group by now includes Assignees for the list and the
+  board: one group/column per member in first-appearance order,
+  multi-appearance (an issue with N assignees shows under every
+  assignee), Ungrouped last and hidden when empty, names taken
+  from the row itself. No backend change: assignee membership
+  endpoints already existed.
+- List: header drops move, mirroring the cycle 127 epic
+  pipeline — add target member, remove the dragged appearance's
+  source member, PATCH bottom `sort_order`; the Ungrouped header
+  removes all assignees with no sort PATCH. Reorder is enabled
+  under assignee grouping with the cycle 128 mixed-state
+  gap-collapse recovery (rebalance distinct neighbor states,
+  refetch, retry once, honest error). Per-group quick-add
+  attaches the member after create; expand-to-full-form carries
+  the member the same way.
+- Board: columns per member with compound card ids; cross-column
+  drops attach only (never detach, never change state, so no
+  workflow transition guard — mirroring epic columns; Ungrouped
+  drops are a deliberate no-op); within-column drags reorder by
+  `sort_order` using the column's own card sequence. Quick-add
+  per column attaches the member after create. Header counts
+  stay unique issues under multi-appearance.
+- Boundaries: "Show empty groups" synthesizes no member columns
+  (groups derive from loaded issues only); assignee-as-sub-group
+  is a later cycle (sub-group sections under assignee primaries
+  still work for state/priority/epic); keyboard drag to a header
+  remains out of scope per cycle 127; the within-column board
+  reorder pipeline is unit-tested at its pieces but, like all
+  board drags, its final verifier is a live browser drag.
+
 **Within-stack reorder under priority/epic grouping in the list view (cycle 128)**
 
 - Closing the cycle 125→126→127 drag story, the list-view
