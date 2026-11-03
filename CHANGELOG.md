@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by modules in the list and board views (cycle 131)**
+
+- Plane's Group by offers Module (among other dimensions);
+  glance offered state, priority, epic, assignees, labels, none.
+  The Display panel's Group by now includes Modules for the list
+  and the board: one group/column per module in first-appearance
+  order, multi-appearance (an issue with N modules shows under
+  every module), Ungrouped last and hidden when empty, names
+  taken from the row itself. No backend change: module
+  membership endpoints already existed. One deliberate
+  difference from labels: modules have no color, so headers
+  render name + count with no color dot — nothing invented.
+- List: header drops move, mirroring the cycle 130 label
+  pipeline — add target module, remove the dragged appearance's
+  source module, PATCH bottom `sort_order`; the Ungrouped header
+  removes all modules with no sort PATCH. Reorder is enabled
+  under module grouping with the cycle 128 mixed-state
+  gap-collapse recovery. Per-group quick-add attaches the
+  module after create; expand-to-full-form carries the module
+  the same way.
+- Board: columns per module with compound card ids; cross-column
+  drops attach only (never detach, never change state, so no
+  workflow transition guard — mirroring label columns;
+  Ungrouped drops are a deliberate no-op); within-column drags
+  reorder by `sort_order` via the column's own card sequence.
+  Per-column quick-add attaches the module after create;
+  expand-to-full-form carries the module via the list page's
+  attach-after-create.
+
 **Group by labels in the list and board views (cycle 130)**
 
 - Plane's Group by offers Labels (among other dimensions);
