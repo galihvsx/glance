@@ -102,6 +102,7 @@ import {
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
 import { groupIssuesByLabel } from "../components/issue/groupByLabel";
+import { groupIssuesByModule } from "../components/issue/groupByModule";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -370,6 +371,7 @@ export default function Issues() {
       newIssueTargetDate?: string;
       newIssueAssigneeId?: string;
       newIssueLabelId?: string;
+      newIssueModuleId?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -390,6 +392,12 @@ export default function Issues() {
       // assignee carry above and the list's own label-group expand).
       if (typeof st.newIssueLabelId === "string")
         pendingLabelRef.current = st.newIssueLabelId;
+      // C131T0: board module-column expand carries the module id
+      // here; the create dialog has no module field, so it rides
+      // pendingModuleRef and attaches after create (same rule as
+      // the label carry above and the list's own module-group expand).
+      if (typeof st.newIssueModuleId === "string")
+        pendingModuleRef.current = st.newIssueModuleId;
       if (typeof st.newIssueStartDate === "string")
         setNewStartDate(st.newIssueStartDate);
       if (typeof st.newIssueTargetDate === "string")
@@ -423,6 +431,14 @@ export default function Issues() {
   // dialog, and the dialog-close handler clears it on cancel so it
   // never leaks into the next create.
   const pendingLabelRef = useRef<string | null>(null);
+  // C131T0: module carried from a module group's expand-to-full-
+  // form (the create dialog has no module field, so the module is
+  // attached right after a successful create — see createMutation's
+  // onSuccess). Same ref-not-state rule as pendingLabelRef:
+  // onSuccess must read the value from the render that opened the
+  // dialog, and the dialog-close handler clears it on cancel so it
+  // never leaks into the next create.
+  const pendingModuleRef = useRef<string | null>(null);
   // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
   // calendar's day-cell quick-add via location.state.
   const [newStartDate, setNewStartDate] = useState("");
@@ -779,6 +795,10 @@ export default function Issues() {
       // (same rule as the assignee carry above).
       const pendingLabelId = pendingLabelRef.current;
       pendingLabelRef.current = null;
+      // C131T0: a module-group expand carries the group module here
+      // (same rule as the label carry above).
+      const pendingModuleId = pendingModuleRef.current;
+      pendingModuleRef.current = null;
       resetCreateForm();
       // "Create more" keeps the dialog open for rapid entry; otherwise
       // the dialog closes and the toast is the confirmation.
@@ -836,6 +856,33 @@ export default function Issues() {
               type: "error",
               description:
                 e instanceof Error ? e.message : "Failed to label issue",
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            });
+          });
+      }
+      if (pendingModuleId) {
+        // C131T0: same rule as the label carry above — the module
+        // endpoint is idempotent with an {issue_ids} body, and an
+        // attach failure surfaces honestly while the row lands in
+        // Ungrouped after invalidation.
+        void api
+          .post(
+            `${base}/modules/${encodeURIComponent(pendingModuleId)}/issues`,
+            { issue_ids: [issue.id] },
+          )
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            }),
+          )
+          .catch((e) => {
+            toast.add({
+              title: "Issue created but not added to module",
+              type: "error",
+              description:
+                e instanceof Error ? e.message : "Failed to add to module",
             });
             void queryClient.invalidateQueries({
               queryKey: ["issues", slug, identifier],
@@ -973,14 +1020,18 @@ export default function Issues() {
    *  precedent): an attach failure surfaces (QuickAdd shows the
    *  thrown error) and the row lands in Ungrouped after invalidation.
    *  C130T0: under label grouping, the group label attaches the same
-   *  way (POST .../labels/{id}, idempotent, no body). Ungrouped
-   *  quick-add (no member / no label) is a plain create. */
+   *  way (POST .../labels/{id}, idempotent, no body). C131T0: under
+   *  module grouping, the group module attaches the same way
+   *  (POST .../modules/{id}/issues, idempotent, {issue_ids} body).
+   *  Ungrouped quick-add (no member / no label / no module) is a
+   *  plain create. */
   async function quickCreate(
     stateId: string,
     name: string,
     priority?: number,
     assigneeId?: string,
     labelId?: string,
+    moduleId?: string,
   ): Promise<void> {
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
@@ -1011,6 +1062,19 @@ export default function Issues() {
         throw e;
       }
     }
+    if (moduleId) {
+      try {
+        await api.post(
+          `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        throw e;
+      }
+    }
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
@@ -1025,19 +1089,27 @@ export default function Issues() {
    *  create form renders Priority, State, Estimate, dates, Parent,
    *  and custom fields, but no label picker), so the label attaches
    *  after create via pendingLabelRef rather than a prefilled field.
-   *  Title + group label are therefore both kept, via attach. */
+   *  Title + group label are therefore both kept, via attach.
+   *  C131T0: under module grouping the group module rides the same
+   *  way — the dialog has no module field either (verified: same
+   *  field list as the label check, no module picker), so the module
+   *  attaches after create via pendingModuleRef rather than a
+   *  prefilled field. Title + group module are therefore both kept,
+   *  via attach. */
   function expandQuickAdd(
     stateId: string,
     name: string,
     priority?: number,
     assigneeId?: string,
     labelId?: string,
+    moduleId?: string,
   ) {
     setName(name);
     setNewStateId(stateId);
     if (priority !== undefined) setNewPriority(priority);
     pendingAssigneeRef.current = assigneeId ?? null;
     pendingLabelRef.current = labelId ?? null;
+    pendingModuleRef.current = moduleId ?? null;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -1100,12 +1172,17 @@ export default function Issues() {
   // C130T0: label grouping needs no skip either — labels ride on
   // the list rows themselves, exactly like assignee memberships.
   const groupByLabels = settings.groupBy === "labels";
+  // C131T0: module grouping needs no skip either — modules ride on
+  // the list rows themselves (project_structure.modules), exactly
+  // like label memberships.
+  const groupByModules = settings.groupBy === "modules";
   const groupingActive =
     groupByState ||
     groupByPriority ||
     groupByEpic ||
     groupByAssignees ||
-    groupByLabels;
+    groupByLabels ||
+    groupByModules;
 
   interface IssueGroup {
     key: string;
@@ -1136,6 +1213,12 @@ export default function Issues() {
      *  above — the key IS the label id verbatim for member groups. */
     targetLabelId?: string;
     isUngroupedLabel?: boolean;
+    /** C131T0: module drop-target values, mirroring the label pair
+     *  above — the key IS the module id verbatim for member groups.
+     *  Module groups carry NO color (NamedRef has id + name only);
+     *  the header renders name + count with no color dot. */
+    targetModuleId?: string;
+    isUngroupedModule?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -1207,6 +1290,20 @@ export default function Issues() {
         targetLabelId: g.isUngrouped ? undefined : g.key,
         isUngroupedLabel: g.isUngrouped,
       }));
+    } else if (groupByModules) {
+      // C131T0: group by module membership (see groupByModule.ts
+      // for the multi-appearance + Ungrouped-last semantics). The
+      // header renders name + count with NO color dot — modules
+      // have none (NamedRef carries id + name only) — and no
+      // breakdown bar (the helper carries no byGroup).
+      gs = groupIssuesByModule(issues).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        stateId: sortedStates[0]?.id,
+        targetModuleId: g.isUngrouped ? undefined : g.key,
+        isUngroupedModule: g.isUngrouped,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1217,6 +1314,7 @@ export default function Issues() {
     groupByEpic,
     groupByAssignees,
     groupByLabels,
+    groupByModules,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1305,12 +1403,15 @@ export default function Issues() {
   // C126T0: list drag-to-reorder. The effective grouping is what
   // renders (a grouping skipped by its single-value filter renders
   // flat), so the enable rule reads groupByState/groupByPriority/
-  // groupByEpic/groupByAssignees/groupByLabels, not the raw setting.
+  // groupByEpic/groupByAssignees/groupByLabels/groupByModules, not
+  // the raw setting.
   // C130T0 keyboard boundary: pointer/touch drag is the deliverable;
   // keyboard reorder/drag under label grouping inherits the C128
   // boundary (no dedicated test under any grouping — ListDragRoot's
   // keyboard sensor is grouping-agnostic, per-stack coordinates),
   // and keyboard drag to a header stays out of scope per C127.
+  // C131T0: the same boundary holds under module grouping, documented
+  // not faked — no dedicated keyboard test under any grouping.
   // The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
@@ -1319,7 +1420,9 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByLabels
+  const effectiveGroupBy = groupByModules
+    ? "modules"
+    : groupByLabels
     ? "labels"
     : groupByAssignees
       ? "assignees"
@@ -1402,6 +1505,8 @@ export default function Issues() {
   // else none (sub-sections are never assignee this cycle).
   // C130T0: the label appearance mirrors it — the primary label
   // group, else none (sub-sections are never labels this cycle).
+  // C131T0: the module appearance mirrors it — the primary module
+  // group, else none (sub-sections are never modules this cycle).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -1411,6 +1516,7 @@ export default function Issues() {
       sourceEpicId: string | null,
       sourceAssigneeId: string | null = null,
       sourceLabelId: string | null = null,
+      sourceModuleId: string | null = null,
     ): ListDragStackRef => {
       const stack: ListDragStackRef = {
         stackKey,
@@ -1418,6 +1524,7 @@ export default function Issues() {
         sourceEpicId,
         sourceAssigneeId,
         sourceLabelId,
+        sourceModuleId,
       };
       for (const issue of rows) {
         sortableMap.set(listSortableId(stackKey, issue.id), {
@@ -1460,6 +1567,11 @@ export default function Issues() {
             ? null
             : (g.targetLabelId ?? null)
           : null;
+        const primaryModuleId = groupByModules
+          ? g.isUngroupedModule
+            ? null
+            : (g.targetModuleId ?? null)
+          : null;
         if (subSectionsByGroup) {
           registerHeader(g.key, g, g.issues);
           for (const sub of subSectionsByGroup.get(g.key) ?? []) {
@@ -1471,15 +1583,16 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            // Sub-sections are never assignee or label this cycle,
-            // so the source is the primary assignee/label group,
-            // else none.
+            // Sub-sections are never assignee, label, or module
+            // this cycle, so the source is the primary
+            // assignee/label/module group, else none.
             registerStack(
               subKey,
               sub.issues,
               sourceEpicId,
               primaryAssigneeId,
               primaryLabelId,
+              primaryModuleId,
             );
             registerHeader(subKey, sub, sub.issues);
           }
@@ -1490,6 +1603,7 @@ export default function Issues() {
             primaryEpicId,
             primaryAssigneeId,
             primaryLabelId,
+            primaryModuleId,
           );
           registerHeader(g.key, g, g.issues);
         }
@@ -1504,16 +1618,17 @@ export default function Issues() {
     groupByEpic,
     groupByAssignees,
     groupByLabels,
+    groupByModules,
     effectiveSubGroup,
   ]);
 
   // C127T0: one header drop — resolve to the exact call sequence,
   // execute it (add-before-remove + sort PATCH for epic/assignee/
-  // label moves), and invalidate so the moved row appears in its new
-  // group from the server's state. No optimistic group-move rendering
-  // (the simpler correct choice the plan allows); on failure the row
-  // stays visibly in its old group after refetch and the error
-  // surfaces via the existing reorderError Alert.
+  // label/module moves), and invalidate so the moved row appears in
+  // its new group from the server's state. No optimistic group-move
+  // rendering (the simpler correct choice the plan allows); on
+  // failure the row stays visibly in its old group after refetch and
+  // the error surfaces via the existing reorderError Alert.
   async function handleHeaderDrop(
     dragged: ListDragRowRef,
     info: ListHeaderDropInfo,
@@ -1524,6 +1639,7 @@ export default function Issues() {
       sourceEpicId: dragged.stack.sourceEpicId,
       sourceAssigneeId: dragged.stack.sourceAssigneeId,
       sourceLabelId: dragged.stack.sourceLabelId,
+      sourceModuleId: dragged.stack.sourceModuleId,
       target: info.target,
       targetRows: info.targetRows,
     });
@@ -1557,6 +1673,19 @@ export default function Issues() {
       removeFromLabel: (labelId, issueId) =>
         api.del(
           `${base}/issues/${issueId}/labels/${encodeURIComponent(labelId)}`,
+        ),
+      // C131T0: module membership endpoints carry an {issue_ids}
+      // body — the module id rides the path, and both calls are
+      // idempotent (verified against module_handler.go).
+      addToModule: (moduleId, issueId) =>
+        api.post(
+          `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+          { issue_ids: [issueId] },
+        ),
+      removeFromModule: (moduleId, issueId) =>
+        api.del(
+          `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+          { issue_ids: [issueId] },
         ),
       invalidate: () =>
         queryClient.invalidateQueries({
@@ -1723,6 +1852,8 @@ export default function Issues() {
                 pendingAssigneeRef.current = null;
                 // C130T0: same rule for a carried label group label.
                 pendingLabelRef.current = null;
+                // C131T0: same rule for a carried module group module.
+                pendingModuleRef.current = null;
               }
             }}
           >
@@ -2275,6 +2406,7 @@ export default function Issues() {
                         g.priority,
                         g.targetAssigneeId,
                         g.targetLabelId,
+                        g.targetModuleId,
                       )
                     }
                     onExpand={(name) =>
@@ -2284,6 +2416,7 @@ export default function Issues() {
                         g.priority,
                         g.targetAssigneeId,
                         g.targetLabelId,
+                        g.targetModuleId,
                       )
                     }
                   />
