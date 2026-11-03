@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Within-stack reorder under priority/epic grouping in the list view (cycle 128)**
+
+- Closing the cycle 125→126→127 drag story, the list-view
+  drag-to-reorder gate now admits priority and epic grouping, not
+  just flat and state grouping: under Manual rank order (and not
+  PQL mode), rows can be dragged within their priority stack or
+  epic stack, with the same pipeline as before — midpoint
+  `sort_order`, PATCH `{sort_order}` only, optimistic reorder,
+  refetch on success. Dropping on a row in another stack stays a
+  no-op; dropping on a header still runs cycle 127's reassignment.
+  Epic multi-appearance rows are safe by construction (C127's
+  stack-scoped sortable ids; the flat list holds the row once, so
+  the optimistic splice cannot duplicate or drop it). The one new
+  design problem is mixed-state gap collapse: a priority/epic
+  stack mixes states, so the recovery rebalances the DISTINCT
+  states of the drop's two neighbors (one call when they share a
+  state, two when they differ), refetches, and retries exactly
+  once — if the gap is still collapsed, it surfaces an honest
+  error and writes nothing, never looping and never re-spacing
+  the whole stack. No backend change, no new visuals: the same
+  grip handle, and `sort_order` stays global per issue (a reorder
+  changes Manual-rank display everywhere the row appears, as
+  since cycle 126). Keyboard reorder is not proven by a dedicated
+  test under any grouping (no such test existed); by inspection
+  it inherits state-grouping behavior exactly.
+
 **Group headers as drop targets in the list view (cycle 127)**
 
 - Completing the cycle 125→126 drag story, a list row can now be
