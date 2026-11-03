@@ -1672,6 +1672,9 @@ export default function Issues() {
       const secs = buildSubGroupSections(g.issues, effectiveSubGroup, {
         states: sortedStates,
         stateById,
+        // C138T1: the created-by branch resolves creator labels from
+        // this map (label = name ?? email; member-miss → Unknown).
+        membersById,
       });
       // Show-empty filtering for sub-sections follows showEmptyGroups,
       // same as primary groups.
@@ -1689,6 +1692,7 @@ export default function Issues() {
     effectiveSubGroup,
     sortedStates,
     stateById,
+    membersById,
     settings.showEmptyGroups,
   ]);
   // Flattened order = primary-group order, then sub-section order

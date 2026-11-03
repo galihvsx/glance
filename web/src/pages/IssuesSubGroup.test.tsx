@@ -35,6 +35,7 @@ import {
 const mockState = vi.hoisted(() => ({
   settings: null as unknown as DisplaySettings & { subGroupBy: SubGroupBy },
   issues: [] as Issue[],
+  members: [] as { id: string; name: string | null; email: string }[],
   toastAdd: vi.fn(),
 }));
 
@@ -58,6 +59,23 @@ vi.mock("../lib/auth", () => ({
 
 vi.mock("../components/ui/toast", () => ({
   toast: { add: mockState.toastAdd },
+}));
+
+// Marker stand-in for the real drop zone: the page's wiring decisions
+// (which headers are droppable) stay observable — a created-by
+// sub-header must render as the plain div, never a dropzone.
+vi.mock("../components/issue/ListHeaderDropZone", () => ({
+  default: ({
+    droppableId,
+    children,
+  }: {
+    droppableId: string;
+    children: React.ReactNode;
+  }) => (
+    <div data-testid="header-dropzone" data-drop-id={droppableId}>
+      {children}
+    </div>
+  ),
 }));
 
 const ENG = "/api/v1/workspaces/acme/projects/ENG";
@@ -122,7 +140,8 @@ function renderIssues() {
       return Promise.resolve({ results: mockState.issues, next_cursor: null });
     if (path === ENG)
       return Promise.resolve({ id: "p", name: "ENG", identifier: "ENG", created_at: "", updated_at: "" });
-    if (path.includes("/members")) return Promise.resolve({ members: [] });
+    if (path.includes("/members"))
+      return Promise.resolve({ members: mockState.members });
     if (path.includes("/labels")) return Promise.resolve({ labels: [] });
     if (path.includes("/templates")) return Promise.resolve({ templates: [] });
     if (path.includes("/estimates")) return Promise.resolve({ estimates: [] });
@@ -159,6 +178,7 @@ beforeEach(() => {
   stubMatchMedia(false);
   localStorage.clear();
   mockState.issues = [];
+  mockState.members = [];
 });
 
 afterEach(() => {
@@ -305,6 +325,97 @@ describe("list sub-group sections (C123T1)", () => {
     ];
     renderIssues();
     await screen.findByText("Alpha issue");
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
+  it("renders created-by sub-sections with single-appearance, Unknown last (C138T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "createdBy" });
+    mockState.members = [
+      { id: "u-alice", name: "Alice", email: "alice@x.com" },
+      { id: "u-bob", name: null, email: "bob@x.com" },
+    ];
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        created_by: "u-alice",
+      }),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 0, {
+        created_by: "u-gone",
+      }),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-todo", 0, {
+        created_by: "u-bob",
+      }),
+      mkIssue("i-4", "ENG-4", "Delta issue", "s-todo", 0, {
+        created_by: "u-alice",
+      }),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const subTitles = todo
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    // Label = name ?? email; member-miss collapses to Unknown, last.
+    expect(subTitles).toEqual(["Alice", "bob@x.com", "Unknown"]);
+    // Single-appearance: no issue renders twice.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(1);
+    expect(screen.getAllByText("Beta issue")).toHaveLength(1);
+    expect(screen.queryByText("u-gone")).not.toBeInTheDocument();
+  });
+
+  it("created-by sub-group hides Unknown when every creator matches a member (C138T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "createdBy" });
+    mockState.members = [
+      { id: "u-alice", name: "Alice", email: "alice@x.com" },
+    ];
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        created_by: "u-alice",
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    expect(
+      screen.queryByRole("heading", { level: 3, name: "Unknown" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "Alice" }),
+    ).toBeInTheDocument();
+  });
+
+  it("created-by sub-header is NOT a drop target — no creator-move plan resolves (C138T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "createdBy" });
+    mockState.members = [
+      { id: "u-alice", name: "Alice", email: "alice@x.com" },
+    ];
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        created_by: "u-alice",
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    const header = screen.getByRole("heading", { level: 3, name: "Alice" });
+    // The creator header renders as the plain div, never a dropzone:
+    // created_by is immutable, so toHeaderTarget returns null.
+    expect(
+      header.closest('[data-testid="header-dropzone"]'),
+    ).toBeNull();
+  });
+
+  it("created-by primary + created-by sub-group renders flat (same-dimension rule, C138T1)", async () => {
+    setSettings({ groupBy: "createdBy", subGroupBy: "createdBy" });
+    mockState.members = [
+      { id: "u-alice", name: "Alice", email: "alice@x.com" },
+    ];
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0, {
+        created_by: "u-alice",
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    // Drop on a created-by sub-header under a created-by primary is
+    // impossible: the same-dimension rule renders flat, no sub-headers.
     expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
   });
 

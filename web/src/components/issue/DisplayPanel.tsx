@@ -47,8 +47,6 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "cycles", label: "Cycles" },
   { value: "releases", label: "Releases" },
   // C134T1: after releases, before none; old options unreordered.
-  // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by created-by
-  // is a later cycle, not a silent addition).
   { value: "createdBy", label: "Created by" },
   // C135T1: after createdBy, before none; old options unreordered.
   // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by state-group
@@ -67,6 +65,8 @@ const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
   { value: "epic", label: "Epic" },
   { value: "assignees", label: "Assignees" },
   { value: "labels", label: "Labels" },
+  // C138T1: after labels; old options unreordered.
+  { value: "createdBy", label: "Created by" },
 ];
 
 const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [

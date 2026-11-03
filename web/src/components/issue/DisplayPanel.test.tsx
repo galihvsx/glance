@@ -209,7 +209,7 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     renderPanelWithUpdate();
     const { group, radio } = subGroupRadios();
     expect(group).toBeInTheDocument();
-    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]) {
       expect(radio(label)).toBeInTheDocument();
     }
     expect(radio("None")).toHaveAttribute("aria-checked", "true");
@@ -255,13 +255,30 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "labels" });
   });
 
+  it("disables the Created by sub-option under primary Created by grouping (C138T1)", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "createdBy",
+    });
+    const { radio } = subGroupRadios();
+    expect(radio("Created by")).toBeDisabled();
+    expect(radio("State")).not.toBeDisabled();
+    expect(radio("None")).not.toBeDisabled();
+  });
+
+  it("selecting Created by reports subGroupBy createdBy (C138T1)", () => {
+    const { onUpdate } = renderPanelWithUpdate();
+    fireEvent.click(subGroupRadios().radio("Created by"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "createdBy" });
+  });
+
   it("disables the whole control with a hint when groupBy is none", () => {
     renderPanelWithUpdate({
       ...DEFAULT_DISPLAY_SETTINGS,
       groupBy: "none",
     });
     const { radio } = subGroupRadios();
-    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]) {
       expect(radio(label)).toBeDisabled();
     }
     expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
@@ -542,10 +559,11 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
     expect(radio("Created by")).toHaveAttribute("aria-checked", "true");
   });
 
-  it("does NOT add Created by to the Sub-group by options", () => {
+  it("adds Created by to the Sub-group by options after Labels — old options unreordered (C138T1)", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels"]);
-    expect(subLabels).not.toContain("Created by");
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]);
+    const idx = (name: string) => subLabels.indexOf(name);
+    expect(idx("Created by")).toBeGreaterThan(idx("Labels"));
   });
 
   it("selecting State groups reports groupBy stateGroups", () => {
@@ -564,7 +582,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("does NOT add State groups to the Sub-group by options", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]);
     expect(subLabels).not.toContain("State groups");
   });
 });

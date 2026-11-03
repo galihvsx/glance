@@ -15,9 +15,16 @@
 // (hidden when empty) are inherited verbatim. Label sections come
 // from the existing groupByLabel helper the same way (C137T1):
 // multi-appearance, first-appearance order, and Ungrouped-last
+// (hidden when empty) are inherited verbatim. Creator sections come
+// from the existing groupByCreatedBy helper the same way (C138T1):
+// single-appearance, first-appearance order, and Unknown-last
 // (hidden when empty) are inherited verbatim.
 
 import { groupIssuesByAssignee } from "./groupByAssignee";
+import {
+  groupIssuesByCreatedBy,
+  type CreatorLookupEntry,
+} from "./groupByCreatedBy";
 import { groupIssuesByEpic } from "./groupByEpic";
 import { groupIssuesByLabel } from "./groupByLabel";
 import type {
@@ -58,6 +65,7 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "epic",
   "assignees",
   "labels",
+  "createdBy",
 ];
 
 /** Ungrouped section key for state sub-grouping (issues whose state
@@ -95,11 +103,22 @@ export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
  *    labels appears under every label sub-section; Ungrouped last,
  *    hidden when empty by groupByLabel itself). Label sections carry
  *    the group color from the row (first-appearance row wins).
+ *  - createdBy: single-appearance via groupByCreatedBy (an issue
+ *    appears under exactly one creator section; Unknown last,
+ *    hidden when empty by groupByCreatedBy itself). Creator sections
+ *    carry NO color (members carry none) and NO target fields:
+ *    created_by is immutable, so the headers are never droppable.
+ *    A missing membersById reads as "no member matches" — every
+ *    issue collapses to Unknown, never a raw id label.
  *  - none: a single section carrying all issues unchanged. */
 export function buildSubGroupSections(
   issues: Issue[],
   subGroupBy: SubGroupBy,
-  opts: { states: IssueState[]; stateById: Map<string, IssueState> },
+  opts: {
+    states: IssueState[];
+    stateById: Map<string, IssueState>;
+    membersById?: ReadonlyMap<string, CreatorLookupEntry>;
+  },
 ): SubGroupSection[] {
   const { states, stateById } = opts;
   if (subGroupBy === "none") {
@@ -181,6 +200,22 @@ export function buildSubGroupSections(
       issues: g.issues,
       targetLabelId: g.isUngrouped ? undefined : g.key,
       isUngroupedLabel: g.isUngrouped,
+    }));
+  }
+  // createdBy: reuse groupByCreatedBy — single-appearance,
+  // first-appearance order, Unknown last (hidden when empty). The
+  // group key and title pass through verbatim (creator id; Unknown
+  // key "createdby:unknown"); NO color, NO target fields — the
+  // C127T0 rule then yields a non-droppable header, and there is no
+  // creator-move pipeline to wire (created_by is immutable).
+  if (subGroupBy === "createdBy") {
+    return groupIssuesByCreatedBy(
+      issues,
+      opts.membersById ?? new Map(),
+    ).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
     }));
   }
   // epic: reuse groupByEpic — multi-appearance, archived exclusion,
