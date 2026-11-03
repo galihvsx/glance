@@ -5,6 +5,45 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by release in the list and board views (cycle 133)**
+
+- Plane's Group by offers Releases (among other dimensions);
+  glance offered state, priority, epic, assignees, labels,
+  modules, cycles, none. The Display panel's Group by now
+  includes Releases for the list and the board: one
+  group/column per release in first-appearance order,
+  single-appearance (an issue carries exactly one release —
+  its own `release_id` column — or none), Ungrouped last and
+  hidden when empty, names taken from the row itself.
+  Releases have no color on the row, so headers render name
+  + count with no color dot — nothing invented. No backend
+  change: both release membership endpoints already existed.
+- One deliberate divergence from the cycle 132 move
+  pipeline, forced by the data model: a release move is a
+  SINGLE assign — `POST .../releases/{target}/issues`
+  overwrites `release_id`, so there is no add-then-remove
+  sequence and no dual-state case. The Ungrouped header
+  removes the displayed release only (`DELETE
+  .../releases/{source}/issues`, setting it to NULL), with
+  no sort PATCH.
+- List: header drops move via the single assign, then PATCH
+  bottom `sort_order`; the Ungrouped header unassigns the
+  displayed release only. Reorder is enabled under release
+  grouping with the cycle 128 mixed-state gap-collapse
+  recovery. Per-group quick-add assigns the release after
+  create; expand-to-full-form carries the release the same
+  way (via a `pendingReleaseRef` bridge, since the create
+  form has no release picker).
+- Board: columns per release with compound card ids;
+  cross-column drops MOVE via the single assign (never a
+  state change, so no workflow transition guard applies —
+  verified state-grouping-only). Ungrouped drops stay a
+  deliberate no-op, as for every other board dimension.
+  Within-column drags reorder by `sort_order` only, via the
+  column's own card sequence. Per-column quick-add assigns
+  the release after create; expand-to-full-form carries the
+  release via the list page's bridge.
+
 **Group by cycle in the list and board views, including the backend remove endpoint (cycle 132)**
 
 - Plane's Group by offers Cycle (among other dimensions);
