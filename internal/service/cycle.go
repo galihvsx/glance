@@ -688,6 +688,48 @@ func AddCycleIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier,
 	return err
 }
 
+// RemoveCycleIssues bulk-removes issues from a cycle. Mirrors
+// AddCycleIssues: every issue must be a live (non-deleted) issue of the
+// same project, otherwise ErrIssueNotFound, and every id is validated
+// BEFORE deleting anything — a bad id in a mixed batch removes nothing.
+// The remove itself is idempotent: removing a non-member is a no-op,
+// not an error. Member (15)+; an empty id list is ErrBulkEmptyIDs. No
+// touch to the issues themselves, no cascade, no state change.
+func RemoveCycleIssues(ctx context.Context, pool *pgxpool.Pool, wsSlug, identifier, actorID, cycleID string, issueIDs []string) error {
+	if len(issueIDs) == 0 {
+		return ErrBulkEmptyIDs
+	}
+	projectID, _, err := resolveCycleProject(ctx, pool, wsSlug, identifier, actorID, true)
+	if err != nil {
+		return err
+	}
+	if _, err := resolveCycle(ctx, pool, projectID, cycleID); err != nil {
+		return err
+	}
+	for _, id := range issueIDs {
+		if !isUUIDFormat(id) {
+			return ErrInvalidCycleID
+		}
+		var owner string
+		err := pool.QueryRow(ctx,
+			`SELECT project_id::text FROM issues
+			 WHERE id = $1::uuid AND deleted_at IS NULL`, id).Scan(&owner)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrIssueNotFound
+			}
+			return err
+		}
+		if owner != projectID {
+			return ErrIssueNotFound
+		}
+	}
+	_, err = pool.Exec(ctx,
+		`DELETE FROM cycle_issues WHERE cycle_id = $1 AND issue_id = ANY($2)`,
+		cycleID, issueIDs)
+	return err
+}
+
 // incompleteCycleIssues returns the ids of live cycle issues whose state
 // group is neither completed nor cancelled — the ones rollover moves.
 func incompleteCycleIssues(ctx context.Context, q queryQuerier, cycleID string) ([]string, error) {

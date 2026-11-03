@@ -1528,6 +1528,14 @@
         "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
         "responses": { "200": { "description": "Added", "content": { "application/json": { "schema": { "type": "object", "properties": { "added": { "type": "integer" } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "delete": {
+        "tags": ["cycles"], "security": [{ "sessionCookie": [] }, { "apiToken": [] }],
+        "summary": "Remove issues from a cycle",
+        "description": "Idempotent: removing a non-member is a no-op. Member (15)+.",
+        "parameters": [ { "$ref": "#/components/parameters/Slug" }, { "$ref": "#/components/parameters/Identifier" }, { "name": "cycleID", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["issue_ids"], "properties": { "issue_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } } } } } } },
+        "responses": { "200": { "description": "Removed", "content": { "application/json": { "schema": { "type": "object", "properties": { "removed": { "type": "integer" } } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
       }
     },
     "/api/v1/workspaces/{slug}/projects/{identifier}/cycles/{cycleID}/burndown": {

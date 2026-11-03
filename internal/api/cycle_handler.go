@@ -27,6 +27,7 @@ func RegisterCycleRoutes(e *echo.Echo, h *IssueHandler) {
 	g.PATCH("/:cycleID", h.updateCycle)
 	g.DELETE("/:cycleID", h.deleteCycle)
 	g.POST("/:cycleID/issues", h.addCycleIssues)
+	g.DELETE("/:cycleID/issues", h.removeCycleIssues)
 	// C79T0: manual start/end ("Override scheduled cycles").
 	g.POST("/:cycleID/start", h.startCycle)
 	g.POST("/:cycleID/end", h.endCycle)
@@ -266,4 +267,22 @@ func (h *IssueHandler) addCycleIssues(c *echo.Context) error {
 		return cycleError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"added": len(body.IssueIDs)})
+}
+
+// removeCycleIssues implements DELETE .../cycles/{cycleID}/issues
+// {issue_ids}. Idempotent: removing a non-member is a no-op. Member (15)+.
+func (h *IssueHandler) removeCycleIssues(c *echo.Context) error {
+	var body addCycleIssuesBody
+	if err := c.Bind(&body); err != nil {
+		return WriteError(c, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", nil)
+	}
+	cycleID, ok := requireUUIDParam(c, "cycleID", "cycle id")
+	if !ok {
+		return nil
+	}
+	if err := service.RemoveCycleIssues(c.Request().Context(), h.Pool,
+		c.Param("slug"), c.Param("identifier"), CurrentUser(c).ID, cycleID, body.IssueIDs); err != nil {
+		return cycleError(c, err)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"removed": len(body.IssueIDs)})
 }

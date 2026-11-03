@@ -376,3 +376,107 @@ func TestListCycleFilter(t *testing.T) {
 	}
 	_ = outCycle
 }
+
+// TestCycleRemoveIssues (C132T0): DELETE-side bulk membership — remove a
+// member, non-member no-op, empty/malformed/foreign/unknown errors, and
+// no partial delete on a bad id in a mixed batch.
+func TestCycleRemoveIssues(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	actor := createTestUser(t, pool, uniqueTestEmail("cycle-remove"))
+	slug := uniqueTestSlug("cycle-rm-ws")
+	createTestWorkspace(t, pool, "Cycle Co", slug, actor)
+	ident := uniqueTestIdentifier()
+	createTestProject(t, pool, slug, actor, "Eng", ident)
+
+	now := time.Now()
+	c, err := CreateCycle(ctx, pool, slug, ident, actor, CycleInput{
+		Name: "S1", StartDate: now.AddDate(0, 0, -1), EndDate: now.AddDate(0, 0, 13),
+	})
+	if err != nil {
+		t.Fatalf("CreateCycle: %v", err)
+	}
+	memberCount := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM cycle_issues WHERE cycle_id = $1::uuid`, c.ID).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	i1 := createTestIssue(t, pool, slug, ident, actor, "one")
+	i2 := createTestIssue(t, pool, slug, ident, actor, "two")
+	nonMember := createTestIssue(t, pool, slug, ident, actor, "never-added")
+	if err := AddCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{i1.ID, i2.ID}); err != nil {
+		t.Fatalf("AddCycleIssues: %v", err)
+	}
+	if n := memberCount(); n != 2 {
+		t.Fatalf("setup count = %d, want 2", n)
+	}
+
+	// Remove a member; removing a non-member is a silent no-op.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{i1.ID}); err != nil {
+		t.Fatalf("RemoveCycleIssues: %v", err)
+	}
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{i1.ID, nonMember.ID}); err != nil {
+		t.Fatalf("re-remove + non-member: %v", err)
+	}
+	if n := memberCount(); n != 1 {
+		t.Fatalf("after remove count = %d, want 1 (only i2)", n)
+	}
+
+	// Empty id list is rejected.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, nil); !errors.Is(err, ErrBulkEmptyIDs) {
+		t.Fatalf("empty remove: err = %v, want ErrBulkEmptyIDs", err)
+	}
+	// Malformed issue id is 400-class.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{"not-a-uuid"}); !errors.Is(err, ErrInvalidCycleID) {
+		t.Fatalf("malformed issue: err = %v, want ErrInvalidCycleID", err)
+	}
+	// Unknown issue id is 404-class.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{"00000000-0000-4000-8000-000000000000"}); !errors.Is(err, ErrIssueNotFound) {
+		t.Fatalf("unknown issue: err = %v, want ErrIssueNotFound", err)
+	}
+	// Foreign-project issue is 404-class.
+	ident2 := uniqueTestIdentifier()
+	createTestProject(t, pool, slug, actor, "Eng2", ident2)
+	foreign := createTestIssue(t, pool, slug, ident2, actor, "foreign")
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{foreign.ID}); !errors.Is(err, ErrIssueNotFound) {
+		t.Fatalf("foreign issue: err = %v, want ErrIssueNotFound", err)
+	}
+	// Unknown cycle is 404-class.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, "00000000-0000-4000-8000-000000000000", []string{i2.ID}); !errors.Is(err, ErrCycleNotFound) {
+		t.Fatalf("unknown cycle: err = %v, want ErrCycleNotFound", err)
+	}
+
+	// No partial delete: a mixed batch with one bad id removes nothing,
+	// and the surviving membership is untouched.
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{i2.ID, "not-a-uuid"}); !errors.Is(err, ErrInvalidCycleID) {
+		t.Fatalf("mixed bad batch: err = %v, want ErrInvalidCycleID", err)
+	}
+	if n := memberCount(); n != 1 {
+		t.Fatalf("after failed batch count = %d, want 1 (i2 untouched)", n)
+	}
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, actor, c.ID, []string{i2.ID, foreign.ID}); !errors.Is(err, ErrIssueNotFound) {
+		t.Fatalf("mixed foreign batch: err = %v, want ErrIssueNotFound", err)
+	}
+	if n := memberCount(); n != 1 {
+		t.Fatalf("after foreign batch count = %d, want 1 (i2 untouched)", n)
+	}
+
+	// Guests cannot mutate cycles.
+	guest := createTestUser(t, pool, uniqueTestEmail("cycle-remove-guest"))
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workspace_members (workspace_id, user_id, role)
+		 SELECT w.id, $2::uuid, 5 FROM workspaces w WHERE w.slug = $1`, slug, guest); err != nil {
+		t.Fatalf("add guest: %v", err)
+	}
+	if err := RemoveCycleIssues(ctx, pool, slug, ident, guest, c.ID, []string{i2.ID}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("guest remove: err = %v, want ErrForbidden", err)
+	}
+	if n := memberCount(); n != 1 {
+		t.Fatalf("after guest attempt count = %d, want 1", n)
+	}
+}
