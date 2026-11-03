@@ -87,7 +87,13 @@ describe("DisplayPanel (C121T1)", () => {
       "Show sub-work items",
     ]);
     for (const row of NEW_ROWS) {
-      expect(screen.getByText(row.label)).toBeInTheDocument();
+      // C133T1: "Releases" now appears twice — the field row (above)
+      // and the new Group-by radio option — so it needs getAllByText.
+      if (row.label === "Releases") {
+        expect(screen.getAllByText("Releases")).toHaveLength(2);
+      } else {
+        expect(screen.getByText(row.label)).toBeInTheDocument();
+      }
       // Base UI Switch marks state with data-checked / data-unchecked.
       expect(
         switchByLabel(`Show ${row.label.toLowerCase()}`),
@@ -351,8 +357,22 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       "Labels",
       "Modules",
       "Cycles",
+      "Releases",
       "None",
     ]);
+  });
+
+  it("offers Releases after Cycles, before None", () => {
+    const { labels } = renderGroupBy();
+    const idx = (name: string) => labels.indexOf(name);
+    expect(idx("Releases")).toBeGreaterThan(idx("Cycles"));
+    expect(idx("Releases")).toBeLessThan(idx("None"));
+  });
+
+  it("selecting Releases reports groupBy releases", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Releases"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "releases" });
   });
 
   it("offers Cycles after Modules, before None", () => {

@@ -104,6 +104,7 @@ import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
 import { groupIssuesByLabel } from "../components/issue/groupByLabel";
 import { groupIssuesByModule } from "../components/issue/groupByModule";
 import { groupIssuesByCycle } from "../components/issue/groupByCycle";
+import { groupIssuesByRelease } from "../components/issue/groupByRelease";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -374,6 +375,7 @@ export default function Issues() {
       newIssueLabelId?: string;
       newIssueModuleId?: string;
       newIssueCycleId?: string;
+      newIssueReleaseId?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -410,6 +412,16 @@ export default function Issues() {
       // the list expand path itself also uses it.
       if (typeof st.newIssueCycleId === "string")
         pendingCycleRef.current = st.newIssueCycleId;
+      // C133T1: board release-column expand (T2) carries the release
+      // id here; the create dialog has no release field either
+      // (verified: same field list as the cycle check — Priority,
+      // State, Estimate, dates, Parent, custom fields, no release
+      // picker), so it rides pendingReleaseRef and attaches after
+      // create (same rule as the cycle carry above and the list's
+      // own release-group expand). T1 builds this bridge even
+      // though the list expand path itself also uses it.
+      if (typeof st.newIssueReleaseId === "string")
+        pendingReleaseRef.current = st.newIssueReleaseId;
       if (typeof st.newIssueStartDate === "string")
         setNewStartDate(st.newIssueStartDate);
       if (typeof st.newIssueTargetDate === "string")
@@ -460,6 +472,15 @@ export default function Issues() {
   // never leaks into the next create (including "Create more"
   // second creates — onSuccess clears the ref on the first create).
   const pendingCycleRef = useRef<string | null>(null);
+  // C133T1: release carried from a release group's expand-to-full-
+  // form (the create dialog has no release field, so the release is
+  // attached right after a successful create — see createMutation's
+  // onSuccess). Same ref-not-state rule as pendingCycleRef:
+  // onSuccess must read the value from the render that opened the
+  // dialog, and the dialog-close handler clears it on cancel so it
+  // never leaks into the next create (including "Create more"
+  // second creates — onSuccess clears the ref on the first create).
+  const pendingReleaseRef = useRef<string | null>(null);
   // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
   // calendar's day-cell quick-add via location.state.
   const [newStartDate, setNewStartDate] = useState("");
@@ -824,6 +845,10 @@ export default function Issues() {
       // (same rule as the module carry above).
       const pendingCycleId = pendingCycleRef.current;
       pendingCycleRef.current = null;
+      // C133T1: a release-group expand carries the group release here
+      // (same rule as the cycle carry above).
+      const pendingReleaseId = pendingReleaseRef.current;
+      pendingReleaseRef.current = null;
       resetCreateForm();
       // "Create more" keeps the dialog open for rapid entry; otherwise
       // the dialog closes and the toast is the confirmation.
@@ -935,6 +960,34 @@ export default function Issues() {
               type: "error",
               description:
                 e instanceof Error ? e.message : "Failed to add to cycle",
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            });
+          });
+      }
+      if (pendingReleaseId) {
+        // C133T1: same rule as the cycle carry above — the release
+        // endpoint is idempotent with an {issue_ids} body, and an
+        // attach failure surfaces honestly while the row lands in
+        // Ungrouped after invalidation. Single assign: the POST
+        // overwrites release_id, so no other membership call exists.
+        void api
+          .post(
+            `${base}/releases/${encodeURIComponent(pendingReleaseId)}/issues`,
+            { issue_ids: [issue.id] },
+          )
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            }),
+          )
+          .catch((e) => {
+            toast.add({
+              title: "Issue created but not added to release",
+              type: "error",
+              description:
+                e instanceof Error ? e.message : "Failed to add to release",
             });
             void queryClient.invalidateQueries({
               queryKey: ["issues", slug, identifier],
@@ -1077,8 +1130,11 @@ export default function Issues() {
    *  (POST .../modules/{id}/issues, idempotent, {issue_ids} body).
    *  C132T1: under cycle grouping, the group cycle attaches the same
    *  way (POST .../cycles/{id}/issues, idempotent, {issue_ids} body).
+   *  C133T1: under release grouping, the group release attaches the
+   *  same way (POST .../releases/{id}/issues, idempotent,
+   *  {issue_ids} body) — single assign, overwriting release_id.
    *  Ungrouped quick-add (no member / no label / no module / no
-   *  cycle) is a plain create. */
+   *  cycle / no release) is a plain create. */
   async function quickCreate(
     stateId: string,
     name: string,
@@ -1087,6 +1143,7 @@ export default function Issues() {
     labelId?: string,
     moduleId?: string,
     cycleId?: string,
+    releaseId?: string,
   ): Promise<void> {
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
@@ -1143,6 +1200,19 @@ export default function Issues() {
         throw e;
       }
     }
+    if (releaseId) {
+      try {
+        await api.post(
+          `${base}/releases/${encodeURIComponent(releaseId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        throw e;
+      }
+    }
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
@@ -1169,6 +1239,12 @@ export default function Issues() {
    *  field list as the label/module checks, no cycle picker), so
    *  the cycle attaches after create via pendingCycleRef rather
    *  than a prefilled field. Title + group cycle are therefore
+   *  both kept, via attach. No form field is invented.
+   *  C133T1: under release grouping the group release rides the same
+   *  way — the dialog has no release field either (verified: same
+   *  field list as the cycle check, no release picker), so the
+   *  release attaches after create via pendingReleaseRef rather
+   *  than a prefilled field. Title + group release are therefore
    *  both kept, via attach. No form field is invented. */
   function expandQuickAdd(
     stateId: string,
@@ -1178,6 +1254,7 @@ export default function Issues() {
     labelId?: string,
     moduleId?: string,
     cycleId?: string,
+    releaseId?: string,
   ) {
     setName(name);
     setNewStateId(stateId);
@@ -1186,6 +1263,7 @@ export default function Issues() {
     pendingLabelRef.current = labelId ?? null;
     pendingModuleRef.current = moduleId ?? null;
     pendingCycleRef.current = cycleId ?? null;
+    pendingReleaseRef.current = releaseId ?? null;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -1256,6 +1334,10 @@ export default function Issues() {
   // cycle rides on the list rows themselves
   // (project_structure.cycle), exactly like module memberships.
   const groupByCycles = settings.groupBy === "cycles";
+  // C133T1: release grouping needs no skip either — the displayed
+  // release rides on the list rows themselves
+  // (project_structure.release), exactly like cycle grouping.
+  const groupByReleases = settings.groupBy === "releases";
   const groupingActive =
     groupByState ||
     groupByPriority ||
@@ -1263,7 +1345,8 @@ export default function Issues() {
     groupByAssignees ||
     groupByLabels ||
     groupByModules ||
-    groupByCycles;
+    groupByCycles ||
+    groupByReleases;
 
   interface IssueGroup {
     key: string;
@@ -1306,6 +1389,12 @@ export default function Issues() {
      *  the header renders name + count with no color dot. */
     targetCycleId?: string;
     isUngroupedCycle?: boolean;
+    /** C133T1: release drop-target values, mirroring the cycle pair
+     *  above — the key IS the release id verbatim for member groups.
+     *  Release groups carry NO color (NamedRef has id + name only);
+     *  the header renders name + count with no color dot. */
+    targetReleaseId?: string;
+    isUngroupedRelease?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -1407,6 +1496,24 @@ export default function Issues() {
         targetCycleId: g.isUngrouped ? undefined : g.key,
         isUngroupedCycle: g.isUngrouped,
       }));
+    } else if (groupByReleases) {
+      // C133T1: group by displayed release (see groupByRelease.ts
+      // for the single-appearance + Ungrouped-last semantics). The
+      // header renders name + count with NO color dot — releases
+      // have none (NamedRef carries id + name only) — and no
+      // breakdown bar (the helper carries no byGroup). Sub-group
+      // sections under release primaries use the existing C123
+      // splitter exactly as under cycle primaries: the splitter is
+      // primary-agnostic (it takes only the group's issues), so no
+      // dimension-specific wiring point needed extending.
+      gs = groupIssuesByRelease(issues).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        stateId: sortedStates[0]?.id,
+        targetReleaseId: g.isUngrouped ? undefined : g.key,
+        isUngroupedRelease: g.isUngrouped,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1419,6 +1526,7 @@ export default function Issues() {
     groupByLabels,
     groupByModules,
     groupByCycles,
+    groupByReleases,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1520,6 +1628,13 @@ export default function Issues() {
   // not faked — pointer/touch drag is the deliverable; keyboard
   // reorder/drag under cycle grouping inherits the C128 boundary,
   // and keyboard drag to a header remains out of scope per C127.
+  // C133T1: the same boundary holds under release grouping,
+  // documented not faked — pointer/touch drag is the deliverable;
+  // keyboard reorder/drag under release grouping inherits the C128
+  // boundary, and keyboard drag to a header remains out of scope
+  // per C127. Nested subtask rows are NOT draggable (C124/C126
+  // precedent, unchanged — they render via NestedListSubtaskRow
+  // outside any SortableIssueRow).
   // The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
@@ -1528,7 +1643,9 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByCycles
+  const effectiveGroupBy = groupByReleases
+    ? "releases"
+    : groupByCycles
     ? "cycles"
     : groupByModules
     ? "modules"
@@ -1619,6 +1736,8 @@ export default function Issues() {
   // group, else none (sub-sections are never modules this cycle).
   // C132T1: the cycle appearance mirrors it — the primary cycle
   // group, else none (sub-sections are never cycles this cycle).
+  // C133T1: the release appearance mirrors it — the primary release
+  // group, else none (sub-sections are never releases this cycle).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -1630,6 +1749,7 @@ export default function Issues() {
       sourceLabelId: string | null = null,
       sourceModuleId: string | null = null,
       sourceCycleId: string | null = null,
+      sourceReleaseId: string | null = null,
     ): ListDragStackRef => {
       const stack: ListDragStackRef = {
         stackKey,
@@ -1639,6 +1759,7 @@ export default function Issues() {
         sourceLabelId,
         sourceModuleId,
         sourceCycleId,
+        sourceReleaseId,
       };
       for (const issue of rows) {
         sortableMap.set(listSortableId(stackKey, issue.id), {
@@ -1691,6 +1812,11 @@ export default function Issues() {
             ? null
             : (g.targetCycleId ?? null)
           : null;
+        const primaryReleaseId = groupByReleases
+          ? g.isUngroupedRelease
+            ? null
+            : (g.targetReleaseId ?? null)
+          : null;
         if (subSectionsByGroup) {
           registerHeader(g.key, g, g.issues);
           for (const sub of subSectionsByGroup.get(g.key) ?? []) {
@@ -1702,9 +1828,10 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            // Sub-sections are never assignee, label, module, or
-            // cycle this cycle, so the source is the primary
-            // assignee/label/module/cycle group, else none.
+            // Sub-sections are never assignee, label, module,
+            // cycle, or release this cycle, so the source is the
+            // primary assignee/label/module/cycle/release group,
+            // else none.
             registerStack(
               subKey,
               sub.issues,
@@ -1713,6 +1840,7 @@ export default function Issues() {
               primaryLabelId,
               primaryModuleId,
               primaryCycleId,
+              primaryReleaseId,
             );
             registerHeader(subKey, sub, sub.issues);
           }
@@ -1725,6 +1853,7 @@ export default function Issues() {
             primaryLabelId,
             primaryModuleId,
             primaryCycleId,
+            primaryReleaseId,
           );
           registerHeader(g.key, g, g.issues);
         }
@@ -1741,12 +1870,14 @@ export default function Issues() {
     groupByLabels,
     groupByModules,
     groupByCycles,
+    groupByReleases,
     effectiveSubGroup,
   ]);
 
   // C127T0: one header drop — resolve to the exact call sequence,
   // execute it (add-before-remove + sort PATCH for epic/assignee/
-  // label/module/cycle moves), and invalidate so the moved row
+  // label/module/cycle moves; single assign + sort PATCH, NO remove,
+  // for release moves — C133T1), and invalidate so the moved row
   // appears in its new group from the server's state. No optimistic
   // group-move rendering (the simpler correct choice the plan
   // allows); on failure the row stays visibly in its old group
@@ -1764,6 +1895,7 @@ export default function Issues() {
       sourceLabelId: dragged.stack.sourceLabelId,
       sourceModuleId: dragged.stack.sourceModuleId,
       sourceCycleId: dragged.stack.sourceCycleId,
+      sourceReleaseId: dragged.stack.sourceReleaseId,
       target: info.target,
       targetRows: info.targetRows,
     });
@@ -1823,6 +1955,22 @@ export default function Issues() {
       removeFromCycle: (cycleId, issueId) =>
         api.del(
           `${base}/cycles/${encodeURIComponent(cycleId)}/issues`,
+          { issue_ids: [issueId] },
+        ),
+      // C133T1: release membership endpoints carry an {issue_ids}
+      // body — the release id rides the path, and both calls are
+      // idempotent (verified against release_handler.go). The move
+      // path calls ONLY addToRelease (single assign overwrites
+      // release_id); removeFromRelease serves release-Ungrouped
+      // drops only.
+      addToRelease: (releaseId, issueId) =>
+        api.post(
+          `${base}/releases/${encodeURIComponent(releaseId)}/issues`,
+          { issue_ids: [issueId] },
+        ),
+      removeFromRelease: (releaseId, issueId) =>
+        api.del(
+          `${base}/releases/${encodeURIComponent(releaseId)}/issues`,
           { issue_ids: [issueId] },
         ),
       invalidate: () =>
@@ -1994,6 +2142,8 @@ export default function Issues() {
                 pendingModuleRef.current = null;
                 // C132T1: same rule for a carried cycle group cycle.
                 pendingCycleRef.current = null;
+                // C133T1: same rule for a carried release group release.
+                pendingReleaseRef.current = null;
               }
             }}
           >
@@ -2548,6 +2698,7 @@ export default function Issues() {
                         g.targetLabelId,
                         g.targetModuleId,
                         g.targetCycleId,
+                        g.targetReleaseId,
                       )
                     }
                     onExpand={(name) =>
@@ -2559,6 +2710,7 @@ export default function Issues() {
                         g.targetLabelId,
                         g.targetModuleId,
                         g.targetCycleId,
+                        g.targetReleaseId,
                       )
                     }
                   />

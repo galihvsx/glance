@@ -8,10 +8,10 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * transport (api + queryClient); this module owns the rules, so the
  * pipeline is unit-testable without dnd-kit or a rendered page.
  *
- * Enable rule (plan §Scope, C128T0, extended C129T0, C130T0, C131T0, C132T1): drag exists ONLY when the visual
+ * Enable rule (plan §Scope, C128T0, extended C129T0, C130T0, C131T0, C132T1, C133T1): drag exists ONLY when the visual
  * stack order equals a sort_order sequence — Manual rank order, visual
  * mode (no PQL ORDER BY winning server-side), and an EFFECTIVE
- * grouping of none, state, priority, epic, assignees, labels, modules, or cycles. The caller passes the
+ * grouping of none, state, priority, epic, assignees, labels, modules, cycles, or releases. The caller passes the
  * effective grouping, not the raw setting: a priority/state grouping
  * skipped by its single-value filter renders flat, so it counts as
  * flat here. Priority/epic/assignee grouping mixes states inside one stack
@@ -24,7 +24,9 @@ import type { GroupBy, OrderBy } from "./useDisplaySettings";
  * recovery applies verbatim. Module stacks mix states exactly like
  * label stacks, so the same recovery applies verbatim. Cycle stacks
  * are single-appearance but mix states exactly like module stacks,
- * so the same recovery applies verbatim. sort_order is
+ * so the same recovery applies verbatim. Release stacks are
+ * single-appearance but mix states exactly like cycle stacks, so
+ * the same recovery applies verbatim (C133T1). sort_order is
  * GLOBAL per issue (one column): a reorder in any stack changes
  * Manual-rank display everywhere that row appears; that is C126's
  * already-accepted semantics, not a per-group rank model (no such
@@ -46,7 +48,8 @@ export function isListDragEnabled(args: {
       args.groupBy === "assignees" ||
       args.groupBy === "labels" ||
       args.groupBy === "modules" ||
-      args.groupBy === "cycles")
+      args.groupBy === "cycles" ||
+      args.groupBy === "releases")
   );
 }
 

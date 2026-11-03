@@ -5,6 +5,7 @@ import { cycleOf } from "./groupByCycle";
 import { liveEpics } from "./groupByEpic";
 import { labelsOf } from "./groupByLabel";
 import { modulesOf } from "./groupByModule";
+import { releaseOf } from "./groupByRelease";
 
 /**
  * List-view group-header drop targets (C127T0, extended C129T0 with
@@ -42,7 +43,9 @@ export type HeaderTarget =
   | { kind: "module"; moduleId: string }
   | { kind: "module-ungrouped" }
   | { kind: "cycle"; cycleId: string }
-  | { kind: "cycle-ungrouped" };
+  | { kind: "cycle-ungrouped" }
+  | { kind: "release"; releaseId: string }
+  | { kind: "release-ungrouped" };
 
 /** Explicit target-value fields carried on IssueGroup / SubGroupSection
  *  (C127T0, extended C129T0, C130T0). A section with none of these names no assignable value —
@@ -60,6 +63,8 @@ export interface HeaderTargetFields {
   isUngroupedModule?: boolean;
   targetCycleId?: string;
   isUngroupedCycle?: boolean;
+  targetReleaseId?: string;
+  isUngroupedRelease?: boolean;
 }
 
 /** Map a group/section's target fields to its header target, or null
@@ -72,6 +77,7 @@ export function toHeaderTarget(
   if (fields.isUngroupedLabel) return { kind: "label-ungrouped" };
   if (fields.isUngroupedModule) return { kind: "module-ungrouped" };
   if (fields.isUngroupedCycle) return { kind: "cycle-ungrouped" };
+  if (fields.isUngroupedRelease) return { kind: "release-ungrouped" };
   if (fields.targetStateId !== undefined)
     return { kind: "state", stateId: fields.targetStateId };
   if (fields.targetPriority !== undefined)
@@ -86,6 +92,8 @@ export function toHeaderTarget(
     return { kind: "module", moduleId: fields.targetModuleId };
   if (fields.targetCycleId !== undefined)
     return { kind: "cycle", cycleId: fields.targetCycleId };
+  if (fields.targetReleaseId !== undefined)
+    return { kind: "release", releaseId: fields.targetReleaseId };
   return null;
 }
 
@@ -142,6 +150,10 @@ export function headerDropId(
       return `header:${sectionKey}:cycle:${target.cycleId}`;
     case "cycle-ungrouped":
       return `header:${sectionKey}:cycle:ungrouped`;
+    case "release":
+      return `header:${sectionKey}:release:${target.releaseId}`;
+    case "release-ungrouped":
+      return `header:${sectionKey}:release:ungrouped`;
   }
 }
 
@@ -227,6 +239,21 @@ export type ListHeaderDropPlan =
        *  would surface on refetch under its own name — server
        *  truth, not a bug (plan boundary, documented not fixed). */
       removeCycleIds: string[];
+    }
+  | {
+      type: "release-move";
+      /** Single assign: POST .../releases/{target}/issues OVERWRITES
+       *  release_id, so there is NO remove side — a DELETE of the
+       *  source after assign would be a no-op at best. The plan
+       *  therefore carries no removeReleaseId field at all, unlike
+       *  the cycle-move shape. */
+      addReleaseId: string;
+      sortOrder: number;
+    }
+  | {
+      type: "release-ungroup";
+      /** Exactly one id: the displayed release only. */
+      removeReleaseIds: string[];
     };
 
 /**
@@ -276,6 +303,16 @@ export type ListHeaderDropPlan =
  *   is no remove-all to mirror), NO sort_order PATCH (same
  *   rationale as module Ungrouped: the row's position in the
  *   Ungrouped stack follows its existing value).
+ * - release (C133T1): the SINGLE-ASSIGN divergence, forced by the
+ *   data model: release membership is one column, so POST
+ *   .../releases/{target}/issues OVERWRITES release_id — exactly
+ *   ONE assign call, NO DELETE call, then the sort PATCH. No-op
+ *   when the row already carries the target release (single-value
+ *   display: membership IS appearance, so the own-group and
+ *   already-member no-ops coincide, as with cycles).
+ * - release Ungrouped: remove the DISPLAYED release only (DELETE
+ *   .../releases/{source}/issues), NO sort_order PATCH (same
+ *   rationale as cycle Ungrouped).
  */
 export function resolveListHeaderDrop(args: {
   dragged: Issue;
@@ -294,6 +331,14 @@ export function resolveListHeaderDrop(args: {
   /** Cycle group the dragged appearance came from, or null
    *  (non-cycle grouping, or an Ungrouped appearance). */
   sourceCycleId?: string | null;
+  /** Release group the dragged appearance came from, or null
+   *  (non-release grouping, or an Ungrouped appearance). C133T1:
+   *  carried for symmetry with sourceCycleId and for the Ungrouped
+   *  remove's caller context — the release-move decision itself
+   *  keys off the row's displayed release (releaseOf), not this
+   *  field, because a single assign overwrites release_id
+   *  regardless of source. */
+  sourceReleaseId?: string | null;
   target: HeaderTarget;
   /** The header section's loaded rows (for the bottom-append math). */
   targetRows: Issue[];
@@ -423,6 +468,22 @@ export function resolveListHeaderDrop(args: {
       if (current === null) return null;
       return { type: "cycle-ungroup", removeCycleIds: [current.id] };
     }
+    case "release": {
+      // Single-assign: membership IS appearance, so the own-group
+      // and already-member no-ops coincide. No remove side — the
+      // POST overwrites release_id on its own.
+      if (releaseOf(dragged)?.id === target.releaseId) return null;
+      return {
+        type: "release-move",
+        addReleaseId: target.releaseId,
+        sortOrder: bottomSortOrder(targetRows, dragged),
+      };
+    }
+    case "release-ungrouped": {
+      const current = releaseOf(dragged);
+      if (current === null) return null;
+      return { type: "release-ungroup", removeReleaseIds: [current.id] };
+    }
   }
 }
 
@@ -456,6 +517,13 @@ export interface ListHeaderDropDeps {
   addToCycle: (cycleId: string, issueId: string) => Promise<unknown>;
   /** DELETE .../cycles/{cycleId}/issues {issue_ids: [id]} (idempotent, T0). */
   removeFromCycle: (cycleId: string, issueId: string) => Promise<unknown>;
+  /** POST .../releases/{releaseId}/issues {issue_ids: [id]} (idempotent).
+   *  Single assign — overwrites release_id, so a release-move calls
+   *  ONLY this, never removeFromRelease (C133T1). */
+  addToRelease: (releaseId: string, issueId: string) => Promise<unknown>;
+  /** DELETE .../releases/{releaseId}/issues {issue_ids: [id]} (idempotent).
+   *  Used ONLY by release-ungroup, never by a release-move. */
+  removeFromRelease: (releaseId: string, issueId: string) => Promise<unknown>;
   /** Invalidate ["issues", slug, identifier] so the moved row appears
    *  in its new group from the server's state, not local optimism. */
   invalidate: () => Promise<unknown>;
@@ -496,6 +564,16 @@ export async function executeListHeaderDrop(
         await deps.removeFromCycle(plan.removeCycleId, issueId);
       }
       await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "release-move") {
+      // Single assign, then the sort PATCH — NO remove call (the
+      // POST overwrites release_id). An assign failure aborts before
+      // the PATCH via the shared catch below, so nothing changed.
+      await deps.addToRelease(plan.addReleaseId, issueId);
+      await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "release-ungroup") {
+      for (const releaseId of plan.removeReleaseIds) {
+        await deps.removeFromRelease(releaseId, issueId);
+      }
     } else if (plan.type === "cycle-ungroup") {
       for (const cycleId of plan.removeCycleIds) {
         await deps.removeFromCycle(cycleId, issueId);
@@ -554,6 +632,7 @@ export interface ListDragStackRef {
   sourceLabelId: string | null;
   sourceModuleId: string | null;
   sourceCycleId: string | null;
+  sourceReleaseId: string | null;
 }
 
 /** One draggable row appearance, as the page's drop maps record it. */

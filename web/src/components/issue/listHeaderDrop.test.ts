@@ -48,6 +48,7 @@ function mkStack(
   sourceLabelId: string | null = null,
   sourceModuleId: string | null = null,
   sourceCycleId: string | null = null,
+  sourceReleaseId: string | null = null,
 ): ListDragStackRef {
   return {
     stackKey,
@@ -57,6 +58,7 @@ function mkStack(
     sourceLabelId,
     sourceModuleId,
     sourceCycleId,
+    sourceReleaseId,
   };
 }
 
@@ -393,6 +395,14 @@ describe("executeListHeaderDrop", () => {
           events.push(`removeCycle:${cycleId}`);
           return Promise.resolve();
         }),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -542,6 +552,14 @@ describe("assignee header drops (C129T0)", () => {
         }),
         removeFromCycle: vi.fn((cycleId: string) => {
           events.push(`removeCycle:${cycleId}`);
+          return Promise.resolve();
+        }),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
           return Promise.resolve();
         }),
         onError: vi.fn((m: string) => {
@@ -985,6 +1003,14 @@ describe("label header drops (C130T0)", () => {
           events.push(`removeCycle:${cycleId}`);
           return Promise.resolve();
         }),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
         onError: vi.fn((m: string) => {
           events.push(`error:${m}`);
         }),
@@ -1310,6 +1336,14 @@ describe("module header drops (C131T0)", () => {
           events.push(`removeCycle:${cycleId}`);
           return Promise.resolve();
         }),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -1633,6 +1667,14 @@ describe("cycle header drops (C132T1)", () => {
           events.push(`removeCycle:${cycleId}`);
           return Promise.resolve();
         }),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -1893,6 +1935,275 @@ describe("cycle header drops (C132T1)", () => {
     dispatchListDragEnd({
       activeSortableId: "row:c-1:a",
       overId: "row:c-2:b",
+      sortableMap,
+      headerMap: new Map(),
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+  });
+});
+
+// C133T1: release header drops — the cycle pipeline mirrored with the
+// single-assign divergence: a target-group drop is exactly ONE POST
+// (assign overwrites release_id), NO DELETE, then the sort PATCH;
+// Ungrouped = remove the displayed release only, no PATCH.
+describe("release header drops (C133T1)", () => {
+  const targetRows = [
+    mkIssue("t1", { sort_order: 1024 }),
+    mkIssue("t2", { sort_order: 2048 }),
+  ];
+
+  function mockReleaseDeps() {
+    const events: string[] = [];
+    return {
+      events,
+      deps: {
+        patch: vi.fn((_id: string, body: unknown) => {
+          events.push(`patch:${JSON.stringify(body)}`);
+          return Promise.resolve();
+        }),
+        addToEpic: vi.fn(() => Promise.resolve()),
+        removeFromEpic: vi.fn(() => Promise.resolve()),
+        addToAssignee: vi.fn(() => Promise.resolve()),
+        removeFromAssignee: vi.fn(() => Promise.resolve()),
+        addToLabel: vi.fn(() => Promise.resolve()),
+        removeFromLabel: vi.fn(() => Promise.resolve()),
+        addToModule: vi.fn(() => Promise.resolve()),
+        removeFromModule: vi.fn(() => Promise.resolve()),
+        addToCycle: vi.fn(() => Promise.resolve()),
+        removeFromCycle: vi.fn(() => Promise.resolve()),
+        addToRelease: vi.fn((releaseId: string) => {
+          events.push(`addRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        removeFromRelease: vi.fn((releaseId: string) => {
+          events.push(`removeRelease:${releaseId}`);
+          return Promise.resolve();
+        }),
+        invalidate: vi.fn(() => {
+          events.push("invalidate");
+          return Promise.resolve();
+        }),
+        onError: vi.fn((m: string) => {
+          events.push(`error:${m}`);
+        }),
+      },
+    };
+  }
+
+  const withRelease = (id: string, release: { id: string; name: string }) =>
+    mkIssue(id, {
+      sort_order: 512,
+      project_structure: { release },
+    } as Partial<Issue>);
+
+  it("toHeaderTarget maps release fields", () => {
+    expect(toHeaderTarget({ targetReleaseId: "r-1" })).toEqual({
+      kind: "release",
+      releaseId: "r-1",
+    });
+    expect(toHeaderTarget({ isUngroupedRelease: true })).toEqual({
+      kind: "release-ungrouped",
+    });
+  });
+
+  it("header ids are namespaced and disjoint from row ids", () => {
+    const h = headerDropId("r-1", { kind: "release", releaseId: "r-2" });
+    const u = headerDropId("release:ungrouped", {
+      kind: "release-ungrouped",
+    });
+    expect(h).toBe("header:r-1:release:r-2");
+    expect(u).toBe("header:release:ungrouped:release:ungrouped");
+    expect(h.startsWith("header:")).toBe(true);
+    expect(listSortableId("r-1", "i-1")).not.toBe(h);
+  });
+
+  it("release header: single assign + sort PATCH, NO remove — from a release source", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withRelease("d", { id: "r-1", name: "v1.0" }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      sourceCycleId: null,
+      sourceReleaseId: "r-1",
+      target: { kind: "release", releaseId: "r-2" },
+      targetRows,
+    });
+    // The plan carries NO remove field at all — the single-assign
+    // shape, unlike cycle-move's addCycleId/removeCycleId pair.
+    expect(plan).toEqual({
+      type: "release-move",
+      addReleaseId: "r-2",
+      sortOrder: 3072,
+    });
+    expect(plan).not.toHaveProperty("removeReleaseId");
+  });
+
+  it("release header: same plan from an Ungrouped appearance", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", { sort_order: 512 }),
+      sourceEpicId: null,
+      sourceReleaseId: null,
+      target: { kind: "release", releaseId: "r-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "release-move",
+      addReleaseId: "r-2",
+      sortOrder: 3072,
+    });
+  });
+
+  it("release header: own-group appearance is a silent no-op with no calls", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withRelease("d", { id: "r-2", name: "v2.0" }),
+      sourceEpicId: null,
+      sourceReleaseId: "r-2",
+      target: { kind: "release", releaseId: "r-2" },
+      targetRows,
+    });
+    expect(plan).toBeNull();
+  });
+
+  it("release header: already carrying the target release is a silent no-op, even from another release group", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: withRelease("d", { id: "r-2", name: "v2.0" }),
+        sourceEpicId: null,
+        sourceReleaseId: "r-1",
+        target: { kind: "release", releaseId: "r-2" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("release Ungrouped: removes the displayed release only, no sort PATCH", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withRelease("d", { id: "r-1", name: "v1.0" }),
+      sourceEpicId: null,
+      sourceReleaseId: "r-1",
+      target: { kind: "release-ungrouped" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "release-ungroup",
+      removeReleaseIds: ["r-1"],
+    });
+  });
+
+  it("release Ungrouped: already-releaseless is a silent no-op", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {}),
+        sourceEpicId: null,
+        sourceReleaseId: null,
+        target: { kind: "release-ungrouped" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("execute release-move: exactly ONE POST, NO DELETE, then PATCH {sort_order} only, then invalidate", async () => {
+    const { events, deps } = mockReleaseDeps();
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "release-move",
+        addReleaseId: "r-2",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addRelease:r-2",
+      'patch:{"sort_order":3072}',
+      "invalidate",
+    ]);
+    expect(deps.removeFromRelease).not.toHaveBeenCalled();
+    expect(deps.patch).toHaveBeenCalledWith("d", { sort_order: 3072 });
+  });
+
+  it("execute release-move: an assign failure aborts the PATCH and surfaces honestly (nothing changed)", async () => {
+    const { events, deps } = mockReleaseDeps();
+    deps.addToRelease.mockRejectedValueOnce(new Error("assign boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "release-move",
+        addReleaseId: "r-2",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual(["error:assign boom", "invalidate"]);
+    expect(deps.removeFromRelease).not.toHaveBeenCalled();
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute release-ungroup: one remove for the displayed release, no PATCH", async () => {
+    const { events, deps } = mockReleaseDeps();
+    await executeListHeaderDrop(
+      "d",
+      { type: "release-ungroup", removeReleaseIds: ["r-1"] },
+      deps,
+    );
+    expect(events).toEqual(["removeRelease:r-1", "invalidate"]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute release-ungroup: a failed remove surfaces honestly", async () => {
+    const { events, deps } = mockReleaseDeps();
+    deps.removeFromRelease.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      { type: "release-ungroup", removeReleaseIds: ["r-1"] },
+      deps,
+    );
+    expect(events).toEqual(["error:remove boom", "invalidate"]);
+    expect(deps.removeFromRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch routes a release header drop to the reassignment pipeline regardless of the reorder gate", () => {
+    const stack = mkStack("r-1", [mkIssue("a")], null, null, null, null, null, "r-1");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:r-1:a", mkRef("a", mkIssue("a"), stack)],
+    ]);
+    const headerMap = new Map<string, ListHeaderDropInfo>([
+      [
+        "header:r-2:release:r-2",
+        {
+          target: { kind: "release", releaseId: "r-2" },
+          targetRows: [],
+        },
+      ],
+    ]);
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:r-1:a",
+      overId: "header:r-2:release:r-2",
+      sortableMap,
+      headerMap,
+      reorderEnabled: false,
+      onRowDrop: vi.fn(),
+      onHeaderDrop,
+    });
+    expect(onHeaderDrop).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch keeps a cross-stack row drop a no-op under release grouping", () => {
+    const stackA = mkStack("r-1", [mkIssue("a")], null, null, null, null, null, "r-1");
+    const stackB = mkStack("r-2", [mkIssue("b")], null, null, null, null, null, "r-2");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:r-1:a", mkRef("a", mkIssue("a"), stackA)],
+      ["row:r-2:b", mkRef("b", mkIssue("b"), stackB)],
+    ]);
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:r-1:a",
+      overId: "row:r-2:b",
       sortableMap,
       headerMap: new Map(),
       reorderEnabled: true,

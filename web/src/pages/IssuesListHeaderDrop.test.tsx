@@ -748,3 +748,241 @@ describe("cycle expand-to-full-form (C132T1)", () => {
     );
   });
 });
+
+describe("release grouping (C133T1)", () => {
+  const REL_1 = { id: "r-1", name: "v1.0" };
+  const REL_2 = { id: "r-2", name: "v2.0" };
+
+  function releaseIssues() {
+    return [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { release: REL_1, modules: [] },
+      }),
+      mkIssue("i-b", "ENG-2", "Second", "s-doing", 2048, {
+        project_structure: { release: REL_2, modules: [] },
+      }),
+      mkIssue("i-c", "ENG-3", "Third", "s-todo", 3072, {
+        project_structure: { release: null, modules: [] },
+      }),
+    ];
+  }
+
+  it("release grouping: single-appearance rows, one grip each, headers in first-appearance order", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(grips()).toHaveLength(3);
+    expect(screen.getByRole("heading", { name: "v1.0" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "v2.0" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ungrouped" })).toBeInTheDocument();
+  });
+
+  it("release grouping: release + Ungrouped headers are droppable, with no color dot", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    expect(dropIds().sort()).toEqual([
+      "header:r-1:release:r-1",
+      "header:r-2:release:r-2",
+      "header:release:ungrouped:release:ungrouped",
+    ]);
+  });
+
+  it("release grouping: no Ungrouped header when every issue has a release", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: { release: REL_1, modules: [] },
+      }),
+    ];
+    renderIssues();
+    await screen.findByText("First");
+    expect(dropIds()).toEqual(["header:r-1:release:r-1"]);
+    expect(
+      screen.queryByRole("heading", { name: "Ungrouped" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("release grouping: PQL mode disables grips and droppables (unchanged rule)", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    renderIssues("/w/acme/p/ENG?pql=state%20%3D%20Todo");
+    await screen.findByText("Third");
+    expect(grips()).toHaveLength(0);
+    expect(dropIds()).toHaveLength(0);
+  });
+
+  it("sub-grouped releases+state: primary release headers and state sub-headers are droppable, sub-sections never dropped", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "state",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    renderIssues();
+    await screen.findByText("Third");
+    // 3 primary release headers (incl. Ungrouped) + 2 state sub-headers
+    // per primary group (Todo, Doing — showEmptyGroups renders empties).
+    expect(dropIds()).toHaveLength(9);
+    expect(dropIds()).toContain("header:r-1:release:r-1");
+    expect(dropIds()).toContain("header:release:ungrouped:release:ungrouped");
+    expect(dropIds()).toContain("header:r-1::s-todo:state:s-todo");
+    const todo = screen.getAllByRole("heading", { name: "Todo" })[0];
+    expect(todo.closest('[data-testid="header-dropzone"]')).not.toBeNull();
+  });
+
+  it("release group quick-add: create, then POST to the group release; attach failure surfaces an error", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/releases/r-1/issues`)
+        return Promise.reject(new Error("attach boom"));
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await screen.findByText("attach boom");
+    expect(postSpy).toHaveBeenCalledWith(
+      `${ENG}/releases/r-1/issues`,
+      expect.objectContaining({ issue_ids: ["i-new"] }),
+    );
+  });
+
+  it("release group quick-add: success attaches to the group release", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/releases/r-1/issues`)
+        return Promise.resolve({ assigned: 1 });
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith(
+        `${ENG}/releases/r-1/issues`,
+        { issue_ids: ["i-new"] },
+      ),
+    );
+  });
+
+  it("release Ungrouped quick-add: plain create, no attach call", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = releaseIssues();
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("Third");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[buttons.length - 1]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(1));
+    expect(postSpy.mock.calls[0][0]).toBe(`${ENG}/issues`);
+  });
+});
+
+describe("release expand-to-full-form (C133T1)", () => {
+  it("expand keeps title + group release via the pendingReleaseRef attach-after-create path", async () => {
+    setSettings({
+      groupBy: "releases",
+      subGroupBy: "none",
+      orderBy: "sort_order",
+    });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024, {
+        project_structure: {
+          release: { id: "r-1", name: "v1.0" },
+          modules: [],
+        },
+      }),
+    ];
+    const postSpy = vi.spyOn(api, "post").mockImplementation((p: string) => {
+      if (p === `${ENG}/issues`)
+        return Promise.resolve(
+          mkIssue("i-new", "ENG-9", "Brand new", "s-todo", 4096),
+        );
+      if (p === `${ENG}/releases/r-1/issues`)
+        return Promise.resolve({ assigned: 1 });
+      return Promise.reject(new Error(`unexpected POST ${p}`));
+    });
+    renderIssues();
+    await screen.findByText("First");
+    const buttons = screen.getAllByRole("button", {
+      name: "Add new work item inline",
+    });
+    fireEvent.click(buttons[0]);
+    const input = screen.getByLabelText("New work item title");
+    fireEvent.change(input, { target: { value: "Brand new" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open full create form" }));
+    const title = screen.getByLabelText("Title") as HTMLInputElement;
+    expect(title.value).toBe("Brand new");
+    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith(
+        `${ENG}/releases/r-1/issues`,
+        { issue_ids: ["i-new"] },
+      ),
+    );
+  });
+});

@@ -45,6 +45,7 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "labels", label: "Labels" },
   { value: "modules", label: "Modules" },
   { value: "cycles", label: "Cycles" },
+  { value: "releases", label: "Releases" },
   { value: "none", label: "None" },
 ];
 
