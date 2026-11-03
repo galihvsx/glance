@@ -46,8 +46,16 @@ function mkStack(
   sourceEpicId: string | null = null,
   sourceAssigneeId: string | null = null,
   sourceLabelId: string | null = null,
+  sourceModuleId: string | null = null,
 ): ListDragStackRef {
-  return { stackKey, rows, sourceEpicId, sourceAssigneeId, sourceLabelId };
+  return {
+    stackKey,
+    rows,
+    sourceEpicId,
+    sourceAssigneeId,
+    sourceLabelId,
+    sourceModuleId,
+  };
 }
 
 function mkRef(
@@ -367,6 +375,14 @@ describe("executeListHeaderDrop", () => {
           events.push(`removeLabel:${labelId}`);
           return Promise.resolve();
         }),
+        addToModule: vi.fn((moduleId: string) => {
+          events.push(`addModule:${moduleId}`);
+          return Promise.resolve();
+        }),
+        removeFromModule: vi.fn((moduleId: string) => {
+          events.push(`removeModule:${moduleId}`);
+          return Promise.resolve();
+        }),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -504,6 +520,8 @@ describe("assignee header drops (C129T0)", () => {
           events.push(`removeLabel:${labelId}`);
           return Promise.resolve();
         }),
+        addToModule: vi.fn(() => Promise.resolve()),
+        removeFromModule: vi.fn(() => Promise.resolve()),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -935,6 +953,8 @@ describe("label header drops (C130T0)", () => {
           events.push(`removeLabel:${labelId}`);
           return Promise.resolve();
         }),
+        addToModule: vi.fn(() => Promise.resolve()),
+        removeFromModule: vi.fn(() => Promise.resolve()),
         invalidate: vi.fn(() => {
           events.push("invalidate");
           return Promise.resolve();
@@ -1215,6 +1235,325 @@ describe("label header drops (C130T0)", () => {
       headerMap: new Map(),
       activeSortableId: "row:label:l-1:m",
       overId: "row:label:l-2:z",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+  });
+});
+
+// C131T0: module header drops — the label pipeline mirrored exactly
+// (add-before-remove + sort PATCH; Ungrouped = remove-all, no PATCH).
+// Module membership rides project_structure.modules (NamedRef: id +
+// name only, no color) on the row.
+describe("module header drops (C131T0)", () => {
+  const targetRows = [
+    mkIssue("t1", { sort_order: 1024 }),
+    mkIssue("t2", { sort_order: 2048 }),
+  ];
+
+  function mockModuleDeps() {
+    const events: string[] = [];
+    return {
+      events,
+      deps: {
+        patch: vi.fn((_id: string, body: unknown) => {
+          events.push(`patch:${JSON.stringify(body)}`);
+          return Promise.resolve();
+        }),
+        addToEpic: vi.fn(() => Promise.resolve()),
+        removeFromEpic: vi.fn(() => Promise.resolve()),
+        addToAssignee: vi.fn(() => Promise.resolve()),
+        removeFromAssignee: vi.fn(() => Promise.resolve()),
+        addToLabel: vi.fn(() => Promise.resolve()),
+        removeFromLabel: vi.fn(() => Promise.resolve()),
+        addToModule: vi.fn((moduleId: string) => {
+          events.push(`addModule:${moduleId}`);
+          return Promise.resolve();
+        }),
+        removeFromModule: vi.fn((moduleId: string) => {
+          events.push(`removeModule:${moduleId}`);
+          return Promise.resolve();
+        }),
+        invalidate: vi.fn(() => {
+          events.push("invalidate");
+          return Promise.resolve();
+        }),
+        onError: vi.fn((m: string) => {
+          events.push(`error:${m}`);
+        }),
+      },
+    };
+  }
+
+  const withModules = (id: string, modules: { id: string; name: string }[]) =>
+    mkIssue(id, {
+      sort_order: 512,
+      project_structure: { modules },
+    } as Partial<Issue>);
+
+  it("toHeaderTarget maps module fields", () => {
+    expect(toHeaderTarget({ targetModuleId: "m-1" })).toEqual({
+      kind: "module",
+      moduleId: "m-1",
+    });
+    expect(toHeaderTarget({ isUngroupedModule: true })).toEqual({
+      kind: "module-ungrouped",
+    });
+  });
+
+  it("header ids are namespaced and disjoint from row ids", () => {
+    const h = headerDropId("m-1", { kind: "module", moduleId: "m-2" });
+    const u = headerDropId("module:ungrouped", { kind: "module-ungrouped" });
+    expect(h).toBe("header:m-1:module:m-2");
+    expect(u).toBe("header:module:ungrouped:module:ungrouped");
+    expect(h.startsWith("header:")).toBe(true);
+    expect(listSortableId("m-1", "i-1")).not.toBe(h);
+  });
+
+  it("module header: add-before-remove + sort PATCH, from a module source", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withModules("d", [{ id: "m-1", name: "Core" }]),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: "m-1",
+      target: { kind: "module", moduleId: "m-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "module-move",
+      addModuleId: "m-2",
+      removeModuleId: "m-1",
+      sortOrder: 3072,
+    });
+  });
+
+  it("module header: no remove when the appearance came from Ungrouped", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: mkIssue("d", { sort_order: 512 }),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: null,
+      target: { kind: "module", moduleId: "m-2" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "module-move",
+      addModuleId: "m-2",
+      removeModuleId: null,
+      sortOrder: 3072,
+    });
+  });
+
+  it("module header: no remove when the source equals the target (own-group appearance)", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withModules("d", [{ id: "m-2", name: "Web" }]),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: "m-2",
+      target: { kind: "module", moduleId: "m-2" },
+      targetRows,
+    });
+    // Already a member of the target: silent no-op, not a move.
+    expect(plan).toBeNull();
+  });
+
+  it("module header: already a member of the target is a silent no-op, even from another module group", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: withModules("d", [
+          { id: "m-1", name: "Core" },
+          { id: "m-2", name: "Web" },
+        ]),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: null,
+        sourceModuleId: "m-1",
+        target: { kind: "module", moduleId: "m-2" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("module Ungrouped: removes ALL current modules, no sort PATCH", () => {
+    const plan = resolveListHeaderDrop({
+      dragged: withModules("d", [
+        { id: "m-1", name: "Core" },
+        { id: "m-2", name: "Web" },
+      ]),
+      sourceEpicId: null,
+      sourceAssigneeId: null,
+      sourceLabelId: null,
+      sourceModuleId: "m-1",
+      target: { kind: "module-ungrouped" },
+      targetRows,
+    });
+    expect(plan).toEqual({
+      type: "module-ungroup",
+      removeModuleIds: ["m-1", "m-2"],
+    });
+  });
+
+  it("module Ungrouped: already-moduleless is a silent no-op", () => {
+    expect(
+      resolveListHeaderDrop({
+        dragged: mkIssue("d", {}),
+        sourceEpicId: null,
+        sourceAssigneeId: null,
+        sourceLabelId: null,
+        sourceModuleId: null,
+        target: { kind: "module-ungrouped" },
+        targetRows,
+      }),
+    ).toBeNull();
+  });
+
+  it("execute module-move: add, then remove, then PATCH {sort_order} only, then invalidate", async () => {
+    const { events, deps } = mockModuleDeps();
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "module-move",
+        addModuleId: "m-2",
+        removeModuleId: "m-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addModule:m-2",
+      "removeModule:m-1",
+      'patch:{"sort_order":3072}',
+      "invalidate",
+    ]);
+    // The sort PATCH body carries exactly {sort_order} — never a module id.
+    expect(deps.patch).toHaveBeenCalledWith("d", { sort_order: 3072 });
+  });
+
+  it("execute module-move: an add failure aborts remove and PATCH, surfaces honestly", async () => {
+    const { events, deps } = mockModuleDeps();
+    deps.addToModule.mockRejectedValueOnce(new Error("add boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "module-move",
+        addModuleId: "m-2",
+        removeModuleId: "m-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual(["error:add boom", "invalidate"]);
+    expect(deps.removeFromModule).not.toHaveBeenCalled();
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute module-move: a remove failure after a successful add aborts the PATCH and surfaces honestly", async () => {
+    const { events, deps } = mockModuleDeps();
+    deps.removeFromModule.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      {
+        type: "module-move",
+        addModuleId: "m-2",
+        removeModuleId: "m-1",
+        sortOrder: 3072,
+      },
+      deps,
+    );
+    expect(events).toEqual([
+      "addModule:m-2",
+      "error:remove boom",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute module-ungroup: sequential removes in order, no PATCH", async () => {
+    const { events, deps } = mockModuleDeps();
+    await executeListHeaderDrop(
+      "d",
+      { type: "module-ungroup", removeModuleIds: ["m-1", "m-2"] },
+      deps,
+    );
+    expect(events).toEqual([
+      "removeModule:m-1",
+      "removeModule:m-2",
+      "invalidate",
+    ]);
+    expect(deps.patch).not.toHaveBeenCalled();
+  });
+
+  it("execute module-ungroup: a failed remove aborts the rest and surfaces honestly", async () => {
+    const { events, deps } = mockModuleDeps();
+    deps.removeFromModule.mockRejectedValueOnce(new Error("remove boom"));
+    await executeListHeaderDrop(
+      "d",
+      { type: "module-ungroup", removeModuleIds: ["m-1", "m-2", "m-3"] },
+      deps,
+    );
+    expect(events).toEqual(["error:remove boom", "invalidate"]);
+    expect(deps.removeFromModule).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatch routes a module header drop to the reassignment pipeline regardless of the reorder gate", () => {
+    const stack = mkStack("m-1", [mkIssue("a")], null, null, null, "m-1");
+    const sortableMap = new Map<string, ListDragRowRef>([
+      ["row:m-1:a", mkRef("a", mkIssue("a"), stack)],
+    ]);
+    const headerMap = new Map<string, ListHeaderDropInfo>([
+      [
+        "header:m-2:module:m-2",
+        {
+          target: { kind: "module", moduleId: "m-2" },
+          targetRows: [],
+        },
+      ],
+    ]);
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      activeSortableId: "row:m-1:a",
+      overId: "header:m-2:module:m-2",
+      sortableMap,
+      headerMap,
+      reorderEnabled: false,
+      onRowDrop: vi.fn(),
+      onHeaderDrop,
+    });
+    expect(onHeaderDrop).toHaveBeenCalledTimes(1);
+    expect(onHeaderDrop.mock.calls[0][0].stack.sourceModuleId).toBe("m-1");
+  });
+
+  it("dispatch: module multi-appearance — one appearance reorders within its own stack only", () => {
+    const module1 = mkStack("module:m-1", [mkIssue("a"), mkIssue("m")], null, null, null, "m-1");
+    const module2 = mkStack("module:m-2", [mkIssue("m"), mkIssue("z")], null, null, null, "m-2");
+    const maps = new Map<string, ListDragRowRef>([
+      ["row:module:m-1:a", mkRef("a", mkIssue("a"), module1)],
+      ["row:module:m-1:m", mkRef("m", mkIssue("m"), module1)],
+      ["row:module:m-2:m", mkRef("m", mkIssue("m"), module2)],
+      ["row:module:m-2:z", mkRef("z", mkIssue("z"), module2)],
+    ]);
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:module:m-1:m",
+      overId: "row:module:m-1:a",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).toHaveBeenCalledWith(module1.rows, "m", "a");
+    onRowDrop.mockClear();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:module:m-1:m",
+      overId: "row:module:m-2:z",
       reorderEnabled: true,
       onRowDrop,
       onHeaderDrop: vi.fn(),

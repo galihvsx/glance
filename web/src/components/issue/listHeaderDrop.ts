@@ -3,11 +3,15 @@ import type { Issue } from "../../lib/types";
 import { assigneesOf } from "./groupByAssignee";
 import { liveEpics } from "./groupByEpic";
 import { labelsOf } from "./groupByLabel";
+import { modulesOf } from "./groupByModule";
 
 /**
  * List-view group-header drop targets (C127T0, extended C129T0 with
  * assignee targets mirroring the epic ones exactly, C130T0 with
- * label targets mirroring the assignee ones exactly). The page component owns
+ * label targets mirroring the assignee ones exactly, C131T0 with
+ * module targets mirroring the label ones exactly — module membership
+ * endpoints carry {issue_ids} bodies, unlike the label path's
+ * body-less calls). The page component owns
  * transport (api + queryClient); this module owns the rules, so the
  * reassignment pipeline is unit-testable without dnd-kit or a rendered
  * page — the listReorder.ts (C126) split, applied to the second drag
@@ -33,7 +37,9 @@ export type HeaderTarget =
   | { kind: "assignee"; assigneeId: string }
   | { kind: "assignee-ungrouped" }
   | { kind: "label"; labelId: string }
-  | { kind: "label-ungrouped" };
+  | { kind: "label-ungrouped" }
+  | { kind: "module"; moduleId: string }
+  | { kind: "module-ungrouped" };
 
 /** Explicit target-value fields carried on IssueGroup / SubGroupSection
  *  (C127T0, extended C129T0, C130T0). A section with none of these names no assignable value —
@@ -47,6 +53,8 @@ export interface HeaderTargetFields {
   isUngroupedAssignee?: boolean;
   targetLabelId?: string;
   isUngroupedLabel?: boolean;
+  targetModuleId?: string;
+  isUngroupedModule?: boolean;
 }
 
 /** Map a group/section's target fields to its header target, or null
@@ -57,6 +65,7 @@ export function toHeaderTarget(
   if (fields.isUngroupedEpic) return { kind: "epic-ungrouped" };
   if (fields.isUngroupedAssignee) return { kind: "assignee-ungrouped" };
   if (fields.isUngroupedLabel) return { kind: "label-ungrouped" };
+  if (fields.isUngroupedModule) return { kind: "module-ungrouped" };
   if (fields.targetStateId !== undefined)
     return { kind: "state", stateId: fields.targetStateId };
   if (fields.targetPriority !== undefined)
@@ -67,6 +76,8 @@ export function toHeaderTarget(
     return { kind: "assignee", assigneeId: fields.targetAssigneeId };
   if (fields.targetLabelId !== undefined)
     return { kind: "label", labelId: fields.targetLabelId };
+  if (fields.targetModuleId !== undefined)
+    return { kind: "module", moduleId: fields.targetModuleId };
   return null;
 }
 
@@ -115,6 +126,10 @@ export function headerDropId(
       return `header:${sectionKey}:label:${target.labelId}`;
     case "label-ungrouped":
       return `header:${sectionKey}:label:ungrouped`;
+    case "module":
+      return `header:${sectionKey}:module:${target.moduleId}`;
+    case "module-ungrouped":
+      return `header:${sectionKey}:module:ungrouped`;
   }
 }
 
@@ -175,7 +190,16 @@ export type ListHeaderDropPlan =
       removeLabelId: string | null;
       sortOrder: number;
     }
-  | { type: "label-ungroup"; removeLabelIds: string[] };
+  | { type: "label-ungroup"; removeLabelIds: string[] }
+  | {
+      type: "module-move";
+      addModuleId: string;
+      /** Null when the dragged appearance came from Ungrouped or
+       *  from a non-module grouping (nothing to remove). */
+      removeModuleId: string | null;
+      sortOrder: number;
+    }
+  | { type: "module-ungroup"; removeModuleIds: string[] };
 
 /**
  * Resolve a header drop to its exact call sequence (C127T0). All
@@ -206,6 +230,13 @@ export type ListHeaderDropPlan =
  *   appearance came from a label group different from the target.
  * - label Ungrouped: remove from ALL current labels, NO
  *   sort_order PATCH (same rationale as epic/assignee Ungrouped).
+ * - module (C131T0): mirrors the label case exactly — add-before-
+ *   remove + sort PATCH; no-op when already a member of the target
+ *   module (multi-module rows included — membership, not
+ *   appearance, decides). Remove runs only when the dragged
+ *   appearance came from a module group different from the target.
+ * - module Ungrouped: remove from ALL current modules, NO
+ *   sort_order PATCH (same rationale as label Ungrouped).
  */
 export function resolveListHeaderDrop(args: {
   dragged: Issue;
@@ -218,6 +249,9 @@ export function resolveListHeaderDrop(args: {
   /** Label group the dragged appearance came from, or null
    *  (non-label grouping, or an Ungrouped appearance). */
   sourceLabelId?: string | null;
+  /** Module group the dragged appearance came from, or null
+   *  (non-module grouping, or an Ungrouped appearance). */
+  sourceModuleId?: string | null;
   target: HeaderTarget;
   /** The header section's loaded rows (for the bottom-append math). */
   targetRows: Issue[];
@@ -227,6 +261,7 @@ export function resolveListHeaderDrop(args: {
     sourceEpicId,
     sourceAssigneeId,
     sourceLabelId,
+    sourceModuleId,
     target,
     targetRows,
   } = args;
@@ -307,6 +342,27 @@ export function resolveListHeaderDrop(args: {
         removeLabelIds: current.map((l) => l.id),
       };
     }
+    case "module": {
+      if (modulesOf(dragged).some((m) => m.id === target.moduleId))
+        return null;
+      return {
+        type: "module-move",
+        addModuleId: target.moduleId,
+        removeModuleId:
+          sourceModuleId != null && sourceModuleId !== target.moduleId
+            ? sourceModuleId
+            : null,
+        sortOrder: bottomSortOrder(targetRows, dragged),
+      };
+    }
+    case "module-ungrouped": {
+      const current = modulesOf(dragged);
+      if (current.length === 0) return null;
+      return {
+        type: "module-ungroup",
+        removeModuleIds: current.map((m) => m.id),
+      };
+    }
   }
 }
 
@@ -332,6 +388,10 @@ export interface ListHeaderDropDeps {
   addToLabel: (labelId: string, issueId: string) => Promise<unknown>;
   /** DELETE .../issues/{id}/labels/{labelId} (idempotent, no body). */
   removeFromLabel: (labelId: string, issueId: string) => Promise<unknown>;
+  /** POST .../modules/{moduleId}/issues {issue_ids: [id]} (idempotent). */
+  addToModule: (moduleId: string, issueId: string) => Promise<unknown>;
+  /** DELETE .../modules/{moduleId}/issues {issue_ids: [id]} (idempotent). */
+  removeFromModule: (moduleId: string, issueId: string) => Promise<unknown>;
   /** Invalidate ["issues", slug, identifier] so the moved row appears
    *  in its new group from the server's state, not local optimism. */
   invalidate: () => Promise<unknown>;
@@ -341,15 +401,15 @@ export interface ListHeaderDropDeps {
 
 /**
  * Execute a resolved header-drop plan (C127T0, extended C129T0,
- * C130T0). Call order is the contract: epic/assignee/label add
- * BEFORE remove, sort PATCH last. Any failure aborts the remaining
- * calls and surfaces honestly — a remove failure after a successful
- * add leaves the row in both epics / assigned to both members /
- * labeled with both labels, reported, never hidden or silently
- * retried. Invalidation runs after success AND after failure so
- * the list shows the server's state either way. No optimistic
- * group-move rendering: the page waits for refetch (the simpler
- * correct choice the plan allows).
+ * C130T0, C131T0). Call order is the contract: epic/assignee/label/
+ * module add BEFORE remove, sort PATCH last. Any failure aborts the
+ * remaining calls and surfaces honestly — a remove failure after a
+ * successful add leaves the row in both epics / assigned to both
+ * members / labeled with both labels / in both modules, reported,
+ * never hidden or silently retried. Invalidation runs after success
+ * AND after failure so the list shows the server's state either way.
+ * No optimistic group-move rendering: the page waits for refetch
+ * (the simpler correct choice the plan allows).
  */
 export async function executeListHeaderDrop(
   issueId: string,
@@ -359,6 +419,16 @@ export async function executeListHeaderDrop(
   try {
     if (plan.type === "patch") {
       await deps.patch(issueId, plan.body);
+    } else if (plan.type === "module-move") {
+      await deps.addToModule(plan.addModuleId, issueId);
+      if (plan.removeModuleId !== null) {
+        await deps.removeFromModule(plan.removeModuleId, issueId);
+      }
+      await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "module-ungroup") {
+      for (const moduleId of plan.removeModuleIds) {
+        await deps.removeFromModule(moduleId, issueId);
+      }
     } else if (plan.type === "epic-move") {
       await deps.addToEpic(plan.addEpicId, issueId);
       if (plan.removeEpicId !== null) {
@@ -398,15 +468,16 @@ export async function executeListHeaderDrop(
   await deps.invalidate();
 }
 
-/** One rendered row stack: its rows, and the epic/assignee/label
- *  group its appearances belong to (null unless epic-/assignee-/
- *  label-grouped). */
+/** One rendered row stack: its rows, and the epic/assignee/label/
+ *  module group its appearances belong to (null unless epic-/
+ *  assignee-/label-/module-grouped). */
 export interface ListDragStackRef {
   stackKey: string;
   rows: Issue[];
   sourceEpicId: string | null;
   sourceAssigneeId: string | null;
   sourceLabelId: string | null;
+  sourceModuleId: string | null;
 }
 
 /** One draggable row appearance, as the page's drop maps record it. */

@@ -349,8 +349,30 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       "Epic",
       "Assignees",
       "Labels",
+      "Modules",
       "None",
     ]);
+  });
+
+  it("offers Modules after Labels, before None", () => {
+    const { labels } = renderGroupBy();
+    const idx = (name: string) => labels.indexOf(name);
+    expect(idx("Modules")).toBeGreaterThan(idx("Labels"));
+    expect(idx("Modules")).toBeLessThan(idx("None"));
+  });
+
+  it("selecting Modules reports groupBy modules", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Modules"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "modules" });
+  });
+
+  it("marks Modules checked when it is the active grouping", () => {
+    const { radio } = renderGroupBy({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "modules",
+    });
+    expect(radio("Modules")).toHaveAttribute("aria-checked", "true");
   });
 
   it("offers Labels after Assignees, before None", () => {

@@ -38,13 +38,19 @@ export interface DisplayFields {
  * assignee group; issues with none land in Ungrouped, last).
  * C130T0: "labels" groups list rows by label membership
  * (multi-appearance: an issue with N labels shows under every
- * label group; issues with none land in Ungrouped, last). */
+ * label group; issues with none land in Ungrouped, last).
+ * C131T0: "modules" groups list rows by module membership
+ * (multi-appearance: an issue with N modules shows under every
+ * module group; issues with none land in Ungrouped, last).
+ * Modules carry no color — module group headers render name +
+ * count with no color dot. */
 export type GroupBy =
   | "state"
   | "priority"
   | "epic"
   | "assignees"
   | "labels"
+  | "modules"
   | "none";
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
@@ -108,6 +114,7 @@ const GROUP_BYS: GroupBy[] = [
   "epic",
   "assignees",
   "labels",
+  "modules",
   "none",
 ];
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
