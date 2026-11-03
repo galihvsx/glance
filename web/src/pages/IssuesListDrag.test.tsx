@@ -198,24 +198,28 @@ describe("list drag enable rules (C126T0)", () => {
     expect(grips()).toHaveLength(0);
   });
 
-  it("grouped path: no grips for priority grouping", async () => {
+  // C127T0 SUPERSEDES the C126 rule here: reassign drag is the ONLY
+  // drag under priority/epic grouping, and the C126 grip handle is
+  // its drag source — so grips now appear (row drops there stay
+  // no-ops; only header drops reassign).
+  it("grouped path: grips appear for priority grouping (C127 reassign source)", async () => {
     setSettings({ groupBy: "priority", subGroupBy: "none", orderBy: "sort_order" });
     mockState.issues = [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024),
     ];
     renderIssues();
     await screen.findByText("First");
-    expect(grips()).toHaveLength(0);
+    expect(grips()).toHaveLength(1);
   });
 
-  it("grouped path: no grips for epic grouping", async () => {
+  it("grouped path: grips appear for epic grouping (C127 reassign source)", async () => {
     setSettings({ groupBy: "epic", subGroupBy: "none", orderBy: "sort_order" });
     mockState.issues = [
       mkIssue("i-a", "ENG-1", "First", "s-todo", 1024),
     ];
     renderIssues();
     await screen.findByText("First");
-    expect(grips()).toHaveLength(0);
+    expect(grips()).toHaveLength(1);
   });
 
   it("grouped path: grips appear for state grouping", async () => {

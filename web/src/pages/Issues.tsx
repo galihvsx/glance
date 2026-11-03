@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -38,10 +38,25 @@ import { Textarea } from "../components/ui/textarea";
 import IssueRow from "../components/issue/IssueRow";
 import SortableIssueRow from "../components/issue/SortableIssueRow";
 import ListRowStack from "../components/issue/ListRowStack";
+import ListDragRoot from "../components/issue/ListDragRoot";
+import ListHeaderDropZone from "../components/issue/ListHeaderDropZone";
 import {
   applyListDrop,
   isListDragEnabled,
 } from "../components/issue/listReorder";
+import {
+  dispatchListDragEnd,
+  executeListHeaderDrop,
+  headerDropId,
+  isListReassignEnabled,
+  listSortableId,
+  resolveListHeaderDrop,
+  toHeaderTarget,
+  type HeaderTargetFields,
+  type ListDragRowRef,
+  type ListDragStackRef,
+  type ListHeaderDropInfo,
+} from "../components/issue/listHeaderDrop";
 import NestedListSubtaskRow from "../components/issue/NestedListSubtaskRow";
 import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
@@ -177,6 +192,33 @@ function buildIssuePath(
   if (includeSubtasks) p.set("include_subtasks", "1");
   if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
+}
+
+/**
+ * C127T0: one render path for a group/sub-group header's outer div.
+ * With a droppable id the header is a ListHeaderDropZone (the zone
+ * appends the idle/hot border token itself); without one — flat
+ * layout, PQL mode, the state-Ungrouped sub-header — it is the plain
+ * div the list has always rendered. `className` carries the header's
+ * classes WITHOUT the border-color token in both branches, so the idle
+ * DOM is identical either way. A plain helper function, not a
+ * component, so the header element type never remounts spuriously.
+ */
+function listHeaderOuter(
+  droppableId: string | null,
+  className: string,
+  inner: ReactNode,
+): ReactNode {
+  if (droppableId === null) {
+    return (
+      <div className={`${className} border-border-hairline`}>{inner}</div>
+    );
+  }
+  return (
+    <ListHeaderDropZone droppableId={droppableId} className={className}>
+      {inner}
+    </ListHeaderDropZone>
+  );
 }
 
 export default function Issues() {
@@ -925,6 +967,15 @@ export default function Issues() {
     issues: Issue[];
     stateId?: string;
     priority?: number;
+    /** C127T0: explicit drop-target values for this group's header
+     *  (see listHeaderDrop.toHeaderTarget). Epic groups carry NO epic
+     *  id field of their own — the key IS the epic id verbatim, so
+     *  the mapping from key → target field happens once here, at
+     *  group build time, never by parsing a key at drop time. */
+    targetStateId?: string;
+    targetPriority?: number;
+    targetEpicId?: string;
+    isUngroupedEpic?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -940,6 +991,7 @@ export default function Issues() {
         stateGroup: s.group,
         issues: issues.filter((i) => i.state_id === s.id),
         stateId: s.id,
+        targetStateId: s.id,
       }));
     } else if (groupByPriority) {
       gs = [4, 3, 2, 1, 0].map((p) => ({
@@ -948,6 +1000,7 @@ export default function Issues() {
         issues: issues.filter((i) => i.priority === p),
         stateId: sortedStates[0]?.id,
         priority: p,
+        targetPriority: p,
       }));
     } else if (groupByEpic) {
       // C72T0: group by LIVE epic membership (see groupByEpic.ts for the
@@ -962,6 +1015,8 @@ export default function Issues() {
         issues: g.issues,
         byGroup: g.byGroup,
         stateId: sortedStates[0]?.id,
+        targetEpicId: g.isUngrouped ? undefined : g.key,
+        isUngroupedEpic: g.isUngrouped,
       }));
     }
     return settings.showEmptyGroups
@@ -1118,13 +1173,165 @@ export default function Issues() {
     });
   }
 
+  // C127T0: reassign drag — a SECOND drag mode, independent of C126's
+  // reorder gate: enabled whenever grouping is active and not PQL
+  // mode, under ANY orderBy (a reassignment persists regardless of
+  // display order; the appended sort_order only affects Manual-rank
+  // display). Under priority/epic grouping it is the only drag (row
+  // drops there stay no-ops). One DndContext owns the whole list
+  // (ListDragRoot) — per-stack contexts could not receive cross-group
+  // header drops — and dispatch, not context isolation, keeps row
+  // drops stack-local. A drag is active when either mode holds.
+  const reassignEnabled = isListReassignEnabled({
+    pqlMode,
+    groupingActive,
+  });
+  const dndActive = dragEnabled || reassignEnabled;
+
+  // C127T0: stack-scoped sortable ids + section-scoped header
+  // droppable ids, built once per render from the same group/section
+  // objects the layout renders, so drop dispatch reads lookup maps,
+  // never parses an id string. The epic appearance a stack's rows
+  // were dragged from is recorded per stack: the primary epic group,
+  // else the epic sub-section, else none (that source decides the
+  // remove side of an epic move — see listHeaderDrop).
+  const listDragMaps = useMemo(() => {
+    const sortableMap = new Map<string, ListDragRowRef>();
+    const headerMap = new Map<string, ListHeaderDropInfo>();
+    const registerStack = (
+      stackKey: string,
+      rows: Issue[],
+      sourceEpicId: string | null,
+    ): ListDragStackRef => {
+      const stack: ListDragStackRef = { stackKey, rows, sourceEpicId };
+      for (const issue of rows) {
+        sortableMap.set(listSortableId(stackKey, issue.id), {
+          rowId: issue.id,
+          issue,
+          stack,
+        });
+      }
+      return stack;
+    };
+    const registerHeader = (
+      sectionKey: string,
+      fields: HeaderTargetFields,
+      rows: Issue[],
+    ) => {
+      const target = toHeaderTarget(fields);
+      if (target) {
+        headerMap.set(headerDropId(sectionKey, target), {
+          target,
+          targetRows: rows,
+        });
+      }
+    };
+    if (!groupingActive) {
+      registerStack("flat", issues, null);
+    } else {
+      for (const g of groups) {
+        const primaryEpicId = groupByEpic
+          ? g.isUngroupedEpic
+            ? null
+            : (g.targetEpicId ?? null)
+          : null;
+        if (subSectionsByGroup) {
+          registerHeader(g.key, g, g.issues);
+          for (const sub of subSectionsByGroup.get(g.key) ?? []) {
+            const subKey = `${g.key}::${sub.key}`;
+            const sourceEpicId =
+              primaryEpicId ??
+              (effectiveSubGroup === "epic"
+                ? sub.isUngroupedEpic
+                  ? null
+                  : (sub.targetEpicId ?? null)
+                : null);
+            registerStack(subKey, sub.issues, sourceEpicId);
+            registerHeader(subKey, sub, sub.issues);
+          }
+        } else {
+          registerStack(g.key, g.issues, primaryEpicId);
+          registerHeader(g.key, g, g.issues);
+        }
+      }
+    }
+    return { sortableMap, headerMap };
+  }, [
+    groupingActive,
+    groups,
+    subSectionsByGroup,
+    issues,
+    groupByEpic,
+    effectiveSubGroup,
+  ]);
+
+  // C127T0: one header drop — resolve to the exact call sequence,
+  // execute it (add-before-remove + sort PATCH for epic moves), and
+  // invalidate so the moved row appears in its new group from the
+  // server's state. No optimistic group-move rendering (the simpler
+  // correct choice the plan allows); on failure the row stays
+  // visibly in its old group after refetch and the error surfaces
+  // via the existing reorderError Alert.
+  async function handleHeaderDrop(
+    dragged: ListDragRowRef,
+    info: ListHeaderDropInfo,
+  ) {
+    setReorderError(null);
+    const plan = resolveListHeaderDrop({
+      dragged: dragged.issue,
+      sourceEpicId: dragged.stack.sourceEpicId,
+      target: info.target,
+      targetRows: info.targetRows,
+    });
+    if (!plan) return; // own-group / already-member: silent no-op
+    await executeListHeaderDrop(dragged.rowId, plan, {
+      patch: (id, body) => api.patch(`${base}/issues/${id}`, body),
+      addToEpic: (epicId, issueId) =>
+        api.post(`${base}/epics/${encodeURIComponent(epicId)}/issues`, {
+          issue_ids: [issueId],
+        }),
+      removeFromEpic: (epicId, issueId) =>
+        api.del(`${base}/epics/${encodeURIComponent(epicId)}/issues`, {
+          issue_ids: [issueId],
+        }),
+      invalidate: () =>
+        queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        }),
+      onError: (m) => setReorderError(m),
+    });
+  }
+
+  // C127T0: one drag-end for the whole list — header ids route to
+  // the reassignment pipeline, same-stack row ids to the C126 reorder
+  // pipeline (only when its gate holds), everything else is a silent
+  // no-op. See listHeaderDrop.dispatchListDragEnd.
+  function handleListDragEnd(
+    activeSortableId: string,
+    overId: string | null,
+  ) {
+    dispatchListDragEnd({
+      activeSortableId,
+      overId,
+      sortableMap: listDragMaps.sortableMap,
+      headerMap: listDragMaps.headerMap,
+      reorderEnabled: dragEnabled,
+      onRowDrop: (stack, activeRowId, overRowId) =>
+        void handleListDrop(stack, activeRowId, overRowId),
+      onHeaderDrop: (ref, info) => void handleHeaderDrop(ref, info),
+    });
+  }
+
   /**
-   * One list row + its nested subtask rows (C124), draggable when the
-   * enable rule holds, otherwise today's rendering exactly (a bare
-   * fragment adds no DOM). Shared by all three render sites so the
-   * row props cannot drift between flat/grouped/sub-grouped paths.
+   * One list row + its nested subtask rows (C124), draggable when
+   * either drag mode holds (C126 reorder and/or C127 reassign),
+   * otherwise today's rendering exactly (a bare fragment adds no
+   * DOM). Shared by all three render sites so the row props cannot
+   * drift between flat/grouped/sub-grouped paths. `stackKey` is the
+   * stack this appearance belongs to — it scopes the row's sortable
+   * id, so a multi-appearance row never collides with itself.
    */
-  function renderListRow(issue: Issue, kbd: boolean) {
+  function renderListRow(issue: Issue, kbd: boolean, stackKey: string) {
     const nestedRows = listSplit.nestedByParent.get(issue.id) ?? [];
     const nested =
       nestedRows.length > 0 ? (
@@ -1149,7 +1356,7 @@ export default function Issues() {
       bulkActive: bulk.count > 0,
       onToggleSelect: () => bulk.toggle(issue.id),
     };
-    if (!dragEnabled) {
+    if (!dndActive) {
       return (
         <>
           <IssueRow {...rowProps} />
@@ -1157,7 +1364,14 @@ export default function Issues() {
         </>
       );
     }
-    return <SortableIssueRow {...rowProps}>{nested}</SortableIssueRow>;
+    return (
+      <SortableIssueRow
+        {...rowProps}
+        sortableId={listSortableId(stackKey, issue.id)}
+      >
+        {nested}
+      </SortableIssueRow>
+    );
   }
 
   /** Plain IssueRow face for a stack's drag overlay. */
@@ -1614,9 +1828,28 @@ export default function Issues() {
         </Card>
       ) : (
         <>
+          <ListDragRoot
+            enabled={dndActive}
+            onDragStart={() => setReorderError(null)}
+            onDragEnd={handleListDragEnd}
+            overlayIssueForId={(id) =>
+              listDragMaps.sortableMap.get(id)?.issue
+            }
+            renderOverlayRow={renderOverlayRow}
+          >
           {groupingActive ? (
             <div>
-              {groups.map((g, gi) => (
+              {groups.map((g, gi) => {
+                // C127T0: the primary header is a drop target when
+                // reassign drag holds and the group names an assignable
+                // target — otherwise the plain header div, exactly as
+                // before (see listHeaderOuter).
+                const gTarget = toHeaderTarget(g);
+                const gDropId =
+                  reassignEnabled && gTarget
+                    ? headerDropId(g.key, gTarget)
+                    : null;
+                return (
                 <section
                   key={g.key}
                   aria-label={g.title}
@@ -1625,7 +1858,10 @@ export default function Issues() {
                   {/* C19T5: group header — 35px, 12px/600, bottom hairline,
                       state-dot (state groups) or priority bars (priority
                       groups) + mono count. */}
-                  <div className="flex h-[35px] items-center gap-2 border-b border-border-hairline">
+                  {listHeaderOuter(
+                    gDropId,
+                    "flex h-[35px] items-center gap-2 border-b",
+                    <>
                     {g.stateGroup ? (
                       <span
                         className={`state-dot ${stateDotClass(g.stateGroup)}`}
@@ -1640,7 +1876,8 @@ export default function Issues() {
                     <span className="font-mono text-[10px] text-ink-muted">
                       {g.issues.length}
                     </span>
-                  </div>
+                    </>,
+                  )}
                   {/* C72T0: epic group header progress — the shared
                       EpicGroupBreakdown (5 segments, no triage, done =
                       completed + cancelled), counts computed client-side
@@ -1663,9 +1900,24 @@ export default function Issues() {
                       unchanged. */}
                   {subSectionsByGroup ? (
                     <div>
-                      {(subSectionsByGroup.get(g.key) ?? []).map((sub) => (
+                      {(subSectionsByGroup.get(g.key) ?? []).map((sub) => {
+                        // C127T0: the sub-header is a drop target on
+                        // the same terms as the primary header — except
+                        // the state-Ungrouped sub-header, whose target
+                        // is null (it names no assignable value) and
+                        // always renders as the plain div.
+                        const subKey = `${g.key}::${sub.key}`;
+                        const subTarget = toHeaderTarget(sub);
+                        const subDropId =
+                          reassignEnabled && subTarget
+                            ? headerDropId(subKey, subTarget)
+                            : null;
+                        return (
                         <div key={sub.key}>
-                          <div className="flex h-[30px] items-center gap-2 border-b border-border-hairline pl-4">
+                          {listHeaderOuter(
+                            subDropId,
+                            "flex h-[30px] items-center gap-2 border-b pl-4",
+                            <>
                             {sub.stateGroup ? (
                               <span
                                 className={`state-dot ${stateDotClass(sub.stateGroup)}`}
@@ -1678,7 +1930,8 @@ export default function Issues() {
                             <span className="font-mono text-[10px] text-ink-muted">
                               {sub.issues.length}
                             </span>
-                          </div>
+                            </>,
+                          )}
                           {sub.byGroup && (
                             <div className="mb-1 mt-2 max-w-[480px] pl-4">
                               <EpicGroupBreakdown
@@ -1688,18 +1941,16 @@ export default function Issues() {
                               />
                             </div>
                           )}
-                          {/* C126T0: one sortable context per sub-section
-                              stack; headers stay outside it (not drop
-                              targets). Disabled: ListRowStack renders
-                              only its children, so this is today's DOM. */}
+                          {/* C127T0: one sortable context per sub-section
+                              stack inside the list-wide DndContext
+                              (ListDragRoot). Disabled: ListRowStack
+                              renders only its children, so this is
+                              today's DOM. */}
                           <ListRowStack
-                            rows={sub.issues}
-                            draggable={dragEnabled}
-                            onDrop={(a, o) =>
-                              void handleListDrop(sub.issues, a, o)
-                            }
-                            onDragStart={() => setReorderError(null)}
-                            renderOverlayRow={renderOverlayRow}
+                            items={sub.issues.map((i) =>
+                              listSortableId(subKey, i.id),
+                            )}
+                            draggable={dndActive}
                           >
                             <div>
                               {sub.issues.map((issue) => (
@@ -1707,23 +1958,22 @@ export default function Issues() {
                                   {renderListRow(
                                     issue,
                                     indexById.get(issue.id) === selected,
+                                    subKey,
                                   )}
                                 </Fragment>
                               ))}
                             </div>
                           </ListRowStack>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <ListRowStack
-                      rows={g.issues}
-                      draggable={dragEnabled}
-                      onDrop={(a, o) =>
-                        void handleListDrop(g.issues, a, o)
-                      }
-                      onDragStart={() => setReorderError(null)}
-                      renderOverlayRow={renderOverlayRow}
+                      items={g.issues.map((i) =>
+                        listSortableId(g.key, i.id),
+                      )}
+                      draggable={dndActive}
                     >
                       <div>
                         {g.issues.map((issue) => (
@@ -1731,6 +1981,7 @@ export default function Issues() {
                             {renderListRow(
                               issue,
                               indexById.get(issue.id) === selected,
+                              g.key,
                             )}
                           </Fragment>
                         ))}
@@ -1747,20 +1998,18 @@ export default function Issues() {
                     }
                   />
                 </section>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <ListRowStack
-              rows={issues}
-              draggable={dragEnabled}
-              onDrop={(a, o) => void handleListDrop(issues, a, o)}
-              onDragStart={() => setReorderError(null)}
-              renderOverlayRow={renderOverlayRow}
+              items={issues.map((i) => listSortableId("flat", i.id))}
+              draggable={dndActive}
             >
               <div>
                 {issues.map((issue, i) => (
                   <Fragment key={issue.id}>
-                    {renderListRow(issue, i === selected)}
+                    {renderListRow(issue, i === selected, "flat")}
                   </Fragment>
                 ))}
                 {filters.state && (
@@ -1773,6 +2022,7 @@ export default function Issues() {
               </div>
             </ListRowStack>
           )}
+          </ListDragRoot>
           {issuesQuery.hasNextPage && (
             <div className="mt-4 flex justify-center">
               <Button

@@ -17,6 +17,11 @@ import type { DisplayFields } from "./useDisplaySettings";
  * toggles selection: the grip stops propagation exactly like the
  * checkbox and row-menu triggers, and dnd-kit's own handlers are
  * still invoked after the stop.
+ *
+ * C127T0: `sortableId` overrides the dnd-kit id with the stack-scoped
+ * id from listHeaderDrop.listSortableId (a row multi-appears across
+ * epic sections, so the bare row id would collide in the list-wide
+ * context). Defaults to the row id — the C126 shape — when omitted.
  */
 export default function SortableIssueRow({
   issue,
@@ -27,6 +32,7 @@ export default function SortableIssueRow({
   bulkSelected,
   bulkActive,
   onToggleSelect,
+  sortableId,
   children,
 }: {
   issue: Issue;
@@ -37,6 +43,8 @@ export default function SortableIssueRow({
   bulkSelected?: boolean;
   bulkActive?: boolean;
   onToggleSelect?: (checked: boolean) => void;
+  /** Stack-scoped dnd-kit id (C127T0); defaults to the row id. */
+  sortableId?: string;
   /** Nested subtask rows under this parent (C124) — never draggable. */
   children?: ReactNode;
 }) {
@@ -47,7 +55,7 @@ export default function SortableIssueRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: issue.id });
+  } = useSortable({ id: sortableId ?? issue.id });
 
   return (
     <div
