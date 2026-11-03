@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by created-by in the list and board views (cycle 138)**
+
+- Plane's Sub-group by offers Created By (among other
+  dimensions); glance offered none, state, priority, epic,
+  assignees, labels. The Display panel's Sub-group by now
+  includes Created by for the list and the board: one
+  sub-section per creator inside each primary group/column,
+  single-appearance (an issue carries exactly one creator,
+  server-set at create time), labels resolving from the
+  workspace members map (`name ?? email`, never a raw user
+  id), no backend change. Creators with no matching member
+  collapse into one Unknown sub-section, last and hidden
+  when empty. "Show empty groups" cannot synthesize creator
+  sub-sections (no closed set, unlike state groups). The
+  sub-group value is "createdBy", identical to the primary
+  Group by literal, so the same-dimension rule renders it
+  flat under primary Created-by grouping.
+- Drop semantics: none, by design. created_by is immutable,
+  so creator sub-headers carry no drop-target fields and
+  are never drop targets in either view — list headers
+  render as plain divs, board drops resolve by primary
+  column as before. No compound drag ids either:
+  single-appearance means one card copy per column.
+
 **Sub-group by labels in the list and board views (cycle 137)**
 
 - Plane's Sub-group by offers Labels (among other
