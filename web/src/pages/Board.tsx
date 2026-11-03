@@ -118,6 +118,15 @@ import {
   planReleaseDrop,
   planReleaseQuickAdd,
 } from "../components/issue/boardRelease";
+import {
+  buildCreatedByBoardGroups,
+  createdByCardDragId,
+  createdByDragColumnKey,
+  createdByDragIssueId,
+  createdByDropColumnKey,
+  planCreatedByDrop,
+} from "../components/issue/boardCreatedBy";
+import type { CreatorLookupEntry } from "../components/issue/groupByCreatedBy";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import PqlEditor from "../components/issue/PqlEditor";
@@ -132,6 +141,7 @@ import type {
   Issue,
   IssueListResult,
   IssueState,
+  Member,
   Project,
   SubtaskRow,
   Workspace,
@@ -600,12 +610,14 @@ function BoardColumn({
   moduleId,
   cycleId,
   releaseId,
+  creatorId,
   byGroup,
   cardState,
   getCardDragId,
   issues,
   disabled,
   dropDisabled = false,
+  disableQuickAdd = false,
   onQuickCreate,
   onQuickExpand,
   fields,
@@ -650,6 +662,11 @@ function BoardColumn({
    *  (NamedRef carries id + name only) — name + count only.
    *  Ungrouped = Ban, mirroring the cycle header rule. */
   releaseId?: string | null;
+  /** C134T2: created-by-mode columns — creator user id (null =
+   *  Unknown). When set, the header shows NO color dot: members have
+   *  no color — name + count only. Unknown keeps the Ban glyph,
+   *  mirroring the release header rule. */
+  creatorId?: string | null;
   /** C72T1: per-state-group member counts for the epic header breakdown. */
   byGroup?: Record<string, number>;
   /** C72T1: per-card state badge — epic columns no longer imply state, so
@@ -665,6 +682,13 @@ function BoardColumn({
    *  droppable is unregistered (client hint only — the server enforces)
    *  and the column dims while dragging. */
   dropDisabled?: boolean;
+  /** C134T2: true under created-by grouping — per-column quick-add
+   *  is DISABLED there (created_by is server-set to the actor; the
+   *  create form has no creator picker). This disables ONLY the
+   *  header "+" tool and the QuickAdd row: it deliberately does NOT
+   *  touch `disabled`, which also gates card dragging — within-column
+   *  reorder drags must stay enabled under created-by grouping. */
+  disableQuickAdd?: boolean;
   onQuickCreate: (name: string) => Promise<void>;
   onQuickExpand: (name: string) => void;
   fields: DisplayFields;
@@ -755,6 +779,13 @@ function BoardColumn({
           releaseId === null ? (
             <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
           ) : null
+        ) : creatorId !== undefined ? (
+          // C134T2: creator columns render NO color dot (members have
+          // none) — same rule as releases; Unknown keeps the Ban
+          // glyph, creator columns render name + count only.
+          creatorId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : null
         ) : state ? (
           <span
             className={`state-dot ${stateDotClass(state.group)}`}
@@ -783,7 +814,7 @@ function BoardColumn({
             className={boardToolClass}
             title="Add work item"
             aria-label={`Add work item to ${title}`}
-            disabled={disabled}
+            disabled={disabled || disableQuickAdd}
             onClick={() => setAddSignal((n) => n + 1)}
           >
             <Plus className="h-[15px] w-[15px]" aria-hidden />
@@ -882,7 +913,7 @@ function BoardColumn({
         <QuickAdd
           onCreate={onQuickCreate}
           onExpand={onQuickExpand}
-          disabled={disabled}
+          disabled={disabled || disableQuickAdd}
           startSignal={addSignal}
         />
       </div>
@@ -969,6 +1000,28 @@ export default function Board() {
     queryKey: ["states", slug, identifier],
     queryFn: () =>
       api.get<{ states: IssueState[] }>(`${base}/states`).then((d) => d.states),
+  });
+  // C134T2: created-by grouping needs the workspace members to resolve
+  // creator ids to names (label = name ?? email). The board fetched NO
+  // members before this; this query uses the SAME React Query key
+  // ["members", slug] and the SAME endpoint
+  // GET /api/v1/workspaces/:slug/members as T1's list-page query, so
+  // the cache is shared with the list page (navigating list ↔ board
+  // under created-by grouping fires no second members request).
+  // Gated on the grouping (not ungated): the board otherwise loads
+  // exactly as today — no extra request on non-created-by boards.
+  // Member.id IS the user id Issue.created_by references (verified
+  // from service.ListMembers: SELECT u.id::text ... JOIN users u ON
+  // u.id = m.user_id), so the lookup below keys directly on it.
+  const membersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+    enabled: settings.groupBy === "createdBy",
   });
   const boardQuery = useQuery({
     queryKey: issuesKey,
@@ -1184,12 +1237,14 @@ export default function Board() {
     ? (boardIssues.find(
         (i) =>
           i.id ===
-          releaseDragIssueId(
-            cycleDragIssueId(
-              moduleDragIssueId(
-                labelDragIssueId(
-                  assigneeDragIssueId(
-                    epicDragIssueId(subgroupDragIssueId(activeId)),
+          createdByDragIssueId(
+            releaseDragIssueId(
+              cycleDragIssueId(
+                moduleDragIssueId(
+                  labelDragIssueId(
+                    assigneeDragIssueId(
+                      epicDragIssueId(subgroupDragIssueId(activeId)),
+                    ),
                   ),
                 ),
               ),
@@ -1601,6 +1656,31 @@ export default function Board() {
   // C133T2: release columns render one column per release (same rule
   // as cycle columns — the column no longer implies state).
   const groupByReleases = settings.groupBy === "releases";
+  // C134T2: creator columns render one column per creator (same rule
+  // as release columns — the column no longer implies state).
+  const groupByCreatedBy = settings.groupBy === "createdBy";
+  // C134T2: members lookup for creator labels (map user id ->
+  // {name, email}), mirroring T1's list-page membersById. A raw user
+  // id is NEVER a column label: the builder collapses unresolved
+  // creators into Unknown, and the render gates on resolution below.
+  const membersById = useMemo(
+    () =>
+      new Map<string, CreatorLookupEntry>(
+        (membersQuery.data ?? []).map((m) => [
+          m.id,
+          { name: m.name, email: m.email },
+        ]),
+      ),
+    [membersQuery.data],
+  );
+  // Resolved = members data arrived, OR the fetch failed (then the
+  // builder runs with an empty map and unresolved creators honestly
+  // collapse into Unknown — an error state, not a first-paint flash).
+  // While pending, the groups branch below returns NO columns, so
+  // first paint never flashes every column as "Unknown" and never
+  // renders a raw creator id as a label (same contract as T1's list).
+  const groupingMembersReady =
+    membersQuery.data !== undefined || membersQuery.isError;
 
   /** One board column: a state (default), a priority bucket, or a live
    *  epic, depending on the Display panel's Group by setting. */
@@ -1628,6 +1708,9 @@ export default function Board() {
     /** C133T2: release-mode columns — release id (null = Ungrouped).
      *  No color: releases have none, same rule as cycles. */
     releaseId?: string | null;
+    /** C134T2: created-by-mode columns — creator user id (null =
+     *  Unknown). No color: members have none, same rule as releases. */
+    creatorId?: string | null;
     /** C72T1: column key for epic-mode dnd ids. C129T1: same field
      *  carries the assignee column key (member id / "ungrouped").
      *  C130T1: same field carries the label column key
@@ -1635,7 +1718,8 @@ export default function Board() {
      *  module column key (module id / "ungrouped"). C132T2: same
      *  field carries the cycle column key (cycle id / "ungrouped").
      *  C133T2: same field carries the release column key
-     *  (release id / "ungrouped"). */
+     *  (release id / "ungrouped"). C134T2: same field carries the
+     *  creator column key (creator user id / "unknown"). */
     columnKey?: string;
     /** C72T1: per-state-group member counts for the epic header breakdown. */
     byGroup?: Record<string, number>;
@@ -1763,6 +1847,40 @@ export default function Board() {
         issues: g.issues,
         newStateId: g.newStateId,
       }));
+    } else if (groupByCreatedBy) {
+      // C134T2: group by creator (see boardCreatedBy.ts for the
+      // single-appearance + Unknown-last/hidden-when-empty semantics,
+      // built on T1's groupIssuesByCreatedBy). Quick-add is DISABLED
+      // on these columns (rendered via disableQuickAdd below — the
+      // newStateId stamp is carried for shape uniformity only and is
+      // never consumed under created-by grouping). "Show empty
+      // groups" synthesizes no creator columns: the builder only
+      // emits columns for creators on loaded issues, and the
+      // empty-group filter below drops nothing here because no built
+      // column is ever empty. Creator headers render name + count
+      // with NO color dot — members have no color (see BoardColumn's
+      // creatorId branch). Sub-group sections compose via the C123
+      // machinery below exactly as under release columns. While the
+      // members query is pending, NO columns render at all (not
+      // Unknown columns): groupingMembersReady gates here so first
+      // paint never flashes every column as "Unknown" and never
+      // renders a raw creator id as a label. Columns derive from
+      // visible rows only (C72T0 live-membership rule, same as every
+      // dimension) — filters narrow boardIssues before this branch.
+      gs = groupingMembersReady
+        ? buildCreatedByBoardGroups(
+            boardIssues,
+            membersById,
+            states[0]?.id,
+          ).map((g) => ({
+            droppableId: g.droppableId,
+            title: g.title,
+            columnKey: g.columnKey,
+            creatorId: g.creatorId,
+            issues: g.issues,
+            newStateId: g.newStateId,
+          }))
+        : [];
     } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
@@ -1810,6 +1928,9 @@ export default function Board() {
     groupByModules,
     groupByCycles,
     groupByReleases,
+    groupByCreatedBy,
+    groupingMembersReady,
+    membersById,
     settings.groupBy,
     settings.showEmptyGroups,
     states,
@@ -1830,9 +1951,12 @@ export default function Board() {
   // same exemption for cycle columns — cycle drops MOVE without
   // changing state. C133T2: same exemption for release columns —
   // release drops MOVE (single assign) without changing state.
-  // VERIFIED (not assumed): the guard below reads
-  // `settings.groupBy !== "state"` — the hint set is empty in every
-  // non-state grouping, so no code change is needed here for releases.
+  // C134T2: same exemption for creator columns — creator drops are a
+  // deliberate no-op and never change state. VERIFIED (not assumed):
+  // the guard below reads `settings.groupBy !== "state"` — the hint
+  // set is empty in every non-state grouping, so no code change is
+  // needed here for created-by either. Creator columns are NOT state
+  // columns, so no workflow transition guard applies on this path.
   const dropBlocked = useMemo(() => {
     const blocked = new Set<string>();
     if (!workflow || !activeIssue || settings.groupBy !== "state") {
@@ -1863,12 +1987,18 @@ export default function Board() {
    *  column's release (same rule). The
    *  new card appears via query invalidation — no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
+    // C134T2: created-by columns never reach this function — their
+    // QuickAdd is rendered disabled (disableQuickAdd) — but the
+    // bypass below keeps the unreachable path harmless too: no epic
+    // plan runs, and every attach below resolves to null under
+    // created-by grouping, so no creator attach is ever attempted.
     const { stateId, attachEpicId } =
       groupByAssignees ||
       groupByLabels ||
       groupByModules ||
       groupByCycles ||
-      groupByReleases
+      groupByReleases ||
+      groupByCreatedBy
         ? { stateId: group.newStateId, attachEpicId: null as string | null }
         : planEpicQuickAdd(group);
     const { attachAssigneeId } = groupByAssignees
@@ -2013,7 +2143,12 @@ export default function Board() {
    *  Issues.tsx's pendingReleaseRef, C133T1: T1 built the
    *  newIssueReleaseId bridge for this, so NO list-page edits are
    *  needed in T2); Ungrouped release columns carry title + state
-   *  only. */
+   *  only. C134T2: a creator column's expand carries NOTHING for
+   *  created-by — there is no creator field in the bridge (the
+   *  default expand below carries title + state only, no creator
+   *  id), and the column's QuickAdd is disabled so the expand is
+   *  unreachable from a creator column anyway; the global add stays
+   *  available. */
   function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
       state: groupByReleases
@@ -2443,6 +2578,77 @@ export default function Board() {
     write(retry.sortOrder);
   }
 
+  /** C134T2: within-column reorder for creator columns — sort_order
+   *  only, never a re-creator (created_by is immutable). Mirrors
+   *  applyReleaseReorder verbatim with the creator column builder:
+   *  the column's visible sequence is the stack, because a creator
+   *  column mixes states. Gap collapse follows the same rebalance →
+   *  refetch → retry-once pipeline, then an honest error (never a
+   *  loop). `overIssueId` null = dropped on the column itself (append
+   *  at the end). The retry rebuilds with the members lookup so the
+   *  fresh column resolves labels the same way the groups memo does. */
+  async function applyCreatedByReorder(
+    issueId: string,
+    stateId: string,
+    columnKey: string,
+    overIssueId: string | null,
+  ) {
+    const col = groups.find((g) => g.columnKey === columnKey);
+    if (!col) return;
+    const write = (sortOrder: number) => writeDrop(issueId, stateId, sortOrder);
+    if (overIssueId === null) {
+      const without = col.issues.filter((i) => i.id !== issueId);
+      if (without.length === 0) return;
+      if (col.issues[col.issues.length - 1]?.id === issueId) return;
+      const so = midpoint(without[without.length - 1].sort_order, null);
+      if (so === null) return;
+      write(so);
+      return;
+    }
+    const drop = stackDropSortOrder(col.issues, issueId, overIssueId);
+    if (!drop.moved) return;
+    if (drop.sortOrder !== null) {
+      write(drop.sortOrder);
+      return;
+    }
+    // Gap collapsed: rebalance the issue's state column, refetch, and
+    // retry once against the fresh column sequence.
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
+    const fresh = refetched.data ?? [];
+    const freshVisible = splitNestedIssues(
+      fresh,
+      settings.showSubWorkItems,
+    ).visibleIssues;
+    const freshCol = buildCreatedByBoardGroups(
+      freshVisible,
+      membersById,
+      states[0]?.id,
+    ).find((g) => g.columnKey === columnKey);
+    if (!freshCol) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    const retry = stackDropSortOrder(freshCol.issues, issueId, overIssueId);
+    if (!retry.moved || retry.sortOrder === null) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    write(retry.sortOrder);
+  }
+
   function onDragStart(e: DragStartEvent) {
     setBoardError(null);
     setActiveId(String(e.active.id));
@@ -2465,11 +2671,13 @@ export default function Board() {
     const dragged = all.find(
       (i) =>
         i.id ===
-        releaseDragIssueId(
-          cycleDragIssueId(
-            moduleDragIssueId(
-              labelDragIssueId(
-                assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+        createdByDragIssueId(
+          releaseDragIssueId(
+            cycleDragIssueId(
+              moduleDragIssueId(
+                labelDragIssueId(
+                  assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+                ),
               ),
             ),
           ),
@@ -2732,6 +2940,52 @@ export default function Board() {
       return;
     }
 
+    if (groupByCreatedBy) {
+      // C134T2: creator columns — cross-column drops are a DELIBERATE
+      // NO-OP (created_by is immutable; no endpoint reassigns a
+      // creator, so no state change, no membership call, and no sort
+      // PATCH that implies a move is ever issued — the plan is always
+      // noop and this branch returns without touching anything).
+      // Creator drops never change state, so the C68 transition guard
+      // does not apply (verified state-grouping-only, see
+      // dropBlocked). A drag whose source column IS the target column
+      // is a within-column reorder (sort_order only — a reorder never
+      // re-creates), resolved from the dragged card's compound id
+      // BEFORE consulting the drop plan (C131T1 trap: same-column
+      // drags reorder, never no-op as already-member). The over id
+      // may be the column droppable or a card inside it (compound
+      // id); sub-group-section cards unwrap to plain issue ids and
+      // resolve no column, so those drops stay visual-only, as
+      // release drops do under sub-grouping.
+      const columnKey = createdByDropColumnKey(overId);
+      if (columnKey === null) return;
+      const sourceKey = createdByDragColumnKey(activeIssueId);
+      if (sourceKey !== null && sourceKey === columnKey) {
+        if (overId === `createdby:${columnKey}`) {
+          void applyCreatedByReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            null,
+          );
+        } else {
+          void applyCreatedByReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            createdByDragIssueId(overId),
+          );
+        }
+        return;
+      }
+      // The plan is always noop (see planCreatedByDrop): this branch
+      // changes nothing — no state change, no membership call, no
+      // sort PATCH — and returns without falling through to the
+      // state/priority drop handling below.
+      planCreatedByDrop(columnKey, dragged);
+      return;
+    }
+
     if (settings.groupBy === "priority") {
       // Priority columns: dropping changes the issue's priority.
       const m = /^priority:([0-4])$/.exec(overId);
@@ -2801,14 +3055,17 @@ export default function Board() {
         // C132T2: same rule for cycle columns (trivially true under
         // single-appearance, but asserted — never show membership
         // counts as issue counts). C133T2: same rule for release
-        // columns (trivially true under single-appearance).
+        // columns (trivially true under single-appearance). C134T2:
+        // same rule for creator columns (trivially true under
+        // single-appearance).
         count={
           groupByEpic ||
           groupByAssignees ||
           groupByLabels ||
           groupByModules ||
           groupByCycles ||
-          groupByReleases
+          groupByReleases ||
+          groupByCreatedBy
             ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
@@ -2946,6 +3203,7 @@ export default function Board() {
                     moduleId={g.moduleId}
                     cycleId={g.cycleId}
                     releaseId={g.releaseId}
+                    creatorId={g.creatorId}
                     byGroup={g.byGroup}
                     cardState={
                       groupByEpic ||
@@ -2953,7 +3211,8 @@ export default function Board() {
                       groupByLabels ||
                       groupByModules ||
                       groupByCycles ||
-                      groupByReleases
+                      groupByReleases ||
+                      groupByCreatedBy
                         ? (issue) => stateById.get(issue.state_id)
                         : undefined
                     }
@@ -2973,10 +3232,23 @@ export default function Board() {
                                 : groupByReleases && columnKey
                                   ? (issue) =>
                                       releaseCardDragId(columnKey, issue.id)
-                                  : undefined
+                                  : groupByCreatedBy && columnKey
+                                    ? (issue) =>
+                                        createdByCardDragId(
+                                          columnKey,
+                                          issue.id,
+                                        )
+                                    : undefined
                     }
                     issues={g.issues}
                     disabled={!canEdit}
+                    // C134T2: per-column quick-add DISABLED under
+                    // created-by grouping (created_by is server-set;
+                    // the form has no creator picker). Cards stay
+                    // draggable — only the "+" tool and QuickAdd row
+                    // are disabled, so within-column reorder still
+                    // works.
+                    disableQuickAdd={groupByCreatedBy}
                     dropDisabled={dropBlocked.has(g.droppableId)}
                     onQuickCreate={(name) => quickCreate(g, name)}
                     onQuickExpand={(name) => quickExpand(g, name)}
