@@ -741,3 +741,151 @@ describe("board sub-group by created-by (C138T2)", () => {
   });
 });
 
+
+describe("board sub-group by state-groups (C139T2)", () => {
+  // Fixture states: s-todo → "unstarted", s-done → "completed".
+  // Todo column: Unstarted ×2, Unknown ×1 (state-miss);
+  // Done column: Completed ×1, no Unknown.
+  const stateGroupPayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-gone", 3),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4),
+  ];
+
+  it("renders state-group sub-sections inside a column in canonical order, Unknown last", async () => {
+    storeSettings({
+      groupBy: "priority",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: true,
+    });
+    renderBoard(stateGroupPayload);
+    await screen.findByText("Fix login");
+    // Helper synthesizes all six canonical groups (show-empty on),
+    // in backend order, with Unknown last and only where it has
+    // rows. Primary priority (not state) is the vehicle: a
+    // state-miss issue still lands in its priority column, so its
+    // Unknown sub-section renders — under primary state grouping
+    // that issue would belong to no column at all.
+    const SIX = [
+      "stategroup:triage",
+      "stategroup:backlog",
+      "stategroup:unstarted",
+      "stategroup:started",
+      "stategroup:completed",
+      "stategroup:cancelled",
+    ];
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual([...SIX, "stategroup:unknown"]);
+    const unstarted = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "stategroup:unstarted",
+    );
+    expect(unstarted).toHaveLength(1);
+    expect(sectionHeader(unstarted[0])).toEqual(["Unstarted", "2"]);
+    const unknown = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "stategroup:unknown",
+    );
+    expect(unknown).toHaveLength(1);
+    expect(sectionHeader(unknown[0])).toEqual(["Unknown", "1"]);
+    expect(sectionKeyOfCard("i-c")).toBe("stategroup:unknown");
+    expect(sectionKeyOfCard("i-a")).toBe("stategroup:unstarted");
+    expect(sectionKeyOfCard("i-d")).toBe("stategroup:completed");
+    // Never a raw state id as a label.
+    expect(screen.queryByText("s-todo")).toBeNull();
+    expect(screen.queryByText("s-done")).toBeNull();
+    expect(screen.queryByText("s-gone")).toBeNull();
+  });
+
+  it("single-appearance: every card carries a PLAIN issue id, exactly one copy per column", async () => {
+    storeSettings({
+      groupBy: "priority",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: true,
+    });
+    renderBoard(stateGroupPayload);
+    await screen.findByText("Fix login");
+    // State-groups is single-appearance (one state per issue, one
+    // group per state), so unlike epic/assignee/label sub-groups
+    // there is exactly one card copy per column and NO compound
+    // drag id branch: the card's DOM id is the plain issue id.
+    for (const id of ["i-a", "i-b", "i-c", "i-d"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-b")).toBe("stategroup:unstarted");
+  });
+
+  it("hides Unknown when every state resolves, even with show-empty on", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: true,
+    });
+    renderBoard([
+      makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1),
+    ]);
+    await screen.findByText("Fix login");
+    // Six canonical sections (synthesized), no Unknown section.
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual([
+      "stategroup:triage",
+      "stategroup:backlog",
+      "stategroup:unstarted",
+      "stategroup:started",
+      "stategroup:completed",
+      "stategroup:cancelled",
+    ]);
+  });
+
+  it("same-dimension (primary state-groups + sub-group state-groups) renders flat", async () => {
+    storeSettings({
+      groupBy: "stateGroups",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: true,
+    });
+    renderBoard(stateGroupPayload);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("state-group sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: true,
+    });
+    renderBoard(stateGroupPayload);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only.
+    // There is no state-group-move pipeline to resolve: a group
+    // holds several states, so a cross-group drop has no single
+    // target state and state-group sections carry no target fields.
+    // Pointer-drag drop resolution has no simulation in this repo
+    // (C129 precedent); the live browser drag is the plan matrix's
+    // final verifier, as for epic, assignee, and label drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});

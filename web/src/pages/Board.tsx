@@ -1996,7 +1996,7 @@ export default function Board() {
             const sections = buildSubGroupSections(
               g.issues,
               effectiveSubGroup,
-              { states, stateById, membersById },
+              { states, stateById, membersById, stateGroupById },
             );
             return {
               ...g,
