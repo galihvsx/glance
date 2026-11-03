@@ -49,8 +49,10 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   // C134T1: after releases, before none; old options unreordered.
   { value: "createdBy", label: "Created by" },
   // C135T1: after createdBy, before none; old options unreordered.
-  // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by state-group
-  // is a later cycle, not a silent addition).
+  // C139T1: now also in SUB_GROUP_OPTIONS (sub-group by state-group
+  // is this cycle) — same value literal as the primary option, so
+  // the same-dimension rule renders it as "none" under primary
+  // state-groups grouping.
   { value: "stateGroups", label: "State groups" },
   { value: "none", label: "None" },
 ];
@@ -67,6 +69,8 @@ const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
   { value: "labels", label: "Labels" },
   // C138T1: after labels; old options unreordered.
   { value: "createdBy", label: "Created by" },
+  // C139T1: after createdBy; old options unreordered.
+  { value: "stateGroups", label: "State groups" },
 ];
 
 const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [

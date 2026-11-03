@@ -243,6 +243,20 @@ describe("list drag enable rules (C126T0)", () => {
     expect(grips()).toHaveLength(1);
   });
 
+  it("sub-grouped path: grips appear for state grouping with a state-groups sub-group (C139T1)", async () => {
+    // The row still drags by its primary-dimension target only: the
+    // state-group sub-section carries no target field, so no new
+    // drop target exists — the grip is the primary-dimension
+    // reassign source, exactly as for the priority sub-group above.
+    setSettings({ groupBy: "state", subGroupBy: "stateGroups", orderBy: "sort_order" });
+    mockState.issues = [
+      mkIssue("i-a", "ENG-1", "First", "s-todo", 1024),
+    ];
+    renderIssues();
+    await screen.findByText("First");
+    expect(grips()).toHaveLength(1);
+  });
+
   it("nested subtask rows never get a grip, even when drag is enabled", async () => {
     setSettings({ groupBy: "none", subGroupBy: "none", orderBy: "sort_order", showSubWorkItems: true });
     mockState.issues = [
