@@ -122,7 +122,10 @@ const parent = makeIssue("i-p", "ENG-1", "Parent task", "s-todo", 1, {
 const child = makeIssue("i-c", "ENG-2", "Child task", "s-done", 2);
 const nestedPayload = [parent, child];
 
-function renderBoard(issues: Issue[]) {
+function renderBoard(
+  issues: Issue[],
+  members: unknown[] = [],
+) {
   vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces/acme")
       return Promise.resolve({ role: 15 });
@@ -130,7 +133,8 @@ function renderBoard(issues: Issue[]) {
     if (path.endsWith("/states")) return Promise.resolve({ states });
     if (path.endsWith("/workflow"))
       return Promise.resolve({ states, transitions: [] });
-    if (path.endsWith("/members")) return Promise.resolve({ members: [] });
+    if (path.endsWith("/members"))
+      return Promise.resolve({ members });
     if (path.endsWith("/labels")) return Promise.resolve({ labels: [] });
     if (path.endsWith("/estimates")) return Promise.resolve({ estimates: [] });
     if (path.includes("/epics?")) return Promise.resolve({ epics: [] });
@@ -577,6 +581,156 @@ describe("board sub-group by labels (C137T2)", () => {
     // no simulation in this repo (C129 precedent); the live browser
     // drag is the plan matrix's final verifier, as for epic and
     // assignee drops.
+    for (const section of allSections()) {
+      expect(
+        (section.firstElementChild as HTMLElement).querySelector(
+          "button",
+        ),
+      ).toBeNull();
+    }
+  });
+});
+
+describe("board sub-group by created-by (C138T2)", () => {
+  const MEMBERS = [
+    { id: "u-alice", name: "Alice", email: "alice@x.com" },
+    { id: "u-bob", name: null, email: "bob@x.com" },
+  ];
+
+  // Todo column: Alice ×2, Bob ×1, Unknown ×1 (member-miss);
+  // Done column: Bob ×1, no Unknown.
+  const creatorPayload = [
+    makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+      created_by: "u-alice",
+    }),
+    makeIssue("i-b", "ENG-2", "Write docs", "s-todo", 2, {
+      created_by: "u-gone",
+    }),
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      created_by: "u-bob",
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      created_by: "u-bob",
+    }),
+    makeIssue("i-e", "ENG-5", "Second alice task", "s-todo", 5, {
+      created_by: "u-alice",
+    }),
+  ];
+
+  it("renders creator sub-sections inside a column, Unknown last and hidden when empty", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "createdBy",
+      showEmptyGroups: true,
+    });
+    renderBoard(creatorPayload, MEMBERS);
+    await screen.findByText("Fix login");
+    // Todo: Alice, Bob, Unknown (first-appearance order, Unknown
+    // last); Done: Bob only — no Unknown section when empty.
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["u-alice", "u-bob", "createdby:unknown", "u-bob"]);
+    const alice = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "u-alice",
+    );
+    expect(alice).toHaveLength(1);
+    expect(sectionHeader(alice[0])).toEqual(["Alice", "2"]);
+    // Label = name ?? email: Bob has no name, so his email labels
+    // the section — never the raw user id.
+    const bob = allSections().filter(
+      (s) => s.getAttribute("data-sub-group-section") === "u-bob",
+    );
+    expect(sectionHeader(bob[0])).toEqual(["bob@x.com", "1"]);
+    const unknown = allSections().filter(
+      (s) =>
+        s.getAttribute("data-sub-group-section") ===
+        "createdby:unknown",
+    );
+    expect(unknown).toHaveLength(1);
+    expect(sectionHeader(unknown[0])).toEqual(["Unknown", "1"]);
+    expect(sectionKeyOfCard("i-b")).toBe("createdby:unknown");
+    expect(screen.queryByText("u-gone")).toBeNull();
+    expect(screen.queryByText("u-alice")).toBeNull();
+    expect(screen.queryByText("u-bob")).toBeNull();
+  });
+
+  it("single-appearance: every card carries a PLAIN issue id, exactly one copy per column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "createdBy",
+      showEmptyGroups: true,
+    });
+    renderBoard(creatorPayload, MEMBERS);
+    await screen.findByText("Fix login");
+    // Created-by is single-appearance (one creator per issue), so
+    // unlike epic/assignee/label sub-groups there is exactly one
+    // card copy per column and NO compound drag id branch: the
+    // card's DOM id is the plain issue id, not a
+    // `subgroup-card:<section>:<issue>` compound.
+    for (const id of ["i-a", "i-b", "i-c", "i-d", "i-e"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-a")).toBe("u-alice");
+    expect(sectionKeyOfCard("i-c")).toBe("u-bob");
+    expect(sectionKeyOfCard("i-d")).toBe("u-bob");
+    expect(sectionKeyOfCard("i-e")).toBe("u-alice");
+  });
+
+  it("hides Unknown when every creator matches a member", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "createdBy",
+      showEmptyGroups: true,
+    });
+    renderBoard(
+      [makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+        created_by: "u-alice",
+      })],
+      MEMBERS,
+    );
+    await screen.findByText("Fix login");
+    expect(
+      allSections().map((s) =>
+        s.getAttribute("data-sub-group-section"),
+      ),
+    ).toEqual(["u-alice"]);
+  });
+
+  it("same-dimension (primary created-by + sub-group created-by) renders flat", async () => {
+    storeSettings({
+      groupBy: "createdBy",
+      subGroupBy: "createdBy",
+      showEmptyGroups: true,
+    });
+    renderBoard(creatorPayload, MEMBERS);
+    await screen.findByText("Fix login");
+    expect(allSections()).toHaveLength(0);
+    expect(
+      document.querySelector('[data-board-card="i-a"]'),
+    ).not.toBeNull();
+  });
+
+  it("creator sub-sections are visual only: a sub-section drop resolves no column", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "createdBy",
+      showEmptyGroups: true,
+    });
+    renderBoard(creatorPayload, MEMBERS);
+    await screen.findByText("Fix login");
+    // Sub-headers are headers only (title + count spans, no tools):
+    // the column header "+" is the only quick-add, and sections are
+    // never droppables — BoardColumn registers exactly one droppable,
+    // the column itself, so a drop resolves by primary column only.
+    // There is no creator-move pipeline to resolve: created_by is
+    // immutable, so creator sub-sections carry no target fields.
+    // Pointer-drag drop resolution has no simulation in this repo
+    // (C129 precedent); the live browser drag is the plan matrix's
+    // final verifier, as for epic, assignee, and label drops.
     for (const section of allSections()) {
       expect(
         (section.firstElementChild as HTMLElement).querySelector(
