@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group headers as drop targets in the list view (cycle 127)**
+
+- Completing the cycle 125→126 drag story, a list row can now be
+  dragged onto a group or sub-group header to reassign exactly
+  that header's dimension: state → one `PATCH {state_id,
+  sort_order}`; priority → one `PATCH {priority, sort_order}`;
+  epic → add-before-remove membership calls + `PATCH
+  {sort_order}`; epic Ungrouped → remove all live memberships.
+  The row lands at the bottom of the target section (max loaded
+  `sort_order` + 1024). Dropping on a row's own group, or a group
+  it already belongs to, writes nothing. Reassign drag is a second
+  drag mode, independent of cycle 126's reorder gate: it holds
+  whenever grouping is active and not PQL mode, under any order
+  by. The state-Ungrouped sub-header is never a drop target (it
+  names no assignable value). One list-wide dnd-kit context owns
+  headers + stacks (per-section contexts cannot receive
+  cross-group drops); per-stack isolation is preserved by
+  dispatch, so cycle 126 within-stack reorder is unchanged, and
+  cross-stack row drops stay no-ops. No backend change: all
+  endpoints already existed. Keyboard drag to a header is not
+  supported this cycle (keyboard users keep the row-menu/peek
+  paths); the grip handle label still says "reorder".
+
 **Drag-to-reorder rows in the list view (cycle 126)**
 
 - List rows are now draggable, completing cycle 125's Manual-rank
