@@ -498,7 +498,7 @@ describe("dispatchListDragEnd", () => {
     expect(onHeaderDrop).not.toHaveBeenCalled();
   });
 
-  it("row drop with reorder disabled is a silent no-op (priority/epic grouping)", () => {
+  it("row drop with reorder disabled is a silent no-op (non-Manual order / PQL mode)", () => {
     const onRowDrop = vi.fn();
     dispatchListDragEnd({
       ...base,
@@ -527,6 +527,61 @@ describe("dispatchListDragEnd", () => {
       kind: "state",
       stateId: "s-doing",
     });
+  });
+
+  it("C128T0 epic multi-appearance: dragging one appearance reorders within its own stack only", () => {
+    // Issue "m" is a member of two epics, so it appears once in
+    // each epic stack under distinct stack-scoped sortable ids.
+    // Dispatch reads the appearance → issue map, never parses an
+    // id: the epic-1 appearance routes to the epic-1 stack's rows
+    // with plain row ids, and the same appearance over an epic-2
+    // row is a cross-stack no-op.
+    const epic1 = mkStack("epic:e1", [mkIssue("a"), mkIssue("m")], "e1");
+    const epic2 = mkStack("epic:e2", [mkIssue("m"), mkIssue("z")], "e2");
+    const maps = new Map<string, ListDragRowRef>([
+      ["row:epic:e1:a", mkRef("a", mkIssue("a"), epic1)],
+      ["row:epic:e1:m", mkRef("m", mkIssue("m"), epic1)],
+      ["row:epic:e2:m", mkRef("m", mkIssue("m"), epic2)],
+      ["row:epic:e2:z", mkRef("z", mkIssue("z"), epic2)],
+    ]);
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:epic:e1:m",
+      overId: "row:epic:e1:a",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).toHaveBeenCalledWith(epic1.rows, "m", "a");
+    onRowDrop.mockClear();
+    dispatchListDragEnd({
+      sortableMap: maps,
+      headerMap: new Map(),
+      activeSortableId: "row:epic:e1:m",
+      overId: "row:epic:e2:z",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+  });
+
+  it("C128T0: same-stack row drop routes to reorder when the gate admits priority/epic grouping", () => {
+    // The gate itself lives in listReorder.isListDragEnabled; dispatch
+    // only consumes its boolean, so this pins the contract: gate true
+    // under priority/epic grouping → row drops reach the pipeline.
+    const onRowDrop = vi.fn();
+    dispatchListDragEnd({
+      ...base,
+      activeSortableId: "row:s-todo:a",
+      overId: "row:s-todo:b",
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop: vi.fn(),
+    });
+    expect(onRowDrop).toHaveBeenCalledWith(stackA.rows, "a", "b");
   });
 
   it("null over, same id, and unknown ids are silent no-ops", () => {
