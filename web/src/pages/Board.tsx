@@ -85,6 +85,16 @@ import {
   planLabelDrop,
   planLabelQuickAdd,
 } from "../components/issue/boardLabel";
+import {
+  buildModuleBoardGroups,
+  moduleCardDragId,
+  moduleDragColumnKey,
+  moduleDragIssueId,
+  moduleDropColumnKey,
+  planBoardModuleQuickExpand,
+  planModuleDrop,
+  planModuleQuickAdd,
+} from "../components/issue/boardModule";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import PqlEditor from "../components/issue/PqlEditor";
@@ -564,6 +574,7 @@ function BoardColumn({
   assigneeId,
   labelId,
   labelColor,
+  moduleId,
   byGroup,
   cardState,
   getCardDragId,
@@ -599,6 +610,11 @@ function BoardColumn({
   labelId?: string | null;
   /** C130T1: label-mode columns — the label's color from the row. */
   labelColor?: string;
+  /** C131T1: module-mode columns — module id (null = Ungrouped).
+   *  When set, the header shows NO color dot: modules have no color
+   *  (NamedRef carries id + name only) — name + count only.
+   *  Ungrouped = Ban, mirroring the label/assignee header rule. */
+  moduleId?: string | null;
   /** C72T1: per-state-group member counts for the epic header breakdown. */
   byGroup?: Record<string, number>;
   /** C72T1: per-card state badge — epic columns no longer imply state, so
@@ -683,6 +699,13 @@ function BoardColumn({
               aria-hidden="true"
             />
           )
+        ) : moduleId !== undefined ? (
+          // C131T1: module columns render NO color dot (modules have
+          // none); Ungrouped keeps the Ban glyph, member columns
+          // render name + count only.
+          moduleId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : null
         ) : state ? (
           <span
             className={`state-dot ${stateDotClass(state.group)}`}
@@ -1112,9 +1135,11 @@ export default function Board() {
     ? (boardIssues.find(
         (i) =>
           i.id ===
-          labelDragIssueId(
-            assigneeDragIssueId(
-              epicDragIssueId(subgroupDragIssueId(activeId)),
+          moduleDragIssueId(
+            labelDragIssueId(
+              assigneeDragIssueId(
+                epicDragIssueId(subgroupDragIssueId(activeId)),
+              ),
             ),
           ),
       ) ?? null)
@@ -1318,6 +1343,61 @@ export default function Board() {
     labelAttachMutation.mutate({ issueId, labelId });
   }
 
+  /** C131T1: module-column drops attach the issue to the target
+   *  module (the module membership endpoint — idempotent,
+   *  multi-module aware, never detaches other modules). */
+  const moduleAttachMutation = useMutation({
+    mutationFn: ({
+      issueId,
+      moduleId,
+    }: {
+      issueId: string;
+      moduleId: string;
+    }) =>
+      api.post(
+        `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+        { issue_ids: [issueId] },
+      ),
+    onError: (e) => {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to attach issue to module",
+      );
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    },
+  });
+
+  /** Optimistic attach: the card appears in the target module column
+   *  immediately; the refetch on settle corrects any drift. */
+  function attachToModule(
+    issueId: string,
+    moduleId: string,
+    moduleName: string,
+  ) {
+    setBoardError(null);
+    queryClient.setQueryData<Issue[]>(displayKey, (old) =>
+      old?.map((i) =>
+        i.id === issueId
+          ? {
+              ...i,
+              project_structure: {
+                ...(i.project_structure ?? { modules: [] }),
+                modules: [
+                  ...(i.project_structure?.modules ?? []),
+                  { id: moduleId, name: moduleName },
+                ],
+              },
+            }
+          : i,
+      ),
+    );
+    moduleAttachMutation.mutate({ issueId, moduleId });
+  }
+
   /** Optimistic attach: the card appears in the target epic column
    *  immediately; the refetch on settle corrects any drift. */
   function attachToEpic(issueId: string, epicId: string, epicName: string) {
@@ -1348,6 +1428,9 @@ export default function Board() {
   // C130T1: label columns render one column per label (same rule
   // as assignee columns — the column no longer implies state).
   const groupByLabels = settings.groupBy === "labels";
+  // C131T1: module columns render one column per module (same rule
+  // as label columns — the column no longer implies state).
+  const groupByModules = settings.groupBy === "modules";
 
   /** One board column: a state (default), a priority bucket, or a live
    *  epic, depending on the Display panel's Group by setting. */
@@ -1366,10 +1449,14 @@ export default function Board() {
     labelId?: string | null;
     /** C130T1: label-mode columns — the label's color from the row. */
     labelColor?: string;
+    /** C131T1: module-mode columns — module id (null = Ungrouped).
+     *  No color: modules have none. */
+    moduleId?: string | null;
     /** C72T1: column key for epic-mode dnd ids. C129T1: same field
      *  carries the assignee column key (member id / "ungrouped").
      *  C130T1: same field carries the label column key
-     *  (label id / "ungrouped"). */
+     *  (label id / "ungrouped"). C131T1: same field carries the
+     *  module column key (module id / "ungrouped"). */
     columnKey?: string;
     /** C72T1: per-state-group member counts for the epic header breakdown. */
     byGroup?: Record<string, number>;
@@ -1439,6 +1526,24 @@ export default function Board() {
         issues: g.issues,
         newStateId: g.newStateId,
       }));
+    } else if (groupByModules) {
+      // C131T1: group by module membership (see boardModule.ts for
+      // the multi-appearance + Ungrouped-last semantics, built on
+      // T0's groupIssuesByModule). Quick-add stamps the first sorted
+      // state, mirroring the label columns. "Show empty groups"
+      // synthesizes no module columns: the builder only emits columns
+      // for modules on loaded issues, and the empty-group filter below
+      // drops nothing here because no built column is ever empty.
+      // Module headers render name + count with NO color dot —
+      // modules have no color (see BoardColumn's moduleId branch).
+      gs = buildModuleBoardGroups(boardIssues, states[0]?.id).map((g) => ({
+        droppableId: g.droppableId,
+        title: g.title,
+        columnKey: g.columnKey,
+        moduleId: g.moduleId,
+        issues: g.issues,
+        newStateId: g.newStateId,
+      }));
     } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
@@ -1483,6 +1588,7 @@ export default function Board() {
     groupByEpic,
     groupByAssignees,
     groupByLabels,
+    groupByModules,
     settings.groupBy,
     settings.showEmptyGroups,
     states,
@@ -1498,7 +1604,8 @@ export default function Board() {
   // drops re-stamp priority, also exempt). C129T1: same exemption for
   // assignee columns — assignee drops attach without changing state.
   // C130T1: same exemption for label columns — label drops attach
-  // without changing state.
+  // without changing state. C131T1: same exemption for module
+  // columns — module drops attach without changing state.
   // Client hint only; the server enforces on PATCH.
   const dropBlocked = useMemo(() => {
     const blocked = new Set<string>();
@@ -1522,11 +1629,13 @@ export default function Board() {
    *  create, no attach). C129T1: an assignee column's quick-add also
    *  attaches the new issue to the column's member (same rule).
    *  C130T1: a label column's quick-add also attaches the new issue
-   *  to the column's label (same rule). The
+   *  to the column's label (same rule). C131T1: a module column's
+   *  quick-add also attaches the new issue to the column's module
+   *  (same rule). The
    *  new card appears via query invalidation — no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
     const { stateId, attachEpicId } =
-      groupByAssignees || groupByLabels
+      groupByAssignees || groupByLabels || groupByModules
         ? { stateId: group.newStateId, attachEpicId: null as string | null }
         : planEpicQuickAdd(group);
     const { attachAssigneeId } = groupByAssignees
@@ -1535,6 +1644,9 @@ export default function Board() {
     const { attachLabelId } = groupByLabels
       ? planLabelQuickAdd(group)
       : { attachLabelId: null as string | null };
+    const { attachModuleId } = groupByModules
+      ? planModuleQuickAdd(group)
+      : { attachModuleId: null as string | null };
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
       ...(stateId ? { state_id: stateId } : {}),
@@ -1584,6 +1696,23 @@ export default function Board() {
         );
       }
     }
+    if (attachModuleId) {
+      try {
+        await api.post(
+          `${base}/modules/${encodeURIComponent(attachModuleId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        // Same rule as the label path: the issue exists, only the
+        // attach failed — surface it and let the invalidation below
+        // show the card in Ungrouped.
+        setBoardError(
+          e instanceof ApiError
+            ? e.message
+            : "Failed to attach issue to module",
+        );
+      }
+    }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
     await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
   }
@@ -1597,12 +1726,18 @@ export default function Board() {
    *  its label id, which the list page attaches after create the same
    *  way (its dialog has no label field either — see Issues.tsx's
    *  pendingLabelRef, C130T0); Ungrouped label columns carry title +
+   *  state only. C131T1: a module column also carries its module id,
+   *  which the list page attaches after create the same way (its
+   *  dialog has no module field either — see Issues.tsx's
+   *  pendingModuleRef, C131T0); Ungrouped module columns carry title +
    *  state only. */
   function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
-      state: groupByLabels
-        ? planBoardLabelQuickExpand(group, name)
-        : planBoardQuickExpand(group, name),
+      state: groupByModules
+        ? planBoardModuleQuickExpand(group, name)
+        : groupByLabels
+          ? planBoardLabelQuickExpand(group, name)
+          : planBoardQuickExpand(group, name),
     });
   }
 
@@ -1817,6 +1952,74 @@ export default function Board() {
     write(retry.sortOrder);
   }
 
+  /** C131T1: within-column reorder for module columns — sort_order
+   *  only, never a re-module. Mirrors applyLabelReorder verbatim
+   *  with the module column builder: the column's visible sequence is
+   *  the stack, because a module column mixes states. Gap collapse
+   *  follows the same rebalance → refetch → retry-once pipeline, then
+   *  an honest error (never a loop). `overIssueId` null = dropped on
+   *  the column itself (append at the end). */
+  async function applyModuleReorder(
+    issueId: string,
+    stateId: string,
+    columnKey: string,
+    overIssueId: string | null,
+  ) {
+    const col = groups.find((g) => g.columnKey === columnKey);
+    if (!col) return;
+    const write = (sortOrder: number) => writeDrop(issueId, stateId, sortOrder);
+    if (overIssueId === null) {
+      const without = col.issues.filter((i) => i.id !== issueId);
+      if (without.length === 0) return;
+      if (col.issues[col.issues.length - 1]?.id === issueId) return;
+      const so = midpoint(without[without.length - 1].sort_order, null);
+      if (so === null) return;
+      write(so);
+      return;
+    }
+    const drop = stackDropSortOrder(col.issues, issueId, overIssueId);
+    if (!drop.moved) return;
+    if (drop.sortOrder !== null) {
+      write(drop.sortOrder);
+      return;
+    }
+    // Gap collapsed: rebalance the issue's state column, refetch, and
+    // retry once against the fresh column sequence.
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
+    const fresh = refetched.data ?? [];
+    const freshVisible = splitNestedIssues(
+      fresh,
+      settings.showSubWorkItems,
+    ).visibleIssues;
+    const freshCol = buildModuleBoardGroups(
+      freshVisible,
+      states[0]?.id,
+    ).find((g) => g.columnKey === columnKey);
+    if (!freshCol) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    const retry = stackDropSortOrder(freshCol.issues, issueId, overIssueId);
+    if (!retry.moved || retry.sortOrder === null) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    write(retry.sortOrder);
+  }
+
   function onDragStart(e: DragStartEvent) {
     setBoardError(null);
     setActiveId(String(e.active.id));
@@ -1839,7 +2042,9 @@ export default function Board() {
     const dragged = all.find(
       (i) =>
         i.id ===
-        labelDragIssueId(assigneeDragIssueId(epicDragIssueId(activeIssueId))),
+        moduleDragIssueId(
+          labelDragIssueId(assigneeDragIssueId(epicDragIssueId(activeIssueId))),
+        ),
     );
     if (!dragged) return;
 
@@ -1946,6 +2151,50 @@ export default function Board() {
       return;
     }
 
+    if (groupByModules) {
+      // C131T1: module columns — cross-column drops ATTACH ONLY
+      // (idempotent, multi-module aware; Ungrouped drops are a
+      // deliberate no-op). Module drops never change state, so the
+      // C68 transition guard does not apply. A drag whose source
+      // column IS the target column is a within-column reorder
+      // (sort_order only — a reorder never re-modules), resolved
+      // from the dragged card's compound id. The over id may be the
+      // column droppable or a card inside it (compound id);
+      // sub-group-section cards unwrap to plain issue ids and resolve
+      // no column, so those drops stay visual-only, as label drops
+      // do under sub-grouping.
+      const columnKey = moduleDropColumnKey(overId);
+      if (columnKey === null) return;
+      const sourceKey = moduleDragColumnKey(activeIssueId);
+      if (sourceKey !== null && sourceKey === columnKey) {
+        if (overId === `module:${columnKey}`) {
+          void applyModuleReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            null,
+          );
+        } else {
+          void applyModuleReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            moduleDragIssueId(overId),
+          );
+        }
+        return;
+      }
+      const plan = planModuleDrop(columnKey, dragged);
+      if (plan.kind === "noop") return;
+      const target = groups.find((g) => g.columnKey === columnKey);
+      attachToModule(
+        dragged.id,
+        plan.moduleId,
+        target?.title ?? plan.moduleId,
+      );
+      return;
+    }
+
     if (settings.groupBy === "priority") {
       // Priority columns: dropping changes the issue's priority.
       const m = /^priority:([0-4])$/.exec(overId);
@@ -2011,9 +2260,9 @@ export default function Board() {
         // C72T1: under multi-appearance the column memberships exceed the
         // issue count — the header shows UNIQUE issues, not memberships.
         // C129T1: same rule for assignee columns. C130T1: same rule
-        // for label columns.
+        // for label columns. C131T1: same rule for module columns.
         count={
-          groupByEpic || groupByAssignees || groupByLabels
+          groupByEpic || groupByAssignees || groupByLabels || groupByModules
             ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
@@ -2148,9 +2397,13 @@ export default function Board() {
                     assigneeId={g.assigneeId}
                     labelId={g.labelId}
                     labelColor={g.labelColor}
+                    moduleId={g.moduleId}
                     byGroup={g.byGroup}
                     cardState={
-                      groupByEpic || groupByAssignees || groupByLabels
+                      groupByEpic ||
+                      groupByAssignees ||
+                      groupByLabels ||
+                      groupByModules
                         ? (issue) => stateById.get(issue.state_id)
                         : undefined
                     }
@@ -2161,7 +2414,10 @@ export default function Board() {
                           ? (issue) => assigneeCardDragId(columnKey, issue.id)
                           : groupByLabels && columnKey
                             ? (issue) => labelCardDragId(columnKey, issue.id)
-                            : undefined
+                            : groupByModules && columnKey
+                              ? (issue) =>
+                                  moduleCardDragId(columnKey, issue.id)
+                              : undefined
                     }
                     issues={g.issues}
                     disabled={!canEdit}
