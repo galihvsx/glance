@@ -1873,10 +1873,13 @@ export default function Issues() {
   // assignee appearance mirrors it — the primary assignee group,
   // else none. C136T1: the assignee sub-section joins it — the
   // primary assignee group, else the assignee sub-section, else none
-  // (sub-sections ARE assignee now; label/module/cycle/release stay
+  // (sub-sections ARE assignee now; module/cycle/release stay
   // primary-only).
   // C130T0: the label appearance mirrors it — the primary label
-  // group, else none (sub-sections are never labels this cycle).
+  // group, else none. C137T1: the label sub-section joins it — the
+  // primary label group, else the label sub-section, else none
+  // (sub-sections ARE labels now, as the third admitted sub-source
+  // dimension).
   // C131T0: the module appearance mirrors it — the primary module
   // group, else none (sub-sections are never modules this cycle).
   // C132T1: the cycle appearance mirrors it — the primary cycle
@@ -1985,9 +1988,11 @@ export default function Issues() {
             // C136T1: assignee sub-sections mirror epic — the
             // sub-section's target is the stack's source assignee
             // (Ungrouped sub-section → null), falling back to the
-            // primary assignee group otherwise. Sub-sections are
-            // never label, module, cycle, or release, so those
-            // sources stay the primary group, else none.
+            // primary assignee group otherwise. C137T1: label
+            // sub-sections mirror assignee the same way — labels
+            // are the third admitted sub-source dimension.
+            // Sub-sections are never module, cycle, or release,
+            // so those sources stay the primary group, else none.
             const sourceAssigneeId =
               primaryAssigneeId ??
               (effectiveSubGroup === "assignees"
@@ -1995,12 +2000,19 @@ export default function Issues() {
                   ? null
                   : (sub.targetAssigneeId ?? null)
                 : null);
+            const sourceLabelId =
+              primaryLabelId ??
+              (effectiveSubGroup === "labels"
+                ? sub.isUngroupedLabel
+                  ? null
+                  : (sub.targetLabelId ?? null)
+                : null);
             registerStack(
               subKey,
               sub.issues,
               sourceEpicId,
               sourceAssigneeId,
-              primaryLabelId,
+              sourceLabelId,
               primaryModuleId,
               primaryCycleId,
               primaryReleaseId,

@@ -209,7 +209,7 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     renderPanelWithUpdate();
     const { group, radio } = subGroupRadios();
     expect(group).toBeInTheDocument();
-    for (const label of ["None", "State", "Priority", "Epic", "Assignees"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels"]) {
       expect(radio(label)).toBeInTheDocument();
     }
     expect(radio("None")).toHaveAttribute("aria-checked", "true");
@@ -238,13 +238,30 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     expect(radio("None")).not.toBeDisabled();
   });
 
+  it("disables the Labels sub-option under primary Labels grouping (C137T1)", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "labels",
+    });
+    const { radio } = subGroupRadios();
+    expect(radio("Labels")).toBeDisabled();
+    expect(radio("Epic")).not.toBeDisabled();
+    expect(radio("None")).not.toBeDisabled();
+  });
+
+  it("selecting Labels reports subGroupBy labels (C137T1)", () => {
+    const { onUpdate } = renderPanelWithUpdate();
+    fireEvent.click(subGroupRadios().radio("Labels"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "labels" });
+  });
+
   it("disables the whole control with a hint when groupBy is none", () => {
     renderPanelWithUpdate({
       ...DEFAULT_DISPLAY_SETTINGS,
       groupBy: "none",
     });
     const { radio } = subGroupRadios();
-    for (const label of ["None", "State", "Priority", "Epic", "Assignees"]) {
+    for (const label of ["None", "State", "Priority", "Epic", "Assignees", "Labels"]) {
       expect(radio(label)).toBeDisabled();
     }
     expect(screen.getByText("Choose a Group by first")).toBeInTheDocument();
@@ -527,7 +544,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("does NOT add Created by to the Sub-group by options", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels"]);
     expect(subLabels).not.toContain("Created by");
   });
 
@@ -547,7 +564,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("does NOT add State groups to the Sub-group by options", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels"]);
     expect(subLabels).not.toContain("State groups");
   });
 });
