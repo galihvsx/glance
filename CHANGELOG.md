@@ -5,6 +5,33 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by assignees in the list and board views (cycle 136)**
+
+- Plane's Sub-group by offers Assignees (among other
+  dimensions); glance offered none, state, priority, epic.
+  The Display panel's Sub-group by now includes Assignees
+  for the list and the board: one sub-section per assignee
+  inside each primary group/column, multi-appearance (an
+  issue assigned to N people appears under every assignee's
+  sub-section — dropping one side would silently hide work
+  from a person's view), names riding the row with no extra
+  fetch, no backend change. Issues with no assignees land in
+  an Ungrouped sub-section, last and hidden when empty.
+  "Show empty groups" cannot synthesize assignee sub-sections
+  (no closed set, unlike state groups). The sub-group value
+  is "assignees", identical to the primary Group by literal,
+  so the same-dimension rule renders it flat under primary
+  Assignees grouping.
+- Drop semantics diverge by view, by established precedent:
+  list assignee sub-headers ARE drop targets and move the
+  sub-dimension only (the existing assignee-move /
+  assignee-ungroup pipeline — add-before-remove + sort PATCH,
+  never the primary group); board sub-sections are visual
+  only (drops resolve by primary column, as epic sub-group
+  drops do), with compound card drag ids keeping
+  multi-appearance copies distinct inside a column. No
+  per-sub-section quick-add in either view.
+
 **Group by state groups in the list and board views (cycle 135)**
 
 - Plane's Group by offers State groups (among other dimensions);
