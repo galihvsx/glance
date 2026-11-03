@@ -29,6 +29,14 @@ export interface SubGroupSection {
    *  groupByEpic, for the shared breakdown bar). */
   byGroup?: Record<string, number>;
   issues: Issue[];
+  /** C127T0: explicit drop-target values for this section's header
+   *  (see listHeaderDrop.toHeaderTarget). A section with none of
+   *  these names no assignable value — today only the state-Ungrouped
+   *  section — and its header is never droppable. */
+  targetStateId?: string;
+  targetPriority?: number;
+  targetEpicId?: string;
+  isUngroupedEpic?: boolean;
 }
 
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];
@@ -99,6 +107,7 @@ export function buildSubGroupSections(
       color: s.color,
       stateGroup: s.group,
       issues: byState.get(s.id) ?? [],
+      targetStateId: s.id,
     }));
     if (ungrouped.length > 0) {
       sections.push({
@@ -114,10 +123,13 @@ export function buildSubGroupSections(
       key: `priority:${p}`,
       title: priorityLabel(p),
       issues: issues.filter((i) => i.priority === p),
+      targetPriority: p,
     }));
   }
   // epic: reuse groupByEpic — multi-appearance, archived exclusion,
-  // Ungrouped last (hidden when empty).
+  // Ungrouped last (hidden when empty). The epic id IS the key
+  // verbatim; the target field is mapped once here, never parsed
+  // from the key at drop time.
   return groupIssuesByEpic(
     issues,
     (i) => stateById.get(i.state_id)?.group,
@@ -126,5 +138,7 @@ export function buildSubGroupSections(
     title: g.title,
     byGroup: g.byGroup,
     issues: g.issues,
+    targetEpicId: g.isUngrouped ? undefined : g.key,
+    isUngroupedEpic: g.isUngrouped,
   }));
 }
