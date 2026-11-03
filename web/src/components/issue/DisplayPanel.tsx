@@ -71,6 +71,13 @@ const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
   { value: "createdBy", label: "Created by" },
   // C139T1: after createdBy; old options unreordered.
   { value: "stateGroups", label: "State groups" },
+  // C140T1: after stateGroups; old options unreordered. The disable
+  // path below disables by value (o.value === settings.groupBy),
+  // so it covers these with no change — same value literals as the
+  // primary options, so the same-dimension rule applies.
+  { value: "cycles", label: "Cycles" },
+  { value: "modules", label: "Modules" },
+  { value: "releases", label: "Releases" },
 ];
 
 const ORDER_OPTIONS: { value: OrderBy; label: string }[] = [

@@ -8,7 +8,7 @@
 // by their aria-label attribute — the value the component sets —
 // rather than by computed accessible name.
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import DisplayPanel from "./DisplayPanel";
@@ -89,8 +89,9 @@ describe("DisplayPanel (C121T1)", () => {
     for (const row of NEW_ROWS) {
       // C133T1: "Releases" now appears twice — the field row (above)
       // and the new Group-by radio option — so it needs getAllByText.
+      // C140T1: three times — the Sub-group by option joins them.
       if (row.label === "Releases") {
-        expect(screen.getAllByText("Releases")).toHaveLength(2);
+        expect(screen.getAllByText("Releases")).toHaveLength(3);
       } else {
         expect(screen.getByText(row.label)).toBeInTheDocument();
       }
@@ -275,6 +276,55 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     expect(radio("State groups")).toBeDisabled();
     expect(radio("Created by")).not.toBeDisabled();
     expect(radio("None")).not.toBeDisabled();
+  });
+
+  it("renders Cycles, Modules, Releases sub-options after State groups, old options unreordered (C140T1)", () => {
+    renderPanelWithUpdate();
+    const { group } = subGroupRadios();
+    const labels = Array.from(
+      group.querySelectorAll('[role="radio"]'),
+    ).map((el) => el.textContent);
+    expect(labels).toEqual([
+      "None",
+      "State",
+      "Priority",
+      "Epic",
+      "Assignees",
+      "Labels",
+      "Created by",
+      "State groups",
+      "Cycles",
+      "Modules",
+      "Releases",
+    ]);
+  });
+
+  it("disables each new sub-option under its own primary grouping (C140T1)", () => {
+    for (const [groupBy, label] of [
+      ["cycles", "Cycles"],
+      ["modules", "Modules"],
+      ["releases", "Releases"],
+    ] as const) {
+      renderPanelWithUpdate({
+        ...DEFAULT_DISPLAY_SETTINGS,
+        groupBy,
+      });
+      const { radio } = subGroupRadios();
+      expect(radio(label)).toBeDisabled();
+      expect(radio("None")).not.toBeDisabled();
+      expect(radio("State")).not.toBeDisabled();
+      cleanup();
+    }
+  });
+
+  it("selecting Cycles, Modules, Releases reports the matching subGroupBy (C140T1)", () => {
+    const { onUpdate } = renderPanelWithUpdate();
+    fireEvent.click(subGroupRadios().radio("Cycles"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "cycles" });
+    fireEvent.click(subGroupRadios().radio("Modules"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "modules" });
+    fireEvent.click(subGroupRadios().radio("Releases"));
+    expect(onUpdate).toHaveBeenCalledWith({ subGroupBy: "releases" });
   });
 
   it("selecting Created by reports subGroupBy createdBy (C138T1)", () => {
@@ -572,7 +622,8 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("adds Created by to the Sub-group by options after Labels — old options unreordered (C138T1)", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups"]);
+    // C140T1: Cycles, Modules, Releases appended after State groups.
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups", "Cycles", "Modules", "Releases"]);
     const idx = (name: string) => subLabels.indexOf(name);
     expect(idx("Created by")).toBeGreaterThan(idx("Labels"));
   });
@@ -593,7 +644,8 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("adds State groups to the Sub-group by options after Created by — old options unreordered (C139T1)", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups"]);
+    // C140T1: Cycles, Modules, Releases appended after State groups.
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups", "Cycles", "Modules", "Releases"]);
     const idx = (name: string) => subLabels.indexOf(name);
     expect(idx("State groups")).toBeGreaterThan(idx("Created by"));
   });

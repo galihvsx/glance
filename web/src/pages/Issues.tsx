@@ -1890,10 +1890,30 @@ export default function Issues() {
   // dimension).
   // C131T0: the module appearance mirrors it — the primary module
   // group, else none (sub-sections are never modules this cycle).
+  // C140T1: the module sub-section joins it — the primary module
+  // group, else the module sub-section, else none (C137 label
+  // precedent, proven: resolveListHeaderDrop's module-move removes
+  // sourceModuleId, so a sub-section drag without a sub-source
+  // would add the target without removing the dragged appearance
+  // and turn a move into a copy; the other appearances are
+  // untouched either way, since the remove names one module).
   // C132T1: the cycle appearance mirrors it — the primary cycle
   // group, else none (sub-sections are never cycles this cycle).
+  // C140T1: the cycle sub-section joins it, same proof as modules
+  // — the cycle-move remove side reads sourceCycleId, and the
+  // server-side add is a non-exclusive junction insert
+  // (AddCycleIssues: INSERT ... ON CONFLICT DO NOTHING), so a
+  // sub-section drag without a sub-source would leave the old
+  // membership in place and the displayed cycle would stay the
+  // alphabetically-first of the two. Single-appearance display
+  // does not remove the need for a remove side; it only hides the
+  // stale membership behind the first-by-name pick.
   // C133T1: the release appearance mirrors it — the primary release
   // group, else none (sub-sections are never releases this cycle).
+  // C140T1: no release sub-source is added, proven unnecessary —
+  // the release-move plan has NO remove side at all (a single
+  // POST overwrites release_id), so sourceReleaseId never affects
+  // a release drop's call sequence.
   // C134T1: there is NO created-by appearance — created_by is
   // immutable, so no sourceCreatorId exists and no move entries are
   // registered for created-by groups (their headers carry no target
@@ -1999,8 +2019,12 @@ export default function Issues() {
             // primary assignee group otherwise. C137T1: label
             // sub-sections mirror assignee the same way — labels
             // are the third admitted sub-source dimension.
-            // Sub-sections are never module, cycle, or release,
-            // so those sources stay the primary group, else none.
+            // C140T1: module and cycle sub-sections mirror label
+            // the same way — the fourth and fifth admitted
+            // sub-source dimensions (see the block comment above
+            // for the proof). Release sub-sections stay out: the
+            // release-move plan has no remove side, so no source
+            // is ever read for a release drop.
             const sourceAssigneeId =
               primaryAssigneeId ??
               (effectiveSubGroup === "assignees"
@@ -2015,14 +2039,28 @@ export default function Issues() {
                   ? null
                   : (sub.targetLabelId ?? null)
                 : null);
+            const sourceModuleId =
+              primaryModuleId ??
+              (effectiveSubGroup === "modules"
+                ? sub.isUngroupedModule
+                  ? null
+                  : (sub.targetModuleId ?? null)
+                : null);
+            const sourceCycleId =
+              primaryCycleId ??
+              (effectiveSubGroup === "cycles"
+                ? sub.isUngroupedCycle
+                  ? null
+                  : (sub.targetCycleId ?? null)
+                : null);
             registerStack(
               subKey,
               sub.issues,
               sourceEpicId,
               sourceAssigneeId,
               sourceLabelId,
-              primaryModuleId,
-              primaryCycleId,
+              sourceModuleId,
+              sourceCycleId,
               primaryReleaseId,
             );
             registerHeader(subKey, sub, sub.issues);

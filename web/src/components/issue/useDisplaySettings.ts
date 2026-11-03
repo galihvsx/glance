@@ -96,7 +96,10 @@ export type SubGroupBy =
   | "assignees"
   | "labels"
   | "createdBy"
-  | "stateGroups";
+  | "stateGroups"
+  | "cycles"
+  | "modules"
+  | "releases";
 
 /** Whitelisted ?order_by= values the backend accepts (internal/service/issue.go). */
 export type OrderBy =
@@ -171,6 +174,12 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "labels",
   "createdBy",
   "stateGroups",
+  // C140T1: after stateGroups (same order as SUB_GROUP_OPTIONS);
+  // without these a stored cycles/modules/releases value would
+  // silently fall back to "none" on reload (C139 precedent).
+  "cycles",
+  "modules",
+  "releases",
 ];
 const ORDER_BYS: OrderBy[] = [
   "-updated_at",
