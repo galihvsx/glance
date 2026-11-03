@@ -218,6 +218,15 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(result.current.settings.subGroupBy).toBe("labels");
   });
 
+  it("keeps a stored createdBy sub-group value (C138T1 whitelist)", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ groupBy: "state", subGroupBy: "createdBy" }),
+    );
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.subGroupBy).toBe("createdBy");
+  });
+
   it("falls back to none for the singular label stored value (C137T1 literal)", () => {
     localStorage.setItem(
       KEY,

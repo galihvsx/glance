@@ -13,6 +13,7 @@ import {
 import { UNGROUPED_ASSIGNEE_KEY } from "./groupByAssignee";
 import { UNGROUPED_EPIC_KEY } from "./groupByEpic";
 import { UNGROUPED_LABEL_KEY } from "./groupByLabel";
+import { UNKNOWN_CREATOR_KEY } from "./groupByCreatedBy";
 import type { Issue, IssueState } from "../../lib/types";
 import {
   DEFAULT_DISPLAY_SETTINGS,
@@ -50,6 +51,7 @@ function mkIssue(
   epics: { id: string; name: string; archived_at?: string | null }[] = [],
   assignees: { id: string; name: string }[] = [],
   labels: { id: string; name: string; color: string }[] = [],
+  createdBy = "u",
 ): Issue {
   return {
     id,
@@ -61,7 +63,7 @@ function mkIssue(
     state_id: stateId,
     sort_order: 0,
     is_draft: false,
-    created_by: "u",
+    created_by: createdBy,
     created_at: "",
     updated_at: "",
     assignees,
@@ -121,6 +123,18 @@ describe("effectiveSubGroupBy", () => {
     expect(effectiveSubGroupBy(settingsWith("state", "labels"))).toBe(
       "labels",
     );
+  });
+
+  it("passes createdBy through when it differs from groupBy (C138T1)", () => {
+    expect(effectiveSubGroupBy(settingsWith("state", "createdBy"))).toBe(
+      "createdBy",
+    );
+  });
+
+  it("renders createdBy same-as-primary as none (C138T1)", () => {
+    expect(
+      effectiveSubGroupBy(settingsWith("createdBy", "createdBy")),
+    ).toBe("none");
   });
 
   it("renders none when groupBy is none, whatever is stored", () => {
@@ -353,5 +367,89 @@ describe("buildSubGroupSections", () => {
     });
     expect(sections).toHaveLength(1);
     expect(sections[0].issues).toBe(issues);
+  });
+
+  it("createdBy: single-appearance via groupByCreatedBy, Unknown last, no color, no target fields (C138T1)", () => {
+    const membersById = new Map([
+      ["u-alice", { name: "Alice", email: "alice@x.com" }],
+      ["u-bob", { name: null, email: "bob@x.com" }],
+    ]);
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u-alice"),
+      mkIssue("2", "s-todo", 3, [], [], [], "u-gone"),
+      mkIssue("3", "s-todo", 3, [], [], [], "u-bob"),
+      mkIssue("4", "s-todo", 3, [], [], [], "u-alice"),
+    ];
+    const sections = buildSubGroupSections(issues, "createdBy", {
+      states,
+      stateById,
+      membersById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([
+      "u-alice",
+      "u-bob",
+      UNKNOWN_CREATOR_KEY,
+    ]);
+    // Labels come from the members map (name ?? email), never a raw id.
+    expect(sections.map((s) => s.title)).toEqual([
+      "Alice",
+      "bob@x.com",
+      "Unknown",
+    ]);
+    // Single-appearance: each issue under exactly one section.
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "4"]);
+    expect(sections[1].issues.map((i) => i.id)).toEqual(["3"]);
+    expect(sections[2].issues.map((i) => i.id)).toEqual(["2"]);
+    // No color (members carry none) and NO target fields: created_by
+    // is immutable, so the headers are never droppable (C127T0 rule).
+    for (const s of sections) {
+      expect(s.color).toBeUndefined();
+      expect(s.targetStateId).toBeUndefined();
+      expect(s.targetPriority).toBeUndefined();
+      expect(s.targetEpicId).toBeUndefined();
+      expect(s.targetAssigneeId).toBeUndefined();
+      expect(s.targetLabelId).toBeUndefined();
+      expect(s.isUngroupedEpic).toBeUndefined();
+      expect(s.isUngroupedAssignee).toBeUndefined();
+      expect(s.isUngroupedLabel).toBeUndefined();
+    }
+  });
+
+  it("createdBy: Unknown hidden when empty (every creator matches a member)", () => {
+    const membersById = new Map([
+      ["u-alice", { name: "Alice", email: "alice@x.com" }],
+    ]);
+    const issues = [mkIssue("1", "s-todo", 3, [], [], [], "u-alice")];
+    const sections = buildSubGroupSections(issues, "createdBy", {
+      states,
+      stateById,
+      membersById,
+    });
+    expect(sections.map((s) => s.key)).toEqual(["u-alice"]);
+  });
+
+  it("createdBy: member-miss collapses to Unknown, never a raw id label", () => {
+    const membersById = new Map<string, { name: string; email: string }>();
+    const issues = [mkIssue("1", "s-todo", 3, [], [], [], "u-gone")];
+    const sections = buildSubGroupSections(issues, "createdBy", {
+      states,
+      stateById,
+      membersById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([UNKNOWN_CREATOR_KEY]);
+    expect(sections.map((s) => s.title)).toEqual(["Unknown"]);
+  });
+
+  it("createdBy: missing membersById reads as no matches — all Unknown, no crash", () => {
+    const issues = [
+      mkIssue("1", "s-todo", 3, [], [], [], "u-alice"),
+      mkIssue("2", "s-todo", 3, [], [], [], ""),
+    ];
+    const sections = buildSubGroupSections(issues, "createdBy", {
+      states,
+      stateById,
+    });
+    expect(sections.map((s) => s.key)).toEqual([UNKNOWN_CREATOR_KEY]);
+    expect(sections[0].issues.map((i) => i.id)).toEqual(["1", "2"]);
   });
 });
