@@ -1,6 +1,7 @@
 import { SORT_ORDER_STEP } from "../../lib/sortOrder";
 import type { Issue } from "../../lib/types";
 import { assigneesOf } from "./groupByAssignee";
+import { cycleOf } from "./groupByCycle";
 import { liveEpics } from "./groupByEpic";
 import { labelsOf } from "./groupByLabel";
 import { modulesOf } from "./groupByModule";
@@ -39,7 +40,9 @@ export type HeaderTarget =
   | { kind: "label"; labelId: string }
   | { kind: "label-ungrouped" }
   | { kind: "module"; moduleId: string }
-  | { kind: "module-ungrouped" };
+  | { kind: "module-ungrouped" }
+  | { kind: "cycle"; cycleId: string }
+  | { kind: "cycle-ungrouped" };
 
 /** Explicit target-value fields carried on IssueGroup / SubGroupSection
  *  (C127T0, extended C129T0, C130T0). A section with none of these names no assignable value —
@@ -55,6 +58,8 @@ export interface HeaderTargetFields {
   isUngroupedLabel?: boolean;
   targetModuleId?: string;
   isUngroupedModule?: boolean;
+  targetCycleId?: string;
+  isUngroupedCycle?: boolean;
 }
 
 /** Map a group/section's target fields to its header target, or null
@@ -66,6 +71,7 @@ export function toHeaderTarget(
   if (fields.isUngroupedAssignee) return { kind: "assignee-ungrouped" };
   if (fields.isUngroupedLabel) return { kind: "label-ungrouped" };
   if (fields.isUngroupedModule) return { kind: "module-ungrouped" };
+  if (fields.isUngroupedCycle) return { kind: "cycle-ungrouped" };
   if (fields.targetStateId !== undefined)
     return { kind: "state", stateId: fields.targetStateId };
   if (fields.targetPriority !== undefined)
@@ -78,6 +84,8 @@ export function toHeaderTarget(
     return { kind: "label", labelId: fields.targetLabelId };
   if (fields.targetModuleId !== undefined)
     return { kind: "module", moduleId: fields.targetModuleId };
+  if (fields.targetCycleId !== undefined)
+    return { kind: "cycle", cycleId: fields.targetCycleId };
   return null;
 }
 
@@ -130,6 +138,10 @@ export function headerDropId(
       return `header:${sectionKey}:module:${target.moduleId}`;
     case "module-ungrouped":
       return `header:${sectionKey}:module:ungrouped`;
+    case "cycle":
+      return `header:${sectionKey}:cycle:${target.cycleId}`;
+    case "cycle-ungrouped":
+      return `header:${sectionKey}:cycle:ungrouped`;
   }
 }
 
@@ -199,7 +211,23 @@ export type ListHeaderDropPlan =
       removeModuleId: string | null;
       sortOrder: number;
     }
-  | { type: "module-ungroup"; removeModuleIds: string[] };
+  | { type: "module-ungroup"; removeModuleIds: string[] }
+  | {
+      type: "cycle-move";
+      addCycleId: string;
+      /** Null when the dragged appearance came from Ungrouped or
+       *  from a non-cycle grouping (nothing to remove). */
+      removeCycleId: string | null;
+      sortOrder: number;
+    }
+  | {
+      type: "cycle-ungroup";
+      /** Exactly one id: the displayed cycle only. The junction
+       *  table can in principle hold a second membership, which
+       *  would surface on refetch under its own name — server
+       *  truth, not a bug (plan boundary, documented not fixed). */
+      removeCycleIds: string[];
+    };
 
 /**
  * Resolve a header drop to its exact call sequence (C127T0). All
@@ -237,6 +265,17 @@ export type ListHeaderDropPlan =
  *   appearance came from a module group different from the target.
  * - module Ungrouped: remove from ALL current modules, NO
  *   sort_order PATCH (same rationale as label Ungrouped).
+ * - cycle (C132T1): mirrors the module case exactly — add-before-
+ *   remove + sort PATCH; no-op when the row already carries the
+ *   target cycle (single-value display: membership IS appearance,
+ *   so the own-group and already-member no-ops coincide). Remove
+ *   runs only when the dragged appearance came from a cycle group
+ *   different from the target.
+ * - cycle Ungrouped: remove the DISPLAYED cycle only (the one
+ *   membership the row data knows — single-appearance, so there
+ *   is no remove-all to mirror), NO sort_order PATCH (same
+ *   rationale as module Ungrouped: the row's position in the
+ *   Ungrouped stack follows its existing value).
  */
 export function resolveListHeaderDrop(args: {
   dragged: Issue;
@@ -252,6 +291,9 @@ export function resolveListHeaderDrop(args: {
   /** Module group the dragged appearance came from, or null
    *  (non-module grouping, or an Ungrouped appearance). */
   sourceModuleId?: string | null;
+  /** Cycle group the dragged appearance came from, or null
+   *  (non-cycle grouping, or an Ungrouped appearance). */
+  sourceCycleId?: string | null;
   target: HeaderTarget;
   /** The header section's loaded rows (for the bottom-append math). */
   targetRows: Issue[];
@@ -262,6 +304,7 @@ export function resolveListHeaderDrop(args: {
     sourceAssigneeId,
     sourceLabelId,
     sourceModuleId,
+    sourceCycleId,
     target,
     targetRows,
   } = args;
@@ -363,6 +406,23 @@ export function resolveListHeaderDrop(args: {
         removeModuleIds: current.map((m) => m.id),
       };
     }
+    case "cycle": {
+      if (cycleOf(dragged)?.id === target.cycleId) return null;
+      return {
+        type: "cycle-move",
+        addCycleId: target.cycleId,
+        removeCycleId:
+          sourceCycleId != null && sourceCycleId !== target.cycleId
+            ? sourceCycleId
+            : null,
+        sortOrder: bottomSortOrder(targetRows, dragged),
+      };
+    }
+    case "cycle-ungrouped": {
+      const current = cycleOf(dragged);
+      if (current === null) return null;
+      return { type: "cycle-ungroup", removeCycleIds: [current.id] };
+    }
   }
 }
 
@@ -392,6 +452,10 @@ export interface ListHeaderDropDeps {
   addToModule: (moduleId: string, issueId: string) => Promise<unknown>;
   /** DELETE .../modules/{moduleId}/issues {issue_ids: [id]} (idempotent). */
   removeFromModule: (moduleId: string, issueId: string) => Promise<unknown>;
+  /** POST .../cycles/{cycleId}/issues {issue_ids: [id]} (idempotent). */
+  addToCycle: (cycleId: string, issueId: string) => Promise<unknown>;
+  /** DELETE .../cycles/{cycleId}/issues {issue_ids: [id]} (idempotent, T0). */
+  removeFromCycle: (cycleId: string, issueId: string) => Promise<unknown>;
   /** Invalidate ["issues", slug, identifier] so the moved row appears
    *  in its new group from the server's state, not local optimism. */
   invalidate: () => Promise<unknown>;
@@ -401,13 +465,14 @@ export interface ListHeaderDropDeps {
 
 /**
  * Execute a resolved header-drop plan (C127T0, extended C129T0,
- * C130T0, C131T0). Call order is the contract: epic/assignee/label/
- * module add BEFORE remove, sort PATCH last. Any failure aborts the
- * remaining calls and surfaces honestly — a remove failure after a
- * successful add leaves the row in both epics / assigned to both
- * members / labeled with both labels / in both modules, reported,
- * never hidden or silently retried. Invalidation runs after success
- * AND after failure so the list shows the server's state either way.
+ * C130T0, C131T0, C132T1). Call order is the contract: epic/assignee/
+ * label/module/cycle add BEFORE remove, sort PATCH last. Any failure
+ * aborts the remaining calls and surfaces honestly — a remove
+ * failure after a successful add leaves the row in both epics /
+ * assigned to both members / labeled with both labels / in both
+ * modules / in both cycles, reported, never hidden or silently
+ * retried. Invalidation runs after success AND after failure so the
+ * list shows the server's state either way.
  * No optimistic group-move rendering: the page waits for refetch
  * (the simpler correct choice the plan allows).
  */
@@ -425,6 +490,16 @@ export async function executeListHeaderDrop(
         await deps.removeFromModule(plan.removeModuleId, issueId);
       }
       await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "cycle-move") {
+      await deps.addToCycle(plan.addCycleId, issueId);
+      if (plan.removeCycleId !== null) {
+        await deps.removeFromCycle(plan.removeCycleId, issueId);
+      }
+      await deps.patch(issueId, { sort_order: plan.sortOrder });
+    } else if (plan.type === "cycle-ungroup") {
+      for (const cycleId of plan.removeCycleIds) {
+        await deps.removeFromCycle(cycleId, issueId);
+      }
     } else if (plan.type === "module-ungroup") {
       for (const moduleId of plan.removeModuleIds) {
         await deps.removeFromModule(moduleId, issueId);
@@ -469,8 +544,8 @@ export async function executeListHeaderDrop(
 }
 
 /** One rendered row stack: its rows, and the epic/assignee/label/
- *  module group its appearances belong to (null unless epic-/
- *  assignee-/label-/module-grouped). */
+ *  module/cycle group its appearances belong to (null unless epic-/
+ *  assignee-/label-/module-/cycle-grouped). */
 export interface ListDragStackRef {
   stackKey: string;
   rows: Issue[];
@@ -478,6 +553,7 @@ export interface ListDragStackRef {
   sourceAssigneeId: string | null;
   sourceLabelId: string | null;
   sourceModuleId: string | null;
+  sourceCycleId: string | null;
 }
 
 /** One draggable row appearance, as the page's drop maps record it. */

@@ -43,6 +43,11 @@ export interface DisplayFields {
  * (multi-appearance: an issue with N modules shows under every
  * module group; issues with none land in Ungrouped, last).
  * Modules carry no color — module group headers render name +
+ * count with no color dot.
+ * C132T1: "cycles" groups list rows by displayed cycle
+ * (SINGLE-appearance: an issue carries exactly one displayed cycle
+ * or none; issues with none land in Ungrouped, last).
+ * Cycles carry no color — cycle group headers render name +
  * count with no color dot. */
 export type GroupBy =
   | "state"
@@ -51,6 +56,7 @@ export type GroupBy =
   | "assignees"
   | "labels"
   | "modules"
+  | "cycles"
   | "none";
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
@@ -115,6 +121,7 @@ const GROUP_BYS: GroupBy[] = [
   "assignees",
   "labels",
   "modules",
+  "cycles",
   "none",
 ];
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];

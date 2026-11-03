@@ -103,6 +103,7 @@ import { groupIssuesByEpic } from "../components/issue/groupByEpic";
 import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
 import { groupIssuesByLabel } from "../components/issue/groupByLabel";
 import { groupIssuesByModule } from "../components/issue/groupByModule";
+import { groupIssuesByCycle } from "../components/issue/groupByCycle";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -372,6 +373,7 @@ export default function Issues() {
       newIssueAssigneeId?: string;
       newIssueLabelId?: string;
       newIssueModuleId?: string;
+      newIssueCycleId?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -398,6 +400,16 @@ export default function Issues() {
       // the label carry above and the list's own module-group expand).
       if (typeof st.newIssueModuleId === "string")
         pendingModuleRef.current = st.newIssueModuleId;
+      // C132T1: board cycle-column expand (T2) carries the cycle id
+      // here; the create dialog has no cycle field either (verified:
+      // same field list as the label/module checks — Priority,
+      // State, Estimate, dates, Parent, custom fields, no cycle
+      // picker), so it rides pendingCycleRef and attaches after
+      // create (same rule as the module carry above and the list's
+      // own cycle-group expand). T1 builds this bridge even though
+      // the list expand path itself also uses it.
+      if (typeof st.newIssueCycleId === "string")
+        pendingCycleRef.current = st.newIssueCycleId;
       if (typeof st.newIssueStartDate === "string")
         setNewStartDate(st.newIssueStartDate);
       if (typeof st.newIssueTargetDate === "string")
@@ -439,6 +451,15 @@ export default function Issues() {
   // dialog, and the dialog-close handler clears it on cancel so it
   // never leaks into the next create.
   const pendingModuleRef = useRef<string | null>(null);
+  // C132T1: cycle carried from a cycle group's expand-to-full-
+  // form (the create dialog has no cycle field, so the cycle is
+  // attached right after a successful create — see createMutation's
+  // onSuccess). Same ref-not-state rule as pendingModuleRef:
+  // onSuccess must read the value from the render that opened the
+  // dialog, and the dialog-close handler clears it on cancel so it
+  // never leaks into the next create (including "Create more"
+  // second creates — onSuccess clears the ref on the first create).
+  const pendingCycleRef = useRef<string | null>(null);
   // C26T3: YYYY-MM-DD dates for the create form — prefilled by the
   // calendar's day-cell quick-add via location.state.
   const [newStartDate, setNewStartDate] = useState("");
@@ -799,6 +820,10 @@ export default function Issues() {
       // (same rule as the label carry above).
       const pendingModuleId = pendingModuleRef.current;
       pendingModuleRef.current = null;
+      // C132T1: a cycle-group expand carries the group cycle here
+      // (same rule as the module carry above).
+      const pendingCycleId = pendingCycleRef.current;
+      pendingCycleRef.current = null;
       resetCreateForm();
       // "Create more" keeps the dialog open for rapid entry; otherwise
       // the dialog closes and the toast is the confirmation.
@@ -883,6 +908,33 @@ export default function Issues() {
               type: "error",
               description:
                 e instanceof Error ? e.message : "Failed to add to module",
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            });
+          });
+      }
+      if (pendingCycleId) {
+        // C132T1: same rule as the module carry above — the cycle
+        // endpoint is idempotent with an {issue_ids} body, and an
+        // attach failure surfaces honestly while the row lands in
+        // Ungrouped after invalidation.
+        void api
+          .post(
+            `${base}/cycles/${encodeURIComponent(pendingCycleId)}/issues`,
+            { issue_ids: [issue.id] },
+          )
+          .then(() =>
+            queryClient.invalidateQueries({
+              queryKey: ["issues", slug, identifier],
+            }),
+          )
+          .catch((e) => {
+            toast.add({
+              title: "Issue created but not added to cycle",
+              type: "error",
+              description:
+                e instanceof Error ? e.message : "Failed to add to cycle",
             });
             void queryClient.invalidateQueries({
               queryKey: ["issues", slug, identifier],
@@ -1023,8 +1075,10 @@ export default function Issues() {
    *  way (POST .../labels/{id}, idempotent, no body). C131T0: under
    *  module grouping, the group module attaches the same way
    *  (POST .../modules/{id}/issues, idempotent, {issue_ids} body).
-   *  Ungrouped quick-add (no member / no label / no module) is a
-   *  plain create. */
+   *  C132T1: under cycle grouping, the group cycle attaches the same
+   *  way (POST .../cycles/{id}/issues, idempotent, {issue_ids} body).
+   *  Ungrouped quick-add (no member / no label / no module / no
+   *  cycle) is a plain create. */
   async function quickCreate(
     stateId: string,
     name: string,
@@ -1032,6 +1086,7 @@ export default function Issues() {
     assigneeId?: string,
     labelId?: string,
     moduleId?: string,
+    cycleId?: string,
   ): Promise<void> {
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
@@ -1075,6 +1130,19 @@ export default function Issues() {
         throw e;
       }
     }
+    if (cycleId) {
+      try {
+        await api.post(
+          `${base}/cycles/${encodeURIComponent(cycleId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        throw e;
+      }
+    }
     await queryClient.invalidateQueries({
       queryKey: ["issues", slug, identifier],
     });
@@ -1095,7 +1163,13 @@ export default function Issues() {
    *  field list as the label check, no module picker), so the module
    *  attaches after create via pendingModuleRef rather than a
    *  prefilled field. Title + group module are therefore both kept,
-   *  via attach. */
+   *  via attach.
+   *  C132T1: under cycle grouping the group cycle rides the same
+   *  way — the dialog has no cycle field either (verified: same
+   *  field list as the label/module checks, no cycle picker), so
+   *  the cycle attaches after create via pendingCycleRef rather
+   *  than a prefilled field. Title + group cycle are therefore
+   *  both kept, via attach. No form field is invented. */
   function expandQuickAdd(
     stateId: string,
     name: string,
@@ -1103,6 +1177,7 @@ export default function Issues() {
     assigneeId?: string,
     labelId?: string,
     moduleId?: string,
+    cycleId?: string,
   ) {
     setName(name);
     setNewStateId(stateId);
@@ -1110,6 +1185,7 @@ export default function Issues() {
     pendingAssigneeRef.current = assigneeId ?? null;
     pendingLabelRef.current = labelId ?? null;
     pendingModuleRef.current = moduleId ?? null;
+    pendingCycleRef.current = cycleId ?? null;
     setFormError(null);
     setDialogOpen(true);
   }
@@ -1176,13 +1252,18 @@ export default function Issues() {
   // the list rows themselves (project_structure.modules), exactly
   // like label memberships.
   const groupByModules = settings.groupBy === "modules";
+  // C132T1: cycle grouping needs no skip either — the displayed
+  // cycle rides on the list rows themselves
+  // (project_structure.cycle), exactly like module memberships.
+  const groupByCycles = settings.groupBy === "cycles";
   const groupingActive =
     groupByState ||
     groupByPriority ||
     groupByEpic ||
     groupByAssignees ||
     groupByLabels ||
-    groupByModules;
+    groupByModules ||
+    groupByCycles;
 
   interface IssueGroup {
     key: string;
@@ -1219,6 +1300,12 @@ export default function Issues() {
      *  the header renders name + count with no color dot. */
     targetModuleId?: string;
     isUngroupedModule?: boolean;
+    /** C132T1: cycle drop-target values, mirroring the module pair
+     *  above — the key IS the cycle id verbatim for member groups.
+     *  Cycle groups carry NO color (NamedRef has id + name only);
+     *  the header renders name + count with no color dot. */
+    targetCycleId?: string;
+    isUngroupedCycle?: boolean;
   }
 
   // C124T0: `issues` here is already the post-split visible rows
@@ -1304,6 +1391,22 @@ export default function Issues() {
         targetModuleId: g.isUngrouped ? undefined : g.key,
         isUngroupedModule: g.isUngrouped,
       }));
+    } else if (groupByCycles) {
+      // C132T1: group by displayed cycle (see groupByCycle.ts
+      // for the single-appearance + Ungrouped-last semantics). The
+      // header renders name + count with NO color dot — cycles
+      // have none (NamedRef carries id + name only) — and no
+      // breakdown bar (the helper carries no byGroup). Sub-group
+      // sections under cycle primaries use the existing C123
+      // splitter exactly as under module primaries.
+      gs = groupIssuesByCycle(issues).map((g) => ({
+        key: g.key,
+        title: g.title,
+        issues: g.issues,
+        stateId: sortedStates[0]?.id,
+        targetCycleId: g.isUngrouped ? undefined : g.key,
+        isUngroupedCycle: g.isUngrouped,
+      }));
     }
     return settings.showEmptyGroups
       ? gs
@@ -1315,6 +1418,7 @@ export default function Issues() {
     groupByAssignees,
     groupByLabels,
     groupByModules,
+    groupByCycles,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1412,6 +1516,10 @@ export default function Issues() {
   // and keyboard drag to a header stays out of scope per C127.
   // C131T0: the same boundary holds under module grouping, documented
   // not faked — no dedicated keyboard test under any grouping.
+  // C132T1: the same boundary holds under cycle grouping, documented
+  // not faked — pointer/touch drag is the deliverable; keyboard
+  // reorder/drag under cycle grouping inherits the C128 boundary,
+  // and keyboard drag to a header remains out of scope per C127.
   // The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
@@ -1420,7 +1528,9 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByModules
+  const effectiveGroupBy = groupByCycles
+    ? "cycles"
+    : groupByModules
     ? "modules"
     : groupByLabels
     ? "labels"
@@ -1507,6 +1617,8 @@ export default function Issues() {
   // group, else none (sub-sections are never labels this cycle).
   // C131T0: the module appearance mirrors it — the primary module
   // group, else none (sub-sections are never modules this cycle).
+  // C132T1: the cycle appearance mirrors it — the primary cycle
+  // group, else none (sub-sections are never cycles this cycle).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -1517,6 +1629,7 @@ export default function Issues() {
       sourceAssigneeId: string | null = null,
       sourceLabelId: string | null = null,
       sourceModuleId: string | null = null,
+      sourceCycleId: string | null = null,
     ): ListDragStackRef => {
       const stack: ListDragStackRef = {
         stackKey,
@@ -1525,6 +1638,7 @@ export default function Issues() {
         sourceAssigneeId,
         sourceLabelId,
         sourceModuleId,
+        sourceCycleId,
       };
       for (const issue of rows) {
         sortableMap.set(listSortableId(stackKey, issue.id), {
@@ -1572,6 +1686,11 @@ export default function Issues() {
             ? null
             : (g.targetModuleId ?? null)
           : null;
+        const primaryCycleId = groupByCycles
+          ? g.isUngroupedCycle
+            ? null
+            : (g.targetCycleId ?? null)
+          : null;
         if (subSectionsByGroup) {
           registerHeader(g.key, g, g.issues);
           for (const sub of subSectionsByGroup.get(g.key) ?? []) {
@@ -1583,9 +1702,9 @@ export default function Issues() {
                   ? null
                   : (sub.targetEpicId ?? null)
                 : null);
-            // Sub-sections are never assignee, label, or module
-            // this cycle, so the source is the primary
-            // assignee/label/module group, else none.
+            // Sub-sections are never assignee, label, module, or
+            // cycle this cycle, so the source is the primary
+            // assignee/label/module/cycle group, else none.
             registerStack(
               subKey,
               sub.issues,
@@ -1593,6 +1712,7 @@ export default function Issues() {
               primaryAssigneeId,
               primaryLabelId,
               primaryModuleId,
+              primaryCycleId,
             );
             registerHeader(subKey, sub, sub.issues);
           }
@@ -1604,6 +1724,7 @@ export default function Issues() {
             primaryAssigneeId,
             primaryLabelId,
             primaryModuleId,
+            primaryCycleId,
           );
           registerHeader(g.key, g, g.issues);
         }
@@ -1619,16 +1740,18 @@ export default function Issues() {
     groupByAssignees,
     groupByLabels,
     groupByModules,
+    groupByCycles,
     effectiveSubGroup,
   ]);
 
   // C127T0: one header drop — resolve to the exact call sequence,
   // execute it (add-before-remove + sort PATCH for epic/assignee/
-  // label/module moves), and invalidate so the moved row appears in
-  // its new group from the server's state. No optimistic group-move
-  // rendering (the simpler correct choice the plan allows); on
-  // failure the row stays visibly in its old group after refetch and
-  // the error surfaces via the existing reorderError Alert.
+  // label/module/cycle moves), and invalidate so the moved row
+  // appears in its new group from the server's state. No optimistic
+  // group-move rendering (the simpler correct choice the plan
+  // allows); on failure the row stays visibly in its old group
+  // after refetch and the error surfaces via the existing
+  // reorderError Alert.
   async function handleHeaderDrop(
     dragged: ListDragRowRef,
     info: ListHeaderDropInfo,
@@ -1640,6 +1763,7 @@ export default function Issues() {
       sourceAssigneeId: dragged.stack.sourceAssigneeId,
       sourceLabelId: dragged.stack.sourceLabelId,
       sourceModuleId: dragged.stack.sourceModuleId,
+      sourceCycleId: dragged.stack.sourceCycleId,
       target: info.target,
       targetRows: info.targetRows,
     });
@@ -1685,6 +1809,20 @@ export default function Issues() {
       removeFromModule: (moduleId, issueId) =>
         api.del(
           `${base}/modules/${encodeURIComponent(moduleId)}/issues`,
+          { issue_ids: [issueId] },
+        ),
+      // C132T1: cycle membership endpoints carry an {issue_ids}
+      // body — the cycle id rides the path, and both calls are
+      // idempotent (verified against cycle_handler.go, T0's
+      // DELETE route alongside the existing POST route).
+      addToCycle: (cycleId, issueId) =>
+        api.post(
+          `${base}/cycles/${encodeURIComponent(cycleId)}/issues`,
+          { issue_ids: [issueId] },
+        ),
+      removeFromCycle: (cycleId, issueId) =>
+        api.del(
+          `${base}/cycles/${encodeURIComponent(cycleId)}/issues`,
           { issue_ids: [issueId] },
         ),
       invalidate: () =>
@@ -1854,6 +1992,8 @@ export default function Issues() {
                 pendingLabelRef.current = null;
                 // C131T0: same rule for a carried module group module.
                 pendingModuleRef.current = null;
+                // C132T1: same rule for a carried cycle group cycle.
+                pendingCycleRef.current = null;
               }
             }}
           >
@@ -2407,6 +2547,7 @@ export default function Issues() {
                         g.targetAssigneeId,
                         g.targetLabelId,
                         g.targetModuleId,
+                        g.targetCycleId,
                       )
                     }
                     onExpand={(name) =>
@@ -2417,6 +2558,7 @@ export default function Issues() {
                         g.targetAssigneeId,
                         g.targetLabelId,
                         g.targetModuleId,
+                        g.targetCycleId,
                       )
                     }
                   />

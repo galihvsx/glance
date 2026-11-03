@@ -350,8 +350,22 @@ describe("DisplayPanel Group by Assignees (C129T0)", () => {
       "Assignees",
       "Labels",
       "Modules",
+      "Cycles",
       "None",
     ]);
+  });
+
+  it("offers Cycles after Modules, before None", () => {
+    const { labels } = renderGroupBy();
+    const idx = (name: string) => labels.indexOf(name);
+    expect(idx("Cycles")).toBeGreaterThan(idx("Modules"));
+    expect(idx("Cycles")).toBeLessThan(idx("None"));
+  });
+
+  it("selecting Cycles reports groupBy cycles", () => {
+    const { onUpdate, radio } = renderGroupBy();
+    fireEvent.click(radio("Cycles"));
+    expect(onUpdate).toHaveBeenCalledWith({ groupBy: "cycles" });
   });
 
   it("offers Modules after Labels, before None", () => {
