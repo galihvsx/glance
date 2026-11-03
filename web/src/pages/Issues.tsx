@@ -105,6 +105,10 @@ import { groupIssuesByLabel } from "../components/issue/groupByLabel";
 import { groupIssuesByModule } from "../components/issue/groupByModule";
 import { groupIssuesByCycle } from "../components/issue/groupByCycle";
 import { groupIssuesByRelease } from "../components/issue/groupByRelease";
+import {
+  groupIssuesByCreatedBy,
+  type CreatorLookupEntry,
+} from "../components/issue/groupByCreatedBy";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import EpicGroupBreakdown from "../components/epics/EpicGroupBreakdown";
 import FilterPanel from "../components/issue/FilterPanel";
@@ -655,6 +659,26 @@ export default function Issues() {
         )
         .then((d) => d.members),
     enabled: bulk.count > 0,
+  });
+  // C134T1: created-by grouping needs the workspace members to
+  // resolve creator ids to names (label = name ?? email). The bulk
+  // query above stays gated on bulk.count > 0; this query is
+  // always enabled and shares the SAME React Query key
+  // ["members", slug] with the IDENTICAL queryFn, so both hooks
+  // read one cache entry and one network fetch serves both: the
+  // bulk query reuses this cache once a selection exists, and no
+  // second members request fires. Key-reuse check: TanStack Query
+  // dedupes observers by key, and `enabled` only controls fetching,
+  // never the cached data — so the two observers cannot diverge.
+  const groupingMembersQuery = useQuery({
+    queryKey: ["members", slug],
+    queryFn: () =>
+      api
+        .get<{ members: Member[] }>(
+          `/api/v1/workspaces/${encodeURIComponent(slug)}/members`,
+        )
+        .then((d) => d.members),
+    enabled: true,
   });
   const labelsQuery = useQuery({
     queryKey: ["labels", slug, identifier],
@@ -1338,6 +1362,29 @@ export default function Issues() {
   // release rides on the list rows themselves
   // (project_structure.release), exactly like cycle grouping.
   const groupByReleases = settings.groupBy === "releases";
+  // C134T1: created-by grouping needs no skip either — the creator
+  // id rides on the list rows themselves (Issue.created_by); only
+  // the display NAME resolves from the members lookup below, and
+  // the grouped render gates on that resolution (see
+  // groupingMembersReady) so first paint never flashes every group
+  // as "Unknown" and never renders a raw creator id as a label.
+  const groupByCreatedBy = settings.groupBy === "createdBy";
+  const membersById = useMemo(
+    () =>
+      new Map<string, CreatorLookupEntry>(
+        (groupingMembersQuery.data ?? []).map((m) => [
+          m.id,
+          { name: m.name, email: m.email },
+        ]),
+      ),
+    [groupingMembersQuery.data],
+  );
+  // Resolved = members data arrived, OR the fetch failed (then the
+  // helper runs with an empty map and unresolved creators honestly
+  // collapse into Unknown — an error state, not a first-paint flash).
+  // While pending, the groups branch below returns NO groups.
+  const groupingMembersReady =
+    groupingMembersQuery.data !== undefined || groupingMembersQuery.isError;
   const groupingActive =
     groupByState ||
     groupByPriority ||
@@ -1346,7 +1393,8 @@ export default function Issues() {
     groupByLabels ||
     groupByModules ||
     groupByCycles ||
-    groupByReleases;
+    groupByReleases ||
+    groupByCreatedBy;
 
   interface IssueGroup {
     key: string;
@@ -1514,6 +1562,32 @@ export default function Issues() {
         targetReleaseId: g.isUngrouped ? undefined : g.key,
         isUngroupedRelease: g.isUngrouped,
       }));
+    } else if (groupByCreatedBy) {
+      // C134T1: group by creator (see groupByCreatedBy.ts for the
+      // single-appearance + Unknown-last/hidden-when-empty semantics).
+      // The header renders name + count with NO color dot — members
+      // have none — and no breakdown bar. Deliberately NO
+      // target*/isUngrouped* fields: created_by is immutable and no
+      // endpoint reassigns a creator, so toHeaderTarget returns null
+      // and these headers are NOT drop targets (no move pipeline).
+      // While the members query is pending, NO groups render at all
+      // (not Unknown groups): groupingMembersReady gates here so
+      // first paint never flashes every group as "Unknown" and never
+      // renders a raw creator id as a label. Sub-group sections
+      // under created-by primaries use the existing C123 splitter
+      // exactly as under release primaries; a sub-group header keeps
+      // its OWN dimension's drop behavior (state/priority/epic) —
+      // that pipeline moves the sub-dimension, never the creator.
+      // "Show empty groups" synthesizes no creator groups: groups
+      // derive from loaded issues only, same boundary as C133.
+      gs = groupingMembersReady
+        ? groupIssuesByCreatedBy(issues, membersById).map((g) => ({
+            key: g.key,
+            title: g.title,
+            issues: g.issues,
+            stateId: sortedStates[0]?.id,
+          }))
+        : [];
     }
     return settings.showEmptyGroups
       ? gs
@@ -1527,6 +1601,9 @@ export default function Issues() {
     groupByModules,
     groupByCycles,
     groupByReleases,
+    groupByCreatedBy,
+    groupingMembersReady,
+    membersById,
     sortedStates,
     issues,
     settings.showEmptyGroups,
@@ -1632,7 +1709,12 @@ export default function Issues() {
   // documented not faked — pointer/touch drag is the deliverable;
   // keyboard reorder/drag under release grouping inherits the C128
   // boundary, and keyboard drag to a header remains out of scope
-  // per C127. Nested subtask rows are NOT draggable (C124/C126
+  // per C127. C134T1: the same boundary holds under created-by
+  // grouping — pointer/touch within-group reorder is the
+  // deliverable (a pure sort_order PATCH, no creator change);
+  // cross-group reorder stays disabled (dispatch keeps row drops
+  // stack-local) and headers are not drop targets at all.
+  // Nested subtask rows are NOT draggable (C124/C126
   // precedent, unchanged — they render via NestedListSubtaskRow
   // outside any SortableIssueRow).
   // The drop pipeline lives in
@@ -1643,7 +1725,9 @@ export default function Issues() {
   // invalidation refetches the loaded pages, so a drop at the bottom
   // of a partially-loaded list may shift on refetch among unloaded
   // values — no fetch-all-pages workaround by design.
-  const effectiveGroupBy = groupByReleases
+  const effectiveGroupBy = groupByCreatedBy
+    ? "createdBy"
+    : groupByReleases
     ? "releases"
     : groupByCycles
     ? "cycles"
@@ -1738,6 +1822,10 @@ export default function Issues() {
   // group, else none (sub-sections are never cycles this cycle).
   // C133T1: the release appearance mirrors it — the primary release
   // group, else none (sub-sections are never releases this cycle).
+  // C134T1: there is NO created-by appearance — created_by is
+  // immutable, so no sourceCreatorId exists and no move entries are
+  // registered for created-by groups (their headers carry no target
+  // fields, so registerHeader no-ops for them).
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
@@ -2687,6 +2775,15 @@ export default function Issues() {
                       </div>
                     </ListRowStack>
                   )}
+                  {/* C134T1: per-group quick-add is DISABLED under
+                      created-by grouping — the create form has no
+                      creator picker and created_by is server-set to
+                      the actor, so a row quick-added inside another
+                      creator's group would immediately leave that
+                      group. The global add (page header) stays
+                      available; expand-to-full-form carries nothing
+                      for created-by. */}
+                  {!groupByCreatedBy && (
                   <QuickAdd
                     className="mt-1"
                     onCreate={(name) =>
@@ -2714,6 +2811,7 @@ export default function Issues() {
                       )
                     }
                   />
+                  )}
                 </section>
                 );
               })}

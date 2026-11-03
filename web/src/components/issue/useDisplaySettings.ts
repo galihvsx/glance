@@ -53,7 +53,14 @@ export interface DisplayFields {
  * (SINGLE-appearance: an issue carries exactly one displayed release
  * or none; issues with none land in Ungrouped, last).
  * Releases carry no color — release group headers render name +
- * count with no color dot. */
+ * count with no color dot.
+ * C134T1: "createdBy" groups list rows by creator (SINGLE-appearance:
+ * an issue carries exactly one creator, Issue.created_by; creators
+ * with no workspace member collapse into ONE "Unknown" group, last,
+ * hidden when empty). Creator groups carry no color — headers render
+ * name + count with no color dot. The creator NAME does not ride the
+ * row: it resolves from the workspace members lookup (see
+ * groupByCreatedBy.ts), never from a raw user id. */
 export type GroupBy =
   | "state"
   | "priority"
@@ -63,6 +70,7 @@ export type GroupBy =
   | "modules"
   | "cycles"
   | "releases"
+  | "createdBy"
   | "none";
 
 /** C123T0: second grouping dimension inside each primary group. Mirrors
@@ -129,6 +137,7 @@ const GROUP_BYS: GroupBy[] = [
   "modules",
   "cycles",
   "releases",
+  "createdBy",
   "none",
 ];
 const SUB_GROUP_BYS: SubGroupBy[] = ["none", "state", "priority", "epic"];

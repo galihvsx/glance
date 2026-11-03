@@ -46,6 +46,10 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "modules", label: "Modules" },
   { value: "cycles", label: "Cycles" },
   { value: "releases", label: "Releases" },
+  // C134T1: after releases, before none; old options unreordered.
+  // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by created-by
+  // is a later cycle, not a silent addition).
+  { value: "createdBy", label: "Created by" },
   { value: "none", label: "None" },
 ];
 
