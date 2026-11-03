@@ -127,6 +127,14 @@ import {
   planCreatedByDrop,
 } from "../components/issue/boardCreatedBy";
 import type { CreatorLookupEntry } from "../components/issue/groupByCreatedBy";
+import {
+  buildStateGroupBoardGroups,
+  planStateGroupDrop,
+  stateGroupCardDragId,
+  stateGroupDragColumnKey,
+  stateGroupDragIssueId,
+  stateGroupDropColumnKey,
+} from "../components/issue/boardStateGroup";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import PqlEditor from "../components/issue/PqlEditor";
@@ -611,6 +619,7 @@ function BoardColumn({
   cycleId,
   releaseId,
   creatorId,
+  stateGroup,
   byGroup,
   cardState,
   getCardDragId,
@@ -667,6 +676,11 @@ function BoardColumn({
    *  no color — name + count only. Unknown keeps the Ban glyph,
    *  mirroring the release header rule. */
   creatorId?: string | null;
+  /** C135T2: state-group-mode columns — group slug (null =
+   *  Unknown). When set, the header shows NO color dot: groups have
+   *  no color — name + count only, NO breakdown bar. Unknown keeps
+   *  the Ban glyph, mirroring the creator header rule. */
+  stateGroup?: string | null;
   /** C72T1: per-state-group member counts for the epic header breakdown. */
   byGroup?: Record<string, number>;
   /** C72T1: per-card state badge — epic columns no longer imply state, so
@@ -784,6 +798,13 @@ function BoardColumn({
           // none) — same rule as releases; Unknown keeps the Ban
           // glyph, creator columns render name + count only.
           creatorId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : null
+        ) : stateGroup !== undefined ? (
+          // C135T2: state-group columns render NO color dot (groups
+          // have none) — same rule as creators; Unknown keeps the Ban
+          // glyph, group columns render name + count only.
+          stateGroup === null ? (
             <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
           ) : null
         ) : state ? (
@@ -1237,13 +1258,15 @@ export default function Board() {
     ? (boardIssues.find(
         (i) =>
           i.id ===
-          createdByDragIssueId(
-            releaseDragIssueId(
-              cycleDragIssueId(
-                moduleDragIssueId(
-                  labelDragIssueId(
-                    assigneeDragIssueId(
-                      epicDragIssueId(subgroupDragIssueId(activeId)),
+          stateGroupDragIssueId(
+            createdByDragIssueId(
+              releaseDragIssueId(
+                cycleDragIssueId(
+                  moduleDragIssueId(
+                    labelDragIssueId(
+                      assigneeDragIssueId(
+                        epicDragIssueId(subgroupDragIssueId(activeId)),
+                      ),
                     ),
                   ),
                 ),
@@ -1659,6 +1682,17 @@ export default function Board() {
   // C134T2: creator columns render one column per creator (same rule
   // as release columns — the column no longer implies state).
   const groupByCreatedBy = settings.groupBy === "createdBy";
+  // C135T2: state-group columns render one column per state group
+  // (same rule as creator columns — the column no longer implies a
+  // single state; it holds every state in the group).
+  const groupByStateGroups = settings.groupBy === "stateGroups";
+  // C135T2: state-by-id lookup (state id -> group string) for the
+  // state-group builder. States load with the page, so unlike
+  // created-by there is no pending-lookup flash to gate on.
+  const stateGroupById = useMemo(
+    () => new Map(states.map((s) => [s.id, s.group] as const)),
+    [states],
+  );
   // C134T2: members lookup for creator labels (map user id ->
   // {name, email}), mirroring T1's list-page membersById. A raw user
   // id is NEVER a column label: the builder collapses unresolved
@@ -1711,6 +1745,9 @@ export default function Board() {
     /** C134T2: created-by-mode columns — creator user id (null =
      *  Unknown). No color: members have none, same rule as releases. */
     creatorId?: string | null;
+    /** C135T2: state-group-mode columns — group slug (null =
+     *  Unknown). No color: groups have none, same rule as creators. */
+    stateGroup?: string | null;
     /** C72T1: column key for epic-mode dnd ids. C129T1: same field
      *  carries the assignee column key (member id / "ungrouped").
      *  C130T1: same field carries the label column key
@@ -1719,7 +1756,9 @@ export default function Board() {
      *  field carries the cycle column key (cycle id / "ungrouped").
      *  C133T2: same field carries the release column key
      *  (release id / "ungrouped"). C134T2: same field carries the
-     *  creator column key (creator user id / "unknown"). */
+     *  creator column key (creator user id / "unknown"). C135T2:
+     *  same field carries the state-group column key (group slug /
+     *  "unknown"). */
     columnKey?: string;
     /** C72T1: per-state-group member counts for the epic header breakdown. */
     byGroup?: Record<string, number>;
@@ -1881,6 +1920,40 @@ export default function Board() {
             newStateId: g.newStateId,
           }))
         : [];
+    } else if (groupByStateGroups) {
+      // C135T2: group by state group (see boardStateGroup.ts for
+      // the canonical-six-order + Unknown-last/hidden-when-empty
+      // semantics, built on T1's groupIssuesByStateGroup).
+      // Per-column quick-add IS enabled: newStateId is the
+      // first-by-sequence state in the group (states is
+      // sequence-sorted), so the new card STAYS in the column; a
+      // column with no states at all gets newStateId undefined and
+      // renders its quick-add disabled via disableQuickAdd below.
+      // "Show empty groups" synthesizes all six canonical groups
+      // via the builder's includeEmptyGroups option (closed set);
+      // Unknown renders only when it has rows, in both modes, and
+      // the empty-group filter below drops nothing here beyond
+      // what the builder already hides when show-empty is off.
+      // State-group headers render name + count with NO color dot
+      // and NO breakdown bar (see BoardColumn's stateGroup branch).
+      // Sub-group sections compose via the C123 machinery below
+      // exactly as under creator columns. Columns derive from
+      // visible rows only (C72T0 live-membership rule, same as
+      // every dimension) — filters narrow boardIssues before this
+      // branch. States load with the page, so no resolution gate.
+      gs = buildStateGroupBoardGroups(
+        boardIssues,
+        stateGroupById,
+        states,
+        { includeEmptyGroups: settings.showEmptyGroups },
+      ).map((g) => ({
+        droppableId: g.droppableId,
+        title: g.title,
+        columnKey: g.columnKey,
+        stateGroup: g.stateGroup,
+        issues: g.issues,
+        newStateId: g.newStateId,
+      }));
     } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
@@ -1929,8 +2002,10 @@ export default function Board() {
     groupByCycles,
     groupByReleases,
     groupByCreatedBy,
+    groupByStateGroups,
     groupingMembersReady,
     membersById,
+    stateGroupById,
     settings.groupBy,
     settings.showEmptyGroups,
     states,
@@ -1952,7 +2027,9 @@ export default function Board() {
   // changing state. C133T2: same exemption for release columns —
   // release drops MOVE (single assign) without changing state.
   // C134T2: same exemption for creator columns — creator drops are a
-  // deliberate no-op and never change state. VERIFIED (not assumed):
+  // deliberate no-op and never change state. C135T2: same exemption
+  // for state-group columns — state-group drops are a deliberate
+  // no-op and never change state. VERIFIED (not assumed):
   // the guard below reads `settings.groupBy !== "state"` — the hint
   // set is empty in every non-state grouping, so no code change is
   // needed here for created-by either. Creator columns are NOT state
@@ -1984,7 +2061,11 @@ export default function Board() {
    *  (same rule). C132T2: a cycle column's quick-add also attaches
    *  the new issue to the column's cycle (same rule). C133T2: a
    *  release column's quick-add also assigns the new issue to the
-   *  column's release (same rule). The
+   *  column's release (same rule). C135T2: a state-group column's
+   *  quick-add needs no attach — its newStateId stamp (first-by-
+   *  sequence state in the group) keeps the new card in the column;
+   *  a stateless column never reaches this function (its QuickAdd
+   *  renders disabled via disableQuickAdd). The
    *  new card appears via query invalidation — no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
     // C134T2: created-by columns never reach this function — their
@@ -1998,7 +2079,8 @@ export default function Board() {
       groupByModules ||
       groupByCycles ||
       groupByReleases ||
-      groupByCreatedBy
+      groupByCreatedBy ||
+      groupByStateGroups
         ? { stateId: group.newStateId, attachEpicId: null as string | null }
         : planEpicQuickAdd(group);
     const { attachAssigneeId } = groupByAssignees
@@ -2148,7 +2230,12 @@ export default function Board() {
    *  default expand below carries title + state only, no creator
    *  id), and the column's QuickAdd is disabled so the expand is
    *  unreachable from a creator column anyway; the global add stays
-   *  available. */
+   *  available. C135T2: a state-group column's expand carries
+   *  NOTHING for the group either — the default expand below
+   *  carries title + the column's state stamp (first-by-sequence
+   *  state in the group), which keeps the created card in the
+   *  column; a stateless column's QuickAdd is disabled so its
+   *  expand is unreachable anyway. */
   function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
       state: groupByReleases
@@ -2649,6 +2736,79 @@ export default function Board() {
     write(retry.sortOrder);
   }
 
+  /** C135T2: within-column reorder for state-group columns —
+   *  sort_order only, never a re-group (a group holds several states,
+   *  so a reorder never picks a target state). Mirrors
+   *  applyCreatedByReorder verbatim with the state-group column
+   *  builder: the column's visible sequence is the stack, because a
+   *  state-group column mixes states. Gap collapse follows the same
+   *  rebalance → refetch → retry-once pipeline, then an honest error
+   *  (never a loop). `overIssueId` null = dropped on the column
+   *  itself (append at the end). The retry rebuilds with the same
+   *  state-group lookup and sequence-sorted states the groups memo
+   *  uses, so the fresh column resolves the same way. */
+  async function applyStateGroupReorder(
+    issueId: string,
+    stateId: string,
+    columnKey: string,
+    overIssueId: string | null,
+  ) {
+    const col = groups.find((g) => g.columnKey === columnKey);
+    if (!col) return;
+    const write = (sortOrder: number) => writeDrop(issueId, stateId, sortOrder);
+    if (overIssueId === null) {
+      const without = col.issues.filter((i) => i.id !== issueId);
+      if (without.length === 0) return;
+      if (col.issues[col.issues.length - 1]?.id === issueId) return;
+      const so = midpoint(without[without.length - 1].sort_order, null);
+      if (so === null) return;
+      write(so);
+      return;
+    }
+    const drop = stackDropSortOrder(col.issues, issueId, overIssueId);
+    if (!drop.moved) return;
+    if (drop.sortOrder !== null) {
+      write(drop.sortOrder);
+      return;
+    }
+    // Gap collapsed: rebalance the issue's state column, refetch, and
+    // retry once against the fresh column sequence.
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
+    const fresh = refetched.data ?? [];
+    const freshVisible = splitNestedIssues(
+      fresh,
+      settings.showSubWorkItems,
+    ).visibleIssues;
+    const freshCol = buildStateGroupBoardGroups(
+      freshVisible,
+      stateGroupById,
+      states,
+    ).find((g) => g.columnKey === columnKey);
+    if (!freshCol) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    const retry = stackDropSortOrder(freshCol.issues, issueId, overIssueId);
+    if (!retry.moved || retry.sortOrder === null) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    write(retry.sortOrder);
+  }
+
   function onDragStart(e: DragStartEvent) {
     setBoardError(null);
     setActiveId(String(e.active.id));
@@ -2671,12 +2831,14 @@ export default function Board() {
     const dragged = all.find(
       (i) =>
         i.id ===
-        createdByDragIssueId(
-          releaseDragIssueId(
-            cycleDragIssueId(
-              moduleDragIssueId(
-                labelDragIssueId(
-                  assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+        stateGroupDragIssueId(
+          createdByDragIssueId(
+            releaseDragIssueId(
+              cycleDragIssueId(
+                moduleDragIssueId(
+                  labelDragIssueId(
+                    assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+                  ),
                 ),
               ),
             ),
@@ -2986,6 +3148,54 @@ export default function Board() {
       return;
     }
 
+    if (groupByStateGroups) {
+      // C135T2: state-group columns — cross-column drops are a
+      // DELIBERATE NO-OP (a group holds several states, so there is
+      // no single target state to move to — picking one would
+      // silently change the issue's workflow state; no state change,
+      // no membership call, and no sort PATCH that implies a move is
+      // ever issued — the plan is always noop and this branch
+      // returns without touching anything). State-group drops never
+      // change state, so the C68 transition guard does not apply
+      // (verified state-grouping-only, see dropBlocked). A drag
+      // whose source column IS the target column is a within-column
+      // reorder (sort_order only — a reorder never re-groups),
+      // resolved from the dragged card's compound id BEFORE
+      // consulting the drop plan (C131T1 trap: same-column drags
+      // reorder, never no-op as already-member). The over id may be
+      // the column droppable or a card inside it (compound id);
+      // sub-group-section cards unwrap to plain issue ids and
+      // resolve no column, so those drops stay visual-only, as
+      // creator drops do under sub-grouping.
+      const columnKey = stateGroupDropColumnKey(overId);
+      if (columnKey === null) return;
+      const sourceKey = stateGroupDragColumnKey(activeIssueId);
+      if (sourceKey !== null && sourceKey === columnKey) {
+        if (overId === `stategroup:${columnKey}`) {
+          void applyStateGroupReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            null,
+          );
+        } else {
+          void applyStateGroupReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            stateGroupDragIssueId(overId),
+          );
+        }
+        return;
+      }
+      // The plan is always noop (see planStateGroupDrop): this branch
+      // changes nothing — no state change, no membership call, no
+      // sort PATCH — and returns without falling through to the
+      // state/priority drop handling below.
+      planStateGroupDrop(columnKey, dragged, stateGroupById);
+      return;
+    }
+
     if (settings.groupBy === "priority") {
       // Priority columns: dropping changes the issue's priority.
       const m = /^priority:([0-4])$/.exec(overId);
@@ -3057,7 +3267,8 @@ export default function Board() {
         // counts as issue counts). C133T2: same rule for release
         // columns (trivially true under single-appearance). C134T2:
         // same rule for creator columns (trivially true under
-        // single-appearance).
+        // single-appearance). C135T2: same rule for state-group
+        // columns (trivially true under single-appearance).
         count={
           groupByEpic ||
           groupByAssignees ||
@@ -3065,7 +3276,8 @@ export default function Board() {
           groupByModules ||
           groupByCycles ||
           groupByReleases ||
-          groupByCreatedBy
+          groupByCreatedBy ||
+          groupByStateGroups
             ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
@@ -3204,6 +3416,7 @@ export default function Board() {
                     cycleId={g.cycleId}
                     releaseId={g.releaseId}
                     creatorId={g.creatorId}
+                    stateGroup={g.stateGroup}
                     byGroup={g.byGroup}
                     cardState={
                       groupByEpic ||
@@ -3212,7 +3425,8 @@ export default function Board() {
                       groupByModules ||
                       groupByCycles ||
                       groupByReleases ||
-                      groupByCreatedBy
+                      groupByCreatedBy ||
+                      groupByStateGroups
                         ? (issue) => stateById.get(issue.state_id)
                         : undefined
                     }
@@ -3238,7 +3452,13 @@ export default function Board() {
                                           columnKey,
                                           issue.id,
                                         )
-                                    : undefined
+                                    : groupByStateGroups && columnKey
+                                      ? (issue) =>
+                                          stateGroupCardDragId(
+                                            columnKey,
+                                            issue.id,
+                                          )
+                                      : undefined
                     }
                     issues={g.issues}
                     disabled={!canEdit}
@@ -3247,8 +3467,18 @@ export default function Board() {
                     // the form has no creator picker). Cards stay
                     // draggable — only the "+" tool and QuickAdd row
                     // are disabled, so within-column reorder still
-                    // works.
-                    disableQuickAdd={groupByCreatedBy}
+                    // works. C135T2: per-column quick-add ENABLED
+                    // under state-group grouping, EXCEPT columns with
+                    // no states at all (no state to default to — the
+                    // Unknown column, or a synthesized empty group
+                    // whose group has no state): those render
+                    // disabled via the same dedicated prop, so their
+                    // cards stay draggable and within-column reorder
+                    // still works.
+                    disableQuickAdd={
+                      groupByCreatedBy ||
+                      (groupByStateGroups && !g.newStateId)
+                    }
                     dropDisabled={dropBlocked.has(g.droppableId)}
                     onQuickCreate={(name) => quickCreate(g, name)}
                     onQuickExpand={(name) => quickExpand(g, name)}
