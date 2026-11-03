@@ -75,6 +75,16 @@ import {
   planAssigneeQuickAdd,
   planBoardQuickExpand,
 } from "../components/issue/boardAssignee";
+import {
+  buildLabelBoardGroups,
+  labelCardDragId,
+  labelDragColumnKey,
+  labelDragIssueId,
+  labelDropColumnKey,
+  planBoardLabelQuickExpand,
+  planLabelDrop,
+  planLabelQuickAdd,
+} from "../components/issue/boardLabel";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import PqlEditor from "../components/issue/PqlEditor";
@@ -552,6 +562,8 @@ function BoardColumn({
   priority,
   epicId,
   assigneeId,
+  labelId,
+  labelColor,
   byGroup,
   cardState,
   getCardDragId,
@@ -580,6 +592,13 @@ function BoardColumn({
    *  When set, the header shows the assignee glyph (Ungrouped = Ban),
    *  mirroring the epic header glyph rule — no new visual language. */
   assigneeId?: string | null;
+  /** C130T1: label-mode columns — label id (null = Ungrouped).
+   *  When set, the header shows the label's color dot (the same
+   *  color-dot primitive the sub-group section headers already use;
+   *  Ungrouped = Ban) — no new visual language. */
+  labelId?: string | null;
+  /** C130T1: label-mode columns — the label's color from the row. */
+  labelColor?: string;
   /** C72T1: per-state-group member counts for the epic header breakdown. */
   byGroup?: Record<string, number>;
   /** C72T1: per-card state badge — epic columns no longer imply state, so
@@ -653,6 +672,16 @@ function BoardColumn({
             <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
           ) : (
             <User className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          )
+        ) : labelId !== undefined ? (
+          labelId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : (
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ backgroundColor: labelColor }}
+              aria-hidden="true"
+            />
           )
         ) : state ? (
           <span
@@ -1083,8 +1112,10 @@ export default function Board() {
     ? (boardIssues.find(
         (i) =>
           i.id ===
-          assigneeDragIssueId(
-            epicDragIssueId(subgroupDragIssueId(activeId)),
+          labelDragIssueId(
+            assigneeDragIssueId(
+              epicDragIssueId(subgroupDragIssueId(activeId)),
+            ),
           ),
       ) ?? null)
     : null;
@@ -1235,6 +1266,58 @@ export default function Board() {
     assigneeAttachMutation.mutate({ issueId, memberId });
   }
 
+  /** C130T1: label-column drops attach the issue to the target
+   *  label (the label membership endpoint — idempotent,
+   *  multi-label aware, never detaches other labels). */
+  const labelAttachMutation = useMutation({
+    mutationFn: ({
+      issueId,
+      labelId,
+    }: {
+      issueId: string;
+      labelId: string;
+    }) =>
+      api.post(
+        `${base}/issues/${issueId}/labels/${encodeURIComponent(labelId)}`,
+      ),
+    onError: (e) => {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to label issue",
+      );
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: issuesKey });
+      void queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    },
+  });
+
+  /** Optimistic attach: the card appears in the target label column
+   *  immediately; the refetch on settle corrects any drift. */
+  function attachToLabel(
+    issueId: string,
+    labelId: string,
+    labelName: string,
+    labelColor?: string,
+  ) {
+    setBoardError(null);
+    queryClient.setQueryData<Issue[]>(displayKey, (old) =>
+      old?.map((i) =>
+        i.id === issueId
+          ? {
+              ...i,
+              labels: [
+                ...(i.labels ?? []),
+                { id: labelId, name: labelName, color: labelColor ?? "" },
+              ],
+            }
+          : i,
+      ),
+    );
+    labelAttachMutation.mutate({ issueId, labelId });
+  }
+
   /** Optimistic attach: the card appears in the target epic column
    *  immediately; the refetch on settle corrects any drift. */
   function attachToEpic(issueId: string, epicId: string, epicName: string) {
@@ -1262,6 +1345,9 @@ export default function Board() {
   // C129T1: assignee columns render one column per member (same rule
   // as epic columns — the column no longer implies state).
   const groupByAssignees = settings.groupBy === "assignees";
+  // C130T1: label columns render one column per label (same rule
+  // as assignee columns — the column no longer implies state).
+  const groupByLabels = settings.groupBy === "labels";
 
   /** One board column: a state (default), a priority bucket, or a live
    *  epic, depending on the Display panel's Group by setting. */
@@ -1276,8 +1362,14 @@ export default function Board() {
     epicId?: string | null;
     /** C129T1: assignee-mode columns — member id (null = Ungrouped). */
     assigneeId?: string | null;
+    /** C130T1: label-mode columns — label id (null = Ungrouped). */
+    labelId?: string | null;
+    /** C130T1: label-mode columns — the label's color from the row. */
+    labelColor?: string;
     /** C72T1: column key for epic-mode dnd ids. C129T1: same field
-     *  carries the assignee column key (member id / "ungrouped"). */
+     *  carries the assignee column key (member id / "ungrouped").
+     *  C130T1: same field carries the label column key
+     *  (label id / "ungrouped"). */
     columnKey?: string;
     /** C72T1: per-state-group member counts for the epic header breakdown. */
     byGroup?: Record<string, number>;
@@ -1330,6 +1422,23 @@ export default function Board() {
         issues: g.issues,
         newStateId: g.newStateId,
       }));
+    } else if (groupByLabels) {
+      // C130T1: group by label membership (see boardLabel.ts for
+      // the multi-appearance + Ungrouped-last semantics, built on
+      // T0's groupIssuesByLabel). Quick-add stamps the first sorted
+      // state, mirroring the assignee columns. "Show empty groups"
+      // synthesizes no label columns: the builder only emits columns
+      // for labels on loaded issues, and the empty-group filter below
+      // drops nothing here because no built column is ever empty.
+      gs = buildLabelBoardGroups(boardIssues, states[0]?.id).map((g) => ({
+        droppableId: g.droppableId,
+        title: g.title,
+        columnKey: g.columnKey,
+        labelId: g.labelId,
+        labelColor: g.color,
+        issues: g.issues,
+        newStateId: g.newStateId,
+      }));
     } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
@@ -1373,6 +1482,7 @@ export default function Board() {
   }, [
     groupByEpic,
     groupByAssignees,
+    groupByLabels,
     settings.groupBy,
     settings.showEmptyGroups,
     states,
@@ -1387,6 +1497,8 @@ export default function Board() {
   // epic columns — epic drops attach without changing state (priority
   // drops re-stamp priority, also exempt). C129T1: same exemption for
   // assignee columns — assignee drops attach without changing state.
+  // C130T1: same exemption for label columns — label drops attach
+  // without changing state.
   // Client hint only; the server enforces on PATCH.
   const dropBlocked = useMemo(() => {
     const blocked = new Set<string>();
@@ -1408,15 +1520,21 @@ export default function Board() {
    *  in priority-grouped mode). C72T1: an epic column's quick-add also
    *  attaches the new issue to the column's epic (Ungrouped = plain
    *  create, no attach). C129T1: an assignee column's quick-add also
-   *  attaches the new issue to the column's member (same rule). The
+   *  attaches the new issue to the column's member (same rule).
+   *  C130T1: a label column's quick-add also attaches the new issue
+   *  to the column's label (same rule). The
    *  new card appears via query invalidation — no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
-    const { stateId, attachEpicId } = groupByAssignees
-      ? { stateId: group.newStateId, attachEpicId: null as string | null }
-      : planEpicQuickAdd(group);
+    const { stateId, attachEpicId } =
+      groupByAssignees || groupByLabels
+        ? { stateId: group.newStateId, attachEpicId: null as string | null }
+        : planEpicQuickAdd(group);
     const { attachAssigneeId } = groupByAssignees
       ? planAssigneeQuickAdd(group)
       : { attachAssigneeId: null as string | null };
+    const { attachLabelId } = groupByLabels
+      ? planLabelQuickAdd(group)
+      : { attachLabelId: null as string | null };
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
       ...(stateId ? { state_id: stateId } : {}),
@@ -1452,6 +1570,20 @@ export default function Board() {
         );
       }
     }
+    if (attachLabelId) {
+      try {
+        await api.post(
+          `${base}/issues/${created.id}/labels/${encodeURIComponent(attachLabelId)}`,
+        );
+      } catch (e) {
+        // Same rule as the assignee path: the issue exists, only the
+        // attach failed — surface it and let the invalidation below
+        // show the card in Ungrouped.
+        setBoardError(
+          e instanceof ApiError ? e.message : "Failed to label issue",
+        );
+      }
+    }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
     await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
   }
@@ -1461,10 +1593,16 @@ export default function Board() {
    *  C129T1: an assignee column also carries its member id, which the
    *  list page attaches after create (its dialog has no assignee
    *  field — see Issues.tsx's pendingAssigneeRef); Ungrouped columns
-   *  carry title + state only. */
+   *  carry title + state only. C130T1: a label column also carries
+   *  its label id, which the list page attaches after create the same
+   *  way (its dialog has no label field either — see Issues.tsx's
+   *  pendingLabelRef, C130T0); Ungrouped label columns carry title +
+   *  state only. */
   function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
-      state: planBoardQuickExpand(group, name),
+      state: groupByLabels
+        ? planBoardLabelQuickExpand(group, name)
+        : planBoardQuickExpand(group, name),
     });
   }
 
@@ -1611,6 +1749,74 @@ export default function Board() {
     write(retry.sortOrder);
   }
 
+  /** C130T1: within-column reorder for label columns — sort_order
+   *  only, never a re-label. Mirrors applyAssigneeReorder verbatim
+   *  with the label column builder: the column's visible sequence is
+   *  the stack, because a label column mixes states. Gap collapse
+   *  follows the same rebalance → refetch → retry-once pipeline, then
+   *  an honest error (never a loop). `overIssueId` null = dropped on
+   *  the column itself (append at the end). */
+  async function applyLabelReorder(
+    issueId: string,
+    stateId: string,
+    columnKey: string,
+    overIssueId: string | null,
+  ) {
+    const col = groups.find((g) => g.columnKey === columnKey);
+    if (!col) return;
+    const write = (sortOrder: number) => writeDrop(issueId, stateId, sortOrder);
+    if (overIssueId === null) {
+      const without = col.issues.filter((i) => i.id !== issueId);
+      if (without.length === 0) return;
+      if (col.issues[col.issues.length - 1]?.id === issueId) return;
+      const so = midpoint(without[without.length - 1].sort_order, null);
+      if (so === null) return;
+      write(so);
+      return;
+    }
+    const drop = stackDropSortOrder(col.issues, issueId, overIssueId);
+    if (!drop.moved) return;
+    if (drop.sortOrder !== null) {
+      write(drop.sortOrder);
+      return;
+    }
+    // Gap collapsed: rebalance the issue's state column, refetch, and
+    // retry once against the fresh column sequence.
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
+    const fresh = refetched.data ?? [];
+    const freshVisible = splitNestedIssues(
+      fresh,
+      settings.showSubWorkItems,
+    ).visibleIssues;
+    const freshCol = buildLabelBoardGroups(
+      freshVisible,
+      states[0]?.id,
+    ).find((g) => g.columnKey === columnKey);
+    if (!freshCol) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    const retry = stackDropSortOrder(freshCol.issues, issueId, overIssueId);
+    if (!retry.moved || retry.sortOrder === null) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    write(retry.sortOrder);
+  }
+
   function onDragStart(e: DragStartEvent) {
     setBoardError(null);
     setActiveId(String(e.active.id));
@@ -1632,7 +1838,8 @@ export default function Board() {
     // identity for non-matching ids).
     const dragged = all.find(
       (i) =>
-        i.id === assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+        i.id ===
+        labelDragIssueId(assigneeDragIssueId(epicDragIssueId(activeIssueId))),
     );
     if (!dragged) return;
 
@@ -1690,6 +1897,52 @@ export default function Board() {
       const targetTitle =
         groups.find((g) => g.columnKey === columnKey)?.title ?? plan.memberId;
       attachToAssignee(dragged.id, plan.memberId, targetTitle);
+      return;
+    }
+
+    if (groupByLabels) {
+      // C130T1: label columns — cross-column drops ATTACH ONLY
+      // (idempotent, multi-label aware; Ungrouped drops are a
+      // deliberate no-op). Label drops never change state, so the
+      // C68 transition guard does not apply. A drag whose source
+      // column IS the target column is a within-column reorder
+      // (sort_order only — a reorder never re-labels), resolved
+      // from the dragged card's compound id. The over id may be the
+      // column droppable or a card inside it (compound id);
+      // sub-group-section cards unwrap to plain issue ids and resolve
+      // no column, so those drops stay visual-only, as assignee drops
+      // do under sub-grouping.
+      const columnKey = labelDropColumnKey(overId);
+      if (columnKey === null) return;
+      const sourceKey = labelDragColumnKey(activeIssueId);
+      if (sourceKey !== null && sourceKey === columnKey) {
+        if (overId === `label:${columnKey}`) {
+          void applyLabelReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            null,
+          );
+        } else {
+          void applyLabelReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            labelDragIssueId(overId),
+          );
+        }
+        return;
+      }
+      const plan = planLabelDrop(columnKey, dragged);
+      if (plan.kind === "noop") return;
+      const target =
+        groups.find((g) => g.columnKey === columnKey);
+      attachToLabel(
+        dragged.id,
+        plan.labelId,
+        target?.title ?? plan.labelId,
+        target?.labelColor,
+      );
       return;
     }
 
@@ -1757,9 +2010,10 @@ export default function Board() {
         viewName="Board"
         // C72T1: under multi-appearance the column memberships exceed the
         // issue count — the header shows UNIQUE issues, not memberships.
-        // C129T1: same rule for assignee columns.
+        // C129T1: same rule for assignee columns. C130T1: same rule
+        // for label columns.
         count={
-          groupByEpic || groupByAssignees
+          groupByEpic || groupByAssignees || groupByLabels
             ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
@@ -1892,9 +2146,11 @@ export default function Board() {
                     priority={g.priority}
                     epicId={g.epicId}
                     assigneeId={g.assigneeId}
+                    labelId={g.labelId}
+                    labelColor={g.labelColor}
                     byGroup={g.byGroup}
                     cardState={
-                      groupByEpic || groupByAssignees
+                      groupByEpic || groupByAssignees || groupByLabels
                         ? (issue) => stateById.get(issue.state_id)
                         : undefined
                     }
@@ -1903,7 +2159,9 @@ export default function Board() {
                         ? (issue) => epicCardDragId(columnKey, issue.id)
                         : groupByAssignees && columnKey
                           ? (issue) => assigneeCardDragId(columnKey, issue.id)
-                          : undefined
+                          : groupByLabels && columnKey
+                            ? (issue) => labelCardDragId(columnKey, issue.id)
+                            : undefined
                     }
                     issues={g.issues}
                     disabled={!canEdit}

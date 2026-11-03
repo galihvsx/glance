@@ -369,6 +369,7 @@ export default function Issues() {
       newIssueStartDate?: string;
       newIssueTargetDate?: string;
       newIssueAssigneeId?: string;
+      newIssueLabelId?: string;
     } | null;
     if (st?.newIssue) {
       if (typeof st.newIssueName === "string") setName(st.newIssueName);
@@ -383,6 +384,12 @@ export default function Issues() {
       // onSuccess). The dialog-close handler clears it on cancel.
       if (typeof st.newIssueAssigneeId === "string")
         pendingAssigneeRef.current = st.newIssueAssigneeId;
+      // C130T1: board label-column expand carries the label id
+      // here; the create dialog has no label field, so it rides
+      // pendingLabelRef and attaches after create (same rule as the
+      // assignee carry above and the list's own label-group expand).
+      if (typeof st.newIssueLabelId === "string")
+        pendingLabelRef.current = st.newIssueLabelId;
       if (typeof st.newIssueStartDate === "string")
         setNewStartDate(st.newIssueStartDate);
       if (typeof st.newIssueTargetDate === "string")
