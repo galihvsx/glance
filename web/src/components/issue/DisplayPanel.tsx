@@ -50,6 +50,10 @@ const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
   // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by created-by
   // is a later cycle, not a silent addition).
   { value: "createdBy", label: "Created by" },
+  // C135T1: after createdBy, before none; old options unreordered.
+  // Deliberately NOT in SUB_GROUP_OPTIONS (sub-group by state-group
+  // is a later cycle, not a silent addition).
+  { value: "stateGroups", label: "State groups" },
   { value: "none", label: "None" },
 ];
 

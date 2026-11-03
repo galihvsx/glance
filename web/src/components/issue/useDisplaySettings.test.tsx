@@ -172,6 +172,12 @@ describe("useDisplaySettings subGroupBy (C123T0)", () => {
     expect(result.current.settings.groupBy).toBe("labels");
   });
 
+  it("keeps a stored stateGroups groupBy value (C135T1 whitelist)", () => {
+    localStorage.setItem(KEY, JSON.stringify({ groupBy: "stateGroups" }));
+    const { result } = renderHook(() => useDisplaySettings("acme", "ENG"));
+    expect(result.current.settings.groupBy).toBe("stateGroups");
+  });
+
   it("gives pre-existing stored settings the key as none (no migration)", () => {
     localStorage.setItem(
       KEY,

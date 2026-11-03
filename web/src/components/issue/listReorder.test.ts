@@ -150,6 +150,33 @@ describe("isListDragEnabled", () => {
     ).toBe(false);
   });
 
+  it("enables for state-group grouping under Manual rank in visual mode (C135T1)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "stateGroups",
+      }),
+    ).toBe(true);
+  });
+  it("disables state-group grouping under non-Manual order or PQL mode (C135T1)", () => {
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "-updated_at",
+        groupBy: "stateGroups",
+      }),
+    ).toBe(false);
+    expect(
+      isListDragEnabled({
+        ...base,
+        orderBy: "sort_order",
+        groupBy: "stateGroups",
+        pqlMode: true,
+      }),
+    ).toBe(false);
+  });
+
   it("disables cycle grouping under non-Manual order or PQL mode (C132T1)", () => {
     expect(
       isListDragEnabled({
