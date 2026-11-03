@@ -5,6 +5,43 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by labels in the list and board views (cycle 130)**
+
+- Plane's Group by offers Labels (among other dimensions);
+  glance offered only state, priority, epic, assignees, none.
+  The Display panel's Group by now includes Labels for the list
+  and the board: one group/column per label in first-appearance
+  order, multi-appearance (an issue with N labels shows under
+  every label), Ungrouped last and hidden when empty, names and
+  colors taken from the row itself. No backend change: label
+  membership endpoints already existed.
+- List: header drops move, mirroring the cycle 129 assignee
+  pipeline — add target label, remove the dragged appearance's
+  source label, PATCH bottom `sort_order`; the Ungrouped header
+  removes all labels with no sort PATCH. Reorder is enabled
+  under label grouping with the cycle 128 mixed-state
+  gap-collapse recovery (rebalance distinct neighbor states,
+  refetch, retry once, honest error). Per-group quick-add
+  attaches the label after create; expand-to-full-form carries
+  the label the same way.
+- Board: columns per label with compound card ids; cross-column
+  drops attach only (never detach, never change state, so no
+  workflow transition guard — mirroring assignee columns;
+  Ungrouped drops are a deliberate no-op); within-column drags
+  reorder by `sort_order` using the column's own card sequence.
+  Quick-add per column attaches the label after create;
+  expand-to-full-form carries the label via the list page's
+  attach-after-create. Header counts stay unique issues under
+  multi-appearance.
+- Boundaries: "Show empty groups" synthesizes no label columns
+  (groups derive from loaded issues only); labels-as-sub-group
+  is a later cycle (sub-group sections under label primaries
+  still work for state/priority/epic); keyboard drag to a header
+  remains out of scope per cycle 127; the board drop and
+  within-column reorder pipelines are unit-tested at their
+  pieces but, like all board drags, their final verifier is a
+  live browser drag.
+
 **Group by assignees in the list and board views (cycle 129)**
 
 - Plane's Group by offers Assignees (among other dimensions);
