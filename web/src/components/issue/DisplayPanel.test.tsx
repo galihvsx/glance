@@ -266,6 +266,17 @@ describe("DisplayPanel sub-group by (C123T0)", () => {
     expect(radio("None")).not.toBeDisabled();
   });
 
+  it("disables the State groups sub-option under primary State groups grouping (C139T1)", () => {
+    renderPanelWithUpdate({
+      ...DEFAULT_DISPLAY_SETTINGS,
+      groupBy: "stateGroups",
+    });
+    const { radio } = subGroupRadios();
+    expect(radio("State groups")).toBeDisabled();
+    expect(radio("Created by")).not.toBeDisabled();
+    expect(radio("None")).not.toBeDisabled();
+  });
+
   it("selecting Created by reports subGroupBy createdBy (C138T1)", () => {
     const { onUpdate } = renderPanelWithUpdate();
     fireEvent.click(subGroupRadios().radio("Created by"));
@@ -561,7 +572,7 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
 
   it("adds Created by to the Sub-group by options after Labels — old options unreordered (C138T1)", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]);
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups"]);
     const idx = (name: string) => subLabels.indexOf(name);
     expect(idx("Created by")).toBeGreaterThan(idx("Labels"));
   });
@@ -580,9 +591,10 @@ describe("DisplayPanel Group by Created by (C134T1)", () => {
     expect(radio("State groups")).toHaveAttribute("aria-checked", "true");
   });
 
-  it("does NOT add State groups to the Sub-group by options", () => {
+  it("adds State groups to the Sub-group by options after Created by — old options unreordered (C139T1)", () => {
     const { subLabels } = renderGroupBy();
-    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by"]);
-    expect(subLabels).not.toContain("State groups");
+    expect(subLabels).toEqual(["None", "State", "Priority", "Epic", "Assignees", "Labels", "Created by", "State groups"]);
+    const idx = (name: string) => subLabels.indexOf(name);
+    expect(idx("State groups")).toBeGreaterThan(idx("Created by"));
   });
 });

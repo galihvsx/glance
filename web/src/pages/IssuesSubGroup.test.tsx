@@ -419,6 +419,113 @@ describe("list sub-group sections (C123T1)", () => {
     expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
   });
 
+  it("renders state-group sub-sections in canonical order, single-appearance (C139T1)", async () => {
+    // One priority primary group holding states from three groups,
+    // in scrambled order — sub-sections still emit triage → cancelled.
+    setSettings({ groupBy: "priority", subGroupBy: "stateGroups" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-done", 4),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-todo", 4),
+      mkIssue("i-3", "ENG-3", "Gamma issue", "s-doing", 4),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    // The Urgent primary group holds all three rows; its
+    // sub-sections (showEmptyGroups on) are all six canonical
+    // groups, in backend order, regardless of issue order.
+    const urgent = within(screen.getByRole("region", { name: "Urgent" }));
+    const subTitles = urgent
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(subTitles).toEqual([
+      "Triage",
+      "Backlog",
+      "Unstarted",
+      "Started",
+      "Completed",
+      "Cancelled",
+    ]);
+    // Single-appearance: no issue renders twice.
+    expect(screen.getAllByText("Alpha issue")).toHaveLength(1);
+    expect(screen.getAllByText("Beta issue")).toHaveLength(1);
+    expect(screen.getAllByText("Gamma issue")).toHaveLength(1);
+  });
+
+  it("state-group sub-group renders Unknown last, hidden when empty (C139T1)", async () => {
+    // Priority primary: a missing-state row still renders (primary
+    // state grouping would drop it — it matches no state group), so
+    // the Unknown sub-section is observable here.
+    setSettings({
+      groupBy: "priority",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: false,
+    });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 4),
+      mkIssue("i-2", "ENG-2", "Beta issue", "s-missing", 4),
+    ];
+    renderIssues();
+    await screen.findAllByText("Alpha issue");
+    const urgent = within(screen.getByRole("region", { name: "Urgent" }));
+    // Empty canonical groups filtered; Unknown last, never a raw id.
+    expect(
+      urgent.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Unstarted", "Unknown"]);
+    expect(screen.queryByText("s-missing")).not.toBeInTheDocument();
+  });
+
+  it("state-group sub-group hides Unknown when every state resolves (C139T1)", async () => {
+    setSettings({
+      groupBy: "priority",
+      subGroupBy: "stateGroups",
+      showEmptyGroups: false,
+    });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 4),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    const urgent = within(screen.getByRole("region", { name: "Urgent" }));
+    expect(
+      urgent.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Unstarted"]);
+  });
+
+  it("state-group sub-header is NOT a drop target — no state-group-move plan resolves (C139T1)", async () => {
+    setSettings({ groupBy: "state", subGroupBy: "stateGroups" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    // Scoped to the Todo primary group: showEmptyGroups on renders
+    // the six canonical sub-sections under every state primary, so
+    // the document holds several "Unstarted" sub-headers.
+    const todo = within(screen.getByRole("region", { name: "Todo" }));
+    const header = todo.getByRole("heading", {
+      level: 3,
+      name: "Unstarted",
+    });
+    // The state-group header renders as the plain div, never a
+    // dropzone: a group holds several states, so toHeaderTarget
+    // returns null (no single target state).
+    expect(
+      header.closest('[data-testid="header-dropzone"]'),
+    ).toBeNull();
+  });
+
+  it("stateGroups primary + stateGroups sub-group renders flat (same-dimension rule, C139T1)", async () => {
+    setSettings({ groupBy: "stateGroups", subGroupBy: "stateGroups" });
+    mockState.issues = [
+      mkIssue("i-1", "ENG-1", "Alpha issue", "s-todo", 0),
+    ];
+    renderIssues();
+    await screen.findByText("Alpha issue");
+    // The same-dimension rule renders flat, no sub-headers — the
+    // shared "stateGroups" literal is what makes this automatic.
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
   it("assignee sub-group hides Ungrouped when every issue is assigned (C136T1)", async () => {
     setSettings({ groupBy: "state", subGroupBy: "assignees" });
     mockState.issues = [

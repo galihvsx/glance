@@ -18,7 +18,16 @@
 // (hidden when empty) are inherited verbatim. Creator sections come
 // from the existing groupByCreatedBy helper the same way (C138T1):
 // single-appearance, first-appearance order, and Unknown-last
-// (hidden when empty) are inherited verbatim.
+// (hidden when empty) are inherited verbatim. State-group sections
+// come from the existing groupByStateGroup helper the same way
+// (C139T1): single-appearance, backend-fixed canonical order
+// (triage, backlog, unstarted, started, completed, cancelled), and
+// Unknown-last (hidden when empty) are inherited verbatim, with
+// empty canonical groups synthesized via { includeEmptyGroups: true }
+// (the call site filters them when showEmptyGroups is off).
+// State-group sections carry NO color, NO breakdown bar, and NO
+// target fields: a group holds several states, so a cross-group drop
+// has no single target state and the headers are never droppable.
 
 import { groupIssuesByAssignee } from "./groupByAssignee";
 import {
@@ -27,6 +36,7 @@ import {
 } from "./groupByCreatedBy";
 import { groupIssuesByEpic } from "./groupByEpic";
 import { groupIssuesByLabel } from "./groupByLabel";
+import { groupIssuesByStateGroup } from "./groupByStateGroup";
 import type {
   DisplaySettings,
   SubGroupBy,
@@ -66,6 +76,7 @@ const SUB_GROUP_BYS: SubGroupBy[] = [
   "assignees",
   "labels",
   "createdBy",
+  "stateGroups",
 ];
 
 /** Ungrouped section key for state sub-grouping (issues whose state
@@ -110,6 +121,19 @@ export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
  *    created_by is immutable, so the headers are never droppable.
  *    A missing membersById reads as "no member matches" — every
  *    issue collapses to Unknown, never a raw id label.
+ *  - stateGroups: single-appearance via groupByStateGroup (an issue
+ *    appears under exactly one state-group section; canonical order
+ *    triage → cancelled regardless of issue order, Unknown last,
+ *    hidden when empty by groupByStateGroup itself; empty canonical
+ *    groups synthesized via { includeEmptyGroups: true } and
+ *    filtered by the call site when showEmptyGroups is off).
+ *    State-group sections carry NO color (groups have none), NO
+ *    breakdown bar, NO stateGroup field (a section IS a group, not
+ *    a state in one), and NO target fields: a group holds several
+ *    states, so a cross-group drop has no single target state and
+ *    the headers are never droppable. A missing stateGroupById
+ *    reads as "no state matches" — every issue collapses to
+ *    Unknown, never a raw state id label.
  *  - none: a single section carrying all issues unchanged. */
 export function buildSubGroupSections(
   issues: Issue[],
@@ -118,6 +142,7 @@ export function buildSubGroupSections(
     states: IssueState[];
     stateById: Map<string, IssueState>;
     membersById?: ReadonlyMap<string, CreatorLookupEntry>;
+    stateGroupById?: ReadonlyMap<string, string>;
   },
 ): SubGroupSection[] {
   const { states, stateById } = opts;
@@ -212,6 +237,26 @@ export function buildSubGroupSections(
     return groupIssuesByCreatedBy(
       issues,
       opts.membersById ?? new Map(),
+    ).map((g) => ({
+      key: g.key,
+      title: g.title,
+      issues: g.issues,
+    }));
+  }
+  // stateGroups: reuse groupByStateGroup — single-appearance,
+  // canonical order, Unknown last (hidden when empty), empty
+  // canonical groups synthesized (call site filters them when
+  // showEmptyGroups is off). The group key and title pass through
+  // verbatim (stategroup:<group>; Unknown key
+  // "stategroup:unknown"); NO color, NO breakdown bar, NO
+  // stateGroup field, NO target fields — the C127T0 rule then
+  // yields a non-droppable header, and there is no state-group-move
+  // pipeline to wire (a group holds several states).
+  if (subGroupBy === "stateGroups") {
+    return groupIssuesByStateGroup(
+      issues,
+      opts.stateGroupById ?? new Map(),
+      { includeEmptyGroups: true },
     ).map((g) => ({
       key: g.key,
       title: g.title,

@@ -1675,6 +1675,9 @@ export default function Issues() {
         // C138T1: the created-by branch resolves creator labels from
         // this map (label = name ?? email; member-miss → Unknown).
         membersById,
+        // C139T1: the state-groups branch resolves groups from this
+        // map (state id -> group string; map-miss → Unknown).
+        stateGroupById,
       });
       // Show-empty filtering for sub-sections follows showEmptyGroups,
       // same as primary groups.
@@ -1693,6 +1696,7 @@ export default function Issues() {
     sortedStates,
     stateById,
     membersById,
+    stateGroupById,
     settings.showEmptyGroups,
   ]);
   // Flattened order = primary-group order, then sub-section order
