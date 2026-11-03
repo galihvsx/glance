@@ -95,6 +95,18 @@ import {
   planModuleDrop,
   planModuleQuickAdd,
 } from "../components/issue/boardModule";
+import {
+  CYCLE_UNGROUPED_COLUMN_KEY,
+  buildCycleBoardGroups,
+  cycleCardDragId,
+  cycleDragColumnKey,
+  cycleDragIssueId,
+  cycleDropColumnKey,
+  executeCycleMove,
+  planBoardCycleQuickExpand,
+  planCycleDrop,
+  planCycleQuickAdd,
+} from "../components/issue/boardCycle";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import PqlEditor from "../components/issue/PqlEditor";
@@ -575,6 +587,7 @@ function BoardColumn({
   labelId,
   labelColor,
   moduleId,
+  cycleId,
   byGroup,
   cardState,
   getCardDragId,
@@ -615,6 +628,11 @@ function BoardColumn({
    *  (NamedRef carries id + name only) — name + count only.
    *  Ungrouped = Ban, mirroring the label/assignee header rule. */
   moduleId?: string | null;
+  /** C132T2: cycle-mode columns — cycle id (null = Ungrouped).
+   *  When set, the header shows NO color dot: cycles have no color
+   *  (NamedRef carries id + name only) — name + count only.
+   *  Ungrouped = Ban, mirroring the module header rule. */
+  cycleId?: string | null;
   /** C72T1: per-state-group member counts for the epic header breakdown. */
   byGroup?: Record<string, number>;
   /** C72T1: per-card state badge — epic columns no longer imply state, so
@@ -704,6 +722,13 @@ function BoardColumn({
           // none); Ungrouped keeps the Ban glyph, member columns
           // render name + count only.
           moduleId === null ? (
+            <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
+          ) : null
+        ) : cycleId !== undefined ? (
+          // C132T2: cycle columns render NO color dot (cycles have
+          // none) — same rule as modules; Ungrouped keeps the Ban
+          // glyph, member columns render name + count only.
+          cycleId === null ? (
             <Ban className="h-[13px] w-[13px] text-ink-muted" aria-hidden />
           ) : null
         ) : state ? (
@@ -1135,10 +1160,12 @@ export default function Board() {
     ? (boardIssues.find(
         (i) =>
           i.id ===
-          moduleDragIssueId(
-            labelDragIssueId(
-              assigneeDragIssueId(
-                epicDragIssueId(subgroupDragIssueId(activeId)),
+          cycleDragIssueId(
+            moduleDragIssueId(
+              labelDragIssueId(
+                assigneeDragIssueId(
+                  epicDragIssueId(subgroupDragIssueId(activeId)),
+                ),
               ),
             ),
           ),
@@ -1398,6 +1425,69 @@ export default function Board() {
     moduleAttachMutation.mutate({ issueId, moduleId });
   }
 
+  /** C132T2: cycle-column drops MOVE the issue to the target cycle
+   *  (the deliberate divergence from the attach-only precedent — the
+   *  single-value display would misdisplay an attach-only card under
+   *  the wrong cycle). Optimistic move: the card appears in the target
+   *  cycle column immediately; the invalidation below restores server
+   *  state in every outcome. Add failure aborts before remove (the
+   *  issue is untouched); remove failure after a successful add
+   *  surfaces honestly — the issue is now in both cycles, and the
+   *  refetch shows whichever the server resolves as displayed. Never
+   *  changes state, so no C68 guard applies. */
+  async function moveToCycle(
+    issueId: string,
+    cycleId: string,
+    cycleName: string,
+    sourceCycleId: string | null,
+  ) {
+    setBoardError(null);
+    queryClient.setQueryData<Issue[]>(displayKey, (old) =>
+      old?.map((i) =>
+        i.id === issueId
+          ? {
+              ...i,
+              project_structure: {
+                ...(i.project_structure ?? { modules: [] }),
+                cycle: { id: cycleId, name: cycleName },
+              },
+            }
+          : i,
+      ),
+    );
+    const result = await executeCycleMove(
+      {
+        addToCycle: (targetCycleId, id) =>
+          api.post(
+            `${base}/cycles/${encodeURIComponent(targetCycleId)}/issues`,
+            { issue_ids: [id] },
+          ),
+        removeFromCycle: (sourceId, id) =>
+          api.del(
+            `${base}/cycles/${encodeURIComponent(sourceId)}/issues`,
+            { issue_ids: [id] },
+          ),
+      },
+      { kind: "move", cycleId, sourceCycleId },
+      issueId,
+    );
+    if (!result.ok) {
+      const detail =
+        result.error instanceof ApiError
+          ? result.error.message
+          : null;
+      setBoardError(
+        result.stage === "add"
+          ? (detail ?? "Failed to move issue to cycle")
+          : (detail
+              ? `${detail} (the issue is now in both cycles)`
+              : "Issue was added to the new cycle but could not be removed from the old cycle"),
+      );
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+  }
+
   /** Optimistic attach: the card appears in the target epic column
    *  immediately; the refetch on settle corrects any drift. */
   function attachToEpic(issueId: string, epicId: string, epicName: string) {
@@ -1431,6 +1521,9 @@ export default function Board() {
   // C131T1: module columns render one column per module (same rule
   // as label columns — the column no longer implies state).
   const groupByModules = settings.groupBy === "modules";
+  // C132T2: cycle columns render one column per cycle (same rule
+  // as module columns — the column no longer implies state).
+  const groupByCycles = settings.groupBy === "cycles";
 
   /** One board column: a state (default), a priority bucket, or a live
    *  epic, depending on the Display panel's Group by setting. */
@@ -1452,11 +1545,15 @@ export default function Board() {
     /** C131T1: module-mode columns — module id (null = Ungrouped).
      *  No color: modules have none. */
     moduleId?: string | null;
+    /** C132T2: cycle-mode columns — cycle id (null = Ungrouped).
+     *  No color: cycles have none, same rule as modules. */
+    cycleId?: string | null;
     /** C72T1: column key for epic-mode dnd ids. C129T1: same field
      *  carries the assignee column key (member id / "ungrouped").
      *  C130T1: same field carries the label column key
      *  (label id / "ungrouped"). C131T1: same field carries the
-     *  module column key (module id / "ungrouped"). */
+     *  module column key (module id / "ungrouped"). C132T2: same
+     *  field carries the cycle column key (cycle id / "ungrouped"). */
     columnKey?: string;
     /** C72T1: per-state-group member counts for the epic header breakdown. */
     byGroup?: Record<string, number>;
@@ -1544,6 +1641,26 @@ export default function Board() {
         issues: g.issues,
         newStateId: g.newStateId,
       }));
+    } else if (groupByCycles) {
+      // C132T2: group by displayed cycle (see boardCycle.ts for the
+      // single-appearance + Ungrouped-last semantics, built on T1's
+      // groupIssuesByCycle). Quick-add stamps the first sorted
+      // state, mirroring the module columns. "Show empty groups"
+      // synthesizes no cycle columns: the builder only emits columns
+      // for cycles on loaded issues, and the empty-group filter below
+      // drops nothing here because no built column is ever empty.
+      // Cycle headers render name + count with NO color dot —
+      // cycles have no color (see BoardColumn's cycleId branch).
+      // Sub-group sections compose via the C123 machinery below
+      // exactly as under module columns.
+      gs = buildCycleBoardGroups(boardIssues, states[0]?.id).map((g) => ({
+        droppableId: g.droppableId,
+        title: g.title,
+        columnKey: g.columnKey,
+        cycleId: g.cycleId,
+        issues: g.issues,
+        newStateId: g.newStateId,
+      }));
     } else if (settings.groupBy === "priority") {
       gs = [4, 3, 2, 1, 0].map((p) => ({
         droppableId: `priority:${p}`,
@@ -1589,6 +1706,7 @@ export default function Board() {
     groupByAssignees,
     groupByLabels,
     groupByModules,
+    groupByCycles,
     settings.groupBy,
     settings.showEmptyGroups,
     states,
@@ -1605,8 +1723,11 @@ export default function Board() {
   // assignee columns — assignee drops attach without changing state.
   // C130T1: same exemption for label columns — label drops attach
   // without changing state. C131T1: same exemption for module
-  // columns — module drops attach without changing state.
-  // Client hint only; the server enforces on PATCH.
+  // columns — module drops attach without changing state. C132T2:
+  // same exemption for cycle columns — cycle drops MOVE without
+  // changing state. VERIFIED (not assumed): the guard below reads
+  // `settings.groupBy !== "state"` — the hint set is empty in every
+  // non-state grouping, so no code change is needed here for cycles.
   const dropBlocked = useMemo(() => {
     const blocked = new Set<string>();
     if (!workflow || !activeIssue || settings.groupBy !== "state") {
@@ -1631,11 +1752,12 @@ export default function Board() {
    *  C130T1: a label column's quick-add also attaches the new issue
    *  to the column's label (same rule). C131T1: a module column's
    *  quick-add also attaches the new issue to the column's module
-   *  (same rule). The
+   *  (same rule). C132T2: a cycle column's quick-add also attaches
+   *  the new issue to the column's cycle (same rule). The
    *  new card appears via query invalidation — no full reload. */
   async function quickCreate(group: BoardGroup, name: string): Promise<void> {
     const { stateId, attachEpicId } =
-      groupByAssignees || groupByLabels || groupByModules
+      groupByAssignees || groupByLabels || groupByModules || groupByCycles
         ? { stateId: group.newStateId, attachEpicId: null as string | null }
         : planEpicQuickAdd(group);
     const { attachAssigneeId } = groupByAssignees
@@ -1647,6 +1769,9 @@ export default function Board() {
     const { attachModuleId } = groupByModules
       ? planModuleQuickAdd(group)
       : { attachModuleId: null as string | null };
+    const { attachCycleId } = groupByCycles
+      ? planCycleQuickAdd(group)
+      : { attachCycleId: null as string | null };
     const created = await api.post<Issue>(`${base}/issues`, {
       name,
       ...(stateId ? { state_id: stateId } : {}),
@@ -1713,6 +1838,23 @@ export default function Board() {
         );
       }
     }
+    if (attachCycleId) {
+      try {
+        await api.post(
+          `${base}/cycles/${encodeURIComponent(attachCycleId)}/issues`,
+          { issue_ids: [created.id] },
+        );
+      } catch (e) {
+        // Same rule as the module path: the issue exists, only the
+        // attach failed — surface it and let the invalidation below
+        // show the card in Ungrouped.
+        setBoardError(
+          e instanceof ApiError
+            ? e.message
+            : "Failed to attach issue to cycle",
+        );
+      }
+    }
     await queryClient.invalidateQueries({ queryKey: issuesKey });
     await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
   }
@@ -1730,14 +1872,21 @@ export default function Board() {
    *  which the list page attaches after create the same way (its
    *  dialog has no module field either — see Issues.tsx's
    *  pendingModuleRef, C131T0); Ungrouped module columns carry title +
-   *  state only. */
+   *  state only. C132T2: a cycle column also carries its cycle id
+   *  the same way (its dialog has no cycle field either — see
+   *  Issues.tsx's pendingCycleRef, C132T1: T1 built the
+   *  newIssueCycleId bridge for this, so NO list-page edits are
+   *  needed in T2); Ungrouped cycle columns carry title + state
+   *  only. */
   function quickExpand(group: BoardGroup, name: string) {
     navigate(`/w/${slug}/p/${identifier}`, {
-      state: groupByModules
-        ? planBoardModuleQuickExpand(group, name)
-        : groupByLabels
-          ? planBoardLabelQuickExpand(group, name)
-          : planBoardQuickExpand(group, name),
+      state: groupByCycles
+        ? planBoardCycleQuickExpand(group, name)
+        : groupByModules
+          ? planBoardModuleQuickExpand(group, name)
+          : groupByLabels
+            ? planBoardLabelQuickExpand(group, name)
+            : planBoardQuickExpand(group, name),
     });
   }
 
@@ -2020,6 +2169,74 @@ export default function Board() {
     write(retry.sortOrder);
   }
 
+  /** C132T2: within-column reorder for cycle columns — sort_order
+   *  only, never a re-cycle. Mirrors applyModuleReorder verbatim
+   *  with the cycle column builder: the column's visible sequence is
+   *  the stack, because a cycle column mixes states. Gap collapse
+   *  follows the same rebalance → refetch → retry-once pipeline, then
+   *  an honest error (never a loop). `overIssueId` null = dropped on
+   *  the column itself (append at the end). */
+  async function applyCycleReorder(
+    issueId: string,
+    stateId: string,
+    columnKey: string,
+    overIssueId: string | null,
+  ) {
+    const col = groups.find((g) => g.columnKey === columnKey);
+    if (!col) return;
+    const write = (sortOrder: number) => writeDrop(issueId, stateId, sortOrder);
+    if (overIssueId === null) {
+      const without = col.issues.filter((i) => i.id !== issueId);
+      if (without.length === 0) return;
+      if (col.issues[col.issues.length - 1]?.id === issueId) return;
+      const so = midpoint(without[without.length - 1].sort_order, null);
+      if (so === null) return;
+      write(so);
+      return;
+    }
+    const drop = stackDropSortOrder(col.issues, issueId, overIssueId);
+    if (!drop.moved) return;
+    if (drop.sortOrder !== null) {
+      write(drop.sortOrder);
+      return;
+    }
+    // Gap collapsed: rebalance the issue's state column, refetch, and
+    // retry once against the fresh column sequence.
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setBoardError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: issuesKey });
+    await queryClient.invalidateQueries({ queryKey: pqlIssuesKey });
+    const refetched =
+      pqlMode && appliedQuery.trim() !== ""
+        ? await pqlIssuesQuery.refetch()
+        : await boardQuery.refetch();
+    const fresh = refetched.data ?? [];
+    const freshVisible = splitNestedIssues(
+      fresh,
+      settings.showSubWorkItems,
+    ).visibleIssues;
+    const freshCol = buildCycleBoardGroups(
+      freshVisible,
+      states[0]?.id,
+    ).find((g) => g.columnKey === columnKey);
+    if (!freshCol) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    const retry = stackDropSortOrder(freshCol.issues, issueId, overIssueId);
+    if (!retry.moved || retry.sortOrder === null) {
+      setBoardError("Couldn't place the card even after rebalancing.");
+      return;
+    }
+    write(retry.sortOrder);
+  }
+
   function onDragStart(e: DragStartEvent) {
     setBoardError(null);
     setActiveId(String(e.active.id));
@@ -2042,8 +2259,12 @@ export default function Board() {
     const dragged = all.find(
       (i) =>
         i.id ===
-        moduleDragIssueId(
-          labelDragIssueId(assigneeDragIssueId(epicDragIssueId(activeIssueId))),
+        cycleDragIssueId(
+          moduleDragIssueId(
+            labelDragIssueId(
+              assigneeDragIssueId(epicDragIssueId(activeIssueId)),
+            ),
+          ),
         ),
     );
     if (!dragged) return;
@@ -2195,6 +2416,65 @@ export default function Board() {
       return;
     }
 
+    if (groupByCycles) {
+      // C132T2: cycle columns — cross-column drops MOVE (add target
+      // first, then remove source; the deliberate divergence from the
+      // attach-only precedent — single-value display would misdisplay
+      // an attach-only card under the wrong cycle). Ungrouped drops
+      // are a deliberate no-op. Cycle drops never change state, so
+      // the C68 transition guard does not apply (verified
+      // state-grouping-only, see dropBlocked). A drag whose source
+      // column IS the target column is a within-column reorder
+      // (sort_order only — a reorder never re-cycles), resolved
+      // from the dragged card's compound id BEFORE consulting the
+      // drop plan (C131T1 trap: same-column drags reorder, never
+      // no-op as already-member). The over id may be the column
+      // droppable or a card inside it (compound id);
+      // sub-group-section cards unwrap to plain issue ids and resolve
+      // no column, so those drops stay visual-only, as module drops
+      // do under sub-grouping.
+      const columnKey = cycleDropColumnKey(overId);
+      if (columnKey === null) return;
+      const sourceKey = cycleDragColumnKey(activeIssueId);
+      if (sourceKey !== null && sourceKey === columnKey) {
+        if (overId === `cycle:${columnKey}`) {
+          void applyCycleReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            null,
+          );
+        } else {
+          void applyCycleReorder(
+            dragged.id,
+            dragged.state_id,
+            columnKey,
+            cycleDragIssueId(overId),
+          );
+        }
+        return;
+      }
+      const plan = planCycleDrop(columnKey, dragged);
+      if (plan.kind === "noop") return;
+      const target = groups.find((g) => g.columnKey === columnKey);
+      // Source is the dragged card's column (the contract's rule);
+      // the sub-group-section case carries no compound source, so it
+      // falls back to the plan's row-derived source. An Ungrouped
+      // card column is not a real cycle, so it falls back the same
+      // way (the plan names a null source there: add-only move).
+      const sourceCycleId =
+        sourceKey !== null && sourceKey !== CYCLE_UNGROUPED_COLUMN_KEY
+          ? sourceKey
+          : plan.sourceCycleId;
+      void moveToCycle(
+        dragged.id,
+        plan.cycleId,
+        target?.title ?? plan.cycleId,
+        sourceCycleId,
+      );
+      return;
+    }
+
     if (settings.groupBy === "priority") {
       // Priority columns: dropping changes the issue's priority.
       const m = /^priority:([0-4])$/.exec(overId);
@@ -2261,8 +2541,15 @@ export default function Board() {
         // issue count — the header shows UNIQUE issues, not memberships.
         // C129T1: same rule for assignee columns. C130T1: same rule
         // for label columns. C131T1: same rule for module columns.
+        // C132T2: same rule for cycle columns (trivially true under
+        // single-appearance, but asserted — never show membership
+        // counts as issue counts).
         count={
-          groupByEpic || groupByAssignees || groupByLabels || groupByModules
+          groupByEpic ||
+          groupByAssignees ||
+          groupByLabels ||
+          groupByModules ||
+          groupByCycles
             ? uniqueIssueCount(boardIssues)
             : groups.reduce((n, g) => n + g.issues.length, 0)
         }
@@ -2398,12 +2685,14 @@ export default function Board() {
                     labelId={g.labelId}
                     labelColor={g.labelColor}
                     moduleId={g.moduleId}
+                    cycleId={g.cycleId}
                     byGroup={g.byGroup}
                     cardState={
                       groupByEpic ||
                       groupByAssignees ||
                       groupByLabels ||
-                      groupByModules
+                      groupByModules ||
+                      groupByCycles
                         ? (issue) => stateById.get(issue.state_id)
                         : undefined
                     }
@@ -2417,7 +2706,10 @@ export default function Board() {
                             : groupByModules && columnKey
                               ? (issue) =>
                                   moduleCardDragId(columnKey, issue.id)
-                              : undefined
+                              : groupByCycles && columnKey
+                                ? (issue) =>
+                                    cycleCardDragId(columnKey, issue.id)
+                                : undefined
                     }
                     issues={g.issues}
                     disabled={!canEdit}
