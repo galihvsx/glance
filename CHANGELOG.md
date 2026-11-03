@@ -5,6 +5,44 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Group by created-by in the list and board views (cycle 134)**
+
+- Plane's Group by offers Created by (among other dimensions);
+  glance offered state, priority, epic, assignees, labels,
+  modules, cycles, releases, none. The Display panel's Group
+  by now includes Created by for the list and the board: one
+  group/column per creator in first-appearance order,
+  single-appearance (an issue carries exactly one creator —
+  its own `created_by` user id, server-set to the actor at
+  create time), names taken from the workspace members
+  endpoint (`Member.id` is the user id the row references;
+  label is name, else email), creators with no matching
+  member collapsing into one Unknown group/column, last and
+  hidden when empty. Creator groups carry no color, so
+  headers render name + count with no color dot — nothing
+  invented, and a raw user id is never rendered as a label.
+  No backend change: the members endpoint already existed.
+- One deliberate divergence from the cycle 132/133 move
+  pipelines, forced by the data model: there is NO move
+  pipeline for created-by. `created_by` is immutable and no
+  endpoint reassigns a creator, so list group headers are not
+  drop targets, board cross-column drops are a deliberate
+  no-op (no state change, no membership call, no sort PATCH),
+  and per-group / per-column quick-add is disabled (the
+  create form has no creator picker; a row added inside
+  another creator's group would immediately leave it). The
+  global add stays available; expand-to-full-form carries
+  nothing for created-by.
+- List: creator sections via the members lookup, gated on
+  members resolution so first paint never flashes every group
+  as Unknown; within-group reorder by `sort_order` only, with
+  the cycle 128 mixed-state gap-collapse recovery.
+- Board: columns per creator with compound card ids;
+  within-column drags reorder by `sort_order` only, via the
+  column's own card sequence with the same gap-collapse
+  recovery. The board's workflow transition guard is untouched
+  (verified state-grouping-only).
+
 **Group by release in the list and board views (cycle 133)**
 
 - Plane's Group by offers Releases (among other dimensions);
