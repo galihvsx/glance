@@ -21,8 +21,10 @@ package service
 // their responses byte-identical.
 //
 // Contract types (cycle 122 plan, fixed so T0/T1 can run in
-// parallel): SubtaskRow carries EXACTLY id, display_id, title,
-// state_id, priority, assignee_ids, sort_order — no more.
+// parallel): SubtaskRow originally carried EXACTLY id, display_id,
+// title, state_id, priority, assignee_ids, sort_order — no more.
+// C145T1 extends it with start_date / target_date (see SubtaskRow
+// above); no other field is added.
 //   - state_id / priority are typed nullable (*string) because the
 //     contract says uuid|null / string|null. In practice both
 //     columns are NOT NULL (migrations 000007: state_id UUID NOT
@@ -49,20 +51,25 @@ package service
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SubtaskRow is one nested row under a parent list item (C122T0).
-// Field order matches the contract; no extra fields.
+// Field order matches the contract; C145T1 adds the child's own
+// start/target dates (the columns already exist on issues — no
+// migration), so date-based views can place/show the child row.
 type SubtaskRow struct {
-	ID          string   `json:"id"`
-	DisplayID   string   `json:"display_id"`
-	Title       string   `json:"title"`
-	StateID     *string  `json:"state_id"`
-	Priority    *string  `json:"priority"`
-	AssigneeIDs []string `json:"assignee_ids"`
-	SortOrder   float64  `json:"sort_order"`
+	ID          string     `json:"id"`
+	DisplayID   string     `json:"display_id"`
+	Title       string     `json:"title"`
+	StateID     *string    `json:"state_id"`
+	Priority    *string    `json:"priority"`
+	AssigneeIDs []string   `json:"assignee_ids"`
+	SortOrder   float64    `json:"sort_order"`
+	StartDate   *time.Time `json:"start_date,omitempty"`
+	TargetDate  *time.Time `json:"target_date,omitempty"`
 }
 
 // subtaskPriorityLabel maps the issues.priority SMALLINT (0-4) to
@@ -115,7 +122,8 @@ func attachIssueSubtasks(ctx context.Context, pool *pgxpool.Pool, projectID, ide
 	// list rows build theirs (ident + "-" + sequence_id).
 	rows, err := pool.Query(ctx,
 		`SELECT c.id::text, c.parent_id::text, c.sequence_id, c.name,
-			c.state_id::text, c.priority, c.sort_order
+			c.state_id::text, c.priority, c.sort_order,
+			c.start_date, c.target_date
 		 FROM issues c
 		 WHERE c.parent_id = ANY($1::uuid[])
 		   AND c.project_id = $2::uuid
@@ -135,7 +143,8 @@ func attachIssueSubtasks(ctx context.Context, pool *pgxpool.Pool, projectID, ide
 		var seq int
 		var priority int
 		if err := rows.Scan(&cr.row.ID, &cr.parentID, &seq, &cr.row.Title,
-			&cr.row.StateID, &priority, &cr.row.SortOrder); err != nil {
+			&cr.row.StateID, &priority, &cr.row.SortOrder,
+			&cr.row.StartDate, &cr.row.TargetDate); err != nil {
 			rows.Close()
 			return err
 		}
