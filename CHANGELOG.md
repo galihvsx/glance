@@ -5,6 +5,34 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Drag-to-reorder nested subtask rows in the board view (cycle 142)**
+
+- The C141 list drag-to-reorder for nested subtask rows had a
+  board-view counterpart still missing: board nested rows
+  rendered under their parent card but could never start a
+  drag themselves (the card face owned all drag listeners).
+  Nested rows are now draggable within their own parent
+  card: a grip handle on each nested row (hover/focus-
+  reveal, same as the C141 handle), one sortable context
+  per parent-card appearance, stack-scoped ids
+  (`board-nested:<appearanceKey>:<parentId>:<childId>`) so
+  a parent multi-appearing under grouping/sub-grouping
+  never collides with itself. Drops reorder siblings only
+  — cross-parent, cross-appearance, card-face, column-
+  droppable, and sub-group-section drops are silent no-
+  ops — via the C141 pipeline (shared midpoint math,
+  PATCH /issues/{id} {sort_order} with state unchanged
+  and no re-parenting, rebalance + retry once on gap
+  collapse). No backend change.
+- Gate: nested board drag needs showSubWorkItems on plus
+  at least two nested rows under the parent plus edit
+  permission, and nothing else — the nested stack's visual
+  order is always a sort_order sequence, so unlike
+  top-level cards it needs no grouping gate. With one row,
+  with sub-work items off, or without edit permission, the
+  nested block renders exactly as before (no handle, no
+  extra DOM).
+
 **Drag-to-reorder nested subtask rows in the list view (cycle 141)**
 
 - The C126 list drag-to-reorder excluded nested subtask rows:
