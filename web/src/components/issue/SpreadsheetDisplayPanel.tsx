@@ -2,6 +2,13 @@ import { SlidersHorizontal } from "lucide-react";
 import { buttonVariants } from "../ui/button";
 import { Label } from "../ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Separator } from "../ui/separator";
 import { Skeleton } from "../ui/skeleton";
 import { Switch } from "../ui/switch";
@@ -10,6 +17,41 @@ import {
   CUSTOM_FIELD_TYPES,
   type CustomField,
 } from "../../lib/customFields";
+import type { GroupBy, SubGroupBy } from "./useDisplaySettings";
+
+// C147T3: same option order as DisplayPanel's GROUP_OPTIONS /
+// SUB_GROUP_OPTIONS (the list/board precedent). The sub-group list
+// leads with None and otherwise mirrors the primary labels; the
+// active primary dimension's option is disabled (greyed out, not
+// hidden — Plane greys it out), and the whole sub-group control is
+// disabled while groupBy is "none".
+const GROUP_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "state", label: "State" },
+  { value: "priority", label: "Priority" },
+  { value: "epic", label: "Epic" },
+  { value: "assignees", label: "Assignees" },
+  { value: "labels", label: "Labels" },
+  { value: "modules", label: "Modules" },
+  { value: "cycles", label: "Cycles" },
+  { value: "releases", label: "Releases" },
+  { value: "createdBy", label: "Created by" },
+  { value: "stateGroups", label: "State groups" },
+  { value: "none", label: "None" },
+];
+
+const SUB_GROUP_OPTIONS: { value: SubGroupBy; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "state", label: "State" },
+  { value: "priority", label: "Priority" },
+  { value: "epic", label: "Epic" },
+  { value: "assignees", label: "Assignees" },
+  { value: "labels", label: "Labels" },
+  { value: "createdBy", label: "Created by" },
+  { value: "stateGroups", label: "State groups" },
+  { value: "cycles", label: "Cycles" },
+  { value: "modules", label: "Modules" },
+  { value: "releases", label: "Releases" },
+];
 
 const typeLabel = (t: CustomField["field_type"]) =>
   CUSTOM_FIELD_TYPES.find((x) => x.value === t)?.label ?? t;
@@ -32,6 +74,11 @@ export default function SpreadsheetDisplayPanel({
   showSubWorkItems,
   onToggleShowSubWorkItems,
   onResetShowSubWorkItems,
+  groupBy,
+  subGroupBy,
+  onGroupByChange,
+  onSubGroupByChange,
+  onResetGrouping,
   triggerClassName,
 }: {
   fields: CustomField[];
@@ -48,6 +95,15 @@ export default function SpreadsheetDisplayPanel({
   showSubWorkItems: boolean;
   onToggleShowSubWorkItems: () => void;
   onResetShowSubWorkItems: () => void;
+  /** C147T3: spreadsheet grouping (useSpreadsheetGrouping — its own
+   *  localStorage key, never useDisplaySettings, so a selection here
+   *  never flips list/board rendering). Changes apply live to the
+   *  grid: no reload, no refetch. */
+  groupBy: GroupBy;
+  subGroupBy: SubGroupBy;
+  onGroupByChange: (next: GroupBy) => void;
+  onSubGroupByChange: (next: SubGroupBy) => void;
+  onResetGrouping: () => void;
   /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
   triggerClassName?: string;
 }) {
@@ -75,6 +131,75 @@ export default function SpreadsheetDisplayPanel({
       </PopoverTrigger>
       <PopoverContent className="w-72 p-2" align="end">
         <div className="space-y-3 py-1">
+          {/* C147T3: grouping — same section style (uppercase label +
+              controls) as the sections below. Select is the shared
+              shadcn/Base-UI Select DisplayPanel uses for Order by;
+              no new UI dependency. The sub-group control is disabled
+              entirely while groupBy is "none", and the option equal
+              to the active groupBy is disabled (DisplayPanel
+              precedent); the same-dimension render rule itself
+              lives in effectiveSubGroupBy. */}
+          <div className="space-y-1.5">
+            <p className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Grouping
+            </p>
+            <div className="space-y-1 px-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                Group by
+              </p>
+              <Select
+                value={groupBy}
+                onValueChange={(v) => onGroupByChange(v as GroupBy)}
+              >
+                <SelectTrigger className="w-full" aria-label="Group issues by">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GROUP_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1 px-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                Sub-group by
+              </p>
+              <Select
+                value={subGroupBy}
+                onValueChange={(v) => onSubGroupByChange(v as SubGroupBy)}
+                disabled={groupBy === "none"}
+              >
+                <SelectTrigger
+                  className="w-full"
+                  aria-label="Sub-group issues by"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUB_GROUP_OPTIONS.map((o) => (
+                    <SelectItem
+                      key={o.value}
+                      value={o.value}
+                      disabled={o.value === groupBy}
+                    >
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {groupBy === "none" && (
+                <p className="text-xs text-muted-foreground">
+                  Choose a Group by first
+                </p>
+              )}
+            </div>
+          </div>
+
+          <Separator />
+
           {/* C143T1: sub-work items — same switch component + section
               style as the custom-field toggles below. */}
           <div className="space-y-1">
@@ -152,9 +277,11 @@ export default function SpreadsheetDisplayPanel({
             type="button"
             onClick={() => {
               // Reset to defaults covers the whole panel: custom-field
-              // columns off AND sub-work items back to its default ON.
+              // columns off, sub-work items back to its default ON,
+              // and grouping back to none/none.
               onReset();
               onResetShowSubWorkItems();
+              onResetGrouping();
             }}
             className="w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           >

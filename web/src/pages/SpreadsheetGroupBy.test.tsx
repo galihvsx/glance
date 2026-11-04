@@ -598,3 +598,48 @@ describe("Spreadsheet group-by rendering", () => {
     expect(within(table).getAllByRole("link")).toHaveLength(4);
   });
 });
+
+// C147T3: the display panel's Group by select re-groups the grid
+// live — a selection persists to the spreadsheet grouping key and
+// the headers appear without any new issues fetch (no reload, no
+// refetch).
+describe("SpreadsheetDisplayPanel grouping controls (C147T3)", () => {
+  async function issuesFetchCount(): Promise<number> {
+    const { api } = await import("../lib/api");
+    const getMock = api.get as ReturnType<typeof vi.fn>;
+    return getMock.mock.calls.filter((args) =>
+      (args[0] as string).includes("/issues"),
+    ).length;
+  }
+
+  it("panel Group by selection re-groups the grid without a refetch", async () => {
+    const user = userEvent.setup();
+    renderSpreadsheet();
+    await screen.findByRole("button", { name: "Sort by Title" });
+    expect(groupHeaders()).toEqual([]);
+    const before = await issuesFetchCount();
+    expect(before).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole("button", { name: "Display properties" }),
+    );
+    await screen.findByText("Grouping");
+    await user.click(
+      screen.getByRole("combobox", { name: "Group issues by" }),
+    );
+    await user.click(await screen.findByRole("option", { name: "State" }));
+
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual([
+        "Backlog (2)",
+        "In Progress (1)",
+        "Ungrouped (1)",
+      ]);
+    });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}")).toEqual({
+      groupBy: "state",
+      subGroupBy: "none",
+    });
+    expect(await issuesFetchCount()).toBe(before);
+  });
+});
