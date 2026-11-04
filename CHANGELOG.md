@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Gantt drag on child (sub-issue) bars (cycle 150)**
+
+- Sub-issue bars on the Gantt timeline are now first-class schedule
+  objects: child bars support move drag (cycle 150, wave 1) and edge
+  resize (wave 2) with the exact parent gates (`canEdit`, never in
+  link mode), geometry, and aria-labels, including the C149T2
+  outward-only 1-day hit rects and the C144 window-clamp rule (no
+  handle for an edge whose true date lies outside the window). The
+  drag machinery was already id-generic; the only changes are
+  dropping the `!isChild` gate on the handles/hit rects and passing
+  the bridged `barIssue` (id + stored dates) to the resize handler,
+  plus the T1 cascade wiring (flattened subtask rows feed both the
+  ghost preview and the commit path, with a child-aware rule-7
+  presence lookup) so a child drag cascades its dependents like a
+  parent drag. A moved single-date child PATCHes only its
+  originally-present date (C149 rule); a resize that moves an edge
+  creates a range and sends both dates; a clamped-to-original resize
+  sends no PATCH. Child click-to-peek now respects the same
+  `suppressClick` check parents have, so a real drag never opens
+  peek on pointer-up. Link-draw stays parent-only (out of scope).
+  Frontend-only: no backend change, no new endpoint.
+
 **Gantt single-date drag correctness (cycle 149)**
 
 - Dragging a Gantt bar no longer silently converts a single-date
