@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Show sub-work items in the Spreadsheet (Table) view (cycle 143)**
+
+- Plane's "Show sub-work items" display option was honored in the
+  list view (C124) and the board view (C122) but entirely missing
+  from the Spreadsheet: it fetched no subtask data, rendered flat
+  rows only, and its Display panel offered no switch at all, so
+  a parent with subtasks looked childless in the Table view.
+  The spreadsheet now nests sub-issue rows under their parent
+  row: a "Show sub-work items" switch in the Display panel
+  (own per-project localStorage key, default ON — deliberately
+  not the shared per-project display settings, which would flip
+  list/board rendering from the spreadsheet page), with
+  `include_subtasks=1` on both the visual and PQL fetch paths
+  and a refetch on toggle. Nested rows reuse the shared
+  `splitNestedIssues` split (direct children only, sort_order
+  ASC, orphans and grandchildren stay flat) and render ID, an
+  indented title link to the child, state dot + name, priority
+  bars, and assignee glyphs; labels, dates, cycle/module/
+  release membership, and custom-field columns show "—" because
+  a subtask row carries none of those. Nested rows travel with
+  their parent under a column sort, are not inline-editable and
+  not bulk-selectable, and never count toward the header count.
+  No backend change (the PQL path already forwards the flag).
+- Gate: toggle off renders byte-identical to today's flat grid
+  (no flag, no nested rows, no extra DOM).
+
 **Drag-to-reorder nested subtask rows in the board view (cycle 142)**
 
 - The C141 list drag-to-reorder for nested subtask rows had a
