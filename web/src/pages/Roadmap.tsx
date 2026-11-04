@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import PageHeader, { pageHeaderControlClass } from "../components/shell/PageHeader";
@@ -7,10 +7,18 @@ import PqlEditor from "../components/issue/PqlEditor";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import { usePeekParam } from "../components/issue/usePeek";
 import PriorityBars from "../components/issue/PriorityBars";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
+import { useRoadmapSubWorkItems } from "../components/issue/useRoadmapSubWorkItems";
 import { api } from "../lib/api";
 import { EMPTY_FILTERS } from "../lib/filters";
 import { formatPqlError } from "../lib/pql";
-import type { Issue, IssueListResult, IssueState, Project } from "../lib/types";
+import type {
+  Issue,
+  IssueListResult,
+  IssueState,
+  Project,
+  SubtaskRow,
+} from "../lib/types";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { priorityLabel } from "../lib/types";
 import { stateDotClass } from "../lib/stateDot";
@@ -39,12 +47,18 @@ type Range = (typeof RANGES)[number];
 const roadmapChipClass =
   "inline-flex h-[22px] items-center gap-[5px] rounded-[4px] border border-border bg-[#111113] px-[6px] text-[9px] text-ink-secondary";
 
-async function fetchAllIssues(path: string): Promise<Issue[]> {
+async function fetchAllIssues(
+  path: string,
+  includeSubtasks = false,
+): Promise<Issue[]> {
   const issues: Issue[] = [];
   let cursor: string | undefined;
   do {
     const sep = path.includes("?") ? "&" : "?";
     const page = new URLSearchParams({ per_page: "100" });
+    // C145T4: nested sub-work rows — only when the toggle is on;
+    // off means today's flat fetch exactly, no unused data.
+    if (includeSubtasks) page.set("include_subtasks", "1");
     if (cursor) page.set("cursor", cursor);
     const res = await api.get<IssueListResult>(`${path}${sep}${page}`);
     issues.push(...res.results);
@@ -73,12 +87,20 @@ export default function Roadmap() {
   const [range, setRange] = useState<Range>(6);
   const [anchor, setAnchor] = useState<string>(() => currentMonthStart());
 
+  // C145T4: roadmap-local "Show sub-work items" toggle (own storage
+  // key, C143 precedent — not the shared per-project display key).
+  // Default true; the toggle is part of both query keys below, so
+  // flipping it refetches with / without include_subtasks=1 instead
+  // of reusing stale rows.
+  const { showSubWorkItems, toggle: toggleSubWorkItems } =
+    useRoadmapSubWorkItems(slug, identifier);
+
   // One paginated list query composed from the existing endpoint — no new
   // backend work needed (start_date/target_date are already on the list
   // response, C9T0 contract check).
   const issuesQuery = useQuery({
-    queryKey: ["roadmap", slug, identifier],
-    queryFn: () => fetchAllIssues(`${base}/issues`),
+    queryKey: ["roadmap", slug, identifier, showSubWorkItems],
+    queryFn: () => fetchAllIssues(`${base}/issues`, showSubWorkItems),
   });
 
   // C109T3: PQL mode on the roadmap, copying the Cycles detail pattern
@@ -117,11 +139,12 @@ export default function Roadmap() {
   // instead of vanishing or rejecting unhandled.
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlIssuesQuery = useQuery({
-    queryKey: ["roadmap-pql", slug, identifier, appliedQuery],
+    queryKey: ["roadmap-pql", slug, identifier, appliedQuery, showSubWorkItems],
     enabled: pqlMode && appliedQuery.trim() !== "",
     queryFn: () =>
       fetchAllIssues(
         `${base}/issues?pql=${encodeURIComponent(appliedQuery.trim())}`,
+        showSubWorkItems,
       ),
   });
   async function handlePqlApply(query: string): Promise<void> {
@@ -130,7 +153,10 @@ export default function Roadmap() {
       setAppliedQuery("");
       return;
     }
-    await fetchAllIssues(`${base}/issues?pql=${encodeURIComponent(q)}`);
+    await fetchAllIssues(
+      `${base}/issues?pql=${encodeURIComponent(q)}`,
+      showSubWorkItems,
+    );
     setAppliedQuery(q);
     setSavedViewError(null);
   }
@@ -191,9 +217,18 @@ export default function Roadmap() {
   }, [statesQuery.data]);
 
   const buckets = useMemo(() => roadmapMonths(anchor, range), [anchor, range]);
+  // C145T4: child travels with its parent — split FIRST, then bucket
+  // only the visible (top-level + orphan) issues, so a nested child
+  // never lands in its own month bucket or the Unscheduled lane.
+  // Toggle off (or a fetch without the flag) returns today's flat
+  // layout untouched.
+  const { visibleIssues, nestedByParent } = useMemo(
+    () => splitNestedIssues(displayedIssues, showSubWorkItems),
+    [displayedIssues, showSubWorkItems],
+  );
   const { columns, unscheduled } = useMemo(
-    () => bucketIssues(displayedIssues, buckets),
-    [displayedIssues, buckets],
+    () => bucketIssues(visibleIssues, buckets),
+    [visibleIssues, buckets],
   );
 
   const loading = issuesQuery.isLoading || statesQuery.isLoading;
@@ -203,6 +238,54 @@ export default function Roadmap() {
     buckets.length > 0
       ? `${buckets[0].label} – ${buckets[buckets.length - 1].label}`
       : "";
+
+  // C145T4: a nested child entry — indented under its parent, showing
+  // its own target date text (C145T1's SubtaskRow.target_date). A
+  // dateless child shows no date text, never a fabricated bucket.
+  // Click opens the same peek as a parent entry.
+  const renderNested = (row: SubtaskRow) => {
+    const target = row.target_date?.slice(0, 10);
+    return (
+      <button
+        key={row.id}
+        type="button"
+        data-nested="true"
+        onClick={() => openPeek(row.id)}
+        className="w-full rounded-[6px] border border-border bg-surface p-[10px] text-left transition-[border-color,background-color] duration-150 hover:border-[#3f3f46] hover:bg-[#17171a]"
+        title={`${row.display_id}: ${row.title}`}
+      >
+        <div className="flex items-center">
+          <span className="font-mono text-[10px] text-ink-muted">
+            {row.display_id}
+          </span>
+          {target && (
+            <span className="ml-auto font-mono text-[10px] text-ink-muted">
+              Due {formatDay(target)}
+            </span>
+          )}
+        </div>
+        <p className="mb-[2px] mt-[5px] text-[13px] font-[570] leading-[18px] tracking-[-0.008em] text-ink">
+          {row.title}
+        </p>
+      </button>
+    );
+  };
+
+  // A top-level entry plus its nested children, if any, in the
+  // parent's bucket (or the Unscheduled lane for an undated parent).
+  const renderEntry = (issue: Issue) => {
+    const nested = nestedByParent.get(issue.id) ?? [];
+    return (
+      <Fragment key={issue.id}>
+        {renderIssue(issue)}
+        {nested.length > 0 && (
+          <div className="ml-6 flex flex-col gap-[7px]">
+            {nested.map(renderNested)}
+          </div>
+        )}
+      </Fragment>
+    );
+  };
 
   const renderIssue = (issue: Issue) => {
     const state = statesById.get(issue.state_id);
@@ -330,6 +413,18 @@ export default function Roadmap() {
           >
             Today
           </button>
+          {/* C145T4: "Show sub-work items" toggle, next to the other
+              roadmap controls. Default on; off restores today's flat
+              entries. */}
+          <label className="inline-flex h-[30px] cursor-pointer items-center gap-1.5 rounded-[6px] border border-border bg-[#101012] px-2 text-[11px] text-ink-secondary">
+            <input
+              type="checkbox"
+              aria-label="Show sub-work items"
+              checked={showSubWorkItems}
+              onChange={toggleSubWorkItems}
+            />
+            Show sub-work items
+          </label>
           <span className="ml-1 text-[13px] font-semibold text-ink">
             {windowLabel}
           </span>
@@ -394,7 +489,7 @@ export default function Roadmap() {
                   </span>
                 </header>
                 <div className="flex min-h-0 flex-1 flex-col gap-[7px] overflow-y-auto pt-[8px]">
-                  {issues.map(renderIssue)}
+                  {issues.map(renderEntry)}
                   {issues.length === 0 && (
                     <p className="px-1 py-2 text-[11px] text-ink-muted">
                       No issues due this month.
@@ -419,7 +514,7 @@ export default function Roadmap() {
                 </span>
               </header>
               <div className="flex min-h-0 flex-1 flex-col gap-[7px] overflow-y-auto pt-[8px]">
-                {unscheduled.map(renderIssue)}
+                {unscheduled.map(renderEntry)}
                 {unscheduled.length === 0 && (
                   <p className="px-1 py-2 text-[11px] text-ink-muted">
                     Every issue has a target date.
