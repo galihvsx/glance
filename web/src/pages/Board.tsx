@@ -43,6 +43,7 @@ import {
   Calendar,
   Copy,
   GitBranch,
+  GripVertical,
   Layers,
   Link2,
   Maximize2,
@@ -164,6 +165,14 @@ import { Badge } from "../components/ui/badge";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { subtaskPriorityLevel } from "../components/issue/boardSubtasks";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
+import {
+  applyBoardNestedDrop,
+  boardNestedSortableId,
+  isBoardNestedDragEnabled,
+  parseBoardNestedId,
+  resolveBoardNestedDrop,
+  resolveBoardNestedOverlay,
+} from "../components/issue/boardNestedReorder";
 import {
   buildSubGroupSections,
   effectiveSubGroupBy,
@@ -468,17 +477,21 @@ function NestedSubtaskRow({
   row,
   state,
   onOpen,
+  dragHandle,
 }: {
   row: SubtaskRow;
   state: IssueState | undefined;
   onOpen: (id: string) => void;
+  /** C142T1 grip handle, rendered by SortableNestedBoardRow only. */
+  dragHandle?: ReactNode;
 }) {
   const level = subtaskPriorityLevel(row.priority);
   return (
     <div
       data-nested-subtask={row.id}
-      className="flex items-center gap-2 py-[3px]"
+      className={`flex items-center gap-2 py-[3px]${dragHandle ? " group/nested" : ""}`}
     >
+      {dragHandle}
       <span
         className={`state-dot ${stateDotClass(state?.group)}`}
         aria-hidden="true"
@@ -520,6 +533,86 @@ function NestedSubtaskRow({
   );
 }
 
+/**
+ * C142T1: a nested subtask row made draggable by its parent
+ * appearance's nested SortableContext (SortableCard's nested block).
+ * C141 SortableNestedSubtaskRow precedent, board shape: the sortable
+ * node is a wrapper div carrying the transform/transition/drag
+ * opacity, while the drag listeners live on the grip handle only —
+ * so a nested drag never opens peek and never starts a parent drag:
+ * the grip stops propagation exactly like the C141 handle, and
+ * dnd-kit's own handlers are still invoked after the stop. The
+ * wrapper is independent of the parent card's draggability: when the
+ * parent card is not draggable the page renders the plain row, and
+ * the gate (not the parent) decides — the grip is the nested item's
+ * own activator, not the parent's. Keyboard drag comes from the
+ * board DndContext's KeyboardSensor + sortableKeyboardCoordinates,
+ * shared with the top-level cards — the nested item is in the same
+ * board-wide DndContext, so no separate sensor wiring exists here
+ * (see the live-drag caveat: mocked tests cannot prove the live
+ * keyboard-drag sequence, only that the grip carries the sortable
+ * listeners).
+ */
+function SortableNestedBoardRow({
+  row,
+  state,
+  onOpen,
+  sortableId,
+}: {
+  row: SubtaskRow;
+  state: IssueState | undefined;
+  onOpen: (id: string) => void;
+  /** Stack-scoped dnd-kit id (C142T1 boardNestedSortableId). */
+  sortableId: string;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: sortableId });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.35 : 1,
+      }}
+    >
+      <NestedSubtaskRow
+        row={row}
+        state={state}
+        onOpen={onOpen}
+        dragHandle={
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            aria-label={`Drag ${row.display_id} to reorder subtask`}
+            title="Drag to reorder subtask"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              listeners?.onPointerDown?.(e);
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              listeners?.onKeyDown?.(e);
+            }}
+            className="inline-flex shrink-0 cursor-grab touch-none items-center justify-center text-ink-muted opacity-0 transition-opacity hover:text-ink group-hover/nested:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
+          >
+            <GripVertical className="h-3 w-3" aria-hidden />
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
 function SortableCard({
   issue,
   state,
@@ -529,6 +622,7 @@ function SortableCard({
   dragId,
   nested,
   stateById,
+  showSubWorkItems,
 }: {
   issue: Issue;
   state: IssueState | undefined;
@@ -543,6 +637,10 @@ function SortableCard({
   nested?: SubtaskRow[];
   /** C122T1: state lookup for nested rows' real-state indicators. */
   stateById?: Map<string, IssueState>;
+  /** C142T1: the board's showSubWorkItems toggle — one leg of the
+   *  nested-drag gate (nestedByParent is empty when it is off, but
+   *  the gate names the toggle explicitly, like C141's). */
+  showSubWorkItems: boolean;
 }) {
   const {
     attributes,
@@ -560,8 +658,20 @@ function SortableCard({
   }
 
   // C122T1: the sortable node is the wrapper so a dragged parent card
-  // carries its nested rows with it; the drag listeners live on the
-  // card face only, so nested rows never start a drag.
+  // carries its nested rows with it; the card-face drag listeners
+  // start parent drags only. C142T1: nested rows start their OWN drag
+  // from their grip (SortableNestedBoardRow below) — the grip sits
+  // inside the nested block, outside the card face div, so a nested
+  // drag never starts a parent drag. The nested appearance key is the
+  // card's own sortable id (compound under grouping/sub-grouping,
+  // plain issue id otherwise) — the identity that distinguishes one
+  // parent-card appearance from another.
+  const appearanceKey = dragId ?? issue.id;
+  const nestedDraggable = isBoardNestedDragEnabled(
+    showSubWorkItems,
+    (nested ?? []).length,
+    !disabled,
+  );
   return (
     <div
       ref={setNodeRef}
@@ -595,14 +705,42 @@ function SortableCard({
       </div>
       {(nested ?? []).length > 0 && (
         <div className="ml-4 mt-[7px] flex flex-col gap-[2px] border-l-2 border-border pl-3">
-          {(nested ?? []).map((row) => (
-            <NestedSubtaskRow
-              key={row.id}
-              row={row}
-              state={stateById?.get(row.state_id ?? "")}
-              onOpen={onOpen}
-            />
-          ))}
+          {nestedDraggable ? (
+            // C142T1: one nested SortableContext per parent-card
+            // appearance, stack-scoped ids — a multi-appearance
+            // parent's nested rows never collide with themselves.
+            // When the gate fails the rows render plain below,
+            // byte-identical to before (no wrapper, no grip).
+            <SortableContext
+              items={(nested ?? []).map((row) =>
+                boardNestedSortableId(appearanceKey, issue.id, row.id),
+              )}
+              strategy={verticalListSortingStrategy}
+            >
+              {(nested ?? []).map((row) => (
+                <SortableNestedBoardRow
+                  key={row.id}
+                  row={row}
+                  state={stateById?.get(row.state_id ?? "")}
+                  onOpen={onOpen}
+                  sortableId={boardNestedSortableId(
+                    appearanceKey,
+                    issue.id,
+                    row.id,
+                  )}
+                />
+              ))}
+            </SortableContext>
+          ) : (
+            (nested ?? []).map((row) => (
+              <NestedSubtaskRow
+                key={row.id}
+                row={row}
+                state={stateById?.get(row.state_id ?? "")}
+                onOpen={onOpen}
+              />
+            ))
+          )}
         </div>
       )}
     </div>
@@ -636,6 +774,7 @@ function BoardColumn({
   onOpen,
   nestedByParent,
   stateById,
+  showSubWorkItems,
   subSections,
   subGroup,
 }: {
@@ -714,6 +853,9 @@ function BoardColumn({
   nestedByParent?: Map<string, SubtaskRow[]>;
   /** C122T1: state lookup for nested rows' real-state indicators. */
   stateById?: Map<string, IssueState>;
+  /** C142T1: the board's showSubWorkItems toggle, forwarded to
+   *  SortableCard for the nested-drag gate. */
+  showSubWorkItems: boolean;
   /** C123T0: sub-group sections for this column's cards (already
    *  show-empty-filtered by the caller). Undefined = today's flat
    *  column layout exactly. */
@@ -919,6 +1061,7 @@ function BoardColumn({
                       dragId={cardDragId(issue, section.key)}
                       nested={nestedByParent?.get(issue.id) ?? []}
                       stateById={stateById}
+                      showSubWorkItems={showSubWorkItems}
                     />
                   ))}
                 </div>
@@ -943,6 +1086,7 @@ function BoardColumn({
                 dragId={getCardDragId?.(issue)}
                 nested={nestedByParent?.get(issue.id) ?? []}
                 stateById={stateById}
+                showSubWorkItems={showSubWorkItems}
               />
             ))}
           </div>
@@ -1272,6 +1416,13 @@ export default function Board() {
   // epicDragIssueId is identity for plain ids. C129T1: same rule for
   // assignee-mode compound ids (each unwrapper is identity for
   // non-matching ids, so chaining them is safe in every mode).
+  // C142T1: a nested active id depicts a SubtaskRow, not an Issue —
+  // the overlay resolves to the nested face below (never a card
+  // face, never nothing).
+  const activeNested = activeId
+    ? resolveBoardNestedOverlay(activeId, nestedByParent)
+    : null;
+
   const activeIssue = activeId
     ? (boardIssues.find(
         (i) =>
@@ -2836,6 +2987,63 @@ export default function Board() {
     const { active, over } = e;
     setActiveId(null);
     if (!over || !canEdit) return;
+    // C142T1: TERMINAL nested branch, BEFORE card resolution (C141
+    // pattern) — a nested active id resolves to NO card, so without
+    // this branch every nested drop would fall through to the card
+    // pipelines. A nested active id whose over is NOT a same-
+    // appearance sibling (cross-parent, cross-appearance, card face,
+    // column droppable, sub-group section) is a silent no-op here
+    // and NEVER falls through below. A handled nested drop PATCHes
+    // {sort_order} ONLY — never state_id, never a re-parent — and
+    // returns; the board's writeDrop/patchMutation path (which
+    // stamps state_id) is never used for a nested row.
+    if (parseBoardNestedId(String(active.id)) !== null) {
+      const nestedDrop = resolveBoardNestedDrop(
+        String(active.id),
+        String(over.id),
+      );
+      if (nestedDrop === null) return;
+      const stack = nestedByParent.get(nestedDrop.parentId) ?? [];
+      setBoardError(null);
+      void applyBoardNestedDrop(
+        stack,
+        nestedDrop.activeChildId,
+        nestedDrop.overChildId,
+        {
+          parentId: nestedDrop.parentId,
+          getData: () => queryClient.getQueryData<Issue[]>(displayKey),
+          setData: (data) => queryClient.setQueryData(displayKey, data),
+          patch: (id, body) =>
+            api.patch<Issue>(`${base}/issues/${id}`, body),
+          rebalance: (body) =>
+            rebalanceMutation.mutateAsync(body.state_id),
+          refetchStack: async () => {
+            await queryClient.invalidateQueries({ queryKey: issuesKey });
+            await queryClient.invalidateQueries({
+              queryKey: pqlIssuesKey,
+            });
+            const refetched =
+              pqlMode && appliedQuery.trim() !== ""
+                ? await pqlIssuesQuery.refetch()
+                : await boardQuery.refetch();
+            return (
+              splitNestedIssues(
+                refetched.data ?? [],
+                settings.showSubWorkItems,
+              ).nestedByParent.get(nestedDrop.parentId) ?? []
+            );
+          },
+          invalidate: async () => {
+            await queryClient.invalidateQueries({ queryKey: issuesKey });
+            await queryClient.invalidateQueries({
+              queryKey: pqlIssuesKey,
+            });
+          },
+          onError: (message) => setBoardError(message),
+        },
+      );
+      return;
+    }
     // C123T0: unwrap sub-group compound ids before resolving — the
     // drop still resolves by primary column exactly as today.
     const activeIssueId = subgroupDragIssueId(String(active.id));
@@ -3504,6 +3712,7 @@ export default function Board() {
                     onOpen={openPeek}
                     nestedByParent={nestedByParent}
                     stateById={stateById}
+                    showSubWorkItems={settings.showSubWorkItems}
                     subSections={g.subSections}
                     subGroup={effectiveSubGroup}
                   />
@@ -3511,7 +3720,15 @@ export default function Board() {
               })}
             </div>
             <DragOverlay>
-              {activeIssue ? (
+              {activeNested ? (
+                <div className="w-[290px] rotate-2 rounded-[6px] border border-border bg-surface px-[10px] py-[6px] shadow-lg">
+                  <NestedSubtaskRow
+                    row={activeNested.row}
+                    state={stateById.get(activeNested.row.state_id ?? "")}
+                    onOpen={() => {}}
+                  />
+                </div>
+              ) : activeIssue ? (
                 <div className="w-[325px] rotate-2 rounded-[6px] border border-border bg-surface p-[10px] shadow-lg">
                   <BoardCardBody
                     issue={activeIssue}
