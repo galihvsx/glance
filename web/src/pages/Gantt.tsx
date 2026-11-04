@@ -160,8 +160,8 @@ type Row =
   // SubtaskRow, not a full Issue: its own bar comes from the row's
   // start_date/target_date (C145T1). C150T1: child bars host the
   // move drag (same handlers as parents); C150T2: they host edge
-  // resize handles too. Only the link-draw handle stays
-  // parent-only (out of scope).
+  // resize handles too; C151T1: they host the link-draw handle
+  // and draw press too (same gates, same geometry as parents).
   | { kind: "issue-child"; parentId: string; row: SubtaskRow };
 
 export default function Gantt() {
@@ -523,11 +523,48 @@ export default function Gantt() {
     return m;
   }, [rows]);
 
+  // C151T1: unified link-endpoint lookup — top-level issue OR child
+  // row, span from stored dates, y from the row index (the same
+  // geometry ghostRows already computes for children). The draw
+  // preview resolves its source through this lookup; T2 reuses it
+  // for the arrows memo — do not build a second lookup. First
+  // occurrence wins: a parent row precedes its child rows, so a
+  // duplicated id resolves to its top-level row, matching the
+  // cascade dedup rule.
+  const linkEndpoints = useMemo(() => {
+    const m = new Map<
+      string,
+      { startDate: string | null; targetDate: string | null; y: number }
+    >();
+    rows.forEach((r, idx) => {
+      const y = HEADER_H + idx * ROW_H;
+      if (r.kind === "issue" || r.kind === "issue-undated") {
+        if (!m.has(r.issue.id))
+          m.set(r.issue.id, {
+            startDate: r.issue.start_date ?? null,
+            targetDate: r.issue.target_date ?? null,
+            y,
+          });
+      } else if (r.kind === "issue-child") {
+        if (!m.has(r.row.id))
+          m.set(r.row.id, {
+            startDate: r.row.start_date ?? null,
+            targetDate: r.row.target_date ?? null,
+            y,
+          });
+      }
+    });
+    return m;
+  }, [rows]);
+
   // Dependency arrows: A blocks B (issue_id → target_issue_id) draws from
   // the blocker's bar right edge to the blocked issue's bar left edge.
   // Rendered over visLinks (server + optimistic), each carrying its link
   // so a click can open the delete confirm. Only "blocks" edges are
   // drawn — other kinds are managed in the issue detail panel.
+  // NOTE (C151T1 scope): the arrows memo still resolves via rowY +
+  // issues.find (parent rows only) — child-touching arrows are T2,
+  // which swaps this memo onto linkEndpoints above.
   const arrows = useMemo(() => {
     const out: {
       id: string;
@@ -557,12 +594,21 @@ export default function Gantt() {
     return out;
   }, [visLinks, rowY, issues, windowStart]);
 
-  // Dated rows as drop targets for edge drawing (svg coordinates).
+  // Rows as drop targets for edge drawing (svg coordinates).
+  // C151T1: issue-child rows are included (same y math) — without
+  // them a draw released over a child row resolves to nothing, so
+  // a self-drop on the same child bar could never reach the
+  // resolveLinkDrop "self" toast the T1 spec requires. This also
+  // makes drop-onto-child creates resolve; their tests belong to
+  // T2, which extends the T1 suite for exactly that. Undated
+  // rows are drop targets too, mirroring the parent rule.
   const dropRows = useMemo(() => {
     const out: { id: string; y: number }[] = [];
     rows.forEach((r, idx) => {
       if (r.kind === "issue" || r.kind === "issue-undated") {
         out.push({ id: r.issue.id, y: HEADER_H + idx * ROW_H });
+      } else if (r.kind === "issue-child") {
+        out.push({ id: r.row.id, y: HEADER_H + idx * ROW_H });
       }
     });
     return out;
@@ -1275,18 +1321,22 @@ export default function Gantt() {
                     </g>
                   );
                 })}
-                {/* In-progress edge draw preview. */}
+                {/* In-progress edge draw preview. C151T1: the
+                    source resolves through linkEndpoints, so a draw
+                    from a child bar starts at the child bar's right
+                    edge, mid-row y — same dashed stroke-primary
+                    line to the cursor as for parents. */}
                 {linkUi.drawingFrom &&
                   drawPos &&
                   (() => {
-                    const from = issues.find(
-                      (i) => i.id === linkUi.drawingFrom,
-                    );
-                    const fb = from && barSpan(from.start_date, from.target_date);
-                    const fromY = from && rowY.get(from.id);
-                    if (!fb?.start || !fb?.end || fromY === undefined) return null;
+                    const ep = linkUi.drawingFrom
+                      ? linkEndpoints.get(linkUi.drawingFrom)
+                      : undefined;
+                    const fb =
+                      ep && barSpan(ep.startDate, ep.targetDate);
+                    if (!fb?.start || !fb?.end || !ep) return null;
                     const x1 = dayToX(fb.end, windowStart, DAY_W) + DAY_W;
-                    const y1 = fromY + ROW_H / 2;
+                    const y1 = ep.y + ROW_H / 2;
                     return (
                       <path
                         d={`M ${x1} ${y1} L ${drawPos.x} ${drawPos.y}`}
@@ -1309,15 +1359,13 @@ export default function Gantt() {
                   // from the child's own stored dates). C150T2:
                   // child bars carry edge-resize handles exactly
                   // like parents (same gates, same geometry, same
-                  // handler over the bridged barIssue); only the
-                  // link-draw handle stays parent-only (out of
-                  // scope).
+                  // handler over the bridged barIssue). C151T1:
+                  // child bars carry the link-draw handle and the
+                  // link-mode press too — the barIssue bridge
+                  // already carries id + stored dates, and
+                  // onBarPointerDown's link-mode branch is
+                  // id-generic, so no new state machine.
                   const isChild = r.kind === "issue-child";
-                  // Narrowed parent for the parent-only link-draw
-                  // handler; the move AND resize handlers take the
-                  // bridged barIssue below, so they run on
-                  // children too (C150T1 / C150T2).
-                  const parentIssue = r.kind === "issue" ? r.issue : null;
                   const barIssue = isChild
                     ? {
                         id: r.row.id,
@@ -1389,33 +1437,24 @@ export default function Gantt() {
                           canEdit &&
                             !linkUi.linkMode &&
                             "cursor-grab",
-                          !isChild &&
-                            canEdit &&
+                          canEdit &&
                             linkUi.linkMode &&
                             "cursor-crosshair",
                         )}
                         onPointerDown={
-                          // C150T1: a child-bar press starts a move
-                          // drag exactly like a parent press — but
-                          // NEVER an edge draw: in link mode a
-                          // child press does nothing (link-draw
-                          // stays parent-only), and canEdit gates
-                          // both (the handler re-checks canEdit).
-                          isChild
-                            ? !canEdit || linkUi.linkMode
-                              ? undefined
-                              : (e) =>
-                                  onBarPointerDown(e, barIssue, {
-                                    start: b.start!,
-                                    end: b.end!,
-                                  })
-                            : !parentIssue
-                              ? undefined
-                              : (e) =>
-                                  onBarPointerDown(e, parentIssue, {
-                                    start: b.start!,
-                                    end: b.end!,
-                                  })
+                          // C151T1: a child-bar press in link mode
+                          // calls the SAME onBarPointerDown the
+                          // move path uses — its link-mode branch
+                          // starts the draw and returns, so no
+                          // move drag starts in link mode, exactly
+                          // as for parents. canEdit is re-checked
+                          // inside the handler, so a read-only bar
+                          // starts nothing in either mode.
+                          (e) =>
+                            onBarPointerDown(e, barIssue, {
+                              start: b.start!,
+                              end: b.end!,
+                            })
                         }
                         onClick={() => {
                           // C150T1: the child path carries the
@@ -1568,8 +1607,12 @@ export default function Gantt() {
                           <title>Drag to change due date</title>
                         </rect>
                       )}
-                      {/* Link-mode draw handle at the bar's right edge. */}
-                      {!isChild && linkUi.linkMode && canEdit && (
+                      {/* Link-mode draw handle at the bar's right
+                          edge. C151T1: same geometry, same
+                          fill-primary stroke-background circle for
+                          child bars as for parents; gates unchanged
+                          (canEdit && linkMode only). */}
+                      {linkUi.linkMode && canEdit && (
                         <circle
                           cx={x + 2 + Math.max(w, 8)}
                           cy={y + ROW_H / 2}
