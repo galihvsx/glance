@@ -1300,6 +1300,10 @@ export default function Gantt() {
                   }
                   const color =
                     statesById.get(barIssue.state_id ?? "")?.color ?? "#6366f1";
+                  // C149T2: a 1-day bar is a filled span of one day
+                  // (single-date issues fill via barSpan, and a
+                  // ranged issue with start == target is 1 day too).
+                  const isSingleDay = daysBetween(b.start!, b.end!) === 0;
                   return (
                     <g key={barIssue.id}>
                       <rect
@@ -1361,15 +1365,22 @@ export default function Gantt() {
                           fill="#ffffff"
                           fillOpacity={0.4}
                           className="cursor-ew-resize"
-                          aria-label="Drag to change start date"
-                          onPointerDown={(e) =>
-                            onResizePointerDown(e, parentIssue!, {
-                              start: b.start!,
-                              end: b.end!,
-                            }, "resize-start")
+                          aria-label={
+                            isSingleDay ? undefined : "Drag to change start date"
+                          }
+                          onPointerDown={
+                            isSingleDay
+                              ? undefined
+                              : (e) =>
+                                  onResizePointerDown(e, parentIssue!, {
+                                    start: b.start!,
+                                    end: b.end!,
+                                  }, "resize-start")
                           }
                         >
-                          <title>Drag to change start date</title>
+                          {!isSingleDay && (
+                            <title>Drag to change start date</title>
+                          )}
                         </rect>
                       )}
                       {!isChild && canEdit && !linkUi.linkMode && b.end! < windowEnd && (
@@ -1381,6 +1392,77 @@ export default function Gantt() {
                           fill="#ffffff"
                           fillOpacity={0.4}
                           className="cursor-ew-resize"
+                          aria-label={
+                            isSingleDay ? undefined : "Drag to change due date"
+                          }
+                          onPointerDown={
+                            isSingleDay
+                              ? undefined
+                              : (e) =>
+                                  onResizePointerDown(e, parentIssue!, {
+                                    start: b.start!,
+                                    end: b.end!,
+                                  }, "resize-end")
+                          }
+                        >
+                          {!isSingleDay && (
+                            <title>Drag to change due date</title>
+                          )}
+                        </rect>
+                      )}
+                      {/* C149T2: enlarged invisible hit-areas on
+                          1-day bars only, rendered AFTER the visible
+                          handles so they paint on top in the overlap
+                          region. Each hit rect covers its visible
+                          6px handle plus 6px OUTWARD from the bar
+                          (left: barX-6..barX+6, right:
+                          barRight-6..barRight+6) and never extends
+                          inward over the middle 12px move strip, so
+                          move-grab is untouched. fill="transparent"
+                          (not "none") so the rect still receives
+                          pointer events under the default
+                          visiblePainted rule. The hit rect IS the
+                          one logical handle per edge on a 1-day bar:
+                          it carries the handler, aria-label and
+                          <title> the visible handle carries on
+                          multi-day bars, while the visible 6px rect
+                          above is a non-interactive decoration —
+                          otherwise assistive tech and tests would
+                          see two handles per edge. Same gates as
+                          the visible handles (canEdit &&
+                          !linkMode, C144 window-clamp per edge);
+                          multi-day bars render nothing here. Rows
+                          never overlap in y, so the outward
+                          extension cannot steal another row's bar. */}
+                      {!isChild && canEdit && !linkUi.linkMode && isSingleDay && b.start! >= windowStart && (
+                        <rect
+                          x={x + 2 - 6}
+                          y={y + 9}
+                          width={12}
+                          height={16}
+                          fill="transparent"
+                          className="cursor-ew-resize"
+                          data-gantt-hit="resize-start"
+                          aria-label="Drag to change start date"
+                          onPointerDown={(e) =>
+                            onResizePointerDown(e, parentIssue!, {
+                              start: b.start!,
+                              end: b.end!,
+                            }, "resize-start")
+                          }
+                        >
+                          <title>Drag to change start date</title>
+                        </rect>
+                      )}
+                      {!isChild && canEdit && !linkUi.linkMode && isSingleDay && b.end! < windowEnd && (
+                        <rect
+                          x={x + 2 + Math.max(w, 8) - 6}
+                          y={y + 9}
+                          width={12}
+                          height={16}
+                          fill="transparent"
+                          className="cursor-ew-resize"
+                          data-gantt-hit="resize-end"
                           aria-label="Drag to change due date"
                           onPointerDown={(e) =>
                             onResizePointerDown(e, parentIssue!, {
