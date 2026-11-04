@@ -30,8 +30,11 @@ import type {  Issue,
   IssueListResult,
   IssueState,
   Project,
+  SubtaskRow,
   Workspace,
 } from "../lib/types";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
+import { useGanttSubWorkItems } from "../components/issue/useGanttSubWorkItems";
 import {
   addDays,
   barSpan,
@@ -101,7 +104,13 @@ type Row =
   | { kind: "group"; group: string }
   | { kind: "issue"; issue: Issue }
   | { kind: "unscheduled-header" }
-  | { kind: "issue-undated"; issue: Issue };
+  | { kind: "issue-undated"; issue: Issue }
+  // C145T3: a direct child nested under its parent row (one level,
+  // sort_order ASC via splitNestedIssues). The row carries the
+  // SubtaskRow, not a full Issue: its own bar comes from the row's
+  // start_date/target_date (C145T1), and it never hosts drag,
+  // resize, or link-draw handlers — display + click-to-peek only.
+  | { kind: "issue-child"; parentId: string; row: SubtaskRow };
 
 export default function Gantt() {
   const { slug = "", identifier = "" } = useParams<{
@@ -158,6 +167,15 @@ export default function Gantt() {
   const pqlSuffix = activePql ? `&pql=${encodeURIComponent(activePql)}` : "";
   const pqlKey = pqlMode ? "pql" : "all";
 
+  // C145T3: view-local "Show sub-work items" toggle (own
+  // localStorage key, default true — see useGanttSubWorkItems).
+  // On: the window queries below carry include_subtasks=1 and the
+  // rows nest direct children under their parent. Off: today's flat
+  // fetch and flat rows, byte-identical behavior.
+  const { showSubWorkItems, toggle: toggleShowSubWorkItems } =
+    useGanttSubWorkItems(slug, identifier);
+  const subtaskSuffix = showSubWorkItems ? "&include_subtasks=1" : "";
+
   // Probe-first apply (Cycles pattern): fetch one page of each
   // window query with the candidate query and commit only on
   // success. A 400 rejects, so PqlEditor shows it inline and the
@@ -176,6 +194,9 @@ export default function Gantt() {
         per_page: "100",
         include_links: "1",
       });
+      // C145T3: the probe is part of the PQL fetch path, so it
+      // carries the flag exactly like the window queries below.
+      if (showSubWorkItems) p.set("include_subtasks", "1");
       return api.get(`${base}/issues?${p.toString()}`);
     };
     await Promise.all([
@@ -237,22 +258,22 @@ export default function Gantt() {
   // its edges; an edge to an issue outside the filtered set simply
   // does not render, same as today's out-of-window endpoint behavior.
   const dueQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "due", windowStart, pqlKey, activePql],
+    queryKey: ["gantt", slug, identifier, "due", windowStart, pqlKey, activePql, showSubWorkItems],
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?due_after=${rfc(windowStart)}&due_before=${rfc(windowEnd)}${pqlSuffix}`,
+        `${base}/issues?due_after=${rfc(windowStart)}&due_before=${rfc(windowEnd)}${pqlSuffix}${subtaskSuffix}`,
       ),
   });
   const startQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "start", windowStart, pqlKey, activePql],
+    queryKey: ["gantt", slug, identifier, "start", windowStart, pqlKey, activePql, showSubWorkItems],
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?start_after=${rfc(windowStart)}&start_before=${rfc(windowEnd)}${pqlSuffix}`,
+        `${base}/issues?start_after=${rfc(windowStart)}&start_before=${rfc(windowEnd)}${pqlSuffix}${subtaskSuffix}`,
       ),
   });
   const undatedQuery = useQuery({
-    queryKey: ["gantt", slug, identifier, "undated", pqlKey, activePql],
-    queryFn: () => fetchAllIssues(`${base}/issues?undated=1${pqlSuffix}`),
+    queryKey: ["gantt", slug, identifier, "undated", pqlKey, activePql, showSubWorkItems],
+    queryFn: () => fetchAllIssues(`${base}/issues?undated=1${pqlSuffix}${subtaskSuffix}`),
   });
 
   const statesQuery = useQuery({
@@ -316,11 +337,23 @@ export default function Gantt() {
     return m;
   }, [statesQuery.data]);
 
+  // C145T3: nesting split, reused verbatim from list/board
+  // (splitNestedIssues) — toggle off returns today's flat layout
+  // untouched; a child whose parent is NOT in the fetched set stays
+  // a flat row (orphan rule: a child NEVER vanishes); direct
+  // children only, one level, sort_order ASC. A child travels with
+  // its parent: it nests under the parent's row in the parent's
+  // group (dated) or lane (unscheduled), never in its own place.
+  const { visibleIssues, nestedByParent } = useMemo(
+    () => splitNestedIssues(issues, showSubWorkItems),
+    [issues, showSubWorkItems],
+  );
+
   // Rows: issues grouped by state group (dated), then the unscheduled lane.
   const rows = useMemo<Row[]>(() => {
     const dated: Issue[] = [];
     const undated: Issue[] = [];
-    for (const i of issues) {
+    for (const i of visibleIssues) {
       const b = barSpan(i.start_date, i.target_date);
       (b.start ? dated : undated).push(i);
     }
@@ -330,28 +363,36 @@ export default function Gantt() {
       if (!byGroup.has(g)) byGroup.set(g, []);
       byGroup.get(g)!.push(i);
     }
+    // Each parent row is immediately followed by its nested child
+    // rows (sort_order ASC, from the split) in the same section.
+    const pushWithChildren = (out: Row[], i: Issue, kind: "issue" | "issue-undated") => {
+      out.push(kind === "issue" ? { kind, issue: i } : { kind, issue: i });
+      for (const child of nestedByParent.get(i.id) ?? []) {
+        out.push({ kind: "issue-child", parentId: i.id, row: child });
+      }
+    };
     const out: Row[] = [];
     for (const g of GROUP_ORDER) {
       const list = byGroup.get(g);
       if (!list?.length) continue;
       list.sort((a, b) => a.sequence_id - b.sequence_id);
       out.push({ kind: "group", group: g });
-      for (const i of list) out.push({ kind: "issue", issue: i });
+      for (const i of list) pushWithChildren(out, i, "issue");
     }
     // Any dated issues whose state group is unknown still get shown.
     for (const [g, list] of byGroup) {
       if (GROUP_ORDER.includes(g)) continue;
       list.sort((a, b) => a.sequence_id - b.sequence_id);
       out.push({ kind: "group", group: g });
-      for (const i of list) out.push({ kind: "issue", issue: i });
+      for (const i of list) pushWithChildren(out, i, "issue");
     }
     if (undated.length) {
       undated.sort((a, b) => a.sequence_id - b.sequence_id);
       out.push({ kind: "unscheduled-header" });
-      for (const i of undated) out.push({ kind: "issue-undated", issue: i });
+      for (const i of undated) pushWithChildren(out, i, "issue-undated");
     }
     return out;
-  }, [issues, statesById]);
+  }, [visibleIssues, nestedByParent, statesById]);
 
   // Row Y positions for bars + arrows.
   const rowY = useMemo(() => {
@@ -621,6 +662,19 @@ export default function Gantt() {
           <span className="ml-1 text-[13px] font-semibold text-ink">
             {monthLabel(days[0])} – {monthLabel(days[days.length - 1])}
           </span>
+          {/* C145T3: view-local "Show sub-work items" toggle, default
+              on; off restores today's flat rows. */}
+          <label
+            className={cn(ganttControlClass, "ml-1 cursor-pointer")}
+          >
+            <input
+              type="checkbox"
+              checked={showSubWorkItems}
+              onChange={toggleShowSubWorkItems}
+              aria-label="Show sub-work items"
+            />
+            Show sub-work items
+          </label>
           {canEdit && (
             <Button
               type="button"
@@ -789,6 +843,25 @@ export default function Gantt() {
                       >
                         Unscheduled
                       </div>
+                    );
+                  }
+                  // C145T3: nested child row, indented under its
+                  // parent; click opens the same peek as a parent row.
+                  if (r.kind === "issue-child") {
+                    return (
+                      <button
+                        key={`child-${r.parentId}-${r.row.id}`}
+                        type="button"
+                        onClick={() => openPeek(r.row.id)}
+                        className="flex w-full items-center gap-1.5 border-b border-border-hairline px-3 text-left text-[13px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
+                        style={{ height: ROW_H, paddingLeft: 28 }}
+                        title={`${r.row.display_id}: ${r.row.title}`}
+                      >
+                        <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                          {r.row.display_id}
+                        </span>
+                        <span className="truncate">{r.row.title}</span>
+                      </button>
                     );
                   }
                   return (
@@ -997,8 +1070,29 @@ export default function Gantt() {
                   })()}
                 {/* Bars */}
                 {rows.map((r, idx) => {
-                  if (r.kind !== "issue") return null;
-                  const b = barSpan(r.issue.start_date, r.issue.target_date);
+                  if (r.kind !== "issue" && r.kind !== "issue-child") return null;
+                  // C145T3: a child bar uses the child's own dates
+                  // via the same barSpan math as a parent bar — a
+                  // dateless child yields no bar, exactly as a
+                  // dateless parent. Child bars are display +
+                  // click-to-peek ONLY: no move drag, no resize
+                  // handles, no link-draw handle (C109/C144
+                  // handlers stay parent-only).
+                  const isChild = r.kind === "issue-child";
+                  // Narrowed parent for the C109/C144 handlers, which
+                  // take a full Issue and never run on child bars.
+                  const parentIssue = r.kind === "issue" ? r.issue : null;
+                  const barIssue = isChild
+                    ? {
+                        id: r.row.id,
+                        display_id: r.row.display_id,
+                        name: r.row.title,
+                        state_id: r.row.state_id,
+                        start_date: r.row.start_date ?? null,
+                        target_date: r.row.target_date ?? null,
+                      }
+                    : r.issue;
+                  const b = barSpan(barIssue.start_date, barIssue.target_date);
                   if (!b.start || !b.end) return null;
                   const y = HEADER_H + idx * ROW_H;
                   // Clamp the bar to the visible window.
@@ -1018,7 +1112,7 @@ export default function Gantt() {
                   // resize-start shifts x and grows/shrinks from
                   // the left, a resize-end keeps x and changes
                   // the width. Both clamp to a min-1-day bar.
-                  if (drag?.id === r.issue.id) {
+                  if (!isChild && drag?.id === barIssue.id) {
                     const delta = Math.round(drag.dx / DAY_W);
                     if (drag.mode === "resize-start") {
                       let newStart = addDays(b.start!, delta);
@@ -1038,9 +1132,9 @@ export default function Gantt() {
                     }
                   }
                   const color =
-                    statesById.get(r.issue.state_id)?.color ?? "#6366f1";
+                    statesById.get(barIssue.state_id ?? "")?.color ?? "#6366f1";
                   return (
-                    <g key={r.issue.id}>
+                    <g key={barIssue.id}>
                       <rect
                         x={x + 2}
                         y={y + 9}
@@ -1052,21 +1146,34 @@ export default function Gantt() {
                         stroke="rgba(0,0,0,0.3)"
                         strokeWidth={1}
                         className={cn(
-                          canEdit && !linkUi.linkMode && "cursor-grab",
-                          canEdit && linkUi.linkMode && "cursor-crosshair",
+                          !isChild &&
+                            canEdit &&
+                            !linkUi.linkMode &&
+                            "cursor-grab",
+                          !isChild &&
+                            canEdit &&
+                            linkUi.linkMode &&
+                            "cursor-crosshair",
                         )}
-                        onPointerDown={(e) =>
-                          onBarPointerDown(e, r.issue, {
-                            start: b.start!,
-                            end: b.end!,
-                          })
+                        onPointerDown={
+                          isChild || !parentIssue
+                            ? undefined
+                            : (e) =>
+                                onBarPointerDown(e, parentIssue, {
+                                  start: b.start!,
+                                  end: b.end!,
+                                })
                         }
                         onClick={() => {
+                          if (isChild) {
+                            if (!linkUi.linkMode) openPeek(barIssue.id);
+                            return;
+                          }
                           if (!drag && !suppressClick.current && !linkUi.linkMode)
-                            openPeek(r.issue.id);
+                            openPeek(barIssue.id);
                         }}
                       >
-                        <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
+                        <title>{`${barIssue.display_id}: ${barIssue.name}`}</title>
                       </rect>
                       {/* C144T1: resize handles, siblings of the bar
                           rect (so a handle press never reaches the
@@ -1078,7 +1185,7 @@ export default function Gantt() {
                           visible window — the drawn edge there is
                           not the true date, so grabbing it must
                           not move that date. */}
-                      {canEdit && !linkUi.linkMode && b.start! >= windowStart && (
+                      {!isChild && canEdit && !linkUi.linkMode && b.start! >= windowStart && (
                         <rect
                           x={x + 2}
                           y={y + 9}
@@ -1089,7 +1196,7 @@ export default function Gantt() {
                           className="cursor-ew-resize"
                           aria-label="Drag to change start date"
                           onPointerDown={(e) =>
-                            onResizePointerDown(e, r.issue, {
+                            onResizePointerDown(e, parentIssue!, {
                               start: b.start!,
                               end: b.end!,
                             }, "resize-start")
@@ -1098,7 +1205,7 @@ export default function Gantt() {
                           <title>Drag to change start date</title>
                         </rect>
                       )}
-                      {canEdit && !linkUi.linkMode && b.end! < windowEnd && (
+                      {!isChild && canEdit && !linkUi.linkMode && b.end! < windowEnd && (
                         <rect
                           x={x + 2 + Math.max(w, 8) - 6}
                           y={y + 9}
@@ -1109,7 +1216,7 @@ export default function Gantt() {
                           className="cursor-ew-resize"
                           aria-label="Drag to change due date"
                           onPointerDown={(e) =>
-                            onResizePointerDown(e, r.issue, {
+                            onResizePointerDown(e, parentIssue!, {
                               start: b.start!,
                               end: b.end!,
                             }, "resize-end")
@@ -1119,7 +1226,7 @@ export default function Gantt() {
                         </rect>
                       )}
                       {/* Link-mode draw handle at the bar's right edge. */}
-                      {linkUi.linkMode && canEdit && (
+                      {!isChild && linkUi.linkMode && canEdit && (
                         <circle
                           cx={x + 2 + Math.max(w, 8)}
                           cy={y + ROW_H / 2}
