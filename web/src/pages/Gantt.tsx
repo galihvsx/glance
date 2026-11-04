@@ -482,21 +482,11 @@ export default function Gantt() {
     return out;
   }, [visibleIssues, nestedByParent, statesById]);
 
-  // Row Y positions for bars + arrows.
-  const rowY = useMemo(() => {
-    const m = new Map<string, number>();
-    rows.forEach((r, idx) => {
-      if (r.kind === "issue" || r.kind === "issue-undated") {
-        m.set(r.issue.id, HEADER_H + idx * ROW_H);
-      }
-    });
-    return m;
-  }, [rows]);
-
   // C146T2: row geometry for cascade ghosts, covering top-level
   // bars AND nested child bars (children can be dependents even
-  // though they are never drag sources). Kept separate from rowY
-  // so arrow drawing keeps its exact current behavior.
+  // though they are never drag sources). Kept as its own memo
+  // because it carries state/display/name fields the link-endpoint
+  // lookup does not need.
   const ghostRows = useMemo(() => {
     const m = new Map<
       string,
@@ -562,9 +552,12 @@ export default function Gantt() {
   // Rendered over visLinks (server + optimistic), each carrying its link
   // so a click can open the delete confirm. Only "blocks" edges are
   // drawn — other kinds are managed in the issue detail panel.
-  // NOTE (C151T1 scope): the arrows memo still resolves via rowY +
-  // issues.find (parent rows only) — child-touching arrows are T2,
-  // which swaps this memo onto linkEndpoints above.
+  // C151T2: endpoints resolve through the T1 unified linkEndpoints
+  // lookup (top-level issue OR child row: span from stored dates, y
+  // from the row index), so parent→child, child→parent, and
+  // child→child (payload permitting) edges draw with the same parent
+  // geometry. A dateless endpoint has no bar and renders no arrow,
+  // exactly as for dateless parents. No second lookup is built.
   const arrows = useMemo(() => {
     const out: {
       id: string;
@@ -576,23 +569,20 @@ export default function Gantt() {
     }[] = [];
     for (const l of visLinks) {
       if (l.kind !== "blocks") continue;
-      const fromY = rowY.get(l.issue_id);
-      const toY = rowY.get(l.target_issue_id);
-      if (fromY === undefined || toY === undefined) continue;
-      const from = issues.find((i) => i.id === l.issue_id);
-      const to = issues.find((i) => i.id === l.target_issue_id);
+      const from = linkEndpoints.get(l.issue_id);
+      const to = linkEndpoints.get(l.target_issue_id);
       if (!from || !to) continue;
-      const fb = barSpan(from.start_date, from.target_date);
-      const tb = barSpan(to.start_date, to.target_date);
+      const fb = barSpan(from.startDate, from.targetDate);
+      const tb = barSpan(to.startDate, to.targetDate);
       if (!fb.start || !fb.end || !tb.start) continue;
       const x1 = dayToX(fb.end, windowStart, DAY_W) + DAY_W;
       const x2 = dayToX(tb.start, windowStart, DAY_W);
-      const y1 = fromY + ROW_H / 2;
-      const y2 = toY + ROW_H / 2;
+      const y1 = from.y + ROW_H / 2;
+      const y2 = to.y + ROW_H / 2;
       out.push({ id: l.id, link: l, x1, y1, x2, y2 });
     }
     return out;
-  }, [visLinks, rowY, issues, windowStart]);
+  }, [visLinks, linkEndpoints, windowStart]);
 
   // Rows as drop targets for edge drawing (svg coordinates).
   // C151T1: issue-child rows are included (same y math) — without
