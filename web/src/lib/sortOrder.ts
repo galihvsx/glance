@@ -114,9 +114,14 @@ export interface StackDrop {
  * then insert at the hovered row's original index (clamped), so
  * dragging down over a row lands AFTER it, and dragging over the last
  * row lands at the very bottom.
+ *
+ * C141T1: the parameter is the minimal shape the math reads
+ * ({id, sort_order}) rather than SortableRow, so a nested subtask
+ * stack (SubtaskRow, whose state_id is nullable) reuses this exact
+ * math instead of duplicating it — Issue stacks still satisfy it.
  */
 export function stackDropSortOrder(
-  stack: SortableRow[],
+  stack: Array<{ id: string; sort_order: number }>,
   activeId: string,
   overId: string,
 ): StackDrop {

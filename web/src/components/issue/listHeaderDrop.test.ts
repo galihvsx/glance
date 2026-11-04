@@ -1,7 +1,7 @@
 // C127T0: group-header drop targets — drop resolution, call sequences,
 // bottom-append math, id namespacing, and drag-end dispatch, all pure.
 import { describe, expect, it, vi } from "vitest";
-import type { Issue } from "../../lib/types";
+import type { Issue, SubtaskRow } from "../../lib/types";
 import {
   bottomSortOrder,
   dispatchListDragEnd,
@@ -9,12 +9,16 @@ import {
   headerDropId,
   isListReassignEnabled,
   listSortableId,
+  nestedSortableId,
+  parseNestedSortableId,
   resolveListHeaderDrop,
   toHeaderTarget,
   type ListDragRowRef,
   type ListDragStackRef,
   type ListHeaderDropInfo,
   type ListHeaderDropPlan,
+  type NestedDragRowRef,
+  type NestedDragStackRef,
 } from "./listHeaderDrop";
 
 function mkIssue(
@@ -2211,5 +2215,207 @@ describe("release header drops (C133T1)", () => {
       onHeaderDrop: vi.fn(),
     });
     expect(onRowDrop).not.toHaveBeenCalled();
+  });
+});
+
+describe("nested sortable ids (C141T1)", () => {
+  it("round-trips flat, grouped, and sub-grouped (double-colon) stack keys", () => {
+    for (const stackKey of ["flat", "s-todo", "epic::sub"]) {
+      const id = nestedSortableId(stackKey, "p-1", "c-1");
+      expect(parseNestedSortableId(id)).toEqual({
+        stackKey,
+        parentId: "p-1",
+        childId: "c-1",
+      });
+    }
+  });
+
+  it("the same child under two parent appearances gets distinct ids, no collision", () => {
+    const a = nestedSortableId("flat", "p-1", "c-1");
+    const b = nestedSortableId("epic-e1", "p-1", "c-1");
+    expect(a).not.toBe(b);
+    expect(parseNestedSortableId(a)).toEqual({
+      stackKey: "flat",
+      parentId: "p-1",
+      childId: "c-1",
+    });
+    expect(parseNestedSortableId(b)).toEqual({
+      stackKey: "epic-e1",
+      parentId: "p-1",
+      childId: "c-1",
+    });
+  });
+
+  it("nested ids are disjoint from row and header ids by prefix", () => {
+    const nested = nestedSortableId("flat", "p-1", "c-1");
+    expect(nested.startsWith("nested:")).toBe(true);
+    expect(listSortableId("flat", "c-1").startsWith("nested:")).toBe(false);
+    expect(
+      headerDropId("flat", { kind: "state", stateId: "s-todo" }).startsWith(
+        "nested:",
+      ),
+    ).toBe(false);
+  });
+
+  it("parse returns null for row ids, header ids, and garbage", () => {
+    expect(parseNestedSortableId("row:flat:c-1")).toBeNull();
+    expect(
+      parseNestedSortableId("header:flat:state:s-todo"),
+    ).toBeNull();
+    expect(parseNestedSortableId("nested:only-one-segment")).toBeNull();
+    expect(parseNestedSortableId("")).toBeNull();
+  });
+});
+
+describe("dispatchListDragEnd nested routing (C141T1)", () => {
+  function mkChild(id: string): SubtaskRow {
+    return {
+      id,
+      display_id: `ENG-${id}`,
+      title: id,
+      state_id: "s-todo",
+      priority: null,
+      assignee_ids: [],
+      sort_order: 1024,
+    };
+  }
+  function mkNestedStack(
+    stackKey: string,
+    parentId: string,
+    rows: SubtaskRow[],
+  ): NestedDragStackRef {
+    return { stackKey, parentId, rows };
+  }
+  function mkNestedRef(
+    rowId: string,
+    row: SubtaskRow,
+    stack: NestedDragStackRef,
+  ): NestedDragRowRef {
+    return { rowId, row, stack };
+  }
+
+  const rowsP1 = [mkChild("c-1"), mkChild("c-2")];
+  const flatP1 = mkNestedStack("flat", "p-1", rowsP1);
+  const epicP1 = mkNestedStack("epic-e1", "p-1", rowsP1);
+  const flatP2 = mkNestedStack("flat", "p-2", [mkChild("c-9")]);
+  const nestedMap = new Map<string, NestedDragRowRef>([
+    [nestedSortableId("flat", "p-1", "c-1"), mkNestedRef("c-1", rowsP1[0], flatP1)],
+    [nestedSortableId("flat", "p-1", "c-2"), mkNestedRef("c-2", rowsP1[1], flatP1)],
+    [nestedSortableId("epic-e1", "p-1", "c-1"), mkNestedRef("c-1", rowsP1[0], epicP1)],
+    [nestedSortableId("epic-e1", "p-1", "c-2"), mkNestedRef("c-2", rowsP1[1], epicP1)],
+    [nestedSortableId("flat", "p-2", "c-9"), mkNestedRef("c-9", flatP2.rows[0], flatP2)],
+  ]);
+  const sortableMap = new Map<string, ListDragRowRef>([
+    [
+      "row:flat:p-1",
+      mkRef("p-1", mkIssue("p-1"), mkStack("flat", [mkIssue("p-1")])),
+    ],
+  ]);
+  const headerMap = new Map<string, ListHeaderDropInfo>([
+    [
+      "header:flat:state:s-todo",
+      { target: { kind: "state", stateId: "s-todo" }, targetRows: [] },
+    ],
+  ]);
+  const base = {
+    sortableMap,
+    headerMap,
+    nestedMap,
+    onRowDrop: vi.fn(),
+    onHeaderDrop: vi.fn(),
+  };
+
+  it("nested→nested in the same parent appearance routes to the nested pipeline only, even with reorder disabled", () => {
+    const onNestedDrop = vi.fn();
+    const onRowDrop = vi.fn();
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      ...base,
+      activeSortableId: nestedSortableId("flat", "p-1", "c-1"),
+      overId: nestedSortableId("flat", "p-1", "c-2"),
+      // The nested gate is separate from the C126 gate: a nested
+      // drop is exact under any orderBy/PQL/grouping, so reorder
+      // being off must not block it.
+      reorderEnabled: false,
+      onRowDrop,
+      onHeaderDrop,
+      onNestedDrop,
+    });
+    expect(onNestedDrop).toHaveBeenCalledWith(flatP1, "c-1", "c-2");
+    expect(onRowDrop).not.toHaveBeenCalled();
+    expect(onHeaderDrop).not.toHaveBeenCalled();
+  });
+
+  it("nested→parent-row, nested→header, and nested→other-parent are silent no-ops", () => {
+    const onNestedDrop = vi.fn();
+    const onRowDrop = vi.fn();
+    const onHeaderDrop = vi.fn();
+    const args = {
+      ...base,
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop,
+      onNestedDrop,
+    };
+    const active = nestedSortableId("flat", "p-1", "c-1");
+    dispatchListDragEnd({ ...args, activeSortableId: active, overId: "row:flat:p-1" });
+    dispatchListDragEnd({ ...args, activeSortableId: active, overId: "header:flat:state:s-todo" });
+    dispatchListDragEnd({
+      ...args,
+      activeSortableId: active,
+      overId: nestedSortableId("flat", "p-2", "c-9"),
+    });
+    // Same child, different appearance: a different stack, not a drop target.
+    dispatchListDragEnd({
+      ...args,
+      activeSortableId: active,
+      overId: nestedSortableId("epic-e1", "p-1", "c-2"),
+    });
+    // Unregistered nested id (parses, but no stack): no-op, never a row drop.
+    dispatchListDragEnd({
+      ...args,
+      activeSortableId: nestedSortableId("flat", "p-1", "c-gone"),
+      overId: nestedSortableId("flat", "p-1", "c-2"),
+    });
+    // No over / same id: no-op.
+    dispatchListDragEnd({ ...args, activeSortableId: active, overId: null });
+    dispatchListDragEnd({ ...args, activeSortableId: active, overId: active });
+    expect(onNestedDrop).not.toHaveBeenCalled();
+    expect(onRowDrop).not.toHaveBeenCalled();
+    expect(onHeaderDrop).not.toHaveBeenCalled();
+  });
+
+  it("a nested active id with no nested map never reaches the row or header pipelines", () => {
+    const onRowDrop = vi.fn();
+    const onHeaderDrop = vi.fn();
+    dispatchListDragEnd({
+      sortableMap,
+      headerMap,
+      reorderEnabled: true,
+      activeSortableId: nestedSortableId("flat", "p-1", "c-1"),
+      overId: "row:flat:p-1",
+      onRowDrop,
+      onHeaderDrop,
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+    expect(onHeaderDrop).not.toHaveBeenCalled();
+  });
+
+  it("row drops are unaffected: a row dragged over a nested id is a no-op", () => {
+    const onRowDrop = vi.fn();
+    const onHeaderDrop = vi.fn();
+    const onNestedDrop = vi.fn();
+    dispatchListDragEnd({
+      ...base,
+      activeSortableId: "row:flat:p-1",
+      overId: nestedSortableId("flat", "p-1", "c-1"),
+      reorderEnabled: true,
+      onRowDrop,
+      onHeaderDrop,
+      onNestedDrop,
+    });
+    expect(onRowDrop).not.toHaveBeenCalled();
+    expect(onHeaderDrop).not.toHaveBeenCalled();
+    expect(onNestedDrop).not.toHaveBeenCalled();
   });
 });
