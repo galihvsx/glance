@@ -5,6 +5,10 @@
 // ranged issue. Resize shape is unchanged and pinned here: a
 // resize that moves an edge necessarily creates a range, so it
 // PATCHes both dates; an inward resize on a 1-day bar is a no-op.
+// C149T2 extends this suite (same harness): 1-day bars get enlarged
+// outward-only transparent hit rects as their one logical handle
+// per edge, multi-day bars are byte-identical to C144, and the
+// move strip stays bar-body-only.
 // Harness follows GanttBarResize.test.tsx (mocked api, jsdom
 // PointerEvent polyfill, makeIssue with nullable dates).
 
@@ -134,7 +138,9 @@ const dependent = makeIssue(
   2,
 );
 
-function renderPage(opts: { dated?: Issue[]; links?: IssueLink[] } = {}) {
+function renderPage(
+  opts: { dated?: Issue[]; links?: IssueLink[]; role?: number } = {},
+) {
   const dated = opts.dated ?? [startOnly, targetOnly, ranged];
   const links = opts.links ?? [];
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
@@ -143,7 +149,7 @@ function renderPage(opts: { dated?: Issue[]; links?: IssueLink[] } = {}) {
         workspaces: [{ slug: "acme", name: "Acme" }],
       });
     if (path === "/api/v1/workspaces/acme")
-      return Promise.resolve({ role: 15 });
+      return Promise.resolve({ role: opts.role ?? 15 });
     if (path === `${BASE}/states`)
       return Promise.resolve({ states: [stateStarted] });
     if (path.includes("/issues")) {
@@ -196,6 +202,16 @@ function startHandles(container: HTMLElement) {
 function dueHandles(container: HTMLElement) {
   return container.querySelectorAll(
     'rect[aria-label="Drag to change due date"]',
+  );
+}
+function hitRects(container: HTMLElement) {
+  return container.querySelectorAll("rect[data-gantt-hit]");
+}
+/** Visible 6px handle rects (white, 0.4 opacity) — decorations on
+    1-day bars, the logical handles on multi-day bars. */
+function visibleHandles(container: HTMLElement) {
+  return Array.from(container.querySelectorAll('rect[fill="#ffffff"]')).filter(
+    (r) => r.getAttribute("width") === "6",
   );
 }
 /** Drag an element one whole day (28px) right and release. */
@@ -368,5 +384,143 @@ describe("Gantt single-date drag (C149T1)", () => {
     dragRight(dueHandles(container)[0], -28);
     await new Promise((r) => setTimeout(r, 50));
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Gantt single-date handles (C149T2)", () => {
+  it("1-day bar renders exactly one logical handle per edge, on enlarged outward hit rects", async () => {
+    const { container } = renderPage({ dated: [startOnly] });
+    await waitForBars(["Start-only task"]);
+    // One logical handle per edge: the hit rect carries the
+    // aria-label/title, the visible 6px rect is a decoration.
+    expect(startHandles(container).length).toBe(1);
+    expect(dueHandles(container).length).toBe(1);
+    expect(hitRects(container).length).toBe(2);
+    expect(visibleHandles(container).length).toBe(2);
+    const bar = bars(container)[0];
+    const barX = Number(bar.getAttribute("x"));
+    const barW = Number(bar.getAttribute("width"));
+    expect(barW).toBe(24);
+    const startHit = startHandles(container)[0];
+    const dueHit = dueHandles(container)[0];
+    expect(startHit.getAttribute("data-gantt-hit")).toBe("resize-start");
+    expect(dueHit.getAttribute("data-gantt-hit")).toBe("resize-end");
+    expect(startHit.getAttribute("fill")).toBe("transparent");
+    expect(dueHit.getAttribute("fill")).toBe("transparent");
+    expect(startHit.querySelector("title")?.textContent).toBe(
+      "Drag to change start date",
+    );
+    expect(dueHit.querySelector("title")?.textContent).toBe(
+      "Drag to change due date",
+    );
+    // Outward-only geometry, asserted relative to the bar rect so
+    // the test does not hardcode the window offset: left hit covers
+    // the visible handle plus 6px outside the left edge, right hit
+    // the visible handle plus 6px outside the right edge.
+    expect(Number(startHit.getAttribute("x"))).toBe(barX - 6);
+    expect(Number(startHit.getAttribute("width"))).toBe(12);
+    expect(Number(dueHit.getAttribute("x"))).toBe(barX + barW - 6);
+    expect(Number(dueHit.getAttribute("width"))).toBe(12);
+    // Neither hit rect reaches into the middle 12px move strip
+    // (barX+6 .. barX+barW-6): left ends where the strip starts,
+    // right starts where the strip ends.
+    expect(
+      Number(startHit.getAttribute("x")) +
+        Number(startHit.getAttribute("width")),
+    ).toBe(barX + 6);
+    expect(Number(dueHit.getAttribute("x"))).toBe(barX + barW - 6);
+    // Visible handles stay exactly 6px at the bar edges.
+    const vis = visibleHandles(container);
+    expect(Number(vis[0].getAttribute("x"))).toBe(barX);
+    expect(Number(vis[1].getAttribute("x"))).toBe(barX + barW - 6);
+  });
+
+  it("press on the start hit rect starts resize-start and PATCHes both dates (C144 shape)", async () => {
+    const { patch, container } = renderPage({ dated: [startOnly] });
+    await waitForBars(["Start-only task"]);
+    // The only start-labelled element is the hit rect; dragging it
+    // one day left moves the start to 11-09, creating a range.
+    dragRight(startHandles(container)[0], -28);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-s`, {
+        start_date: "2026-11-09",
+        target_date: "2026-11-10",
+      });
+    });
+  });
+
+  it("press on the due hit rect starts resize-end and PATCHes both dates (C144 shape)", async () => {
+    const { patch, container } = renderPage({ dated: [startOnly] });
+    await waitForBars(["Start-only task"]);
+    dragRight(dueHandles(container)[0]);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-s`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-11",
+      });
+    });
+  });
+
+  it("bar-body press on a 1-day bar still starts a move, not a resize", async () => {
+    const { patch, container } = renderPage({ dated: [startOnly] });
+    await waitForBars(["Start-only task"]);
+    dragRight(bars(container)[0]);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-s`, {
+        start_date: "2026-11-11",
+      });
+    });
+    const call = patch.mock.calls.find(
+      (c) => c[0] === `${BASE}/issues/i-s`,
+    )!;
+    expect(Object.keys(call[1] as object).sort()).toEqual(["start_date"]);
+  });
+
+  it("multi-day bars render no hit rects; visible handles only, C144 geometry byte-identical", async () => {
+    const { container } = renderPage({ dated: [ranged] });
+    await waitForBars(["Ranged task"]);
+    expect(hitRects(container).length).toBe(0);
+    expect(startHandles(container).length).toBe(1);
+    expect(dueHandles(container).length).toBe(1);
+    const bar = bars(container)[0];
+    const barX = Number(bar.getAttribute("x"));
+    const barW = Number(bar.getAttribute("width"));
+    // 3-day bar: 3*28-4 = 80.
+    expect(barW).toBe(80);
+    const startHandle = startHandles(container)[0];
+    const dueHandle = dueHandles(container)[0];
+    expect(startHandle.getAttribute("data-gantt-hit")).toBeNull();
+    expect(dueHandle.getAttribute("data-gantt-hit")).toBeNull();
+    expect(Number(startHandle.getAttribute("x"))).toBe(barX);
+    expect(Number(startHandle.getAttribute("width"))).toBe(6);
+    expect(Number(dueHandle.getAttribute("x"))).toBe(barX + barW - 6);
+    expect(Number(dueHandle.getAttribute("width"))).toBe(6);
+    expect(visibleHandles(container).length).toBe(2);
+  });
+
+  it("canEdit=false renders neither handles nor hit rects on a 1-day bar", async () => {
+    const { patch, container } = renderPage({ dated: [startOnly], role: 0 });
+    await waitForBars(["Start-only task"]);
+    expect(startHandles(container).length).toBe(0);
+    expect(dueHandles(container).length).toBe(0);
+    expect(hitRects(container).length).toBe(0);
+    dragRight(bars(container)[0]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("link mode renders neither handles nor hit rects on a 1-day bar", async () => {
+    const { container } = renderPage({ dated: [startOnly] });
+    await waitForBars(["Start-only task"]);
+    expect(startHandles(container).length).toBe(1);
+    expect(hitRects(container).length).toBe(2);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add dependencies" }),
+    );
+    await waitFor(() => {
+      expect(startHandles(container).length).toBe(0);
+      expect(dueHandles(container).length).toBe(0);
+      expect(hitRects(container).length).toBe(0);
+    });
   });
 });
