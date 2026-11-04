@@ -9,7 +9,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ArrowUpDown, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Search, User } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { stateTransitionConflictMessage, useWorkflow } from "../lib/workflow";
 import { toast } from "../components/ui/toast";
@@ -21,6 +21,7 @@ import type {
   IssueState,
   Member,
   Project,
+  SubtaskRow,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
 import { Button } from "../components/ui/button";
@@ -40,6 +41,8 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Textarea } from "../components/ui/textarea";
 import PriorityPicker from "../components/issue/PriorityPicker";
 import PriorityBars from "../components/issue/PriorityBars";
+import { subtaskPriorityLevel } from "../components/issue/boardSubtasks";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import StatePicker from "../components/issue/StatePicker";
 import AssigneePicker from "../components/issue/AssigneePicker";
 import {
@@ -54,6 +57,8 @@ import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import FilterPanel from "../components/issue/FilterPanel";
 import SpreadsheetDisplayPanel from "../components/issue/SpreadsheetDisplayPanel";
 import { useSpreadsheetCustomColumns } from "../components/issue/useSpreadsheetCustomColumns";
+import { useSpreadsheetSubWorkItems } from "../components/issue/useSpreadsheetSubWorkItems";
+import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import {
   customFieldKeys,
   fetchCustomFields,
@@ -99,6 +104,7 @@ function buildIssuePath(
   identifier: string,
   f: IssueFilters,
   cursor?: string,
+  includeSubtasks = false,
 ): string {
   const p = toApiParams(f);
   p.set("per_page", String(PER_PAGE));
@@ -107,6 +113,9 @@ function buildIssuePath(
   // cycle/module/release membership (one server-side query), replacing
   // the old per-row ?include_project_structure=1 detail fetches.
   p.set("include_project_structure", "1");
+  // C143T1: nested sub-work rows — only when the toggle is on; off
+  // means today's flat fetch exactly, no unused data.
+  if (includeSubtasks) p.set("include_subtasks", "1");
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
 
@@ -122,11 +131,17 @@ function buildPqlPath(
   identifier: string,
   query: string,
   cursor?: string,
+  includeSubtasks = false,
 ): string {
   const p = new URLSearchParams();
   p.set("pql", query.trim());
   p.set("per_page", "100");
   p.set("include_project_structure", "1");
+  // C143T1: same toggle-gated flag as the visual fetch. The backend
+  // parses it from the shared issueListCommon (issue_handler.go), so
+  // the PQL path honors it exactly like the visual path — verified
+  // by read, no backend change.
+  if (includeSubtasks) p.set("include_subtasks", "1");
   if (cursor) p.set("cursor", cursor);
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues?${p}`;
 }
@@ -260,6 +275,14 @@ export default function Spreadsheet() {
   // visibility is per-project localStorage, default OFF.
   const { visible: cfVisible, toggle: toggleCfColumn, reset: resetCfColumns } =
     useSpreadsheetCustomColumns(slug, identifier);
+  // C143T1: "Show sub-work items" — own per-project localStorage key
+  // (useSpreadsheetSubWorkItems), default ON, never shared with the
+  // list/board useDisplaySettings object.
+  const {
+    showSubWorkItems,
+    toggle: toggleShowSubWorkItems,
+    reset: resetShowSubWorkItems,
+  } = useSpreadsheetSubWorkItems(slug, identifier);
   const customFieldsQuery = useQuery({
     queryKey: customFieldKeys(slug, identifier).fields,
     queryFn: () => fetchCustomFields(slug, identifier),
@@ -271,9 +294,14 @@ export default function Spreadsheet() {
   );
 
   const issuesQuery = useInfiniteQuery({
-    queryKey: ["issues", slug, identifier, filters],
+    // C143T1: the toggle is part of the key — flipping it refetches
+    // with / without include_subtasks=1 instead of reusing stale rows
+    // (board/list refetch-on-toggle precedent).
+    queryKey: ["issues", slug, identifier, filters, showSubWorkItems],
     queryFn: ({ pageParam }: { pageParam?: string }) =>
-      api.get<IssueListResult>(buildIssuePath(slug, identifier, filters, pageParam)),
+      api.get<IssueListResult>(
+        buildIssuePath(slug, identifier, filters, pageParam, showSubWorkItems),
+      ),
     getNextPageParam: (last) => last.next_cursor || undefined,
     initialPageParam: undefined as string | undefined,
     // C104T0: keep the previous pages across filter-key changes, so
@@ -295,6 +323,7 @@ export default function Spreadsheet() {
     slug,
     identifier,
     appliedQuery,
+    showSubWorkItems,
   ] as const;
   const pqlIssuesQuery = useQuery({
     queryKey: pqlIssuesKey,
@@ -302,7 +331,7 @@ export default function Spreadsheet() {
     queryFn: async () => {
       if (pqlHasLimit(appliedQuery)) {
         const page = await api.get<IssueListResult>(
-          buildPqlPath(slug, identifier, appliedQuery),
+          buildPqlPath(slug, identifier, appliedQuery, undefined, showSubWorkItems),
         );
         return page.results;
       }
@@ -310,7 +339,7 @@ export default function Spreadsheet() {
       let cursor: string | undefined;
       do {
         const page = await api.get<IssueListResult>(
-          buildPqlPath(slug, identifier, appliedQuery, cursor),
+          buildPqlPath(slug, identifier, appliedQuery, cursor, showSubWorkItems),
         );
         all.push(...page.results);
         cursor = page.next_cursor;
@@ -374,7 +403,9 @@ export default function Spreadsheet() {
       setFilters({ pql: "" });
       return;
     }
-    await api.get<IssueListResult>(buildPqlPath(slug, identifier, q));
+    await api.get<IssueListResult>(
+      buildPqlPath(slug, identifier, q, undefined, showSubWorkItems),
+    );
     setFilters({ pql: q });
   }
 
@@ -456,7 +487,7 @@ export default function Spreadsheet() {
   } | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
 
-  const issuesKey = ["issues", slug, identifier, filters] as const;
+  const issuesKey = ["issues", slug, identifier, filters, showSubWorkItems] as const;
   type IssuesCache = InfiniteData<IssueListResult>;
 
   /** Applies a PATCH body to one cached issue row (optimistic). */
@@ -629,6 +660,18 @@ export default function Spreadsheet() {
     [pqlActive, pqlIssuesQuery.data, issues],
   );
 
+  // C143T1: split the displayed rows into visible top-level rows +
+  // nested rows (shared splitNestedIssues — never duplicated here).
+  // Toggle off (or a fetch without the flag) returns the flat list
+  // untouched; orphans and grandchildren stay flat rows — see
+  // splitNestedIssues. Counts, the empty state, and the sort all
+  // derive from visibleIssues, so a nested child never appears twice
+  // and never counts.
+  const { visibleIssues, nestedByParent } = useMemo(
+    () => splitNestedIssues(displayedIssues, showSubWorkItems),
+    [displayedIssues, showSubWorkItems],
+  );
+
   // C9T4: per-issue custom values. The list endpoint deliberately never
   // carries custom_values (C7T2 kept the list query untouched for perf, and
   // this task is frontend-only with zero backend changes), so while at
@@ -639,7 +682,7 @@ export default function Spreadsheet() {
     queries:
       visibleCfFields.length === 0
         ? []
-        : displayedIssues.map((issue) => ({
+        : visibleIssues.map((issue) => ({
             queryKey: ["issue-custom-values", slug, identifier, issue.id],
             queryFn: () =>
               api
@@ -653,7 +696,7 @@ export default function Spreadsheet() {
   const cfValuesByIssue = useMemo(
     () =>
       new Map(
-        displayedIssues.map(
+        visibleIssues.map(
           (issue, i) =>
             [
               issue.id,
@@ -661,7 +704,7 @@ export default function Spreadsheet() {
             ] as const,
         ),
       ),
-    [displayedIssues, cfValueQueries],
+    [visibleIssues, cfValueQueries],
   );
 
   // C21T2: cycle/module/release membership rides on the list rows —
@@ -673,16 +716,19 @@ export default function Spreadsheet() {
   const structureByIssue = useMemo(
     () =>
       new Map(
-        displayedIssues.map(
+        visibleIssues.map(
           (issue) => [issue.id, issue.project_structure] as const,
         ),
       ),
-    [displayedIssues],
+    [visibleIssues],
   );
+  // C143T1: the column sort reorders TOP-LEVEL rows only; nested rows
+  // travel with their parent in stack order (they are rendered from
+  // nestedByParent after the sort, never sorted themselves).
   const sortedIssues = useMemo(() => {
-    if (!sortKey) return displayedIssues;
+    if (!sortKey) return visibleIssues;
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...displayedIssues].sort((a, b) => {
+    return [...visibleIssues].sort((a, b) => {
       const va = cellValue(
         a,
         sortKey,
@@ -704,10 +750,126 @@ export default function Spreadsheet() {
         return (va - vb) * dir;
       return String(va).localeCompare(String(vb)) * dir;
     });
-  }, [displayedIssues, sortKey, sortDir, stateById, structureByIssue]);
+  }, [visibleIssues, sortKey, sortDir, stateById, structureByIssue]);
 
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
+  }
+
+  /** C143T1: nested rows navigate by id — a SubtaskRow is not an Issue. */
+  function openIssueById(id: string) {
+    navigate(`/w/${slug}/p/${identifier}/i/${id}`);
+  }
+
+  /**
+   * C143T1: one nested sub-work row under its parent row — the grid
+   * mirror of the list's NestedListSubtaskRow. A SubtaskRow carries
+   * NO labels, dates, cycle/module/release membership, or custom
+   * values, so those columns render "—" (the grid's empty rendering),
+   * never a fetched value and never a per-row fetch. NOT
+   * inline-editable (no state/priority/date editors — they take a
+   * full Issue) and NOT bulk-selectable (no checkbox; the grid has
+   * no bulk bar at all). Rows come from nestedByParent, so they
+   * render in sort_order ASC under their parent regardless of the
+   * active column sort.
+   */
+  function renderNestedRow(child: SubtaskRow) {
+    const childState = child.state_id
+      ? stateById.get(child.state_id)
+      : undefined;
+    const level = subtaskPriorityLevel(child.priority);
+    const dash = <span className="text-[13px] text-ink-muted">—</span>;
+    return (
+      <tr
+        key={child.id}
+        data-nested-subtask={child.id}
+        role="link"
+        tabIndex={0}
+        aria-label={`Open issue ${child.display_id}: ${child.title}`}
+        onClick={() => openIssueById(child.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+            openIssueById(child.id);
+          }
+        }}
+        className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
+      >
+        <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
+          <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
+            {child.display_id}
+          </span>
+        </td>
+        <td className="max-w-64 truncate py-2 pl-10 pr-3 align-middle text-[13px] font-medium text-ink">
+          {child.title}
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {childState ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`state-dot ${stateDotClass(childState.group)}`}
+                aria-hidden="true"
+              />
+              <span className="text-[13px] text-ink-secondary">
+                {childState.name}
+              </span>
+            </span>
+          ) : (
+            dash
+          )}
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {level !== null ? (
+            <span
+              className="inline-flex items-center gap-1.5"
+              aria-label={`Priority: ${priorityLabel(level)}`}
+            >
+              <PriorityBars priority={level} />
+              <span className="text-[13px] text-ink-secondary">
+                {priorityLabel(level)}
+              </span>
+            </span>
+          ) : (
+            dash
+          )}
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {child.assignee_ids.length > 0 ? (
+            <span
+              className="flex flex-wrap -space-x-1"
+              aria-label={`${child.assignee_ids.length} assignee${child.assignee_ids.length === 1 ? "" : "s"}`}
+            >
+              {child.assignee_ids.map((id) => (
+                <Avatar key={id} size="sm" aria-hidden="true">
+                  <AvatarFallback>
+                    <User className="h-3 w-3" aria-hidden />
+                  </AvatarFallback>
+                </Avatar>
+              ))}
+            </span>
+          ) : (
+            dash
+          )}
+        </td>
+        {/* Labels, dates, Created, Updated, Cycle, Module, Release:
+            a SubtaskRow carries none of these — always "—". */}
+        <td className="px-3 py-2 align-middle">{dash}</td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle">{dash}</td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle">{dash}</td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle">{dash}</td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle">{dash}</td>
+        <td className="px-3 py-2 align-middle">{dash}</td>
+        <td className="px-3 py-2 align-middle">{dash}</td>
+        <td className="px-3 py-2 align-middle">{dash}</td>
+        {visibleCfFields.map((f) => (
+          <td
+            key={`cf-${f.id}`}
+            className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
+          >
+            {dash}
+          </td>
+        ))}
+      </tr>
+    );
   }
 
   return (
@@ -715,7 +877,7 @@ export default function Spreadsheet() {
       {/* C19T4: shared page header replaces the per-page h1 + ProjectNav. */}
       <PageHeader
         viewName="Table"
-        count={displayedIssues.length}
+        count={visibleIssues.length}
         showViews
         filterPanel={
           <FilterPanel
@@ -752,6 +914,9 @@ export default function Spreadsheet() {
             visible={cfVisible}
             onToggle={toggleCfColumn}
             onReset={resetCfColumns}
+            showSubWorkItems={showSubWorkItems}
+            onToggleShowSubWorkItems={toggleShowSubWorkItems}
+            onResetShowSubWorkItems={resetShowSubWorkItems}
             triggerClassName={pageHeaderControlClass}
           />
         }
@@ -1007,6 +1172,7 @@ export default function Spreadsheet() {
                     const structure = structureByIssue.get(issue.id);
                     const modules = structure?.modules ?? [];
                     return (
+                      <Fragment key={issue.id}>
                       <tr
                         key={issue.id}
                         role="link"
@@ -1262,6 +1428,11 @@ export default function Spreadsheet() {
                           </td>
                         ))}
                       </tr>
+                      {/* C143T1: nested rows, in stack order, directly
+                          under their parent — in visual mode, PQL
+                          mode, and under a column sort alike. */}
+                      {(nestedByParent.get(issue.id) ?? []).map(renderNestedRow)}
+                      </Fragment>
                     );
                   })}
                 </tbody>
