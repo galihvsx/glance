@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Spreadsheet cross-group drag move (cycle 148)**
+
+- Cycle 147's spreadsheet group headers were explicitly visual-only
+  ("never a drop target"). Grouped spreadsheet rows are now
+  draggable: grab a row's leading handle and drop it onto another
+  primary group and the issue moves there, mirroring Board's drop
+  semantics dimension for dimension. State and priority moves
+  PATCH `state_id` / `priority` through the existing cell-edit
+  mutation (gated on `canEdit`, with Board's transition guard and
+  "Move blocked" toast for state moves); epic, assignees, labels,
+  and modules attach (already-member drops are no-ops, never
+  detaches); cycles set via Board's add-then-remove pipeline;
+  releases set via a single assign (never a DELETE). Drops onto
+  Ungrouped, same-group, created-by, and state-group targets are
+  deliberate no-ops, exactly as Board treats them. While dragging,
+  the source row dims in place and the target group's header
+  highlights, including when the pointer is over a foreign row of
+  that group; sub-group headers are never drop targets, and
+  multi-appearance issues move once with all appearances
+  re-rendering after invalidation (PQL-mode moves re-group the row
+  the same way). A failed move rolls the row back to its source
+  group. Frontend-only: no backend change, no new endpoint.
+
 **Spreadsheet grouping + sub-grouping (cycle 147)**
 
 - Board and List grouped rows by state, priority, epic, assignees,
