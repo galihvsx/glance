@@ -5,6 +5,32 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Spreadsheet grouping + sub-grouping (cycle 147)**
+
+- Board and List grouped rows by state, priority, epic, assignees,
+  labels, modules, cycles, releases, created-by, and state-groups,
+  but the Spreadsheet view rendered one flat row list with no
+  grouping at all — switching views lost the structure entirely.
+  The spreadsheet grid now groups and sub-groups exactly like
+  Board/List, reusing the same `groupBy*` helpers and `subGroup.ts`
+  sections (same group order, Unknown/Ungrouped last and hidden
+  when empty, multi-appearance semantics inherited). Group headers
+  are full-width visual-only rows (title + top-level count, never
+  drop targets); a column sort re-sorts rows within groups, never
+  the groups; nested sub-work rows travel with their parent and
+  are never counted separately; committed PQL rows group
+  identically. Grouping settings live in the spreadsheet's own
+  localStorage key (never the per-project display settings, so
+  grouping here never flips list/board rendering) and default to
+  none/none, so the flat grid is unchanged until opted in. The
+  display panel gains Group by / Sub-group by selects (same
+  option order and disable rules as the list/board panel; the
+  sub-group control is disabled while no group is chosen, and
+  the same-dimension option is disabled, with the
+  `effectiveSubGroupBy` rule as the single source of truth).
+  Frontend-only: no backend change, no new endpoint, no drag
+  pipeline added.
+
 **Dependency cascade on Gantt move/resize (cycle 146)**
 
 - Plane's dependency model is finish-to-start, but glance's Gantt
