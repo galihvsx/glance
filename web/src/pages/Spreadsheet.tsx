@@ -303,9 +303,11 @@ export default function Spreadsheet() {
   // C147T1/T2: spreadsheet grouping — its OWN per-project
   // localStorage key (useSpreadsheetGrouping), never
   // useDisplaySettings, so grouping here never flips list/board
-  // rendering. T2 wires subGroupBy into the grid (T1 persisted it
-  // but the grid did not read it). No panel controls yet (T3).
-  const { groupBy, subGroupBy } = useSpreadsheetGrouping(slug, identifier);
+  // rendering. T3 wires the setters into SpreadsheetDisplayPanel,
+  // so a panel selection persists and re-renders the grid
+  // immediately (no reload, no refetch).
+  const { groupBy, subGroupBy, setGroupBy, setSubGroupBy, reset: resetGrouping } =
+    useSpreadsheetGrouping(slug, identifier);
   const customFieldsQuery = useQuery({
     queryKey: customFieldKeys(slug, identifier).fields,
     queryFn: () => fetchCustomFields(slug, identifier),
@@ -1420,6 +1422,11 @@ export default function Spreadsheet() {
             showSubWorkItems={showSubWorkItems}
             onToggleShowSubWorkItems={toggleShowSubWorkItems}
             onResetShowSubWorkItems={resetShowSubWorkItems}
+            groupBy={groupBy}
+            subGroupBy={subGroupBy}
+            onGroupByChange={setGroupBy}
+            onSubGroupByChange={setSubGroupBy}
+            onResetGrouping={resetGrouping}
             triggerClassName={pageHeaderControlClass}
           />
         }
