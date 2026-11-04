@@ -103,7 +103,12 @@ async function fetchAllIssues(path: string): Promise<{
 
 /** Drag state (C109 move + C144 resize), shared by the commit path
  *  and the cascade ghost preview so both compute the prospective span
- *  from exactly the same math. */
+ *  from exactly the same math. C149T1: hasStart/hasTarget record
+ *  which dates the issue ORIGINALLY had, captured at drag start
+ *  from the Issue object — origStart/origEnd come from the filled
+ *  barSpan, which fills the missing date, so presence cannot be
+ *  recovered from them. The move commit uses presence to PATCH
+ *  only the originally-present date(s). */
 type DragState = {
   id: string;
   startX: number;
@@ -111,6 +116,8 @@ type DragState = {
   origEnd: string;
   dx: number;
   mode: "move" | "resize-start" | "resize-end";
+  hasStart: boolean;
+  hasTarget: boolean;
 };
 
 /** Prospective span for a drag at the given whole-day delta — the
@@ -535,11 +542,25 @@ export default function Gantt() {
   }, [drag, issues, links]);
 
   const patchMutation = useMutation({
-    mutationFn: ({ id, start, end }: { id: string; start: string; end: string }) =>
-      api.patch<Issue>(`${base}/issues/${id}`, {
-        start_date: start,
-        target_date: end,
-      }),
+    // C149T1: start/end are optional — the mutation sends exactly
+    // the keys given. An absent key leaves that date untouched
+    // server-side; an explicit null would CLEAR it, so nulls are
+    // never sent. Move commits pass only the originally-present
+    // date(s); resize commits pass both.
+    mutationFn: ({
+      id,
+      start,
+      end,
+    }: {
+      id: string;
+      start?: string;
+      end?: string;
+    }) => {
+      const body: { start_date?: string; target_date?: string } = {};
+      if (start !== undefined) body.start_date = start;
+      if (end !== undefined) body.target_date = end;
+      return api.patch<Issue>(`${base}/issues/${id}`, body);
+    },
     onSuccess: () => {
       // C109T2: the drag targets the issue, not the query, so it
       // works on visible bars in PQL mode too. The ["gantt"]
@@ -579,6 +600,10 @@ export default function Gantt() {
       origEnd: b.end,
       dx: 0,
       mode: "move",
+      // C149T1: presence from the Issue, NOT the filled span b
+      // (barSpan fills the missing date, so b always has both).
+      hasStart: Boolean(issue.start_date),
+      hasTarget: Boolean(issue.target_date),
     });
   };
 
@@ -602,6 +627,11 @@ export default function Gantt() {
       origEnd: b.end,
       dx: 0,
       mode,
+      // C149T1: captured uniformly with move drags (resize commits
+      // always send both dates — a moved edge creates the range —
+      // but the state stays honest about the original shape).
+      hasStart: Boolean(issue.start_date),
+      hasTarget: Boolean(issue.target_date),
     });
   };
 
@@ -662,12 +692,27 @@ export default function Gantt() {
     // presence-preserving PATCH per shift fire together; full
     // success toasts the count, any failure toasts an error, and
     // either way ["gantt"] invalidates to resync (rule 8).
+    // C149T1: a MOVE PATCHes only the dates the dragged issue
+    // originally had (drag.hasStart/hasTarget, captured at drag
+    // start from the Issue). Sending the filled missing date would
+    // silently convert a single-date issue into a ranged one — the
+    // bar renders identically either way, so nothing would look
+    // wrong. A resize that moves an edge necessarily creates a
+    // range, so it keeps sending both dates. Neither-present is
+    // unreachable for a bar drag (a bar needs at least one date);
+    // it falls back to both rather than sending an empty PATCH.
+    const draggedDates =
+      drag.mode === "move" && (drag.hasStart || drag.hasTarget)
+        ? {
+            ...(drag.hasStart ? { start } : {}),
+            ...(drag.hasTarget ? { end } : {}),
+          }
+        : { start, end };
     const shifts = computeCascade(issues, links, drag.id, start, end, drag.mode);
     if (shifts.length === 0) {
       patchMutation.mutate({
         id: drag.id,
-        start,
-        end,
+        ...draggedDates,
       });
       return;
     }
@@ -688,9 +733,17 @@ export default function Gantt() {
     const draggedId = drag.id;
     void (async () => {
       const results = await Promise.allSettled([
+        // C149T1: same presence rule as the single-PATCH path above
+        // — a moved single-date blocker stays single-date even when
+        // it cascades its dependents (computeCascade still receives
+        // the filled span, unchanged).
         api.patch<Issue>(`${base}/issues/${draggedId}`, {
-          start_date: start,
-          target_date: end,
+          ...(draggedDates.start !== undefined
+            ? { start_date: draggedDates.start }
+            : {}),
+          ...(draggedDates.end !== undefined
+            ? { target_date: draggedDates.end }
+            : {}),
         }),
         ...cascadePatches.map((p) =>
           api.patch<Issue>(`${base}/issues/${p.id}`, p.body),
