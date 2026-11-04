@@ -5,6 +5,29 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Dependency cascade on Gantt move/resize (cycle 146)**
+
+- Plane's dependency model is finish-to-start, but glance's Gantt
+  only PATCHed the dragged bar: moving or resizing a blocker left
+  its dependents on stale dates, so a dependent bar could sit
+  entirely before its blocker ends while the drawn edge still
+  claimed "blocked by". Moving or resizing a blocker on Gantt now
+  cascades the shift forward through its transitive `blocks`
+  dependents — gap-preserving and forward-only: only dependents
+  that would violate finish-to-start after the shift move, by
+  exactly the blocker's end delta; pre-existing violations are
+  preserved, not repaired; `relates_to`/`duplicates` edges never
+  cascade; dateless dependents are skipped. During the drag, each
+  would-shift dependent renders as a translucent dashed ghost bar
+  at its shifted position, so the cascade is visible before
+  committing; on commit, the dragged issue plus one
+  presence-preserving PATCH per shift fire together, with a
+  success toast naming the count and an error toast + refetch on
+  any failure. Frontend-only: a pure `computeCascade` engine (BFS
+  order, cycle-safe) wired into the existing Gantt drag commit
+  path; no backend change, no new endpoint, no cascade on
+  Calendar/Roadmap/List/Board drags.
+
 **Show sub-work items in Calendar, Gantt, and Roadmap views (cycle 145)**
 
 - Plane's "Show sub-work items" display option was honored in the
