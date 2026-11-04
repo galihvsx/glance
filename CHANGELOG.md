@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Drag-to-reorder nested subtask rows in the list view (cycle 141)**
+
+- The C126 list drag-to-reorder excluded nested subtask rows:
+  they traveled with a dragged parent but could never start a
+  drag themselves. Nested rows are now draggable within their
+  own parent's stack: a grip handle on each nested row (hover/
+  focus-reveal, same as the top-level handle), one sortable
+  context per parent appearance, stack-scoped ids so a parent
+  multi-appearing under epic grouping never collides with
+  itself. Drops reorder siblings only — cross-parent drops,
+  drops onto parent rows, and drops onto group/sub-group
+  headers are silent no-ops — via the C126 pipeline (midpoint
+  math, PATCH /issues/{id} {sort_order} with state unchanged
+  and no re-parenting, rebalance + retry once on gap
+  collapse). No backend change.
+- Gate: nested drag needs showSubWorkItems on plus at least
+  two nested rows under the parent, and nothing else — the
+  nested stack's visual order is always a sort_order sequence
+  (nestedByParent sorts by sort_order ASC under every orderBy,
+  in PQL mode, and under every grouping), so unlike top-level
+  rows it needs no orderBy/PQL/grouping gate. With one row or
+  with sub-work items off, the nested block renders exactly as
+  before (no handle, no extra DOM).
+- Known boundary: mocked tests cover grips, routing, drop
+  math, and the pipeline, but a real drop landing and the
+  full keyboard-drag sequence for a nested item inside a
+  parent sortable remain verifiable only by a live browser
+  drag, as for every prior cycle.
+
 **Sub-group by cycles, modules, and releases in the list and board views (cycle 140)**
 
 - Plane's Sub-group by offers Cycle, Module, and Releases
