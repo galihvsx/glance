@@ -507,7 +507,11 @@ describe("Gantt child move drag (C150T1)", () => {
     expect(Object.keys(call[1] as object).sort()).toEqual(["start_date"]);
   });
 
-  it("link mode: a child-bar press starts no edge draw", async () => {
+  // C151T1 (rule change, not a regression): the C150 rule "a
+  // child-bar press in link mode starts no edge draw" is retired —
+  // a child-bar press now starts an edge draw exactly like a
+  // parent press, and still starts no move drag.
+  it("link mode: a child-bar press starts an edge draw, not a move drag", async () => {
     const { patch, post, container } = renderPage();
     await waitForBars();
     fireEvent.click(
@@ -521,7 +525,21 @@ describe("Gantt child move drag (C150T1)", () => {
         ).length,
       ).toBe(0);
     });
-    drag(barByTitle(container, "ENG-11: Child task"));
+    const bar = barByTitle(container, "ENG-11: Child task");
+    const svg = bar.closest("svg")!;
+    fireEvent.pointerDown(bar, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 200, clientY: 100 });
+    // The in-progress draw preview (dashed path) proves the press
+    // started an edge draw rather than a move drag.
+    await waitFor(() => {
+      expect(
+        container.querySelector('path[stroke-dasharray="4 3"]'),
+      ).not.toBeNull();
+    });
+    expect(patch).not.toHaveBeenCalled();
+    // Release over empty space (below all rows) cancels the draw:
+    // no POST, no PATCH, no peek.
+    fireEvent.pointerUp(svg, { clientX: 200, clientY: 1000 });
     await new Promise((r) => setTimeout(r, 50));
     expect(patch).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
