@@ -2,8 +2,9 @@ import type { ReactNode } from "react";
 import { IssueChip } from "./IssueChip";
 import { DraggableIssueChip } from "./DraggableIssueChip";
 import { DroppableUnscheduledStrip } from "./DroppableUnscheduledStrip";
+import { SubtaskChip } from "./SubtaskChip";
 import type { EpicIssueGroup } from "../issue/groupByEpic";
-import type { Issue, IssueState } from "../../lib/types";
+import type { Issue, IssueState, SubtaskRow } from "../../lib/types";
 import { cn } from "../../lib/utils";
 
 /**
@@ -30,6 +31,8 @@ export function UnscheduledStrip({
   canEdit,
   onOpen,
   groups,
+  nestedByParent,
+  onOpenSubtask,
 }: {
   issues: Issue[];
   statesById: Map<string, IssueState>;
@@ -38,6 +41,13 @@ export function UnscheduledStrip({
   /** C72T2: pre-computed epic lane clusters; null/undefined keeps the
    *  flat strip. */
   groups?: EpicIssueGroup[] | null;
+  /** C145T2: parent id → nested child rows (from splitNestedIssues).
+   *  Absent = today's flat strip. Children of a strip parent nest
+   *  under that parent here; a child chip is display + click-to-peek
+   *  only, never draggable. */
+  nestedByParent?: Map<string, SubtaskRow[]>;
+  /** C145T2: peek opener for a nested child chip (child id). */
+  onOpenSubtask?: (id: string) => void;
 }) {
   if (!canEdit && issues.length === 0) return null;
 
@@ -58,9 +68,25 @@ export function UnscheduledStrip({
         onOpen={() => onOpen(issue)}
       />
     );
+    const nested = nestedByParent?.get(issue.id) ?? [];
+    if (nested.length === 0 || !onOpenSubtask) {
+      return (
+        <span key={issue.id} className="max-w-64">
+          {chip}
+        </span>
+      );
+    }
     return (
-      <span key={issue.id} className="max-w-64">
+      <span key={issue.id} className="flex max-w-64 flex-col gap-0.5">
         {chip}
+        {nested.map((row) => (
+          <SubtaskChip
+            key={row.id}
+            row={row}
+            state={row.state_id ? statesById.get(row.state_id) : undefined}
+            onOpen={() => onOpenSubtask(row.id)}
+          />
+        ))}
       </span>
     );
   };

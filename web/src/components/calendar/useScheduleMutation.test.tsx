@@ -56,9 +56,11 @@ function mkIssue(over: Partial<Issue> & { id: string }): Issue {
 }
 
 const RANGE = { start: "2026-10-01", end: "2026-11-01" };
-const dueKey = ["calendar", "acme", "ENG", "due", RANGE.start];
-const startKey = ["calendar", "acme", "ENG", "start", RANGE.start];
-const undatedKey = ["calendar", "acme", "ENG", "undated"];
+// C145T2: the calendar query keys carry the showSubWorkItems toggle
+// as a trailing element (default true here, as in the page).
+const dueKey = ["calendar", "acme", "ENG", "due", RANGE.start, true];
+const startKey = ["calendar", "acme", "ENG", "start", RANGE.start, true];
+const undatedKey = ["calendar", "acme", "ENG", "undated", true];
 
 function wrapper(client: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {

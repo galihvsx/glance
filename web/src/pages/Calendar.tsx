@@ -10,7 +10,9 @@ import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { usePeekParam } from "../components/issue/usePeek";
 import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import { IssueChip } from "../components/calendar/IssueChip";
+import { SubtaskChip } from "../components/calendar/SubtaskChip";
 import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
 import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
 import { DroppableWeekColumn } from "../components/calendar/DroppableWeekColumn";
@@ -83,6 +85,23 @@ function loadGroupBy(slug: string, identifier: string): CalendarGroupBy {
   return "none";
 }
 
+// C145T2: calendar-local "Show sub-work items" storage — see the
+// in-component comment where the setting lives.
+function subWorkItemsStorageKey(slug: string, identifier: string): string {
+  return `glance:calendar-sub-work-items:${slug}:${identifier}`;
+}
+
+function loadSubWorkItems(slug: string, identifier: string): boolean {
+  try {
+    const raw = localStorage.getItem(subWorkItemsStorageKey(slug, identifier));
+    if (!raw) return true;
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "boolean" ? parsed : true;
+  } catch {
+    return true;
+  }
+}
+
 /** 28px toolbar button in the C19 token ramp (matches PageHeader controls). */
 const calControlClass =
   "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50";
@@ -152,6 +171,34 @@ export default function Calendar() {
     setCachedGroupBy((prev) => ({ ...prev, groupBy: next }));
   };
 
+  // C145T2: calendar-local "Show sub-work items" — its OWN storage
+  // key, following the calendar-local group-by precedent above (NOT
+  // the list's display key: flipping it here must never restructure
+  // the list/board). Default true, matching
+  // DEFAULT_DISPLAY_SETTINGS.showSubWorkItems.
+  const [cachedSubWorkItems, setCachedSubWorkItems] = useState(() => ({
+    key: viewKey,
+    show: loadSubWorkItems(slug, identifier),
+  }));
+  if (cachedSubWorkItems.key !== viewKey) {
+    setCachedSubWorkItems({
+      key: viewKey,
+      show: loadSubWorkItems(slug, identifier),
+    });
+  }
+  const showSubWorkItems = cachedSubWorkItems.show;
+  const setShowSubWorkItems = (next: boolean) => {
+    try {
+      localStorage.setItem(
+        subWorkItemsStorageKey(slug, identifier),
+        JSON.stringify(next),
+      );
+    } catch {
+      // Storage full / private mode — still applies for the session.
+    }
+    setCachedSubWorkItems((prev) => ({ ...prev, show: next }));
+  };
+
   // Anchor date drives both views: the month view uses its year/month, the
   // week view uses the week containing it. Navigation preserves the anchor
   // so switching Month <-> Week keeps the user's place.
@@ -180,21 +227,27 @@ export default function Calendar() {
     };
   }, [view, anchor]);
   const rfc = (day: string) => `${day}T00:00:00Z`;
+  // C145T2: include_subtasks=1 rides the toggle on every visual
+  // query; the toggle sits in each query key so on/off refetches
+  // instead of reusing stale rows.
+  const subFlag = showSubWorkItems ? "&include_subtasks=1" : "";
   const dueQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "due", start],
-    queryFn: () =>
-      fetchAllIssues(`${base}/issues?due_after=${rfc(start)}&due_before=${rfc(end)}`),
-  });
-  const startQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "start", start],
+    queryKey: ["calendar", slug, identifier, "due", start, showSubWorkItems],
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?start_after=${rfc(start)}&start_before=${rfc(end)}`,
+        `${base}/issues?due_after=${rfc(start)}&due_before=${rfc(end)}${subFlag}`,
+      ),
+  });
+  const startQuery = useQuery({
+    queryKey: ["calendar", slug, identifier, "start", start, showSubWorkItems],
+    queryFn: () =>
+      fetchAllIssues(
+        `${base}/issues?start_after=${rfc(start)}&start_before=${rfc(end)}${subFlag}`,
       ),
   });
   const undatedQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "undated"],
-    queryFn: () => fetchAllIssues(`${base}/issues?undated=1`),
+    queryKey: ["calendar", slug, identifier, "undated", showSubWorkItems],
+    queryFn: () => fetchAllIssues(`${base}/issues?undated=1${subFlag}`),
   });
 
   // C109T1: PQL mode on the calendar. Copies the Cycles detail pattern
@@ -228,27 +281,27 @@ export default function Calendar() {
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const pqlActive = pqlMode && appliedQuery.trim() !== "";
   const pqlDueQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "due-pql", start, appliedQuery],
+    queryKey: ["calendar", slug, identifier, "due-pql", start, appliedQuery, showSubWorkItems],
     enabled: pqlActive,
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?due_after=${rfc(start)}&due_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}`,
+        `${base}/issues?due_after=${rfc(start)}&due_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}${subFlag}`,
       ),
   });
   const pqlStartQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "start-pql", start, appliedQuery],
+    queryKey: ["calendar", slug, identifier, "start-pql", start, appliedQuery, showSubWorkItems],
     enabled: pqlActive,
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?start_after=${rfc(start)}&start_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}`,
+        `${base}/issues?start_after=${rfc(start)}&start_before=${rfc(end)}&pql=${encodeURIComponent(appliedQuery.trim())}${subFlag}`,
       ),
   });
   const pqlUndatedQuery = useQuery({
-    queryKey: ["calendar", slug, identifier, "undated-pql", appliedQuery],
+    queryKey: ["calendar", slug, identifier, "undated-pql", appliedQuery, showSubWorkItems],
     enabled: pqlActive,
     queryFn: () =>
       fetchAllIssues(
-        `${base}/issues?undated=1&pql=${encodeURIComponent(appliedQuery.trim())}`,
+        `${base}/issues?undated=1&pql=${encodeURIComponent(appliedQuery.trim())}${subFlag}`,
       ),
   });
   // Probe-first apply (Cycles pattern): fetch one page of each window
@@ -265,6 +318,9 @@ export default function Calendar() {
     }
     const probe = (params: Record<string, string>) => {
       const p = new URLSearchParams({ ...params, pql: q, per_page: "100" });
+      // C145T2: the probe validates the same query the PQL display
+      // queries will run, flag included.
+      if (showSubWorkItems) p.set("include_subtasks", "1");
       return api.get<IssueListResult>(`${base}/issues?${p.toString()}`);
     };
     await Promise.all([
@@ -355,6 +411,31 @@ export default function Calendar() {
     return m;
   }, [statesQuery.data]);
 
+  // C145T2: one parent chip plus its nested child chips, indented
+  // under it in the SAME cell. Child chips are display +
+  // click-to-peek only — never draggable (no nested drag on the
+  // calendar this cycle), so they carry no dragId and never collide
+  // in the dnd registry, including multi-appearance lane bands.
+  const parentStack = (issue: Issue, dragId?: string) => (
+    <>
+      <DraggableIssueChip
+        issue={issue}
+        state={statesById.get(issue.state_id)}
+        onOpen={() => openPeek(issue.id)}
+        disabled={!canEdit}
+        dragId={dragId}
+      />
+      {(nestedByParent.get(issue.id) ?? []).map((row) => (
+        <SubtaskChip
+          key={row.id}
+          row={row}
+          state={row.state_id ? statesById.get(row.state_id) : undefined}
+          onOpen={() => openPeek(row.id)}
+        />
+      ))}
+    </>
+  );
+
   const cells = useMemo(
     () =>
       view === "week"
@@ -362,11 +443,49 @@ export default function Calendar() {
         : monthGrid(anchor.getFullYear(), anchor.getMonth()),
     [view, anchor],
   );
-  const byDay = useMemo(
-    () => bucketIssuesByDay(displayedDue, displayedStart),
-    [displayedDue, displayedStart],
+  // C145T2: split the fetched sets BEFORE bucketing, so a child
+  // nested under a fetched parent never ALSO renders as a flat chip
+  // in its own day cell or the strip (child travels with parent).
+  // Partitioning back into the due/start/undated lanes preserves
+  // bucketIssuesByDay's exact placement semantics (a start-window
+  // issue carrying a target date stays unplaced, as today). An
+  // orphan child — parent outside the fetched set — is absent from
+  // every parent's `subtasks`, so it stays flat in its own placement
+  // and never vanishes.
+  const { visibleIssues, nestedByParent } = useMemo(() => {
+    const byId = new Map<string, Issue>();
+    for (const issue of [
+      ...displayedDue,
+      ...displayedStart,
+      ...displayedUndated,
+    ]) {
+      const prev = byId.get(issue.id);
+      if (prev) {
+        if ((prev.subtasks?.length ?? 0) === 0 && issue.subtasks?.length) {
+          byId.set(issue.id, issue);
+        }
+      } else {
+        byId.set(issue.id, issue);
+      }
+    }
+    return splitNestedIssues([...byId.values()], showSubWorkItems);
+  }, [displayedDue, displayedStart, displayedUndated, showSubWorkItems]);
+  const visibleById = useMemo(
+    () => new Set(visibleIssues.map((i) => i.id)),
+    [visibleIssues],
   );
-  const undated = useMemo(() => displayedUndated, [displayedUndated]);
+  const byDay = useMemo(
+    () =>
+      bucketIssuesByDay(
+        displayedDue.filter((i) => visibleById.has(i.id)),
+        displayedStart.filter((i) => visibleById.has(i.id)),
+      ),
+    [displayedDue, displayedStart, visibleById],
+  );
+  const undated = useMemo(
+    () => displayedUndated.filter((i) => visibleById.has(i.id)),
+    [displayedUndated, visibleById],
+  );
 
   // C72T2: epic swimlanes. Lanes are computed over every issue visible in
   // the grid's range (first-appearance order); the shared pure
@@ -449,14 +568,9 @@ export default function Calendar() {
       {lanes.map((lane) => (
         <div key={lane.key} className={cn("space-y-0.5 p-0.5", bandClass)}>
           {bandIssues(key, lane.key).map((issue) => (
-            <DraggableIssueChip
-              key={issue.id}
-              dragId={`${issue.id}:${lane.key}`}
-              issue={issue}
-              state={statesById.get(issue.state_id)}
-              onOpen={() => openPeek(issue.id)}
-              disabled={!canEdit}
-            />
+            <Fragment key={issue.id}>
+              {parentStack(issue, `${issue.id}:${lane.key}`)}
+            </Fragment>
           ))}
         </div>
       ))}
@@ -477,7 +591,7 @@ export default function Calendar() {
   // C26T0: month-grid drag-reschedule. The mutation optimistically updates
   // the calendar caches; a failed PATCH rolls back and toasts the server
   // message. No toast on success — the chip visibly moves.
-  const scheduleMutation = useScheduleMutation(slug, identifier, { start, end });
+  const scheduleMutation = useScheduleMutation(slug, identifier, { start, end, showSubWorkItems });
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
   const [announcement, setAnnouncement] = useState("");
 
@@ -669,6 +783,18 @@ export default function Calendar() {
               );
             })}
           </div>
+          {/* C145T2: calendar-local Show sub-work items, next to
+              Group — same toolbar language, own storage key (see the
+              setting above), default on. */}
+          <label className="ml-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={showSubWorkItems}
+              onChange={(e) => setShowSubWorkItems(e.target.checked)}
+              aria-label="Show sub-work items"
+            />
+            Show sub-work items
+          </label>
           {/* C109T1: All-issues / PQL toggle (Cycles pattern), above
               the calendar next to the existing view controls. */}
           <div
@@ -897,13 +1023,9 @@ export default function Calendar() {
                       >
                         <div className="space-y-0.5">
                           {issues.map((issue) => (
-                            <DraggableIssueChip
-                              key={issue.id}
-                              issue={issue}
-                              state={statesById.get(issue.state_id)}
-                              onOpen={() => openPeek(issue.id)}
-                              disabled={!canEdit}
-                            />
+                            <Fragment key={issue.id}>
+                              {parentStack(issue)}
+                            </Fragment>
                           ))}
                         </div>
                       </DroppableWeekColumn>
@@ -920,6 +1042,8 @@ export default function Calendar() {
                 canEdit={canEdit}
                 onOpen={(issue) => openPeek(issue.id)}
                 groups={stripGroups}
+                nestedByParent={nestedByParent}
+                onOpenSubtask={(id) => openPeek(id)}
               />
               </ScheduleDnd>
             ) : (
@@ -1017,13 +1141,9 @@ export default function Calendar() {
                       </div>
                       <div className="max-h-20 space-y-0.5 overflow-y-auto">
                         {issues.map((issue) => (
-                          <DraggableIssueChip
-                            key={issue.id}
-                            issue={issue}
-                            state={statesById.get(issue.state_id)}
-                            onOpen={() => openPeek(issue.id)}
-                            disabled={!canEdit}
-                          />
+                          <Fragment key={issue.id}>
+                            {parentStack(issue)}
+                          </Fragment>
                         ))}
                       </div>
                     </DroppableDayCell>
@@ -1039,6 +1159,8 @@ export default function Calendar() {
                 canEdit={canEdit}
                 onOpen={(issue) => openPeek(issue.id)}
                 groups={stripGroups}
+                nestedByParent={nestedByParent}
+                onOpenSubtask={(id) => openPeek(id)}
               />
               </ScheduleDnd>
             )}
