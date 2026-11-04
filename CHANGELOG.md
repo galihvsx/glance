@@ -5,6 +5,28 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Drag-to-resize Gantt bars (cycle 144)**
+
+- Plane's timeline lets you "drag an edge to change its start
+  or due date"; glance's Gantt only offered drag-to-move the
+  whole bar (C109), so fixing one end of a bar's dates meant
+  opening the issue and editing dates in a form. Dated bars
+  now carry left/right edge handles (only when the viewer
+  can edit, hidden in link mode where the right edge already
+  hosts the dependency-draw handle): dragging the left edge
+  moves the start date, dragging the right edge moves the
+  target date, in whole-day steps, with a minimum one-day
+  bar (a start dragged past the target clamps to the
+  target, and vice versa). A resize PATCHes only the moved
+  date through the existing issue endpoint, refreshes both
+  visual and PQL views, and previews live from the bar's
+  true span; an edge whose true date lies outside the
+  visible window shows no handle, since the drawn edge
+  there is not the true date. No backend change, no
+  dependency cascade (matching the move behavior), and no
+  affordance for single-date/undated rows, which render no
+  bar to grab.
+
 **Show sub-work items in the Spreadsheet (Table) view (cycle 143)**
 
 - Plane's "Show sub-work items" display option was honored in the
