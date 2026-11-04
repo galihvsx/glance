@@ -43,6 +43,18 @@ import PriorityPicker from "../components/issue/PriorityPicker";
 import PriorityBars from "../components/issue/PriorityBars";
 import { subtaskPriorityLevel } from "../components/issue/boardSubtasks";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
+import { groupIssuesByAssignee } from "../components/issue/groupByAssignee";
+import {
+  groupIssuesByCreatedBy,
+  type CreatorLookupEntry,
+} from "../components/issue/groupByCreatedBy";
+import { groupIssuesByCycle } from "../components/issue/groupByCycle";
+import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import { groupIssuesByLabel } from "../components/issue/groupByLabel";
+import { groupIssuesByModule } from "../components/issue/groupByModule";
+import { groupIssuesByRelease } from "../components/issue/groupByRelease";
+import { groupIssuesByStateGroup } from "../components/issue/groupByStateGroup";
+import { useSpreadsheetGrouping } from "../components/issue/useSpreadsheetGrouping";
 import StatePicker from "../components/issue/StatePicker";
 import AssigneePicker from "../components/issue/AssigneePicker";
 import {
@@ -283,6 +295,11 @@ export default function Spreadsheet() {
     toggle: toggleShowSubWorkItems,
     reset: resetShowSubWorkItems,
   } = useSpreadsheetSubWorkItems(slug, identifier);
+  // C147T1: spreadsheet grouping — its OWN per-project localStorage
+  // key (useSpreadsheetGrouping), never useDisplaySettings, so
+  // grouping here never flips list/board rendering. T1 wires
+  // groupBy only; subGroupBy stays "none" until T2.
+  const { groupBy } = useSpreadsheetGrouping(slug, identifier);
   const customFieldsQuery = useQuery({
     queryKey: customFieldKeys(slug, identifier).fields,
     queryFn: () => fetchCustomFields(slug, identifier),
@@ -752,6 +769,162 @@ export default function Spreadsheet() {
     });
   }, [visibleIssues, sortKey, sortDir, stateById, structureByIssue]);
 
+  // C147T1: group sections over sortedIssues — the already
+  // column-sorted top-level list, so a column sort re-sorts rows
+  // WITHIN groups and never re-sorts the groups themselves (binding
+  // rule 4). Grouping partitions TOP-LEVEL rows only: a nested
+  // child travels with its parent (rendered from nestedByParent
+  // under the parent's row) and is never counted separately
+  // (rule 5). Helpers are the Board-proven groupBy* functions with
+  // the same lookup arguments Board passes; group order,
+  // Unknown/Ungrouped-last, empty-hidden, and multi-appearance
+  // semantics are inherited verbatim (rule 3). Null = today's flat
+  // path (groupBy "none", or createdBy while members are still
+  // resolving — Board's no-Unknown-flash gate, with the flat grid
+  // as the fallback instead of empty columns, so no row ever
+  // vanishes while waiting).
+  const stateGroupById = useMemo(
+    () => new Map((statesQuery.data ?? []).map((s) => [s.id, s.group] as const)),
+    [statesQuery.data],
+  );
+  const membersById = useMemo(
+    () =>
+      new Map<string, CreatorLookupEntry>(
+        (membersQuery.data ?? []).map((m) => [
+          m.id,
+          { name: m.name, email: m.email },
+        ]),
+      ),
+    [membersQuery.data],
+  );
+  const groupingMembersReady =
+    membersQuery.data !== undefined || membersQuery.isError;
+  interface SpreadsheetGroupSection {
+    key: string;
+    title: string;
+    issues: Issue[];
+  }
+  const groupSections = useMemo<SpreadsheetGroupSection[] | null>(() => {
+    if (groupBy === "none") return null;
+    if (groupBy === "createdBy" && !groupingMembersReady) return null;
+    switch (groupBy) {
+      case "state": {
+        // Board's inline ordering: states in sequence order. Board
+        // has no column for an unresolvable state_id; the
+        // spreadsheet must never drop a row, so those collapse
+        // into one "Ungrouped" group, last, hidden when empty
+        // (the subGroup.ts state-section precedent).
+        const ordered = [...(statesQuery.data ?? [])].sort(
+          (a, b) => a.sequence - b.sequence,
+        );
+        const sections: SpreadsheetGroupSection[] = [];
+        for (const s of ordered) {
+          const rows = sortedIssues.filter((i) => i.state_id === s.id);
+          if (rows.length > 0) {
+            sections.push({ key: s.id, title: s.name, issues: rows });
+          }
+        }
+        const ungrouped = sortedIssues.filter(
+          (i) => !stateById.has(i.state_id),
+        );
+        if (ungrouped.length > 0) {
+          sections.push({
+            key: "state:ungrouped",
+            title: "Ungrouped",
+            issues: ungrouped,
+          });
+        }
+        return sections;
+      }
+      case "priority": {
+        // Board's inline ordering: 4,3,2,1,0 with priorityLabel
+        // titles. A priority outside 0–4 (defensive only — the
+        // backend vocabulary is 0–4) gets its own trailing group
+        // via priorityLabel's `P${p}` fallback rather than
+        // dropping the row.
+        const sections: SpreadsheetGroupSection[] = [];
+        for (const p of [4, 3, 2, 1, 0]) {
+          const rows = sortedIssues.filter((i) => i.priority === p);
+          if (rows.length > 0) {
+            sections.push({
+              key: `priority:${p}`,
+              title: priorityLabel(p),
+              issues: rows,
+            });
+          }
+        }
+        const seen = new Set([4, 3, 2, 1, 0]);
+        for (const issue of sortedIssues) {
+          if (seen.has(issue.priority)) continue;
+          seen.add(issue.priority);
+          sections.push({
+            key: `priority:${issue.priority}`,
+            title: priorityLabel(issue.priority),
+            issues: sortedIssues.filter(
+              (i) => i.priority === issue.priority,
+            ),
+          });
+        }
+        return sections;
+      }
+      case "epic":
+        return groupIssuesByEpic(
+          sortedIssues,
+          (i) => stateById.get(i.state_id)?.group,
+        ).map((g) => ({ key: g.key, title: g.title, issues: g.issues }));
+      case "assignees":
+        return groupIssuesByAssignee(sortedIssues).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "labels":
+        return groupIssuesByLabel(sortedIssues).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "modules":
+        return groupIssuesByModule(sortedIssues).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "cycles":
+        return groupIssuesByCycle(sortedIssues).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "releases":
+        return groupIssuesByRelease(sortedIssues).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "createdBy":
+        return groupIssuesByCreatedBy(sortedIssues, membersById).map((g) => ({
+          key: g.key,
+          title: g.title,
+          issues: g.issues,
+        }));
+      case "stateGroups":
+        return groupIssuesByStateGroup(sortedIssues, stateGroupById).map(
+          (g) => ({ key: g.key, title: g.title, issues: g.issues }),
+        );
+      default:
+        return null;
+    }
+  }, [
+    groupBy,
+    groupingMembersReady,
+    sortedIssues,
+    statesQuery.data,
+    stateById,
+    stateGroupById,
+    membersById,
+  ]);
+
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
   }
@@ -869,6 +1042,282 @@ export default function Spreadsheet() {
           </td>
         ))}
       </tr>
+    );
+  }
+
+  /**
+   * C147T1: one top-level row + its nested children from
+   * nestedByParent, unchanged from the pre-grouping grid. Used
+   * by both the flat path and every group section, so a grouped
+   * row is the same editable row (same click-to-open, same cell
+   * editors) as the flat row — grouping only partitions rows.
+   */
+  function renderTopLevelRow(issue: Issue) {
+    const state = stateById.get(issue.state_id);
+    const structure = structureByIssue.get(issue.id);
+    const modules = structure?.modules ?? [];
+    return (
+      <Fragment key={issue.id}>
+      <tr
+        key={issue.id}
+        role="link"
+        tabIndex={0}
+        aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
+        onClick={() => openIssue(issue)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+            openIssue(issue);
+          }
+        }}
+        className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
+      >
+        <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
+          <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
+            {issue.display_id || issue.id.slice(0, 8)}
+          </span>
+        </td>
+        <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
+          {issue.name}
+        </td>
+        <td
+          className="cursor-cell px-3 py-2 align-middle"
+          title="Click to edit state"
+          onClick={openCellEditor(issue.id, "state")}
+        >
+          {isEditing(issue.id, "state") ? (
+            <CellStateEditor
+              states={cellStatesFor(issue.state_id)}
+              value={issue.state_id}
+              ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
+              onCommit={(stateId) =>
+                commitCellEdit(issue.id, { state_id: stateId })
+              }
+              onCancel={() => setEditing(null)}
+            />
+          ) : state ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`state-dot ${stateDotClass(state.group)}`}
+                aria-hidden="true"
+              />
+              <span className="text-[13px] text-ink-secondary">
+                {state.name}
+              </span>
+            </span>
+          ) : (
+            <span className="text-[13px] text-ink-muted">—</span>
+          )}
+        </td>
+        <td
+          className="cursor-cell px-3 py-2 align-middle"
+          title="Click to edit priority"
+          onClick={openCellEditor(issue.id, "priority")}
+        >
+          {isEditing(issue.id, "priority") ? (
+            <CellPriorityEditor
+              value={issue.priority}
+              ariaLabel={`Edit priority for ${issue.display_id || issue.id.slice(0, 8)}`}
+              onCommit={(priority) =>
+                commitCellEdit(issue.id, { priority })
+              }
+              onCancel={() => setEditing(null)}
+            />
+          ) : (
+            <span className="inline-flex items-center gap-1.5">
+              <PriorityBars priority={issue.priority} />
+              <span className="text-[13px] text-ink-secondary">
+                {priorityLabel(issue.priority)}
+              </span>
+            </span>
+          )}
+        </td>
+        {/* C20T3: assignees edit inline via the shared
+            multi-select popover; each toggle commits
+            immediately (POST/DELETE relation endpoints). */}
+        <td className="px-3 py-2 align-middle">
+          <span
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <AssigneePicker
+              members={membersQuery.data ?? null}
+              assigned={issue.assignees}
+              onToggle={(userId, currently) =>
+                toggleAssignee(issue, userId, currently)
+              }
+              triggerClassName="h-8 gap-1.5 rounded-[4px] border border-transparent bg-transparent px-1.5 text-[13px] font-normal text-ink-secondary shadow-none hover:border-border hover:bg-wash-hover hover:text-ink"
+              triggerContent={
+                issue.assignees.length > 0 ? (
+                  <span className="flex flex-wrap gap-1">
+                    {issue.assignees.map((a) => (
+                      <Badge
+                        key={a.id}
+                        variant="outline"
+                        className="text-xs font-normal"
+                      >
+                        {a.name}
+                      </Badge>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="text-ink-muted">—</span>
+                )
+              }
+            />
+          </span>
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {issue.labels.length > 0 ? (
+            <span className="flex flex-wrap gap-1">
+              {issue.labels.map((l) => (
+                <Badge
+                  key={l.id}
+                  variant="secondary"
+                  className="gap-1 text-xs font-normal"
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: l.color }}
+                    aria-hidden
+                  />
+                  {l.name}
+                </Badge>
+              ))}
+            </span>
+          ) : (
+            <span className="text-[13px] text-ink-muted">—</span>
+          )}
+        </td>
+        <td
+          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+          title="Click to edit start date"
+          onClick={openCellEditor(issue.id, "start_date")}
+        >
+          {isEditing(issue.id, "start_date") ? (
+            <CellDateEditor
+              value={issue.start_date}
+              ariaLabel={`Edit start date for ${issue.display_id || issue.id.slice(0, 8)}`}
+              onCommit={(v) =>
+                commitCellEdit(issue.id, { start_date: v })
+              }
+              onCancel={() => setEditing(null)}
+            />
+          ) : (
+            <span className="text-[13px] text-ink-secondary">
+              {dateOnly(issue.start_date)}
+            </span>
+          )}
+        </td>
+        <td
+          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+          title="Click to edit target date"
+          onClick={openCellEditor(issue.id, "target_date")}
+        >
+          {isEditing(issue.id, "target_date") ? (
+            <CellDateEditor
+              value={issue.target_date}
+              ariaLabel={`Edit target date for ${issue.display_id || issue.id.slice(0, 8)}`}
+              onCommit={(v) =>
+                commitCellEdit(issue.id, { target_date: v })
+              }
+              onCancel={() => setEditing(null)}
+            />
+          ) : (
+            <span className="text-[13px] text-ink-secondary">
+              {dateOnly(issue.target_date)}
+            </span>
+          )}
+        </td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
+          {dateOnly(issue.created_at)}
+        </td>
+        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
+          {dateOnly(issue.updated_at)}
+        </td>
+        {/* C20T2 columns, C21T2 batched: cycle/module/release
+            membership comes from the list rows'
+            ?include_project_structure=1 (structureByIssue) —
+            resolved server-side in one query, no per-row
+            fetches. Read-only; inline editing is C20T3. */}
+        <td className="px-3 py-2 align-middle">
+          {structure?.cycle ? (
+            <Badge
+              variant="outline"
+              className="text-xs font-normal"
+              title={structure.cycle.name}
+            >
+              {structure.cycle.name}
+            </Badge>
+          ) : (
+            <span className="text-[13px] text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {modules.length > 0 ? (
+            <span className="flex flex-wrap items-center gap-1">
+              {modules.map((m, i) => (
+                <Fragment key={m.id}>
+                  {i > 0 && (
+                    <span
+                      className="text-ink-muted"
+                      aria-hidden="true"
+                    >
+                      ,
+                    </span>
+                  )}
+                  <Badge
+                    variant="outline"
+                    className="text-xs font-normal"
+                    title={m.name}
+                  >
+                    {m.name}
+                  </Badge>
+                </Fragment>
+              ))}
+            </span>
+          ) : (
+            <span className="text-[13px] text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2 align-middle">
+          {structure?.release ? (
+            <Badge
+              variant="outline"
+              className="text-xs font-normal"
+              title={structure.release.name}
+            >
+              {structure.release.name}
+            </Badge>
+          ) : (
+            <span className="text-[13px] text-ink-muted">—</span>
+          )}
+        </td>
+        {/*
+          C9T4: custom-field columns are READ-ONLY by design.
+          Cells render with the exact same formatting as the
+          issue-detail custom-fields section
+          (lib/customFields formatCustomValue); editing stays
+          in the issue detail / peek drawer, where the
+          per-type validation and write paths already live.
+          Unset values render as "—".
+        */}
+        {visibleCfFields.map((f) => (
+          <td
+            key={`cf-${f.id}`}
+            className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
+          >
+            {formatCustomValue(
+              f,
+              cfValuesByIssue.get(issue.id)?.[f.id],
+            )}
+          </td>
+        ))}
+      </tr>
+      {/* C143T1: nested rows, in stack order, directly
+          under their parent — in visual mode, PQL
+          mode, and under a column sort alike. */}
+      {(nestedByParent.get(issue.id) ?? []).map(renderNestedRow)}
+      </Fragment>
     );
   }
 
@@ -1167,274 +1616,35 @@ export default function Spreadsheet() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedIssues.map((issue) => {
-                    const state = stateById.get(issue.state_id);
-                    const structure = structureByIssue.get(issue.id);
-                    const modules = structure?.modules ?? [];
-                    return (
-                      <Fragment key={issue.id}>
-                      <tr
-                        key={issue.id}
-                        role="link"
-                        tabIndex={0}
-                        aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
-                        onClick={() => openIssue(issue)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-                            openIssue(issue);
-                          }
-                        }}
-                        className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
-                      >
-                        <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
-                          <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
-                            {issue.display_id || issue.id.slice(0, 8)}
-                          </span>
-                        </td>
-                        <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
-                          {issue.name}
-                        </td>
-                        <td
-                          className="cursor-cell px-3 py-2 align-middle"
-                          title="Click to edit state"
-                          onClick={openCellEditor(issue.id, "state")}
-                        >
-                          {isEditing(issue.id, "state") ? (
-                            <CellStateEditor
-                              states={cellStatesFor(issue.state_id)}
-                              value={issue.state_id}
-                              ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
-                              onCommit={(stateId) =>
-                                commitCellEdit(issue.id, { state_id: stateId })
-                              }
-                              onCancel={() => setEditing(null)}
-                            />
-                          ) : state ? (
-                            <span className="inline-flex items-center gap-1.5">
-                              <span
-                                className={`state-dot ${stateDotClass(state.group)}`}
-                                aria-hidden="true"
-                              />
-                              <span className="text-[13px] text-ink-secondary">
-                                {state.name}
-                              </span>
-                            </span>
-                          ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
-                          )}
-                        </td>
-                        <td
-                          className="cursor-cell px-3 py-2 align-middle"
-                          title="Click to edit priority"
-                          onClick={openCellEditor(issue.id, "priority")}
-                        >
-                          {isEditing(issue.id, "priority") ? (
-                            <CellPriorityEditor
-                              value={issue.priority}
-                              ariaLabel={`Edit priority for ${issue.display_id || issue.id.slice(0, 8)}`}
-                              onCommit={(priority) =>
-                                commitCellEdit(issue.id, { priority })
-                              }
-                              onCancel={() => setEditing(null)}
-                            />
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5">
-                              <PriorityBars priority={issue.priority} />
-                              <span className="text-[13px] text-ink-secondary">
-                                {priorityLabel(issue.priority)}
-                              </span>
-                            </span>
-                          )}
-                        </td>
-                        {/* C20T3: assignees edit inline via the shared
-                            multi-select popover; each toggle commits
-                            immediately (POST/DELETE relation endpoints). */}
-                        <td className="px-3 py-2 align-middle">
-                          <span
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
+                  {groupSections === null
+                    ? sortedIssues.map((issue) => renderTopLevelRow(issue))
+                    : groupSections.map((group) => (
+                        <Fragment key={group.key}>
+                          {/* C147T1: visual-only header — never a drop
+                              target, never clickable to open an issue,
+                              never bulk-selectable, never counted by
+                              the empty state (the empty branch above
+                              gates on sortedIssues.length, not on
+                              headers). Title + TOP-LEVEL count only. */}
+                          <tr
+                            data-spreadsheet-group-header={group.key}
+                            className="border-b border-border-hairline bg-wash"
                           >
-                            <AssigneePicker
-                              members={membersQuery.data ?? null}
-                              assigned={issue.assignees}
-                              onToggle={(userId, currently) =>
-                                toggleAssignee(issue, userId, currently)
-                              }
-                              triggerClassName="h-8 gap-1.5 rounded-[4px] border border-transparent bg-transparent px-1.5 text-[13px] font-normal text-ink-secondary shadow-none hover:border-border hover:bg-wash-hover hover:text-ink"
-                              triggerContent={
-                                issue.assignees.length > 0 ? (
-                                  <span className="flex flex-wrap gap-1">
-                                    {issue.assignees.map((a) => (
-                                      <Badge
-                                        key={a.id}
-                                        variant="outline"
-                                        className="text-xs font-normal"
-                                      >
-                                        {a.name}
-                                      </Badge>
-                                    ))}
-                                  </span>
-                                ) : (
-                                  <span className="text-ink-muted">—</span>
-                                )
-                              }
-                            />
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 align-middle">
-                          {issue.labels.length > 0 ? (
-                            <span className="flex flex-wrap gap-1">
-                              {issue.labels.map((l) => (
-                                <Badge
-                                  key={l.id}
-                                  variant="secondary"
-                                  className="gap-1 text-xs font-normal"
-                                >
-                                  <span
-                                    className="h-2 w-2 rounded-full"
-                                    style={{ backgroundColor: l.color }}
-                                    aria-hidden
-                                  />
-                                  {l.name}
-                                </Badge>
-                              ))}
-                            </span>
-                          ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
-                          )}
-                        </td>
-                        <td
-                          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
-                          title="Click to edit start date"
-                          onClick={openCellEditor(issue.id, "start_date")}
-                        >
-                          {isEditing(issue.id, "start_date") ? (
-                            <CellDateEditor
-                              value={issue.start_date}
-                              ariaLabel={`Edit start date for ${issue.display_id || issue.id.slice(0, 8)}`}
-                              onCommit={(v) =>
-                                commitCellEdit(issue.id, { start_date: v })
-                              }
-                              onCancel={() => setEditing(null)}
-                            />
-                          ) : (
-                            <span className="text-[13px] text-ink-secondary">
-                              {dateOnly(issue.start_date)}
-                            </span>
-                          )}
-                        </td>
-                        <td
-                          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
-                          title="Click to edit target date"
-                          onClick={openCellEditor(issue.id, "target_date")}
-                        >
-                          {isEditing(issue.id, "target_date") ? (
-                            <CellDateEditor
-                              value={issue.target_date}
-                              ariaLabel={`Edit target date for ${issue.display_id || issue.id.slice(0, 8)}`}
-                              onCommit={(v) =>
-                                commitCellEdit(issue.id, { target_date: v })
-                              }
-                              onCancel={() => setEditing(null)}
-                            />
-                          ) : (
-                            <span className="text-[13px] text-ink-secondary">
-                              {dateOnly(issue.target_date)}
-                            </span>
-                          )}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-                          {dateOnly(issue.created_at)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-                          {dateOnly(issue.updated_at)}
-                        </td>
-                        {/* C20T2 columns, C21T2 batched: cycle/module/release
-                            membership comes from the list rows'
-                            ?include_project_structure=1 (structureByIssue) —
-                            resolved server-side in one query, no per-row
-                            fetches. Read-only; inline editing is C20T3. */}
-                        <td className="px-3 py-2 align-middle">
-                          {structure?.cycle ? (
-                            <Badge
-                              variant="outline"
-                              className="text-xs font-normal"
-                              title={structure.cycle.name}
+                            <td
+                              colSpan={COLUMNS.length + visibleCfFields.length}
+                              className="px-3 py-2 align-middle text-[13px] font-medium text-ink"
                             >
-                              {structure.cycle.name}
-                            </Badge>
-                          ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
+                              {group.title}{" "}
+                              <span className="font-normal text-ink-muted">
+                                ({group.issues.length})
+                              </span>
+                            </td>
+                          </tr>
+                          {group.issues.map((issue) =>
+                            renderTopLevelRow(issue),
                           )}
-                        </td>
-                        <td className="px-3 py-2 align-middle">
-                          {modules.length > 0 ? (
-                            <span className="flex flex-wrap items-center gap-1">
-                              {modules.map((m, i) => (
-                                <Fragment key={m.id}>
-                                  {i > 0 && (
-                                    <span
-                                      className="text-ink-muted"
-                                      aria-hidden="true"
-                                    >
-                                      ,
-                                    </span>
-                                  )}
-                                  <Badge
-                                    variant="outline"
-                                    className="text-xs font-normal"
-                                    title={m.name}
-                                  >
-                                    {m.name}
-                                  </Badge>
-                                </Fragment>
-                              ))}
-                            </span>
-                          ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 align-middle">
-                          {structure?.release ? (
-                            <Badge
-                              variant="outline"
-                              className="text-xs font-normal"
-                              title={structure.release.name}
-                            >
-                              {structure.release.name}
-                            </Badge>
-                          ) : (
-                            <span className="text-[13px] text-ink-muted">—</span>
-                          )}
-                        </td>
-                        {/*
-                          C9T4: custom-field columns are READ-ONLY by design.
-                          Cells render with the exact same formatting as the
-                          issue-detail custom-fields section
-                          (lib/customFields formatCustomValue); editing stays
-                          in the issue detail / peek drawer, where the
-                          per-type validation and write paths already live.
-                          Unset values render as "—".
-                        */}
-                        {visibleCfFields.map((f) => (
-                          <td
-                            key={`cf-${f.id}`}
-                            className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
-                          >
-                            {formatCustomValue(
-                              f,
-                              cfValuesByIssue.get(issue.id)?.[f.id],
-                            )}
-                          </td>
-                        ))}
-                      </tr>
-                      {/* C143T1: nested rows, in stack order, directly
-                          under their parent — in visual mode, PQL
-                          mode, and under a column sort alike. */}
-                      {(nestedByParent.get(issue.id) ?? []).map(renderNestedRow)}
-                      </Fragment>
-                    );
-                  })}
+                        </Fragment>
+                      ))}
                 </tbody>
               </table>
             </div>
