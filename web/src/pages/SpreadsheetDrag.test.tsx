@@ -40,6 +40,9 @@ import type { Issue, IssueState, SubtaskRow } from "../lib/types";
 import type { Workflow } from "../lib/workflow";
 
 const dndCapture = vi.hoisted(() => ({
+  onDragStart: null as ((e: {
+    active: { id: string };
+  }) => void) | null,
   onDragEnd: null as ((e: {
     active: { id: string };
     over: { id: string } | null;
@@ -57,6 +60,9 @@ vi.mock("@dnd-kit/core", async (importOriginal) => {
     ...actual,
     DndContext: (props: {
       children: ReactNode;
+      onDragStart?: (e: {
+        active: { id: string };
+      }) => void;
       onDragEnd?: (e: {
         active: { id: string };
         over: { id: string } | null;
@@ -66,6 +72,7 @@ vi.mock("@dnd-kit/core", async (importOriginal) => {
         over: { id: string } | null;
       }) => void;
     }) => {
+      dndCapture.onDragStart = props.onDragStart ?? null;
       dndCapture.onDragEnd = props.onDragEnd ?? null;
       dndCapture.onDragOver = props.onDragOver ?? null;
       return <>{props.children}</>;
@@ -328,6 +335,14 @@ async function renderGrouped(
   }
 }
 
+/** Invoke the page's captured onDragStart (dnd-kit stub boundary). */
+function dragStart(activeId: string) {
+  expect(dndCapture.onDragStart).not.toBeNull();
+  act(() => {
+    dndCapture.onDragStart!({ active: { id: activeId } });
+  });
+}
+
 /** Invoke the page's captured onDragEnd (dnd-kit stub boundary). */
 function drop(activeId: string, overId: string | null) {
   expect(dndCapture.onDragEnd).not.toBeNull();
@@ -354,6 +369,16 @@ async function patchMock() {
   return api.patch as ReturnType<typeof vi.fn>;
 }
 
+async function postMock() {
+  const { api } = await import("../lib/api");
+  return api.post as ReturnType<typeof vi.fn>;
+}
+
+async function delMock() {
+  const { api } = await import("../lib/api");
+  return api.del as ReturnType<typeof vi.fn>;
+}
+
 /** Default PATCH behavior: apply the body server-side, like the real
  *  endpoint, so the post-move refetch keeps the row in its new group. */
 function applyPatchToFixture(body: Record<string, unknown>, id: string) {
@@ -367,6 +392,7 @@ function applyPatchToFixture(body: Record<string, unknown>, id: string) {
 beforeEach(async () => {
   localStorage.clear();
   vi.clearAllMocks();
+  dndCapture.onDragStart = null;
   dndCapture.onDragEnd = null;
   dndCapture.onDragOver = null;
   mockData.issues = defaultIssues();
@@ -379,6 +405,15 @@ beforeEach(async () => {
     const updated = m ? applyPatchToFixture(body, m[1]) : null;
     return Promise.resolve(updated ?? {});
   });
+  // Membership mocks default to a resolving no-op; T2 tests install
+  // server-side fixture mutations per test (mirroring the PATCH
+  // pattern above) so the post-move refetch re-groups the row.
+  const post = await postMock();
+  post.mockReset();
+  post.mockImplementation(() => Promise.resolve({}));
+  const del = await delMock();
+  del.mockReset();
+  del.mockImplementation(() => Promise.resolve({}));
 });
 
 describe("spreadsheetDrag id helpers", () => {
@@ -557,26 +592,282 @@ describe("planSpreadsheetDrop", () => {
     ).toEqual({ kind: "noop", reason: "state-group" });
   });
 
-  it("membership dimensions are pending-dimension no-ops in T1", () => {
-    for (const groupBy of [
-      "epic",
-      "assignees",
-      "labels",
-      "modules",
-      "cycles",
-      "releases",
-    ]) {
-      expect(
-        planSpreadsheetDrop({
-          groupBy,
-          sourceGroupKey: "a",
-          targetGroupKey: "b",
-          issue,
-          workflow: null,
-          stateNames,
-        }),
-      ).toEqual({ kind: "noop", reason: "pending-dimension" });
-    }
+  it("epic drop attaches; Ungrouped and already-attached are no-ops", () => {
+    const withEpic = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      epics: [{ id: "ep1", name: "Epic One", archived_at: null }],
+    });
+    const base = {
+      groupBy: "epic",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "ep1",
+        targetGroupKey: "ep2",
+        issue: withEpic,
+      }),
+    ).toEqual({ kind: "attach", dimension: "epic", memberId: "ep2" });
+    // Board planEpicDrop: Ungrouped is a deliberate no-op.
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "ep1",
+        targetGroupKey: "epic:ungrouped",
+        issue: withEpic,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    // Already-attached (live membership) is a no-op.
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "ep2",
+        targetGroupKey: "ep1",
+        issue: withEpic,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
+    // An archived-only epic membership does NOT count as attached
+    // (Board checks !archived_at) — the drop attaches.
+    const archivedOnly = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      epics: [{ id: "ep1", name: "Epic One", archived_at: "2026-01-01" }],
+    });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "epic:ungrouped",
+        targetGroupKey: "ep1",
+        issue: archivedOnly,
+      }),
+    ).toEqual({ kind: "attach", dimension: "epic", memberId: "ep1" });
+  });
+
+  it("assignee drop attaches; Ungrouped and already-assigned are no-ops", () => {
+    const withAssignee = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      assignees: [{ id: "u2", name: "Ada" }],
+    });
+    const base = {
+      groupBy: "assignees",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "u2",
+        targetGroupKey: "u3",
+        issue: withAssignee,
+      }),
+    ).toEqual({ kind: "attach", dimension: "assignees", memberId: "u3" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "u2",
+        targetGroupKey: "assignee:ungrouped",
+        issue: withAssignee,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "u3",
+        targetGroupKey: "u2",
+        issue: withAssignee,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
+  });
+
+  it("label drop attaches; Ungrouped and already-labeled are no-ops", () => {
+    const withLabel = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      labels: [{ id: "lb1", name: "Red", color: "#f00" }],
+    });
+    const base = {
+      groupBy: "labels",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "lb1",
+        targetGroupKey: "lb2",
+        issue: withLabel,
+      }),
+    ).toEqual({ kind: "attach", dimension: "labels", memberId: "lb2" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "lb1",
+        targetGroupKey: "label:ungrouped",
+        issue: withLabel,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "lb2",
+        targetGroupKey: "lb1",
+        issue: withLabel,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
+  });
+
+  it("module drop attaches; Ungrouped and already-member are no-ops", () => {
+    const withModule = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      project_structure: {
+        modules: [{ id: "md1", name: "Core" }],
+      },
+    });
+    const base = {
+      groupBy: "modules",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "md1",
+        targetGroupKey: "md2",
+        issue: withModule,
+      }),
+    ).toEqual({ kind: "attach", dimension: "modules", memberId: "md2" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "md1",
+        targetGroupKey: "module:ungrouped",
+        issue: withModule,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "md2",
+        targetGroupKey: "md1",
+        issue: withModule,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
+  });
+
+  it("cycle drop moves add-then-remove; Ungrouped and already-member are no-ops", () => {
+    const withCycle = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      project_structure: {
+        modules: [],
+        cycle: { id: "cy1", name: "Sprint 1" },
+      },
+    });
+    const base = {
+      groupBy: "cycles",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "cy1",
+        targetGroupKey: "cy2",
+        issue: withCycle,
+      }),
+    ).toEqual({
+      kind: "move-cycle",
+      cycleId: "cy2",
+      sourceCycleId: "cy1",
+    });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "cy1",
+        targetGroupKey: "cycle:ungrouped",
+        issue: withCycle,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "cy2",
+        targetGroupKey: "cy1",
+        issue: withCycle,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
+    // Ungrouped source = add-only move (sourceCycleId null, Board
+    // moveToCycle precedent).
+    const ungrouped = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      project_structure: { modules: [] },
+    });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "cycle:ungrouped",
+        targetGroupKey: "cy2",
+        issue: ungrouped,
+      }),
+    ).toEqual({
+      kind: "move-cycle",
+      cycleId: "cy2",
+      sourceCycleId: null,
+    });
+  });
+
+  it("release drop moves via single assign; Ungrouped and already-member are no-ops", () => {
+    const withRelease = mkIssue({
+      id: "i1",
+      state_id: "s",
+      priority: 2,
+      project_structure: {
+        modules: [],
+        release: { id: "r1", name: "v1" },
+      },
+    });
+    const base = {
+      groupBy: "releases",
+      workflow: null,
+      stateNames,
+    } as const;
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "r1",
+        targetGroupKey: "r2",
+        issue: withRelease,
+      }),
+    ).toEqual({ kind: "move-release", releaseId: "r2" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "r1",
+        targetGroupKey: "release:ungrouped",
+        issue: withRelease,
+      }),
+    ).toEqual({ kind: "noop", reason: "ungrouped" });
+    expect(
+      planSpreadsheetDrop({
+        ...base,
+        sourceGroupKey: "r2",
+        targetGroupKey: "r1",
+        issue: withRelease,
+      }),
+    ).toEqual({ kind: "noop", reason: "already-member" });
   });
 
   it("malformed priority target is a no-op, never a PATCH", () => {
@@ -932,5 +1223,534 @@ describe("Spreadsheet drag moves (page wiring)", () => {
     // Real dnd-kit reports over === null above a non-droppable header.
     drop("spreadsheet-drag:priority:2:i1", null);
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Spreadsheet drag membership moves (T2)", () => {
+  /** i1 in every source group, i2 in every target group. */
+  function membershipIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        epics: [{ id: "ep1", name: "Epic One", archived_at: null }],
+        assignees: [{ id: "u2", name: "Ada" }],
+        labels: [{ id: "lb1", name: "Red", color: "#f00" }],
+        project_structure: {
+          modules: [{ id: "md1", name: "Core" }],
+          cycle: { id: "cy1", name: "Sprint 1" },
+          release: { id: "r1", name: "v1" },
+        },
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s2",
+        epics: [{ id: "ep2", name: "Epic Two", archived_at: null }],
+        assignees: [{ id: "u3", name: "Bob" }],
+        labels: [{ id: "lb2", name: "Blue", color: "#00f" }],
+        project_structure: {
+          modules: [{ id: "md2", name: "UI" }],
+          cycle: { id: "cy2", name: "Sprint 2" },
+          release: { id: "r2", name: "v2" },
+        },
+      }),
+    ];
+  }
+
+  const TARGET_NAMES: Record<string, string> = {
+    ep2: "Epic Two",
+    u3: "Bob",
+    lb2: "Blue",
+    lb3: "Green",
+    md2: "UI",
+    cy2: "Sprint 2",
+    r2: "v2",
+  };
+  const TARGET_COLORS: Record<string, string> = {
+    lb2: "#00f",
+    lb3: "#0f0",
+  };
+
+  /** Server-side fixture update for membership endpoints, so the
+   *  post-move refetch re-groups the row (the PATCH pattern above).
+   *  Rows are REPLACED, never mutated in place: React Query's
+   *  structural sharing treats a refetch carrying the same object
+   *  references as unchanged and skips the re-render, so an in-place
+   *  mutation would hide the re-group in PQL mode (where no
+   *  optimistic visual-cache patch is displayed). Replacement mirrors
+   *  production, where every fetch returns fresh JSON. */
+  function replaceIssue(id: string, f: (issue: Issue) => Issue) {
+    const idx = mockData.issues.findIndex((i) => i.id === id);
+    if (idx !== -1) mockData.issues[idx] = f(mockData.issues[idx]);
+  }
+
+  async function installMembershipServer() {
+    const post = await postMock();
+    post.mockImplementation((path: string) => {
+      const epic = /\/epics\/([^/]+)\/issues/.exec(path);
+      if (epic) {
+        replaceIssue("i1", (t) => ({
+          ...t,
+          epics: [
+            ...(t.epics ?? []),
+            {
+              id: epic[1],
+              name: TARGET_NAMES[epic[1]] ?? epic[1],
+              archived_at: null,
+            },
+          ],
+        }));
+        return Promise.resolve({});
+      }
+      const assignee = /\/issues\/([^/]+)\/assignees\/([^/]+)/.exec(path);
+      if (assignee) {
+        replaceIssue(assignee[1], (t) => ({
+          ...t,
+          assignees: [
+            ...t.assignees,
+            {
+              id: assignee[2],
+              name: TARGET_NAMES[assignee[2]] ?? assignee[2],
+            },
+          ],
+        }));
+        return Promise.resolve({});
+      }
+      const label = /\/issues\/([^/]+)\/labels\/([^/]+)/.exec(path);
+      if (label) {
+        replaceIssue(label[1], (t) => ({
+          ...t,
+          labels: [
+            ...t.labels,
+            {
+              id: label[2],
+              name: TARGET_NAMES[label[2]] ?? label[2],
+              color: TARGET_COLORS[label[2]] ?? "",
+            },
+          ],
+        }));
+        return Promise.resolve({});
+      }
+      const module = /\/modules\/([^/]+)\/issues/.exec(path);
+      if (module) {
+        replaceIssue("i1", (t) => {
+          const ps = t.project_structure ?? { modules: [] };
+          return {
+            ...t,
+            project_structure: {
+              ...ps,
+              modules: [
+                ...ps.modules,
+                { id: module[1], name: TARGET_NAMES[module[1]] ?? module[1] },
+              ],
+            },
+          };
+        });
+        return Promise.resolve({});
+      }
+      const cycle = /\/cycles\/([^/]+)\/issues/.exec(path);
+      if (cycle) {
+        replaceIssue("i1", (t) => {
+          const ps = t.project_structure ?? { modules: [] };
+          return {
+            ...t,
+            project_structure: {
+              ...ps,
+              cycle: {
+                id: cycle[1],
+                name: TARGET_NAMES[cycle[1]] ?? cycle[1],
+              },
+            },
+          };
+        });
+        return Promise.resolve({});
+      }
+      const release = /\/releases\/([^/]+)\/issues/.exec(path);
+      if (release) {
+        replaceIssue("i1", (t) => {
+          const ps = t.project_structure ?? { modules: [] };
+          return {
+            ...t,
+            project_structure: {
+              ...ps,
+              release: {
+                id: release[1],
+                name: TARGET_NAMES[release[1]] ?? release[1],
+              },
+            },
+          };
+        });
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
+    const del = await delMock();
+    del.mockImplementation((path: string) => {
+      const cycle = /\/cycles\/([^/]+)\/issues/.exec(path);
+      if (cycle) {
+        replaceIssue("i1", (t) =>
+          t.project_structure?.cycle?.id === cycle[1]
+            ? {
+                ...t,
+                project_structure: { ...t.project_structure, cycle: null },
+              }
+            : t,
+        );
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it("epic drop attaches via Board's epic endpoint and re-groups", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("epic");
+    expect(groupHeaders()).toEqual(["Epic One (1)", "Epic Two (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:ep1:i1", "spreadsheet-group:ep2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/epics/ep2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Epic One (1)", "Epic Two (2)"]);
+    });
+  });
+
+  it("assignee drop attaches via Board's assignee endpoint and re-groups", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("assignees");
+    expect(groupHeaders()).toEqual(["Ada (1)", "Bob (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:u2:i1", "spreadsheet-group:u3");
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([p]) =>
+            typeof p === "string" && p.includes("/issues/i1/assignees/u3"),
+        ),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Ada (1)", "Bob (2)"]);
+    });
+  });
+
+  it("label drop attaches via Board's label endpoint and re-groups", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("labels");
+    expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:lb1:i1", "spreadsheet-group:lb2");
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([p]) =>
+            typeof p === "string" && p.includes("/issues/i1/labels/lb2"),
+        ),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Red (1)", "Blue (2)"]);
+    });
+  });
+
+  it("module drop attaches via Board's module endpoint and re-groups", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("modules");
+    expect(groupHeaders()).toEqual(["Core (1)", "UI (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:md1:i1", "spreadsheet-group:md2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/modules/md2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Core (1)", "UI (2)"]);
+    });
+  });
+
+  it("cycle drop moves add-then-remove (Board pipeline) and re-groups", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("cycles");
+    expect(groupHeaders()).toEqual(["Sprint 1 (1)", "Sprint 2 (1)"]);
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:cy1:i1", "spreadsheet-group:cy2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/cycles/cy2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    await waitFor(() => {
+      expect(del).toHaveBeenCalledWith(
+        expect.stringContaining("/cycles/cy1/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    // The emptied source group hides; the issue lands in Sprint 2.
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Sprint 2 (2)"]);
+    });
+  });
+
+  it("release drop moves via a single assign, never a DELETE", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    await renderGrouped("releases");
+    expect(groupHeaders()).toEqual(["v1 (1)", "v2 (1)"]);
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:r1:i1", "spreadsheet-group:r2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/releases/r2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["v2 (2)"]);
+    });
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("epic Ungrouped drop is a deliberate no-op (Board planEpicDrop)", async () => {
+    mockData.issues = [
+      membershipIssues()[0],
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s2",
+      }),
+    ];
+    await renderGrouped("epic");
+    expect(groupHeaders()).toEqual(["Epic One (1)", "Ungrouped (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:ep1:i1", "spreadsheet-group:epic:ungrouped");
+    expect(post).not.toHaveBeenCalled();
+    expect(toast.add).not.toHaveBeenCalled();
+    expect(groupHeaders()).toEqual(["Epic One (1)", "Ungrouped (1)"]);
+  });
+
+  it("already-member drop issues no membership call, in any dimension", async () => {
+    // i1 carries lb1 AND lb2: dragging its Red appearance onto the
+    // Blue group is an already-labeled drop, not a move.
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        labels: [
+          { id: "lb1", name: "Red", color: "#f00" },
+          { id: "lb2", name: "Blue", color: "#00f" },
+        ],
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s2",
+        labels: [{ id: "lb3", name: "Green", color: "#0f0" }],
+      }),
+    ];
+    await renderGrouped("labels");
+    expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)", "Green (1)"]);
+    const post = await postMock();
+    drop("spreadsheet-drag:lb1:i1", "spreadsheet-group:lb2");
+    expect(post).not.toHaveBeenCalled();
+    expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)", "Green (1)"]);
+  });
+
+  it("multi-appearance drag moves the issue once: single POST, all appearances re-render", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        labels: [
+          { id: "lb1", name: "Red", color: "#f00" },
+          { id: "lb2", name: "Blue", color: "#00f" },
+        ],
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s2",
+        labels: [{ id: "lb3", name: "Green", color: "#0f0" }],
+      }),
+    ];
+    await installMembershipServer();
+    await renderGrouped("labels");
+    expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)", "Green (1)"]);
+    const post = await postMock();
+    // Drag ONE appearance (the Red one) onto Green.
+    drop("spreadsheet-drag:lb1:i1", "spreadsheet-group:lb3");
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([p]) =>
+            typeof p === "string" && p.includes("/issues/i1/labels/lb3"),
+        ),
+      ).toBe(true);
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)", "Green (2)"]);
+    });
+    // The issue now renders in all three groups.
+    const alphaRows = rowLabels().filter(
+      (l) => l === "Open issue ENG-1: Alpha",
+    );
+    expect(alphaRows).toHaveLength(3);
+  });
+
+  it("dragged appearance dims in place; sibling appearances do not", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        labels: [
+          { id: "lb1", name: "Red", color: "#f00" },
+          { id: "lb2", name: "Blue", color: "#00f" },
+        ],
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s2",
+        labels: [{ id: "lb3", name: "Green", color: "#0f0" }],
+      }),
+    ];
+    await renderGrouped("labels");
+    const table = screen.getByRole("table");
+    const alphaRows = within(table).getAllByRole("link", {
+      name: "Open issue ENG-1: Alpha",
+    });
+    expect(alphaRows).toHaveLength(2);
+    expect(alphaRows[0].className).not.toContain("opacity-40");
+    dragStart("spreadsheet-drag:lb1:i1");
+    // Only the dragged (Red) appearance dims.
+    expect(alphaRows[0].className).toContain("opacity-40");
+    expect(alphaRows[1].className).not.toContain("opacity-40");
+    // Ending the drag clears the dim.
+    drop("spreadsheet-drag:lb1:i1", null);
+    expect(alphaRows[0].className).not.toContain("opacity-40");
+  });
+
+  it("sub-group headers are not drop targets under a membership dimension", async () => {
+    mockData.issues = membershipIssues();
+    await renderGrouped("labels", "state");
+    const post = await postMock();
+    const table = screen.getByRole("table");
+    const subHeaders = table.querySelectorAll(
+      "tr[data-spreadsheet-sub-group-header]",
+    );
+    expect(subHeaders.length).toBeGreaterThan(0);
+    for (const h of Array.from(subHeaders)) {
+      expect(h.querySelector("button")).toBeNull();
+    }
+    // Real dnd-kit reports over === null above a non-droppable header.
+    drop("spreadsheet-drag:lb1:i1", null);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("PQL-mode membership move re-groups the row and invalidates the PQL query", async () => {
+    mockData.issues = membershipIssues();
+    await installMembershipServer();
+    setGrouping({ groupBy: "labels", subGroupBy: "none" });
+    renderSpreadsheet("/w/acme/p/ENG/spreadsheet?pql=priority+%3E%3D+0");
+    await screen.findByRole("button", { name: "Sort by Title" });
+    await waitFor(() => expect(handles().length).toBeGreaterThan(0));
+    const { api } = await import("../lib/api");
+    const get = api.get as ReturnType<typeof vi.fn>;
+    const pqlFetches = () =>
+      get.mock.calls.filter(
+        ([p]) => typeof p === "string" && p.includes("pql="),
+      ).length;
+    expect(pqlFetches()).toBeGreaterThanOrEqual(1);
+    const before = pqlFetches();
+    const post = await postMock();
+    drop("spreadsheet-drag:lb1:i1", "spreadsheet-group:lb2");
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([p]) =>
+            typeof p === "string" && p.includes("/issues/i1/labels/lb2"),
+        ),
+      ).toBe(true);
+    });
+    // Settle-time invalidation re-runs the committed PQL query, and
+    // the refetched rows re-group the moved issue.
+    await waitFor(() => {
+      expect(pqlFetches()).toBeGreaterThan(before);
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Red (1)", "Blue (2)"]);
+    });
+  });
+
+  it("failed membership POST rolls the row back to its source group", async () => {
+    mockData.issues = membershipIssues();
+    await renderGrouped("labels");
+    expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)"]);
+    const post = await postMock();
+    const { ApiError } = await import("../lib/api");
+    post.mockRejectedValueOnce(new ApiError(500, "boom"));
+    drop("spreadsheet-drag:lb1:i1", "spreadsheet-group:lb2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Red (1)", "Blue (1)"]);
+    });
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+  });
+
+  it("failed cycle add rolls back and issues no remove", async () => {
+    mockData.issues = membershipIssues();
+    await renderGrouped("cycles");
+    expect(groupHeaders()).toEqual(["Sprint 1 (1)", "Sprint 2 (1)"]);
+    const post = await postMock();
+    const del = await delMock();
+    const { ApiError } = await import("../lib/api");
+    post.mockRejectedValueOnce(new ApiError(500, "cycle boom"));
+    drop("spreadsheet-drag:cy1:i1", "spreadsheet-group:cy2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual(["Sprint 1 (1)", "Sprint 2 (1)"]);
+    });
+    expect(del).not.toHaveBeenCalled();
+    expect(await screen.findByText("cycle boom")).toBeInTheDocument();
   });
 });

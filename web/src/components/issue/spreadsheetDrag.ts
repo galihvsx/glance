@@ -20,6 +20,12 @@ import {
   type Workflow,
 } from "../../lib/workflow";
 import type { Issue } from "../../lib/types";
+import { UNGROUPED_ASSIGNEE_KEY } from "./groupByAssignee";
+import { cycleOf, UNGROUPED_CYCLE_KEY } from "./groupByCycle";
+import { UNGROUPED_EPIC_KEY } from "./groupByEpic";
+import { UNGROUPED_LABEL_KEY } from "./groupByLabel";
+import { modulesOf, UNGROUPED_MODULE_KEY } from "./groupByModule";
+import { releaseOf, UNGROUPED_RELEASE_KEY } from "./groupByRelease";
 
 /** Draggable id prefix for spreadsheet row handles. */
 export const SPREADSHEET_DRAG_PREFIX = "spreadsheet-drag:";
@@ -85,10 +91,34 @@ export function spreadsheetOverGroupKey(overId: string): string | null {
   return null;
 }
 
+export type SpreadsheetAttachDimension =
+  | "epic"
+  | "assignees"
+  | "labels"
+  | "modules";
+
 export type SpreadsheetDropPlan =
   | {
       kind: "patch";
       body: { state_id: string } | { priority: number };
+    }
+  | {
+      kind: "attach";
+      dimension: SpreadsheetAttachDimension;
+      /** Target member id (the group key — non-Ungrouped group keys
+       *  ARE the member ids, Board column-key precedent). */
+      memberId: string;
+    }
+  | {
+      kind: "move-cycle";
+      cycleId: string;
+      /** Row-derived source (null for an Ungrouped source = add-only
+       *  move, Board moveToCycle precedent). */
+      sourceCycleId: string | null;
+    }
+  | {
+      kind: "move-release";
+      releaseId: string;
     }
   | {
       kind: "blocked";
@@ -102,7 +132,8 @@ export type SpreadsheetDropPlan =
         | "created-by"
         | "state-group"
         | "ungrouped-state"
-        | "pending-dimension"
+        | "ungrouped"
+        | "already-member"
         | "unknown-target"
         | "unknown-dimension";
     };
@@ -116,10 +147,24 @@ export type SpreadsheetDropPlan =
  *  (still loading) does not block: the server enforces, exactly as
  *  Board's hint-only dropBlocked does before its PATCH. createdBy and
  *  stateGroups are deliberate no-ops (Board: no single target exists
- *  to move to). The membership dimensions (epic, assignees, labels,
- *  modules, cycles, releases) resolve here as pending-dimension no-ops
- *  in T1 — the dispatch shape lands now so T2 only adds their
- *  membership branches, never a new dispatch. */
+ *  to move to). Membership dimensions mirror Board's plan*Drop
+ *  functions exactly, including their Ungrouped-target rule: every
+ *  dimension's Ungrouped drop is a deliberate no-op (detach-from-all
+ *  would be destructive — verified against planEpicDrop,
+ *  planAssigneeDrop, planLabelDrop, planModuleDrop, planCycleDrop,
+ *  planReleaseDrop, all of which return noop "ungrouped").
+ *  Spreadsheet group keys differ from Board column keys only for
+ *  Ungrouped (spreadsheet: `epic:ungrouped` / `assignee:ungrouped` /
+ *  `label:ungrouped` / `module:ungrouped` / `cycle:ungrouped` /
+ *  `release:ungrouped` from the groupBy* builders; Board: bare
+ *  `ungrouped`) — non-Ungrouped group keys are the member ids, so
+ *  the attach/move target is the group key itself. Already-member
+ *  drops are no-ops (Board's already-attached / already-assigned /
+ *  already-labeled / already-member reasons, unified here as
+ *  "already-member"); the caller issues no membership call. Cycles
+ *  move add-then-remove (Board executeCycleMove pipeline) and
+ *  releases move via a single assign (Board executeReleaseMove —
+ *  no DELETE, ever). */
 export function planSpreadsheetDrop(args: {
   groupBy: string;
   sourceGroupKey: string;
@@ -165,15 +210,99 @@ export function planSpreadsheetDrop(args: {
       return { kind: "noop", reason: "created-by" };
     case "stateGroups":
       return { kind: "noop", reason: "state-group" };
-    case "epic":
-    case "assignees":
-    case "labels":
-    case "modules":
-    case "cycles":
-    case "releases":
-      // C148T1: dispatch shape only — T2 adds the membership branch
-      // per dimension, verified against Board's branch.
-      return { kind: "noop", reason: "pending-dimension" };
+    case "epic": {
+      // Board planEpicDrop: Ungrouped no-op; already-attached
+      // (live, non-archived epic membership) no-op; else attach.
+      if (targetGroupKey === UNGROUPED_EPIC_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const already = (issue.epics ?? []).some(
+        (e) => e.id === targetGroupKey && !e.archived_at,
+      );
+      if (already) return { kind: "noop", reason: "already-member" };
+      return { kind: "attach", dimension: "epic", memberId: targetGroupKey };
+    }
+    case "assignees": {
+      // Board planAssigneeDrop: Ungrouped no-op; already-assigned
+      // no-op; else attach (multi-assignee aware, never detaches).
+      if (targetGroupKey === UNGROUPED_ASSIGNEE_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const already = (issue.assignees ?? []).some(
+        (a) => a.id === targetGroupKey,
+      );
+      if (already) return { kind: "noop", reason: "already-member" };
+      return {
+        kind: "attach",
+        dimension: "assignees",
+        memberId: targetGroupKey,
+      };
+    }
+    case "labels": {
+      // Board planLabelDrop: Ungrouped no-op; already-labeled
+      // no-op; else attach (multi-label aware, never detaches).
+      if (targetGroupKey === UNGROUPED_LABEL_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const already = (issue.labels ?? []).some(
+        (l) => l.id === targetGroupKey,
+      );
+      if (already) return { kind: "noop", reason: "already-member" };
+      return {
+        kind: "attach",
+        dimension: "labels",
+        memberId: targetGroupKey,
+      };
+    }
+    case "modules": {
+      // Board planModuleDrop: Ungrouped no-op; already-member
+      // no-op; else attach (multi-module aware, never detaches).
+      if (targetGroupKey === UNGROUPED_MODULE_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const already = modulesOf(issue).some(
+        (m) => m.id === targetGroupKey,
+      );
+      if (already) return { kind: "noop", reason: "already-member" };
+      return {
+        kind: "attach",
+        dimension: "modules",
+        memberId: targetGroupKey,
+      };
+    }
+    case "cycles": {
+      // Board planCycleDrop: Ungrouped no-op; already-member
+      // no-op; else MOVE (add target first, then remove source —
+      // the deliberate divergence from attach-only, because the
+      // single-value display would misdisplay an attach-only card
+      // under the wrong cycle). Source is row-derived: an Ungrouped
+      // source is an add-only move (sourceCycleId null).
+      if (targetGroupKey === UNGROUPED_CYCLE_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const current = cycleOf(issue);
+      if (current?.id === targetGroupKey) {
+        return { kind: "noop", reason: "already-member" };
+      }
+      return {
+        kind: "move-cycle",
+        cycleId: targetGroupKey,
+        sourceCycleId: current?.id ?? null,
+      };
+    }
+    case "releases": {
+      // Board planReleaseDrop: Ungrouped no-op; already-member
+      // no-op; else MOVE via a single assign (assign overwrites
+      // release_id — no DELETE of the source, ever).
+      if (targetGroupKey === UNGROUPED_RELEASE_KEY) {
+        return { kind: "noop", reason: "ungrouped" };
+      }
+      const current = releaseOf(issue);
+      if (current?.id === targetGroupKey) {
+        return { kind: "noop", reason: "already-member" };
+      }
+      return { kind: "move-release", releaseId: targetGroupKey };
+    }
     default:
       return { kind: "noop", reason: "unknown-dimension" };
   }

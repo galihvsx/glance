@@ -20,6 +20,7 @@ import {
   useSensors,
   type DragEndEvent,
   type DragOverEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import { api, ApiError } from "../lib/api";
 import { stateTransitionConflictMessage, useWorkflow } from "../lib/workflow";
@@ -32,7 +33,10 @@ import {
   spreadsheetGroupDroppableId,
   spreadsheetOverGroupKey,
   spreadsheetRowDroppableId,
+  type SpreadsheetAttachDimension,
 } from "../components/issue/spreadsheetDrag";
+import { executeCycleMove } from "../components/issue/boardCycle";
+import { executeReleaseMove } from "../components/issue/boardRelease";
 import type {
   Issue,
   IssueAssignee,
@@ -281,6 +285,7 @@ type EditableColumn = "state" | "priority" | "start_date" | "target_date";
 function SpreadsheetTopLevelRow({
   issue,
   groupKey,
+  dragging,
   canEdit,
   state,
   structure,
@@ -298,6 +303,11 @@ function SpreadsheetTopLevelRow({
   issue: Issue;
   /** Primary group key, or null in flat mode (no handle, no targets). */
   groupKey: string | null;
+  /** True while THIS appearance is the active drag source (C148T2
+   *  ghosting: the dragged row dims in place; no DragOverlay — the
+   *  dim + the target group's header highlight carry the affordance,
+   *  and an overlay would need a second dnd-kit boundary in tests). */
+  dragging: boolean;
   canEdit: boolean;
   state: IssueState | undefined;
   structure: IssueProjectStructure | undefined;
@@ -353,7 +363,7 @@ function SpreadsheetTopLevelRow({
           onOpen(issue);
         }
       }}
-      className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
+      className={`h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset ${dragging ? "opacity-40" : ""}`}
     >
       {grouped && (
         <td className="w-10 px-1 py-2 align-middle">
@@ -680,6 +690,7 @@ function SpreadsheetGroupHeaderRow({
 function SpreadsheetDragScope({
   grouped,
   sensors,
+  onDragStart,
   onDragOver,
   onDragEnd,
   onDragCancel,
@@ -687,6 +698,7 @@ function SpreadsheetDragScope({
 }: {
   grouped: boolean;
   sensors: ReturnType<typeof useSensors>;
+  onDragStart: (e: DragStartEvent) => void;
   onDragOver: (e: DragOverEvent) => void;
   onDragEnd: (e: DragEndEvent) => void;
   onDragCancel: () => void;
@@ -697,6 +709,7 @@ function SpreadsheetDragScope({
     <DndContext
       sensors={sensors}
       collisionDetection={closestCorners}
+      onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
       onDragCancel={onDragCancel}
@@ -950,6 +963,14 @@ export default function Spreadsheet() {
   const [dragOverGroupKey, setDragOverGroupKey] = useState<string | null>(
     null,
   );
+  // C148T2: active spreadsheet drag id (compound id of the dragged
+  // appearance, or null) — the single dim source: the dragged row
+  // renders opacity-40 while its drag is active, cleared on end and
+  // on cancel. A multi-appearance issue dims only the dragged
+  // appearance, never its siblings.
+  const [activeSpreadsheetDragId, setActiveSpreadsheetDragId] = useState<
+    string | null
+  >(null);
   const stateNamesById = useMemo(
     () => new Map((statesQuery.data ?? []).map((s) => [s.id, s.name] as const)),
     [statesQuery.data],
@@ -1079,6 +1100,219 @@ export default function Spreadsheet() {
       invalidateDisplayedIssues();
     },
   });
+
+  /** C148T2: Board's attach-mutation shape, one mutation for all four
+   *  attach dimensions (epic/assignees/labels/modules) — the endpoint
+   *  is the only per-dimension difference, exactly as Board's four
+   *  attach mutations differ only in mutationFn. Optimistic append
+   *  mirrors Board's attachTo* optimistic setQueryData (epic appends
+   *  {id, name, archived_at: null}; assignee {id, name}; label
+   *  {id, name, color}; module appends to project_structure.modules);
+   *  rollback on error restores the snapshot; settle invalidates via
+   *  invalidateDisplayedIssues, so PQL-mode moves re-run the committed
+   *  query (rule 9, same settle path as patchMutation — no separate
+   *  PQL move path, no change to shared cell-edit behavior). Error
+   *  text mirrors Board's per-dimension onError (ApiError message,
+   *  else Board's fallback). */
+  const attachMutation = useMutation({
+    mutationFn: ({
+      dimension,
+      issueId,
+      memberId,
+    }: {
+      dimension: SpreadsheetAttachDimension;
+      issueId: string;
+      memberId: string;
+      title: string;
+      color?: string;
+    }) => {
+      switch (dimension) {
+        case "epic":
+          return api.post(
+            `${base}/epics/${encodeURIComponent(memberId)}/issues`,
+            { issue_ids: [issueId] },
+          );
+        case "assignees":
+          return api.post(
+            `${base}/issues/${encodeURIComponent(issueId)}/assignees/${encodeURIComponent(memberId)}`,
+          );
+        case "labels":
+          return api.post(
+            `${base}/issues/${encodeURIComponent(issueId)}/labels/${encodeURIComponent(memberId)}`,
+          );
+        case "modules":
+          return api.post(
+            `${base}/modules/${encodeURIComponent(memberId)}/issues`,
+            { issue_ids: [issueId] },
+          );
+      }
+    },
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: issuesKey });
+      const prev = queryClient.getQueryData<IssuesCache>(issuesKey);
+      queryClient.setQueryData<IssuesCache>(issuesKey, (data) =>
+        patchCachedIssue(data, vars.issueId, (issue) => {
+          switch (vars.dimension) {
+            case "epic":
+              return {
+                ...issue,
+                epics: [
+                  ...(issue.epics ?? []),
+                  {
+                    id: vars.memberId,
+                    name: vars.title,
+                    archived_at: null,
+                  },
+                ],
+              };
+            case "assignees":
+              return {
+                ...issue,
+                assignees: [
+                  ...issue.assignees,
+                  { id: vars.memberId, name: vars.title },
+                ],
+              };
+            case "labels":
+              return {
+                ...issue,
+                labels: [
+                  ...issue.labels,
+                  {
+                    id: vars.memberId,
+                    name: vars.title,
+                    color: vars.color ?? "",
+                  },
+                ],
+              };
+            case "modules":
+              return {
+                ...issue,
+                project_structure: {
+                  ...(issue.project_structure ?? { modules: [] }),
+                  modules: [
+                    ...(issue.project_structure?.modules ?? []),
+                    { id: vars.memberId, name: vars.title },
+                  ],
+                },
+              };
+          }
+        }),
+      );
+      return { prev };
+    },
+    onError: (e, vars, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(issuesKey, ctx.prev);
+      const fallback = {
+        epic: "Failed to attach issue to epic",
+        assignees: "Failed to assign issue",
+        labels: "Failed to label issue",
+        modules: "Failed to attach issue to module",
+      }[vars.dimension];
+      setEditError(e instanceof ApiError ? e.message : fallback);
+    },
+    onSettled: () => {
+      invalidateDisplayedIssues();
+    },
+  });
+
+  /** C148T2: Board's moveToCycle, spreadsheet-shaped — optimistic
+   *  cycle stamp, then Board's executeCycleMove pipeline (add target
+   *  first, then remove source; add failure aborts before any
+   *  remove and rolls back; remove failure after a successful add
+   *  surfaces honestly as dual state and keeps the optimistic stamp
+   *  until the invalidate below refetches server state, exactly as
+   *  Board does). Settle always invalidates (PQL key included via
+   *  invalidateDisplayedIssues). */
+  async function moveSpreadsheetToCycle(
+    issueId: string,
+    cycleId: string,
+    cycleTitle: string,
+    sourceCycleId: string | null,
+  ) {
+    await queryClient.cancelQueries({ queryKey: issuesKey });
+    const prev = queryClient.getQueryData<IssuesCache>(issuesKey);
+    queryClient.setQueryData<IssuesCache>(issuesKey, (data) =>
+      patchCachedIssue(data, issueId, (issue) => ({
+        ...issue,
+        project_structure: {
+          ...(issue.project_structure ?? { modules: [] }),
+          cycle: { id: cycleId, name: cycleTitle },
+        },
+      })),
+    );
+    const result = await executeCycleMove(
+      {
+        addToCycle: (targetCycleId, id) =>
+          api.post(
+            `${base}/cycles/${encodeURIComponent(targetCycleId)}/issues`,
+            { issue_ids: [id] },
+          ),
+        removeFromCycle: (sourceId, id) =>
+          api.del(
+            `${base}/cycles/${encodeURIComponent(sourceId)}/issues`,
+            { issue_ids: [id] },
+          ),
+      },
+      { kind: "move", cycleId, sourceCycleId },
+      issueId,
+    );
+    if (!result.ok) {
+      const detail =
+        result.error instanceof ApiError ? result.error.message : null;
+      if (result.stage === "add") {
+        if (prev) queryClient.setQueryData(issuesKey, prev);
+        setEditError(detail ?? "Failed to move issue to cycle");
+      } else {
+        setEditError(
+          detail
+            ? `${detail} (the issue is now in both cycles)`
+            : "Issue was added to the new cycle but could not be removed from the old cycle",
+        );
+      }
+    }
+    invalidateDisplayedIssues();
+  }
+
+  /** C148T2: Board's moveToRelease, spreadsheet-shaped — optimistic
+   *  release stamp, then Board's executeReleaseMove single assign
+   *  (no DELETE, ever). Assign failure rolls back and surfaces
+   *  Board's message; settle always invalidates. */
+  async function moveSpreadsheetToRelease(
+    issueId: string,
+    releaseId: string,
+    releaseTitle: string,
+  ) {
+    await queryClient.cancelQueries({ queryKey: issuesKey });
+    const prev = queryClient.getQueryData<IssuesCache>(issuesKey);
+    queryClient.setQueryData<IssuesCache>(issuesKey, (data) =>
+      patchCachedIssue(data, issueId, (issue) => ({
+        ...issue,
+        project_structure: {
+          ...(issue.project_structure ?? { modules: [] }),
+          release: { id: releaseId, name: releaseTitle },
+        },
+      })),
+    );
+    const result = await executeReleaseMove(
+      {
+        assignToRelease: (targetReleaseId, id) =>
+          api.post(
+            `${base}/releases/${encodeURIComponent(targetReleaseId)}/issues`,
+            { issue_ids: [id] },
+          ),
+      },
+      { kind: "move", releaseId },
+      issueId,
+    );
+    if (!result.ok) {
+      if (prev) queryClient.setQueryData(issuesKey, prev);
+      const detail =
+        result.error instanceof ApiError ? result.error.message : null;
+      setEditError(detail ?? "Failed to move issue to release");
+    }
+    invalidateDisplayedIssues();
+  }
 
   /** Assignee add/remove — relation endpoints, same as the detail page. */
   function toggleAssignee(issue: Issue, userId: string, currently: boolean) {
@@ -1481,10 +1715,20 @@ export default function Spreadsheet() {
    * run through the existing patchMutation shape (optimistic
    * setQueryData on issuesKey, rollback on error, invalidate on
    * settle — the PQL key via invalidateDisplayedIssues, rule 9), so
-   * a move the server rejects never sticks in the grid. No-ops
-   * (same-group, createdBy, stateGroups, pending T2 dimensions)
-   * PATCH nothing and surface no error, by design.
+   * a move the server rejects never sticks in the grid. Membership
+   * moves run through the same shape: attachMutation for
+   * epic/assignees/labels/modules (Board's attach endpoints), and
+   * Board's executeCycleMove / executeReleaseMove pipelines for
+   * cycles/releases — all settling through invalidateDisplayedIssues,
+   * so PQL-mode moves re-run the committed query exactly as
+   * patchMutation moves do. No-ops (same-group, createdBy,
+   * stateGroups, Ungrouped targets, already-member) PATCH nothing
+   * and surface no error, by design.
    */
+  function handleSpreadsheetDragStart(e: DragStartEvent) {
+    setActiveSpreadsheetDragId(String(e.active.id));
+  }
+
   function handleSpreadsheetDragOver(e: DragOverEvent) {
     const overId = e.over ? String(e.over.id) : null;
     setDragOverGroupKey(overId ? spreadsheetOverGroupKey(overId) : null);
@@ -1493,6 +1737,7 @@ export default function Spreadsheet() {
   function handleSpreadsheetDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     setDragOverGroupKey(null);
+    setActiveSpreadsheetDragId(null);
     if (!over || !canEdit) return;
     if (groupSections === null) return;
     const sourceGroupKey = spreadsheetDragGroupKey(String(active.id));
@@ -1526,7 +1771,50 @@ export default function Spreadsheet() {
       return;
     }
     setEditError(null);
-    patchMutation.mutate({ id: issue.id, body: plan.body });
+    if (plan.kind === "patch") {
+      patchMutation.mutate({ id: issue.id, body: plan.body });
+      return;
+    }
+    // Target group title feeds the optimistic membership append
+    // (Board's attachTo* title argument); the group must exist —
+    // it rendered the drop target — so the fallback is defensive.
+    const targetGroup = groupSections.find(
+      (g) => g.key === targetGroupKey,
+    );
+    if (plan.kind === "attach") {
+      // Board passes the column's label color for labels; the
+      // spreadsheet's groups carry no color, so it is read off a
+      // sibling row already carrying that label (a target group is
+      // never empty — groups derive from loaded rows).
+      const color =
+        plan.dimension === "labels"
+          ? (targetGroup?.issues
+              .flatMap((i) => i.labels ?? [])
+              .find((l) => l.id === plan.memberId)?.color ?? "")
+          : undefined;
+      attachMutation.mutate({
+        dimension: plan.dimension,
+        issueId: issue.id,
+        memberId: plan.memberId,
+        title: targetGroup?.title ?? plan.memberId,
+        color,
+      });
+      return;
+    }
+    if (plan.kind === "move-cycle") {
+      void moveSpreadsheetToCycle(
+        issue.id,
+        plan.cycleId,
+        targetGroup?.title ?? plan.cycleId,
+        plan.sourceCycleId,
+      );
+      return;
+    }
+    void moveSpreadsheetToRelease(
+      issue.id,
+      plan.releaseId,
+      targetGroup?.title ?? plan.releaseId,
+    );
   }
 
   function openIssue(issue: Issue) {
@@ -1677,6 +1965,11 @@ export default function Spreadsheet() {
         <SpreadsheetTopLevelRow
           issue={issue}
           groupKey={groupKey}
+          dragging={
+            groupKey !== null &&
+            activeSpreadsheetDragId ===
+              spreadsheetDragId(groupKey, issue.id)
+          }
           canEdit={canEdit}
           state={state}
           structure={structure}
@@ -1928,9 +2221,13 @@ export default function Spreadsheet() {
             <SpreadsheetDragScope
               grouped={groupSections !== null}
               sensors={dragSensors}
+              onDragStart={handleSpreadsheetDragStart}
               onDragOver={handleSpreadsheetDragOver}
               onDragEnd={handleSpreadsheetDragEnd}
-              onDragCancel={() => setDragOverGroupKey(null)}
+              onDragCancel={() => {
+                setDragOverGroupKey(null);
+                setActiveSpreadsheetDragId(null);
+              }}
             >
             <div className="overflow-x-auto rounded-lg border border-border bg-surface">
               <table className="w-full min-w-[1200px] border-collapse text-[13px] text-ink">
