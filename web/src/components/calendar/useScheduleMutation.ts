@@ -9,6 +9,15 @@ import { toast } from "../ui/toast";
 export interface ScheduleRange {
   start: string;
   end: string;
+  /**
+   * C145T2: the calendar's showSubWorkItems toggle — the calendar
+   * query keys carry it as a trailing element, and the optimistic
+   * get/set below matches keys exactly, so the mutation must carry
+   * the same element or its optimistic update silently misses.
+   * Defaults true (the calendar's default) for callers that predate
+   * the toggle.
+   */
+  showSubWorkItems?: boolean;
 }
 
 function issuePath(slug: string, identifier: string, uuid: string): string {
@@ -27,9 +36,10 @@ export function useScheduleMutation(
   range: ScheduleRange,
 ) {
   const queryClient = useQueryClient();
-  const dueKey = ["calendar", slug, identifier, "due", range.start];
-  const startKey = ["calendar", slug, identifier, "start", range.start];
-  const undatedKey = ["calendar", slug, identifier, "undated"];
+  const showSubWorkItems = range.showSubWorkItems ?? true;
+  const dueKey = ["calendar", slug, identifier, "due", range.start, showSubWorkItems];
+  const startKey = ["calendar", slug, identifier, "start", range.start, showSubWorkItems];
+  const undatedKey = ["calendar", slug, identifier, "undated", showSubWorkItems];
   const keys = [dueKey, startKey, undatedKey];
 
   return useMutation({
