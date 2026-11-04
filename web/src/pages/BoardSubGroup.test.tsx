@@ -1115,11 +1115,10 @@ describe("board sub-group by modules (C140T2)", () => {
     // Multi-appearance means two matching texts by design.
     expect(await screen.findAllByText("Ship feature")).toHaveLength(2);
     // The two-module Todo issue renders twice in its column, once
-    // per module section. Per this task's scope the board takes NO
-    // compound drag id branch for modules (visual-only sections,
-    // drop resolves by primary column), so the page-level proof is
-    // the distinct sections, not distinct sortable ids — see the
-    // task report for the live-drag note on duplicated cards.
+    // per module section. C140T3: modules join the compound drag id
+    // branch (epic/assignee/label shape), so the two copies carry
+    // distinct section-scoped sortable ids — see the C140T3 block
+    // below for the drag-id assertions.
     expect(
       document.querySelectorAll('[data-board-card="i-c"]'),
     ).toHaveLength(2);
@@ -1312,5 +1311,145 @@ describe("board sub-group by releases (C140T2)", () => {
         ),
       ).toBeNull();
     }
+  });
+});
+
+describe("board sub-group card drag ids (C140T3)", () => {
+  const MOD_A = { id: "m-a", name: "Auth" };
+  const MOD_B = { id: "m-b", name: "Billing" };
+
+  // Todo column: one two-module issue (renders twice, once per
+  // module section) plus one single-module issue (renders once).
+  const modulePayload = [
+    makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+      project_structure: {
+        cycle: null,
+        modules: [MOD_A, MOD_B],
+        release: null,
+      },
+    }),
+    makeIssue("i-d", "ENG-4", "Release notes", "s-done", 4, {
+      project_structure: { cycle: null, modules: [MOD_B], release: null },
+    }),
+  ];
+
+  /** Every sub-section key holding a copy of this card. */
+  function sectionKeysOfCard(issueId: string): string[] {
+    return Array.from(
+      document.querySelectorAll(`[data-board-card="${issueId}"]`),
+    ).map(
+      (card) =>
+        card.closest("[data-sub-group-section]")?.getAttribute(
+          "data-sub-group-section",
+        ) ?? "",
+    );
+  }
+
+  it("modules: a two-module card's copies carry DISTINCT compound drag ids, each unwrapping to the same issue id", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "modules",
+      showEmptyGroups: true,
+    });
+    renderBoard(modulePayload);
+    // Multi-appearance means two matching texts by design.
+    expect(await screen.findAllByText("Ship feature")).toHaveLength(2);
+    expect(
+      document.querySelectorAll('[data-board-card="i-c"]'),
+    ).toHaveLength(2);
+    // Page-level proof, mirroring the assignee/label compound-id
+    // tests: the copies sit in distinct sections, and cardDragId on
+    // the modules branch builds `subgroup-card:<sectionKey>:<issueId>`
+    // per copy — so distinct section keys mean distinct sortable
+    // ids, never the shared plain id the pre-C140T3 branch produced.
+    // The ids themselves live inside dnd-kit's SortableContext, not
+    // the DOM, and subgroupDragIssueId is module-private, so the
+    // strings below are derived from the observed section keys to
+    // pin the id format and the unwrap rule: the generic last-colon
+    // strip returns the same issue id for both copies (issue ids are
+    // UUIDs, no colons; the "module:ungrouped" key's colon is never
+    // last because the issue id follows it).
+    const keys = sectionKeysOfCard("i-c");
+    expect(keys).toEqual(["m-a", "m-b"]);
+    const dragIds = keys.map((k) => `subgroup-card:${k}:i-c`);
+    expect(new Set(dragIds).size).toBe(2);
+    for (const id of dragIds) {
+      expect(id.slice(id.lastIndexOf(":") + 1)).toBe("i-c");
+    }
+    // The single-module Done copy stays single.
+    expect(
+      document.querySelectorAll('[data-board-card="i-d"]'),
+    ).toHaveLength(1);
+  });
+
+  it("cycles: single-appearance cards keep PLAIN ids (no compound branch)", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "cycles",
+      showEmptyGroups: true,
+    });
+    renderBoard([
+      makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+        project_structure: {
+          cycle: { id: "c-b", name: "Cycle 2" },
+          modules: [],
+          release: null,
+        },
+      }),
+      makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+        project_structure: {
+          cycle: { id: "c-a", name: "Cycle 1" },
+          modules: [],
+          release: null,
+        },
+      }),
+    ]);
+    await screen.findByText("Fix login");
+    // Guard against over-broadening the cardDragId branch: cycles
+    // are single-appearance, so each card renders exactly once per
+    // column and cardDragId falls through to the plain issue id —
+    // no compound id is built for cycles.
+    for (const id of ["i-a", "i-c"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-a")).toBe("c-b");
+    expect(sectionKeyOfCard("i-c")).toBe("c-a");
+  });
+
+  it("releases: single-appearance cards keep PLAIN ids (no compound branch)", async () => {
+    storeSettings({
+      groupBy: "state",
+      subGroupBy: "releases",
+      showEmptyGroups: true,
+    });
+    renderBoard([
+      makeIssue("i-a", "ENG-1", "Fix login", "s-todo", 1, {
+        project_structure: {
+          cycle: null,
+          modules: [],
+          release: { id: "r-b", name: "v2.0" },
+        },
+      }),
+      makeIssue("i-c", "ENG-3", "Ship feature", "s-todo", 3, {
+        project_structure: {
+          cycle: null,
+          modules: [],
+          release: { id: "r-a", name: "v1.0" },
+        },
+      }),
+    ]);
+    await screen.findByText("Fix login");
+    // Same guard as cycles: releases are single-appearance, so each
+    // card renders exactly once per column and cardDragId falls
+    // through to the plain issue id.
+    for (const id of ["i-a", "i-c"]) {
+      expect(
+        document.querySelectorAll(`[data-board-card="${id}"]`),
+      ).toHaveLength(1);
+    }
+    expect(sectionKeyOfCard("i-a")).toBe("r-b");
+    expect(sectionKeyOfCard("i-c")).toBe("r-a");
   });
 });

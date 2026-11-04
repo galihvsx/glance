@@ -736,11 +736,15 @@ function BoardColumn({
    *  key "assignee:ungrouped"). C137T2: label sub-sections are
    *  multi-appearance the same way, so they join the same branch —
    *  the generic last-colon strip also covers the Ungrouped section
-   *  key "label:ungrouped". */
+   *  key "label:ungrouped". C140T3: module sub-sections are
+ *  multi-appearance the same way, so they join the same branch —
+ *  the generic last-colon strip also covers the Ungrouped section
+ *  key "module:ungrouped". */
   const cardDragId = (issue: Issue, sectionKey?: string) =>
     (subGroup === "epic" ||
       subGroup === "assignees" ||
-      subGroup === "labels") &&
+      subGroup === "labels" ||
+      subGroup === "modules") &&
     sectionKey !== undefined
       ? `${SUBGROUP_CARD_PREFIX}${sectionKey}:${issue.id}`
       : (getCardDragId?.(issue) ?? issue.id);
