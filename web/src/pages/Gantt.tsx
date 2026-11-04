@@ -159,8 +159,9 @@ type Row =
   // sort_order ASC via splitNestedIssues). The row carries the
   // SubtaskRow, not a full Issue: its own bar comes from the row's
   // start_date/target_date (C145T1). C150T1: child bars host the
-  // move drag (same handlers as parents); resize handles and the
-  // link-draw handle stay parent-only (C150T2 / out of scope).
+  // move drag (same handlers as parents); C150T2: they host edge
+  // resize handles too. Only the link-draw handle stays
+  // parent-only (out of scope).
   | { kind: "issue-child"; parentId: string; row: SubtaskRow };
 
 export default function Gantt() {
@@ -1305,14 +1306,17 @@ export default function Gantt() {
                   // dateless child yields no bar, exactly as a
                   // dateless parent. C150T1: child bars move-drag
                   // exactly like parents (same handler, presence
-                  // from the child's own stored dates); resize
-                  // handles and the link-draw handle stay
-                  // parent-only (C150T2 / out of scope).
+                  // from the child's own stored dates). C150T2:
+                  // child bars carry edge-resize handles exactly
+                  // like parents (same gates, same geometry, same
+                  // handler over the bridged barIssue); only the
+                  // link-draw handle stays parent-only (out of
+                  // scope).
                   const isChild = r.kind === "issue-child";
-                  // Narrowed parent for the parent-only handlers
-                  // (resize, link-draw); the move handler takes the
-                  // bridged barIssue below, so it runs on children
-                  // too (C150T1).
+                  // Narrowed parent for the parent-only link-draw
+                  // handler; the move AND resize handlers take the
+                  // bridged barIssue below, so they run on
+                  // children too (C150T1 / C150T2).
                   const parentIssue = r.kind === "issue" ? r.issue : null;
                   const barIssue = isChild
                     ? {
@@ -1443,8 +1447,10 @@ export default function Gantt() {
                           when its true edge lies outside the
                           visible window — the drawn edge there is
                           not the true date, so grabbing it must
-                          not move that date. */}
-                      {!isChild && canEdit && !linkUi.linkMode && b.start! >= windowStart && (
+                          not move that date. C150T2: child bars
+                          carry the same handles under the same
+                          gates, over the bridged barIssue. */}
+                      {canEdit && !linkUi.linkMode && b.start! >= windowStart && (
                         <rect
                           x={x + 2}
                           y={y + 9}
@@ -1460,7 +1466,7 @@ export default function Gantt() {
                             isSingleDay
                               ? undefined
                               : (e) =>
-                                  onResizePointerDown(e, parentIssue!, {
+                                  onResizePointerDown(e, barIssue, {
                                     start: b.start!,
                                     end: b.end!,
                                   }, "resize-start")
@@ -1471,7 +1477,7 @@ export default function Gantt() {
                           )}
                         </rect>
                       )}
-                      {!isChild && canEdit && !linkUi.linkMode && b.end! < windowEnd && (
+                      {canEdit && !linkUi.linkMode && b.end! < windowEnd && (
                         <rect
                           x={x + 2 + Math.max(w, 8) - 6}
                           y={y + 9}
@@ -1487,7 +1493,7 @@ export default function Gantt() {
                             isSingleDay
                               ? undefined
                               : (e) =>
-                                  onResizePointerDown(e, parentIssue!, {
+                                  onResizePointerDown(e, barIssue, {
                                     start: b.start!,
                                     end: b.end!,
                                   }, "resize-end")
@@ -1522,7 +1528,7 @@ export default function Gantt() {
                           multi-day bars render nothing here. Rows
                           never overlap in y, so the outward
                           extension cannot steal another row's bar. */}
-                      {!isChild && canEdit && !linkUi.linkMode && isSingleDay && b.start! >= windowStart && (
+                      {canEdit && !linkUi.linkMode && isSingleDay && b.start! >= windowStart && (
                         <rect
                           x={x + 2 - 6}
                           y={y + 9}
@@ -1533,7 +1539,7 @@ export default function Gantt() {
                           data-gantt-hit="resize-start"
                           aria-label="Drag to change start date"
                           onPointerDown={(e) =>
-                            onResizePointerDown(e, parentIssue!, {
+                            onResizePointerDown(e, barIssue, {
                               start: b.start!,
                               end: b.end!,
                             }, "resize-start")
@@ -1542,7 +1548,7 @@ export default function Gantt() {
                           <title>Drag to change start date</title>
                         </rect>
                       )}
-                      {!isChild && canEdit && !linkUi.linkMode && isSingleDay && b.end! < windowEnd && (
+                      {canEdit && !linkUi.linkMode && isSingleDay && b.end! < windowEnd && (
                         <rect
                           x={x + 2 + Math.max(w, 8) - 6}
                           y={y + 9}
@@ -1553,7 +1559,7 @@ export default function Gantt() {
                           data-gantt-hit="resize-end"
                           aria-label="Drag to change due date"
                           onPointerDown={(e) =>
-                            onResizePointerDown(e, parentIssue!, {
+                            onResizePointerDown(e, barIssue, {
                               start: b.start!,
                               end: b.end!,
                             }, "resize-end")

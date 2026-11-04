@@ -319,22 +319,22 @@ describe("Gantt sub-work items (C145T3)", () => {
     ).toBe(true);
   });
 
-  it("child bars have no resize handles but DO move-drag (C150T1 rule change)", async () => {
+  it("child bars carry resize handles AND move-drag (C150T2 rule change)", async () => {
     const { patch, container } = renderPage();
     await waitForFullSet();
-    // Only the two parent bars (parent + orphan) carry resize
-    // handles — the child bar adds none (resize stays
-    // parent-only until C150T2).
+    // All three bars (parent + child + orphan) carry resize
+    // handles under the parent gates (C150T2: the child bar
+    // adds its own pair; previously parent-only until C150T2).
     expect(
       container.querySelectorAll(
         'rect[aria-label="Drag to change start date"]',
       ).length,
-    ).toBe(2);
+    ).toBe(3);
     expect(
       container.querySelectorAll(
         'rect[aria-label="Drag to change due date"]',
       ).length,
-    ).toBe(2);
+    ).toBe(3);
     // Pressing + dragging the child bar PATCHes the CHILD id with
     // the shifted dates (Nov 15–17 → Nov 16–18).
     const childBar = Array.from(

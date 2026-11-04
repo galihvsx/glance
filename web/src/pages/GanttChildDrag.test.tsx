@@ -143,6 +143,36 @@ const childSingleDependent: SubtaskRow = {
   sort_order: 4,
   start_date: "2026-11-18T00:00:00Z",
 };
+// C150T2: a true 1-day child (both dates Nov 16) — its resize
+// handles are the C149T2 outward hit rects, not the visible 6px
+// rects (which are non-interactive decoration on 1-day bars).
+const childOneDay: SubtaskRow = {
+  id: "i-c5",
+  display_id: "ENG-15",
+  title: "One-day child",
+  state_id: "s-1",
+  priority: 3,
+  assignee_ids: [],
+  sort_order: 5,
+  start_date: "2026-11-16T00:00:00Z",
+  target_date: "2026-11-16T00:00:00Z",
+};
+// C150T2: window-clamp fixture. The window is 3 months centered on
+// the current month (Oct 1 – Dec 31, 2026), so this child's true
+// start (Sep 28) lies outside the window while its end (Oct 5)
+// lies inside: the start handle must be omitted, the end handle
+// kept, under the C144 clamp rule.
+const childWindowClamped: SubtaskRow = {
+  id: "i-c6",
+  display_id: "ENG-16",
+  title: "Out-of-window child",
+  state_id: "s-1",
+  priority: 3,
+  assignee_ids: [],
+  sort_order: 6,
+  start_date: "2026-09-28T00:00:00Z",
+  target_date: "2026-10-05T00:00:00Z",
+};
 const parent = makeIssue(
   "i-p",
   "ENG-1",
@@ -150,7 +180,14 @@ const parent = makeIssue(
   "2026-11-10T00:00:00Z",
   "2026-11-12T00:00:00Z",
   1,
-  [childRanged, childStartOnly, childTargetOnly, childSingleDependent],
+  [
+    childRanged,
+    childStartOnly,
+    childTargetOnly,
+    childSingleDependent,
+    childOneDay,
+    childWindowClamped,
+  ],
 );
 // Top-level dependent for the child-source cascade test: Nov 18–20.
 // After the child blocker (Nov 15–17) moves +1 day (end 18), the
@@ -200,6 +237,22 @@ const byId: Record<string, Issue> = {
     "2026-11-18T00:00:00Z",
     null,
     5,
+  ),
+  "i-c5": makeIssue(
+    "i-c5",
+    "ENG-15",
+    "One-day child",
+    "2026-11-16T00:00:00Z",
+    "2026-11-16T00:00:00Z",
+    6,
+  ),
+  "i-c6": makeIssue(
+    "i-c6",
+    "ENG-16",
+    "Out-of-window child",
+    "2026-09-28T00:00:00Z",
+    "2026-10-05T00:00:00Z",
+    7,
   ),
 };
 
@@ -266,6 +319,8 @@ async function waitForBars() {
       "Start-only child",
       "Target-only child",
       "Single-date dependent",
+      "One-day child",
+      "Out-of-window child",
       "Dependent task",
     ]) {
       expect(screen.queryByText(n)).not.toBeNull();
@@ -471,5 +526,257 @@ describe("Gantt child move drag (C150T1)", () => {
     expect(patch).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
     expect(peekDialog()).toBeNull();
+  });
+});
+
+/** The <g> wrapping a bar rect and its sibling handles — handles
+    are siblings of the bar, never ancestors, so a handle press
+    never reaches the bar's move handler. */
+function barGroup(bar: Element): Element {
+  return bar.closest("g")!;
+}
+
+function handlesInGroup(group: Element, label: string): Element[] {
+  return Array.from(group.querySelectorAll(`rect[aria-label="${label}"]`));
+}
+
+function hitRectsInGroup(group: Element, kind: string): Element[] {
+  return Array.from(
+    group.querySelectorAll(`rect[data-gantt-hit="${kind}"]`),
+  );
+}
+
+describe("Gantt child resize drag (C150T2)", () => {
+  it("child bar renders both edge handles with the parent labels", async () => {
+    const { container } = renderPage();
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    const start = handlesInGroup(group, "Drag to change start date");
+    const due = handlesInGroup(group, "Drag to change due date");
+    expect(start.length).toBe(1);
+    expect(due.length).toBe(1);
+    // Siblings of the bar rect, not ancestors of it.
+    expect(start[0].parentElement).toBe(group);
+    expect(due[0].parentElement).toBe(group);
+    expect(start[0].closest("g")).toBe(group);
+  });
+
+  it("resize-end on a child PATCHes the child id with the moved end (both dates, C149 resize rule)", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    const handle = handlesInGroup(group, "Drag to change due date")[0];
+    drag(handle);
+    await waitFor(() => {
+      // Nov 15–17 → Nov 15–18. A move drag would have shifted the
+      // start to Nov 16 instead, so this shape also proves the
+      // handle press never reached the move handler.
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c1`, {
+        start_date: "2026-11-15",
+        target_date: "2026-11-18",
+      });
+    });
+  });
+
+  it("resize-start on a child PATCHes the child id with the moved start", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    const handle = handlesInGroup(group, "Drag to change start date")[0];
+    drag(handle);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c1`, {
+        start_date: "2026-11-16",
+        target_date: "2026-11-17",
+      });
+    });
+  });
+
+  it("1-day child bar renders outward hit rects and its move strip still starts a move", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-15: One-day child"));
+    const bar = barByTitle(container, "ENG-15: One-day child");
+    const startHit = hitRectsInGroup(group, "resize-start");
+    const endHit = hitRectsInGroup(group, "resize-end");
+    expect(startHit.length).toBe(1);
+    expect(endHit.length).toBe(1);
+    // Outward extension only: the left hit rect starts 6px left of
+    // the bar, the right hit rect ends 6px right of the bar.
+    const barX = Number(bar.getAttribute("x"));
+    const barW = Number(bar.getAttribute("width"));
+    expect(startHit[0].getAttribute("fill")).toBe("transparent");
+    expect(startHit[0].getAttribute("width")).toBe("12");
+    expect(Number(startHit[0].getAttribute("x"))).toBe(barX - 6);
+    expect(
+      Number(endHit[0].getAttribute("x")) +
+        Number(endHit[0].getAttribute("width")),
+    ).toBe(barX + barW + 6);
+    // The visible 6px rects on a 1-day bar are decoration: pressing
+    // one starts nothing.
+    const deco = Array.from(group.querySelectorAll("rect")).find(
+      (r) =>
+        r.getAttribute("fill") === "#ffffff" &&
+        r.getAttribute("width") === "6" &&
+        !r.getAttribute("aria-label"),
+    );
+    expect(deco).not.toBeUndefined();
+    drag(deco!);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    // The hit rect itself resizes: Nov 16 → Nov 16–17.
+    drag(endHit[0]);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c5`, {
+        start_date: "2026-11-16",
+        target_date: "2026-11-17",
+      });
+    });
+  });
+
+  it("1-day child bar move strip still starts a move (not a resize)", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    drag(barByTitle(container, "ENG-15: One-day child"));
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c5`, {
+        start_date: "2026-11-17",
+        target_date: "2026-11-17",
+      });
+    });
+  });
+
+  it("window-clamp omits the out-of-window edge handle on a child bar", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(
+      barByTitle(container, "ENG-16: Out-of-window child"),
+    );
+    // True start Sep 28 is outside the window: no start handle.
+    expect(handlesInGroup(group, "Drag to change start date").length).toBe(
+      0,
+    );
+    // True end Oct 5 is inside: the end handle works, Sep 28–Oct 5
+    // → Sep 28–Oct 6.
+    const due = handlesInGroup(group, "Drag to change due date");
+    expect(due.length).toBe(1);
+    drag(due[0]);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c6`, {
+        start_date: "2026-09-28",
+        target_date: "2026-10-06",
+      });
+    });
+  });
+
+  it("canEdit=false renders neither handles nor hit rects on child bars", async () => {
+    const { container } = renderPage({ role: 0 });
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    expect(handlesInGroup(group, "Drag to change start date").length).toBe(
+      0,
+    );
+    expect(handlesInGroup(group, "Drag to change due date").length).toBe(0);
+    const oneDay = barGroup(barByTitle(container, "ENG-15: One-day child"));
+    expect(hitRectsInGroup(oneDay, "resize-start").length).toBe(0);
+    expect(hitRectsInGroup(oneDay, "resize-end").length).toBe(0);
+  });
+
+  it("link mode renders neither handles nor hit rects on child bars", async () => {
+    const { container } = renderPage();
+    await waitForBars();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add dependencies" }),
+    );
+    await waitFor(() => {
+      expect(
+        container.querySelectorAll(
+          'rect[aria-label="Drag to change start date"]',
+        ).length,
+      ).toBe(0);
+      expect(
+        container.querySelectorAll(
+          'rect[aria-label="Drag to change due date"]',
+        ).length,
+      ).toBe(0);
+      expect(
+        container.querySelectorAll("rect[data-gantt-hit]").length,
+      ).toBe(0);
+    });
+  });
+
+  it("resize-end on a child blocker cascades a dependent", async () => {
+    const { patch, container } = renderPage({
+      links: [makeLink("l-1", "i-c1", "i-d")],
+    });
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    const handle = handlesInGroup(group, "Drag to change due date")[0];
+    drag(handle);
+    await waitFor(() => {
+      // Child end 17 → 18, so the dependent (Nov 18–20) violates
+      // finish-to-start and shifts +1, exactly as for a move drag.
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c1`, {
+        start_date: "2026-11-15",
+        target_date: "2026-11-18",
+      });
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-d`, {
+        start_date: "2026-11-19",
+        target_date: "2026-11-21",
+      });
+    });
+  });
+
+  it("resize-start on a child blocker never cascades (engine rule, end unchanged)", async () => {
+    const { patch, container } = renderPage({
+      links: [makeLink("l-1", "i-c1", "i-d")],
+    });
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-11: Child task"));
+    const handle = handlesInGroup(group, "Drag to change start date")[0];
+    drag(handle);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c1`, {
+        start_date: "2026-11-16",
+        target_date: "2026-11-17",
+      });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalledWith(
+      `${BASE}/issues/i-d`,
+      expect.anything(),
+    );
+  });
+
+  it("clamped-to-original resize sends no PATCH", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(barByTitle(container, "ENG-15: One-day child"));
+    const endHit = hitRectsInGroup(group, "resize-end")[0];
+    // 1-day bar, end dragged a day earlier: clamps back to the
+    // start, landing on the original span — same early return as
+    // a zero-delta drag.
+    drag(endHit, -28);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("single-date child resize creates a range (sends both dates)", async () => {
+    const { patch, container } = renderPage();
+    await waitForBars();
+    const group = barGroup(
+      barByTitle(container, "ENG-12: Start-only child"),
+    );
+    const endHit = hitRectsInGroup(group, "resize-end")[0];
+    expect(endHit).not.toBeUndefined();
+    drag(endHit);
+    await waitFor(() => {
+      // C149 resize rule: a moved edge creates the range, so the
+      // originally start-only child PATCHes both dates.
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c2`, {
+        start_date: "2026-11-19",
+        target_date: "2026-11-20",
+      });
+    });
   });
 });
