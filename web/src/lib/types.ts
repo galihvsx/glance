@@ -229,6 +229,12 @@ export interface SubtaskRow {
   priority: number | string | null;
   assignee_ids: string[];
   sort_order: number;
+  /** Child's own dates (C145T1), same wire format as
+   *  Issue.start_date / Issue.target_date: optional string | null
+   *  (the backend omits the key when the date is unset, exactly
+   *  as Issue does via omitempty). */
+  start_date?: string | null;
+  target_date?: string | null;
 }
 
 /** One linked PR or commit on an issue (C17T0), as returned by
