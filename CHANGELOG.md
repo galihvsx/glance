@@ -5,6 +5,25 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Gantt single-date drag correctness (cycle 149)**
+
+- Dragging a Gantt bar no longer silently converts a single-date
+  issue into a ranged one: a move now PATCHes only the date(s) the
+  issue originally had (start-only moves send `start_date` only,
+  target-only moves send `target_date` only), so the issue form no
+  longer gains a date the user never set. The bar renders
+  identically, the ghost preview and the dependency cascade still
+  use the filled span, and a moved single-date blocker still
+  cascades its dependents while its own PATCH stays single-date.
+  Resize behavior is unchanged and now pinned by tests: dragging
+  an edge outward on a single-date bar deliberately creates the
+  missing date (that is the gesture), and dragging inward is a
+  no-op. 1-day bars also get enlarged invisible resize hit-areas:
+  each edge's grab area extends 6px outward from the bar (visible
+  handles stay 6px, the middle 12px move strip is untouched), so
+  the smallest bars are no longer fiddly to grab. Frontend-only:
+  no backend change, no new endpoint.
+
 **Spreadsheet cross-group drag move (cycle 148)**
 
 - Cycle 147's spreadsheet group headers were explicitly visual-only
