@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   keepPreviousData,
@@ -9,10 +9,30 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ArrowUpDown, Search, User } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, GripVertical, Search, User } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCorners,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
 import { api, ApiError } from "../lib/api";
 import { stateTransitionConflictMessage, useWorkflow } from "../lib/workflow";
 import { toast } from "../components/ui/toast";
+import {
+  planSpreadsheetDrop,
+  spreadsheetDragGroupKey,
+  spreadsheetDragId,
+  spreadsheetDragIssueId,
+  spreadsheetGroupDroppableId,
+  spreadsheetOverGroupKey,
+  spreadsheetRowDroppableId,
+} from "../components/issue/spreadsheetDrag";
 import type {
   Issue,
   IssueAssignee,
@@ -22,6 +42,7 @@ import type {
   Member,
   Project,
   SubtaskRow,
+  Workspace,
 } from "../lib/types";
 import { priorityLabel } from "../lib/types";
 import { Button } from "../components/ui/button";
@@ -81,6 +102,7 @@ import {
   fetchCustomFields,
   formatCustomValue,
   resolveVisibleCustomFields,
+  type CustomField,
   type CustomValue,
 } from "../lib/customFields";
 import {
@@ -237,6 +259,453 @@ function cellValue(
   }
 }
 
+type EditableColumn = "state" | "priority" | "start_date" | "target_date";
+
+/**
+ * C148T1: one top-level spreadsheet row as a real component (not an
+ * inline render fn) — dnd-kit hooks are per-component-instance, so a
+ * row component keeps hook order stable while the row count varies
+ * with grouping, filtering, and multi-appearance. The row is both a
+ * drag source (its leading handle cell, grouped + canEdit only) and a
+ * drop target (the whole row resolves to its primary group — Board
+ * over=card precedent). The handle is the ONLY drag source: rows
+ * contain click-to-edit cells and text selection, so whole-row drag
+ * would break them. When grouped but !canEdit, the leading cell is an
+ * empty placeholder (same width) so columns stay aligned with the
+ * header row; when flat (groupKey null) there is no leading cell at
+ * all and the row is byte-identical to the pre-drag grid. The
+ * draggable/droppable hooks run in both modes (dnd-kit degrades to
+ * noop default contexts outside a DndContext, and both are disabled
+ * when flat), so toggling grouping never changes hook order.
+ */
+function SpreadsheetTopLevelRow({
+  issue,
+  groupKey,
+  canEdit,
+  state,
+  structure,
+  visibleCfFields,
+  cfValues,
+  editing,
+  cellStatesFor,
+  onOpenCellEditor,
+  onCommitCellEdit,
+  onCancelEdit,
+  members,
+  onToggleAssignee,
+  onOpen,
+}: {
+  issue: Issue;
+  /** Primary group key, or null in flat mode (no handle, no targets). */
+  groupKey: string | null;
+  canEdit: boolean;
+  state: IssueState | undefined;
+  structure: IssueProjectStructure | undefined;
+  visibleCfFields: CustomField[];
+  cfValues: Record<string, CustomValue> | undefined;
+  editing: { issueId: string; column: EditableColumn } | null;
+  cellStatesFor: (stateId: string) => IssueState[];
+  onOpenCellEditor: (
+    issueId: string,
+    column: EditableColumn,
+  ) => (e: MouseEvent) => void;
+  onCommitCellEdit: (issueId: string, body: Record<string, unknown>) => void;
+  onCancelEdit: () => void;
+  members: Member[] | null;
+  onToggleAssignee: (
+    issue: Issue,
+    userId: string,
+    currently: boolean,
+  ) => void;
+  onOpen: (issue: Issue) => void;
+}) {
+  const grouped = groupKey !== null;
+  const canDrag = grouped && canEdit;
+  const {
+    attributes: dragAttributes,
+    listeners: dragListeners,
+    setNodeRef: setDragNodeRef,
+  } = useDraggable({
+    id: canDrag
+      ? spreadsheetDragId(groupKey, issue.id)
+      : `spreadsheet-drag-disabled:${issue.id}`,
+    disabled: !canDrag,
+  });
+  const { setNodeRef: setDropNodeRef } = useDroppable({
+    id: grouped
+      ? spreadsheetRowDroppableId(groupKey, issue.id)
+      : `spreadsheet-row-drop-disabled:${issue.id}`,
+    disabled: !grouped,
+  });
+  const modules = structure?.modules ?? [];
+  const isEditingCell = (column: EditableColumn) =>
+    editing?.issueId === issue.id && editing?.column === column;
+  return (
+    <tr
+      ref={setDropNodeRef}
+      data-spreadsheet-drag-group={groupKey ?? undefined}
+      role="link"
+      tabIndex={0}
+      aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
+      onClick={() => onOpen(issue)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+          onOpen(issue);
+        }
+      }}
+      className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
+    >
+      {grouped && (
+        <td className="w-10 px-1 py-2 align-middle">
+          {canEdit && (
+            <button
+              type="button"
+              ref={setDragNodeRef}
+              {...dragAttributes}
+              {...dragListeners}
+              aria-label="Drag to move to another group"
+              title="Drag to move to another group"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                dragListeners?.onPointerDown?.(e);
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                dragListeners?.onKeyDown?.(e);
+              }}
+              className="inline-flex cursor-grab touch-none items-center justify-center text-ink-muted hover:text-ink active:cursor-grabbing"
+            >
+              <GripVertical className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          )}
+        </td>
+      )}
+      <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
+        <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
+          {issue.display_id || issue.id.slice(0, 8)}
+        </span>
+      </td>
+      <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
+        {issue.name}
+      </td>
+      <td
+        className="cursor-cell px-3 py-2 align-middle"
+        title="Click to edit state"
+        onClick={onOpenCellEditor(issue.id, "state")}
+      >
+        {isEditingCell("state") ? (
+          <CellStateEditor
+            states={cellStatesFor(issue.state_id)}
+            value={issue.state_id}
+            ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
+            onCommit={(stateId) =>
+              onCommitCellEdit(issue.id, { state_id: stateId })
+            }
+            onCancel={onCancelEdit}
+          />
+        ) : state ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className={`state-dot ${stateDotClass(state.group)}`}
+              aria-hidden="true"
+            />
+            <span className="text-[13px] text-ink-secondary">
+              {state.name}
+            </span>
+          </span>
+        ) : (
+          <span className="text-[13px] text-ink-muted">—</span>
+        )}
+      </td>
+      <td
+        className="cursor-cell px-3 py-2 align-middle"
+        title="Click to edit priority"
+        onClick={onOpenCellEditor(issue.id, "priority")}
+      >
+        {isEditingCell("priority") ? (
+          <CellPriorityEditor
+            value={issue.priority}
+            ariaLabel={`Edit priority for ${issue.display_id || issue.id.slice(0, 8)}`}
+            onCommit={(priority) =>
+              onCommitCellEdit(issue.id, { priority })
+            }
+            onCancel={onCancelEdit}
+          />
+        ) : (
+          <span className="inline-flex items-center gap-1.5">
+            <PriorityBars priority={issue.priority} />
+            <span className="text-[13px] text-ink-secondary">
+              {priorityLabel(issue.priority)}
+            </span>
+          </span>
+        )}
+      </td>
+      {/* C20T3: assignees edit inline via the shared
+          multi-select popover; each toggle commits
+          immediately (POST/DELETE relation endpoints). */}
+      <td className="px-3 py-2 align-middle">
+        <span
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <AssigneePicker
+            members={members}
+            assigned={issue.assignees}
+            onToggle={(userId, currently) =>
+              onToggleAssignee(issue, userId, currently)
+            }
+            triggerClassName="h-8 gap-1.5 rounded-[4px] border border-transparent bg-transparent px-1.5 text-[13px] font-normal text-ink-secondary shadow-none hover:border-border hover:bg-wash-hover hover:text-ink"
+            triggerContent={
+              issue.assignees.length > 0 ? (
+                <span className="flex flex-wrap gap-1">
+                  {issue.assignees.map((a) => (
+                    <Badge
+                      key={a.id}
+                      variant="outline"
+                      className="text-xs font-normal"
+                    >
+                      {a.name}
+                    </Badge>
+                  ))}
+                </span>
+              ) : (
+                <span className="text-ink-muted">—</span>
+              )
+            }
+          />
+        </span>
+      </td>
+      <td className="px-3 py-2 align-middle">
+        {issue.labels.length > 0 ? (
+          <span className="flex flex-wrap gap-1">
+            {issue.labels.map((l) => (
+              <Badge
+                key={l.id}
+                variant="secondary"
+                className="gap-1 text-xs font-normal"
+              >
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ backgroundColor: l.color }}
+                  aria-hidden
+                />
+                {l.name}
+              </Badge>
+            ))}
+          </span>
+        ) : (
+          <span className="text-[13px] text-ink-muted">—</span>
+        )}
+      </td>
+      <td
+        className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+        title="Click to edit start date"
+        onClick={onOpenCellEditor(issue.id, "start_date")}
+      >
+        {isEditingCell("start_date") ? (
+          <CellDateEditor
+            value={issue.start_date}
+            ariaLabel={`Edit start date for ${issue.display_id || issue.id.slice(0, 8)}`}
+            onCommit={(v) =>
+              onCommitCellEdit(issue.id, { start_date: v })
+            }
+            onCancel={onCancelEdit}
+          />
+        ) : (
+          <span className="text-[13px] text-ink-secondary">
+            {dateOnly(issue.start_date)}
+          </span>
+        )}
+      </td>
+      <td
+        className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
+        title="Click to edit target date"
+        onClick={onOpenCellEditor(issue.id, "target_date")}
+      >
+        {isEditingCell("target_date") ? (
+          <CellDateEditor
+            value={issue.target_date}
+            ariaLabel={`Edit target date for ${issue.display_id || issue.id.slice(0, 8)}`}
+            onCommit={(v) =>
+              onCommitCellEdit(issue.id, { target_date: v })
+            }
+            onCancel={onCancelEdit}
+          />
+        ) : (
+          <span className="text-[13px] text-ink-secondary">
+            {dateOnly(issue.target_date)}
+          </span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
+        {dateOnly(issue.created_at)}
+      </td>
+      <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
+        {dateOnly(issue.updated_at)}
+      </td>
+      {/* C20T2 columns, C21T2 batched: cycle/module/release
+          membership comes from the list rows'
+          ?include_project_structure=1 (structureByIssue) —
+          resolved server-side in one query, no per-row
+          fetches. Read-only; inline editing is C20T3. */}
+      <td className="px-3 py-2 align-middle">
+        {structure?.cycle ? (
+          <Badge
+            variant="outline"
+            className="text-xs font-normal"
+            title={structure.cycle.name}
+          >
+            {structure.cycle.name}
+          </Badge>
+        ) : (
+          <span className="text-[13px] text-ink-muted">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 align-middle">
+        {modules.length > 0 ? (
+          <span className="flex flex-wrap items-center gap-1">
+            {modules.map((m, i) => (
+              <Fragment key={m.id}>
+                {i > 0 && (
+                  <span
+                    className="text-ink-muted"
+                    aria-hidden="true"
+                  >
+                    ,
+                  </span>
+                )}
+                <Badge
+                  variant="outline"
+                  className="text-xs font-normal"
+                  title={m.name}
+                >
+                  {m.name}
+                </Badge>
+              </Fragment>
+            ))}
+          </span>
+        ) : (
+          <span className="text-[13px] text-ink-muted">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 align-middle">
+        {structure?.release ? (
+          <Badge
+            variant="outline"
+            className="text-xs font-normal"
+            title={structure.release.name}
+          >
+            {structure.release.name}
+          </Badge>
+        ) : (
+          <span className="text-[13px] text-ink-muted">—</span>
+        )}
+      </td>
+      {/*
+        C9T4: custom-field columns are READ-ONLY by design.
+        Cells render with the exact same formatting as the
+        issue-detail custom-fields section
+        (lib/customFields formatCustomValue); editing stays
+        in the issue detail / peek drawer, where the
+        per-type validation and write paths already live.
+        Unset values render as "—".
+      */}
+      {visibleCfFields.map((f) => (
+        <td
+          key={`cf-${f.id}`}
+          className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
+        >
+          {formatCustomValue(
+            f,
+            cfValues?.[f.id],
+          )}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
+/**
+ * C148T1: a primary group header as a dnd-kit drop target. The
+ * droppable registration lives here (a component, so the hook is
+ * per-header-instance); the highlight comes from the page's
+ * drag-over state, not this header's own isOver — one mechanism
+ * covers both header-overs and row-overs (a row under the pointer
+ * highlights its group's header, T2's over-row polish included).
+ * Sub-group headers are NOT this component: they stay plain rows
+ * with no droppable, preserving C147 rule 7.
+ */
+function SpreadsheetGroupHeaderRow({
+  groupKey,
+  title,
+  count,
+  colSpan,
+  highlighted,
+}: {
+  groupKey: string;
+  title: string;
+  count: number;
+  colSpan: number;
+  highlighted: boolean;
+}) {
+  const { setNodeRef } = useDroppable({
+    id: spreadsheetGroupDroppableId(groupKey),
+  });
+  return (
+    <tr
+      ref={setNodeRef}
+      data-spreadsheet-group-header={groupKey}
+      className={`border-b border-border-hairline ${highlighted ? "bg-accent-blue/10" : "bg-wash"}`}
+    >
+      <td
+        colSpan={colSpan}
+        className="px-3 py-2 align-middle text-[13px] font-medium text-ink"
+      >
+        {title}{" "}
+        <span className="font-normal text-ink-muted">({count})</span>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * C148T1: DndContext scope for the grouped grid only. DndContext
+ * renders screen-reader nodes as siblings of its children, so it
+ * cannot sit inside <tbody> (a div inside tbody is invalid HTML and
+ * browsers hoist it out of the table) — it wraps the grid container
+ * instead, which still scopes drag sources + targets to grouped
+ * mode exactly (flat mode renders the bare grid, no provider).
+ */
+function SpreadsheetDragScope({
+  grouped,
+  sensors,
+  onDragOver,
+  onDragEnd,
+  onDragCancel,
+  children,
+}: {
+  grouped: boolean;
+  sensors: ReturnType<typeof useSensors>;
+  onDragOver: (e: DragOverEvent) => void;
+  onDragEnd: (e: DragEndEvent) => void;
+  onDragCancel: () => void;
+  children: ReactNode;
+}) {
+  if (!grouped) return <>{children}</>;
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      onDragOver={onDragOver}
+      onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
+    >
+      {children}
+    </DndContext>
+  );
+}
+
 export default function Spreadsheet() {
   const { slug = "", identifier = "" } = useParams<{
     slug: string;
@@ -282,6 +751,15 @@ export default function Spreadsheet() {
     queryKey: ["project", slug, identifier],
     queryFn: () => api.get<Project>(base),
   });
+  // C148T1: workspace role gates drag sources (Board precedent:
+  // role >= 15 = member can edit; guests get no handles and drops
+  // are refused in onDragEnd). Same query key + endpoint as Board.
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", slug],
+    queryFn: () =>
+      api.get<Workspace>(`/api/v1/workspaces/${encodeURIComponent(slug)}`),
+  });
+  const canEdit = (workspaceQuery.data?.role ?? 0) >= 15;
   const statesQuery = useQuery({
     queryKey: ["states", slug, identifier],
     queryFn: () =>
@@ -458,6 +936,24 @@ export default function Spreadsheet() {
   // project restricts moves, the state cell editor only offers the
   // row's current state plus its permitted next states.
   const workflow = useWorkflow(slug, identifier).data ?? null;
+  // C148T1: cross-group drag wiring. PointerSensor with Board's
+  // distance-6 activation constraint, so plain clicks (row open,
+  // cell edit, text selection) never start a drag. dragOverGroupKey
+  // is the single highlight source: the header of the group under
+  // the pointer highlights whether the pointer is over the header
+  // itself or over a row of that group.
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+  );
+  const [dragOverGroupKey, setDragOverGroupKey] = useState<string | null>(
+    null,
+  );
+  const stateNamesById = useMemo(
+    () => new Map((statesQuery.data ?? []).map((s) => [s.id, s.name] as const)),
+    [statesQuery.data],
+  );
   const cellStatesFor = (stateId: string) => {
     const all = statesQuery.data ?? [];
     if (!workflow || !workflow.transitions.length) return all;
@@ -505,7 +1001,6 @@ export default function Spreadsheet() {
     staleTime: 60_000,
   });
 
-  type EditableColumn = "state" | "priority" | "start_date" | "target_date";
   const [editing, setEditing] = useState<{
     issueId: string;
     column: EditableColumn;
@@ -623,10 +1118,6 @@ export default function Spreadsheet() {
     setEditing(null);
     setEditError(null);
     patchMutation.mutate({ id: issueId, body });
-  }
-
-  function isEditing(issueId: string, column: EditableColumn) {
-    return editing?.issueId === issueId && editing?.column === column;
   }
 
   /** Opens an inline editor instead of navigating to the issue. */
@@ -981,6 +1472,63 @@ export default function Spreadsheet() {
     ],
   );
 
+  /**
+   * C148T1: cross-group drop handling (Board onDragEnd semantics, per
+   * dimension, via planSpreadsheetDrop). Resolves the source group
+   * from the compound drag id and the target group from the header
+   * id or the over-row's group; sub-group headers carry no droppable,
+   * so a drop over one yields over === null and returns here. Moves
+   * run through the existing patchMutation shape (optimistic
+   * setQueryData on issuesKey, rollback on error, invalidate on
+   * settle — the PQL key via invalidateDisplayedIssues, rule 9), so
+   * a move the server rejects never sticks in the grid. No-ops
+   * (same-group, createdBy, stateGroups, pending T2 dimensions)
+   * PATCH nothing and surface no error, by design.
+   */
+  function handleSpreadsheetDragOver(e: DragOverEvent) {
+    const overId = e.over ? String(e.over.id) : null;
+    setDragOverGroupKey(overId ? spreadsheetOverGroupKey(overId) : null);
+  }
+
+  function handleSpreadsheetDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    setDragOverGroupKey(null);
+    if (!over || !canEdit) return;
+    if (groupSections === null) return;
+    const sourceGroupKey = spreadsheetDragGroupKey(String(active.id));
+    const targetGroupKey = spreadsheetOverGroupKey(String(over.id));
+    if (sourceGroupKey === null || targetGroupKey === null) return;
+    const issueId = spreadsheetDragIssueId(String(active.id));
+    const issue = sortedIssues.find((i) => i.id === issueId);
+    if (!issue) return;
+    const plan = planSpreadsheetDrop({
+      groupBy,
+      sourceGroupKey,
+      targetGroupKey,
+      issue,
+      workflow,
+      stateNames: stateNamesById,
+    });
+    if (plan.kind === "noop") return;
+    if (plan.kind === "blocked") {
+      // Board's error path for a denied move (its patchMutation
+      // onError toast, same wording as stateTransitionConflictMessage):
+      // no PATCH was issued, and the toast names the permitted states.
+      const permitted =
+        plan.permittedNames.length > 0
+          ? ` Permitted next states: ${plan.permittedNames.join(", ")}`
+          : "";
+      toast.add({
+        title: "Move blocked",
+        description: `State transition not allowed by the project's workflow.${permitted}`,
+        type: "error",
+      });
+      return;
+    }
+    setEditError(null);
+    patchMutation.mutate({ id: issue.id, body: plan.body });
+  }
+
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
   }
@@ -1002,7 +1550,7 @@ export default function Spreadsheet() {
    * render in sort_order ASC under their parent regardless of the
    * active column sort.
    */
-  function renderNestedRow(child: SubtaskRow) {
+  function renderNestedRow(child: SubtaskRow, grouped = false) {
     const childState = child.state_id
       ? stateById.get(child.state_id)
       : undefined;
@@ -1023,6 +1571,11 @@ export default function Spreadsheet() {
         }}
         className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
       >
+        {/* C148T1: grouped rows carry a leading handle column, so a
+            nested row (never a drag source, rule 3) needs the same
+            empty leading cell or its columns misalign with its
+            parent's. Flat mode renders no placeholder. */}
+        {grouped && <td className="w-10 px-1 py-2 align-middle" />}
         <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
           <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
             {child.display_id}
@@ -1108,271 +1661,42 @@ export default function Spreadsheet() {
    * row is the same editable row (same click-to-open, same cell
    * editors) as the flat row — grouping only partitions rows.
    */
-  function renderTopLevelRow(issue: Issue) {
+  /**
+   * C148T1: one top-level row + its nested children from
+   * nestedByParent, unchanged from the pre-grouping grid — the row
+   * itself moved to SpreadsheetTopLevelRow (module level) so its
+   * dnd-kit hooks are per-instance. groupKey is the row's PRIMARY
+   * group (a row under a sub-group header still resolves to its
+   * primary group); null = flat mode, no handle, no targets.
+   */
+  function renderTopLevelRow(issue: Issue, groupKey: string | null) {
     const state = stateById.get(issue.state_id);
     const structure = structureByIssue.get(issue.id);
-    const modules = structure?.modules ?? [];
     return (
       <Fragment key={issue.id}>
-      <tr
-        key={issue.id}
-        role="link"
-        tabIndex={0}
-        aria-label={`Open issue ${issue.display_id || issue.id.slice(0, 8)}: ${issue.name}`}
-        onClick={() => openIssue(issue)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-            openIssue(issue);
-          }
-        }}
-        className="h-[47px] cursor-pointer border-b border-border-hairline transition-colors last:border-0 hover:bg-wash-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset"
-      >
-        <td className="sticky left-0 z-10 border-r border-border-hairline bg-surface px-3 py-2 align-middle">
-          <span className="whitespace-nowrap font-mono text-[12px] text-ink-secondary">
-            {issue.display_id || issue.id.slice(0, 8)}
-          </span>
-        </td>
-        <td className="max-w-64 truncate px-3 py-2 align-middle text-[13px] font-medium text-ink">
-          {issue.name}
-        </td>
-        <td
-          className="cursor-cell px-3 py-2 align-middle"
-          title="Click to edit state"
-          onClick={openCellEditor(issue.id, "state")}
-        >
-          {isEditing(issue.id, "state") ? (
-            <CellStateEditor
-              states={cellStatesFor(issue.state_id)}
-              value={issue.state_id}
-              ariaLabel={`Edit state for ${issue.display_id || issue.id.slice(0, 8)}`}
-              onCommit={(stateId) =>
-                commitCellEdit(issue.id, { state_id: stateId })
-              }
-              onCancel={() => setEditing(null)}
-            />
-          ) : state ? (
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                className={`state-dot ${stateDotClass(state.group)}`}
-                aria-hidden="true"
-              />
-              <span className="text-[13px] text-ink-secondary">
-                {state.name}
-              </span>
-            </span>
-          ) : (
-            <span className="text-[13px] text-ink-muted">—</span>
-          )}
-        </td>
-        <td
-          className="cursor-cell px-3 py-2 align-middle"
-          title="Click to edit priority"
-          onClick={openCellEditor(issue.id, "priority")}
-        >
-          {isEditing(issue.id, "priority") ? (
-            <CellPriorityEditor
-              value={issue.priority}
-              ariaLabel={`Edit priority for ${issue.display_id || issue.id.slice(0, 8)}`}
-              onCommit={(priority) =>
-                commitCellEdit(issue.id, { priority })
-              }
-              onCancel={() => setEditing(null)}
-            />
-          ) : (
-            <span className="inline-flex items-center gap-1.5">
-              <PriorityBars priority={issue.priority} />
-              <span className="text-[13px] text-ink-secondary">
-                {priorityLabel(issue.priority)}
-              </span>
-            </span>
-          )}
-        </td>
-        {/* C20T3: assignees edit inline via the shared
-            multi-select popover; each toggle commits
-            immediately (POST/DELETE relation endpoints). */}
-        <td className="px-3 py-2 align-middle">
-          <span
-            onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            <AssigneePicker
-              members={membersQuery.data ?? null}
-              assigned={issue.assignees}
-              onToggle={(userId, currently) =>
-                toggleAssignee(issue, userId, currently)
-              }
-              triggerClassName="h-8 gap-1.5 rounded-[4px] border border-transparent bg-transparent px-1.5 text-[13px] font-normal text-ink-secondary shadow-none hover:border-border hover:bg-wash-hover hover:text-ink"
-              triggerContent={
-                issue.assignees.length > 0 ? (
-                  <span className="flex flex-wrap gap-1">
-                    {issue.assignees.map((a) => (
-                      <Badge
-                        key={a.id}
-                        variant="outline"
-                        className="text-xs font-normal"
-                      >
-                        {a.name}
-                      </Badge>
-                    ))}
-                  </span>
-                ) : (
-                  <span className="text-ink-muted">—</span>
-                )
-              }
-            />
-          </span>
-        </td>
-        <td className="px-3 py-2 align-middle">
-          {issue.labels.length > 0 ? (
-            <span className="flex flex-wrap gap-1">
-              {issue.labels.map((l) => (
-                <Badge
-                  key={l.id}
-                  variant="secondary"
-                  className="gap-1 text-xs font-normal"
-                >
-                  <span
-                    className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: l.color }}
-                    aria-hidden
-                  />
-                  {l.name}
-                </Badge>
-              ))}
-            </span>
-          ) : (
-            <span className="text-[13px] text-ink-muted">—</span>
-          )}
-        </td>
-        <td
-          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
-          title="Click to edit start date"
-          onClick={openCellEditor(issue.id, "start_date")}
-        >
-          {isEditing(issue.id, "start_date") ? (
-            <CellDateEditor
-              value={issue.start_date}
-              ariaLabel={`Edit start date for ${issue.display_id || issue.id.slice(0, 8)}`}
-              onCommit={(v) =>
-                commitCellEdit(issue.id, { start_date: v })
-              }
-              onCancel={() => setEditing(null)}
-            />
-          ) : (
-            <span className="text-[13px] text-ink-secondary">
-              {dateOnly(issue.start_date)}
-            </span>
-          )}
-        </td>
-        <td
-          className="cursor-cell whitespace-nowrap px-3 py-2 align-middle"
-          title="Click to edit target date"
-          onClick={openCellEditor(issue.id, "target_date")}
-        >
-          {isEditing(issue.id, "target_date") ? (
-            <CellDateEditor
-              value={issue.target_date}
-              ariaLabel={`Edit target date for ${issue.display_id || issue.id.slice(0, 8)}`}
-              onCommit={(v) =>
-                commitCellEdit(issue.id, { target_date: v })
-              }
-              onCancel={() => setEditing(null)}
-            />
-          ) : (
-            <span className="text-[13px] text-ink-secondary">
-              {dateOnly(issue.target_date)}
-            </span>
-          )}
-        </td>
-        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-          {dateOnly(issue.created_at)}
-        </td>
-        <td className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary">
-          {dateOnly(issue.updated_at)}
-        </td>
-        {/* C20T2 columns, C21T2 batched: cycle/module/release
-            membership comes from the list rows'
-            ?include_project_structure=1 (structureByIssue) —
-            resolved server-side in one query, no per-row
-            fetches. Read-only; inline editing is C20T3. */}
-        <td className="px-3 py-2 align-middle">
-          {structure?.cycle ? (
-            <Badge
-              variant="outline"
-              className="text-xs font-normal"
-              title={structure.cycle.name}
-            >
-              {structure.cycle.name}
-            </Badge>
-          ) : (
-            <span className="text-[13px] text-ink-muted">—</span>
-          )}
-        </td>
-        <td className="px-3 py-2 align-middle">
-          {modules.length > 0 ? (
-            <span className="flex flex-wrap items-center gap-1">
-              {modules.map((m, i) => (
-                <Fragment key={m.id}>
-                  {i > 0 && (
-                    <span
-                      className="text-ink-muted"
-                      aria-hidden="true"
-                    >
-                      ,
-                    </span>
-                  )}
-                  <Badge
-                    variant="outline"
-                    className="text-xs font-normal"
-                    title={m.name}
-                  >
-                    {m.name}
-                  </Badge>
-                </Fragment>
-              ))}
-            </span>
-          ) : (
-            <span className="text-[13px] text-ink-muted">—</span>
-          )}
-        </td>
-        <td className="px-3 py-2 align-middle">
-          {structure?.release ? (
-            <Badge
-              variant="outline"
-              className="text-xs font-normal"
-              title={structure.release.name}
-            >
-              {structure.release.name}
-            </Badge>
-          ) : (
-            <span className="text-[13px] text-ink-muted">—</span>
-          )}
-        </td>
-        {/*
-          C9T4: custom-field columns are READ-ONLY by design.
-          Cells render with the exact same formatting as the
-          issue-detail custom-fields section
-          (lib/customFields formatCustomValue); editing stays
-          in the issue detail / peek drawer, where the
-          per-type validation and write paths already live.
-          Unset values render as "—".
-        */}
-        {visibleCfFields.map((f) => (
-          <td
-            key={`cf-${f.id}`}
-            className="whitespace-nowrap px-3 py-2 align-middle text-[13px] text-ink-secondary"
-          >
-            {formatCustomValue(
-              f,
-              cfValuesByIssue.get(issue.id)?.[f.id],
-            )}
-          </td>
-        ))}
-      </tr>
-      {/* C143T1: nested rows, in stack order, directly
-          under their parent — in visual mode, PQL
-          mode, and under a column sort alike. */}
-      {(nestedByParent.get(issue.id) ?? []).map(renderNestedRow)}
+        <SpreadsheetTopLevelRow
+          issue={issue}
+          groupKey={groupKey}
+          canEdit={canEdit}
+          state={state}
+          structure={structure}
+          visibleCfFields={visibleCfFields}
+          cfValues={cfValuesByIssue.get(issue.id)}
+          editing={editing}
+          cellStatesFor={cellStatesFor}
+          onOpenCellEditor={openCellEditor}
+          onCommitCellEdit={commitCellEdit}
+          onCancelEdit={() => setEditing(null)}
+          members={membersQuery.data ?? null}
+          onToggleAssignee={toggleAssignee}
+          onOpen={openIssue}
+        />
+        {/* C143T1: nested rows, in stack order, directly
+            under their parent — in visual mode, PQL
+            mode, and under a column sort alike. */}
+        {(nestedByParent.get(issue.id) ?? []).map((child) =>
+          renderNestedRow(child, groupKey !== null),
+        )}
       </Fragment>
     );
   }
@@ -1601,10 +1925,27 @@ export default function Spreadsheet() {
           </div>
         ) : (
           <>
+            <SpreadsheetDragScope
+              grouped={groupSections !== null}
+              sensors={dragSensors}
+              onDragOver={handleSpreadsheetDragOver}
+              onDragEnd={handleSpreadsheetDragEnd}
+              onDragCancel={() => setDragOverGroupKey(null)}
+            >
             <div className="overflow-x-auto rounded-lg border border-border bg-surface">
               <table className="w-full min-w-[1200px] border-collapse text-[13px] text-ink">
                 <thead className="sticky top-0 z-20">
                   <tr className="border-b border-border-hairline">
+                    {/* C148T1: leading handle column header, grouped
+                        only — matches the handle <td> on every
+                        top-level row. Flat mode renders no such
+                        column. */}
+                    {groupSections !== null && (
+                      <th
+                        aria-label="Drag to move"
+                        className="w-10 bg-surface px-1 py-2 text-left align-middle"
+                      />
+                    )}
                     {COLUMNS.map((col, ci) => {
                       const active = sortKey === col.key;
                       return (
@@ -1678,32 +2019,33 @@ export default function Spreadsheet() {
                 </thead>
                 <tbody>
                   {groupSections === null
-                    ? sortedIssues.map((issue) => renderTopLevelRow(issue))
+                    ? sortedIssues.map((issue) =>
+                        renderTopLevelRow(issue, null),
+                      )
                     : groupSections.map((group) => (
                         <Fragment key={group.key}>
-                          {/* C147T1: visual-only header — never a drop
-                              target, never clickable to open an issue,
-                              never bulk-selectable, never counted by
-                              the empty state (the empty branch above
-                              gates on sortedIssues.length, not on
-                              headers). Title + TOP-LEVEL count only. */}
-                          <tr
-                            data-spreadsheet-group-header={group.key}
-                            className="border-b border-border-hairline bg-wash"
-                          >
-                            <td
-                              colSpan={COLUMNS.length + visibleCfFields.length}
-                              className="px-3 py-2 align-middle text-[13px] font-medium text-ink"
-                            >
-                              {group.title}{" "}
-                              <span className="font-normal text-ink-muted">
-                                ({group.issues.length})
-                              </span>
-                            </td>
-                          </tr>
+                          {/* C148T1: primary group headers are drop
+                              targets now (C147's visual-only rule
+                              survives only for SUB-group headers
+                              below). Still never clickable to open
+                              an issue, never bulk-selectable, never
+                              counted by the empty state (the empty
+                              branch above gates on
+                              sortedIssues.length, not on headers).
+                              Title + TOP-LEVEL count only. Colspan
+                              grows by 1 for the handle column. */}
+                          <SpreadsheetGroupHeaderRow
+                            groupKey={group.key}
+                            title={group.title}
+                            count={group.issues.length}
+                            colSpan={
+                              COLUMNS.length + visibleCfFields.length + 1
+                            }
+                            highlighted={dragOverGroupKey === group.key}
+                          />
                           {subSectionsByGroup === null
                             ? group.issues.map((issue) =>
-                                renderTopLevelRow(issue),
+                                renderTopLevelRow(issue, group.key),
                               )
                             : (
                                 subSectionsByGroup.get(group.key) ?? []
@@ -1717,7 +2059,9 @@ export default function Spreadsheet() {
                                       never bulk-selectable, never
                                       counted by the empty state.
                                       Title + TOP-LEVEL count only;
-                                      target fields ignored. */}
+                                      target fields ignored. Colspan
+                                      grows by 1 for the handle
+                                      column, matching the rows. */}
                                   <tr
                                     data-spreadsheet-sub-group-header={`${group.key}:${sub.key}`}
                                     className="border-b border-border-hairline bg-wash"
@@ -1725,7 +2069,8 @@ export default function Spreadsheet() {
                                     <td
                                       colSpan={
                                         COLUMNS.length +
-                                        visibleCfFields.length
+                                        visibleCfFields.length +
+                                        1
                                       }
                                       className="py-2 pl-8 pr-3 align-middle text-[13px] font-medium text-ink"
                                     >
@@ -1736,7 +2081,7 @@ export default function Spreadsheet() {
                                     </td>
                                   </tr>
                                   {sub.issues.map((issue) =>
-                                    renderTopLevelRow(issue),
+                                    renderTopLevelRow(issue, group.key),
                                   )}
                                 </Fragment>
                               ))}
@@ -1745,6 +2090,7 @@ export default function Spreadsheet() {
                 </tbody>
               </table>
             </div>
+            </SpreadsheetDragScope>
             {/* C104T0: no Load more in PQL mode — the PQL result is
                 already the full cursor loop, not a first page. */}
             {!pqlActive && issuesQuery.hasNextPage && (
