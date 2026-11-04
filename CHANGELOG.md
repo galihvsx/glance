@@ -5,6 +5,46 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Sub-group by cycles, modules, and releases in the list and board views (cycle 140)**
+
+- Plane's Sub-group by offers Cycle, Module, and Releases
+  (among other dimensions); glance offered none, state,
+  priority, epic, assignees, labels, created-by, state-groups.
+  The Display panel's Sub-group by now includes Cycles,
+  Modules, and Releases for the list and the board: one
+  sub-section per cycle/module/release inside each primary
+  group/column, no backend change — all three values already
+  ride the issue row (project_structure). Cycles and releases
+  are single-appearance (an issue carries exactly one displayed
+  cycle and one release); modules are multi-appearance (an issue
+  carrying N modules appears under every module sub-section).
+  Sections are in first-appearance order across the primary
+  group's issues; Ungrouped (no cycle / no modules / no
+  release) is always last and hidden when empty. The sub-group
+  values are "cycles", "modules", "releases", identical to the
+  primary Group by literals, so the same-dimension rule renders
+  each flat under its own primary grouping. None of the three
+  carries a color or breakdown bar (a NamedRef carries id +
+  name only).
+- Drop semantics, list: cycle/module/release sub-headers ARE
+  drop targets, using the existing reassignment pipelines —
+  a header drop changes exactly that header's dimension and
+  nothing else. The multi-appearance module trap is handled:
+  dragging from a module sub-section records that sub-section
+  as the source, so a move removes the dragged appearance
+  instead of copying it; the cycle sub-section is recorded the
+  same way (the server-side cycle add is a non-exclusive
+  junction insert, so a move without a source would leave a
+  stale membership behind the first-by-name display pick).
+  Releases need no source: the release move overwrites
+  release_id with a single POST, so there is no remove side.
+  Board: sub-sections are visual only, as for every other
+  sub-group dimension — card drops resolve to the primary
+  column only. A board fix in the same cycle: multi-module
+  cards now take section-scoped compound drag ids (epic /
+  assignee / label shape), so the two copies of one card in a
+  column no longer share a plain sortable id.
+
 **Sub-group by state-groups in the list and board views (cycle 139)**
 
 - Plane's Sub-group by offers State (among other dimensions);
