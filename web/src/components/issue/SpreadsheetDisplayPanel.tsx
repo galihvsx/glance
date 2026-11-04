@@ -29,6 +29,9 @@ export default function SpreadsheetDisplayPanel({
   visible,
   onToggle,
   onReset,
+  showSubWorkItems,
+  onToggleShowSubWorkItems,
+  onResetShowSubWorkItems,
   triggerClassName,
 }: {
   fields: CustomField[];
@@ -39,6 +42,12 @@ export default function SpreadsheetDisplayPanel({
   visible: Record<string, boolean>;
   onToggle: (fieldId: string) => void;
   onReset: () => void;
+  /** C143T1: spreadsheet "Show sub-work items" — own persisted key
+   *  (useSpreadsheetSubWorkItems), default ON, never shared with the
+   *  per-project useDisplaySettings used by list/board. */
+  showSubWorkItems: boolean;
+  onToggleShowSubWorkItems: () => void;
+  onResetShowSubWorkItems: () => void;
   /** Extra classes for the popover trigger (C19T4: PageHeader restyles it). */
   triggerClassName?: string;
 }) {
@@ -66,6 +75,25 @@ export default function SpreadsheetDisplayPanel({
       </PopoverTrigger>
       <PopoverContent className="w-72 p-2" align="end">
         <div className="space-y-3 py-1">
+          {/* C143T1: sub-work items — same switch component + section
+              style as the custom-field toggles below. */}
+          <div className="space-y-1">
+            <p className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Sub-work items
+            </p>
+            <Label className="flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent">
+              <span>Show sub-work items</span>
+              <Switch
+                size="sm"
+                checked={showSubWorkItems}
+                onCheckedChange={() => onToggleShowSubWorkItems()}
+                aria-label="Show sub-work items"
+              />
+            </Label>
+          </div>
+
+          <Separator />
+
           <div className="space-y-1">
             <p className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               Custom field columns
@@ -122,7 +150,12 @@ export default function SpreadsheetDisplayPanel({
 
           <button
             type="button"
-            onClick={onReset}
+            onClick={() => {
+              // Reset to defaults covers the whole panel: custom-field
+              // columns off AND sub-work items back to its default ON.
+              onReset();
+              onResetShowSubWorkItems();
+            }}
             className="w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             Reset to defaults
