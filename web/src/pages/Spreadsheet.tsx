@@ -54,6 +54,11 @@ import { groupIssuesByLabel } from "../components/issue/groupByLabel";
 import { groupIssuesByModule } from "../components/issue/groupByModule";
 import { groupIssuesByRelease } from "../components/issue/groupByRelease";
 import { groupIssuesByStateGroup } from "../components/issue/groupByStateGroup";
+import {
+  buildSubGroupSections,
+  effectiveSubGroupBy,
+  type SubGroupSection,
+} from "../components/issue/subGroup";
 import { useSpreadsheetGrouping } from "../components/issue/useSpreadsheetGrouping";
 import StatePicker from "../components/issue/StatePicker";
 import AssigneePicker from "../components/issue/AssigneePicker";
@@ -295,11 +300,12 @@ export default function Spreadsheet() {
     toggle: toggleShowSubWorkItems,
     reset: resetShowSubWorkItems,
   } = useSpreadsheetSubWorkItems(slug, identifier);
-  // C147T1: spreadsheet grouping — its OWN per-project localStorage
-  // key (useSpreadsheetGrouping), never useDisplaySettings, so
-  // grouping here never flips list/board rendering. T1 wires
-  // groupBy only; subGroupBy stays "none" until T2.
-  const { groupBy } = useSpreadsheetGrouping(slug, identifier);
+  // C147T1/T2: spreadsheet grouping — its OWN per-project
+  // localStorage key (useSpreadsheetGrouping), never
+  // useDisplaySettings, so grouping here never flips list/board
+  // rendering. T2 wires subGroupBy into the grid (T1 persisted it
+  // but the grid did not read it). No panel controls yet (T3).
+  const { groupBy, subGroupBy } = useSpreadsheetGrouping(slug, identifier);
   const customFieldsQuery = useQuery({
     queryKey: customFieldKeys(slug, identifier).fields,
     queryFn: () => fetchCustomFields(slug, identifier),
@@ -924,6 +930,54 @@ export default function Spreadsheet() {
     stateGroupById,
     membersById,
   ]);
+
+  // C147T2: sub-group sections inside each primary group, via the
+  // shared subGroup.ts sections API with the List call pattern
+  // (states + stateById + membersById + stateGroupById — exactly
+  // the lookups each sub-dimension needs). The same-dimension rule
+  // lives ONLY in effectiveSubGroupBy: stored subGroupBy equal to
+  // groupBy renders as "none", and a "none" primary group is flat.
+  // Null = T1's rendering runs untouched (effective sub-group
+  // "none", no primary groups, or createdBy sub-group while members
+  // are still resolving — the T1 no-Unknown-flash gate, applied to
+  // the sub-dimension too). Sections are VISUAL ONLY: target fields
+  // are ignored — the spreadsheet has no move pipeline to wire,
+  // exactly as Board does for epic/assignee/label sub-sections.
+  // Empty sections are dropped (state/priority/stateGroups
+  // synthesize empties; the spreadsheet has no showEmptyGroups,
+  // and T1 omits zero-row primary groups the same way).
+  const effectiveSubGroup = effectiveSubGroupBy({ groupBy, subGroupBy });
+  const subSectionsByGroup = useMemo<Map<string, SubGroupSection[]> | null>(
+    () => {
+      if (groupSections === null) return null;
+      if (effectiveSubGroup === "none") return null;
+      if (effectiveSubGroup === "createdBy" && !groupingMembersReady) {
+        return null;
+      }
+      const m = new Map<string, SubGroupSection[]>();
+      for (const group of groupSections) {
+        m.set(
+          group.key,
+          buildSubGroupSections(group.issues, effectiveSubGroup, {
+            states: statesQuery.data ?? [],
+            stateById,
+            membersById,
+            stateGroupById,
+          }).filter((s) => s.issues.length > 0),
+        );
+      }
+      return m;
+    },
+    [
+      groupSections,
+      effectiveSubGroup,
+      groupingMembersReady,
+      statesQuery.data,
+      stateById,
+      membersById,
+      stateGroupById,
+    ],
+  );
 
   function openIssue(issue: Issue) {
     navigate(`/w/${slug}/p/${identifier}/i/${issue.id}`);
@@ -1640,9 +1694,45 @@ export default function Spreadsheet() {
                               </span>
                             </td>
                           </tr>
-                          {group.issues.map((issue) =>
-                            renderTopLevelRow(issue),
-                          )}
+                          {subSectionsByGroup === null
+                            ? group.issues.map((issue) =>
+                                renderTopLevelRow(issue),
+                              )
+                            : (
+                                subSectionsByGroup.get(group.key) ?? []
+                              ).map((sub) => (
+                                <Fragment key={sub.key}>
+                                  {/* C147T2: visual-only sub-group
+                                      header — indented under the
+                                      primary header, same treatment
+                                      as primary headers: never a
+                                      drop target, never clickable,
+                                      never bulk-selectable, never
+                                      counted by the empty state.
+                                      Title + TOP-LEVEL count only;
+                                      target fields ignored. */}
+                                  <tr
+                                    data-spreadsheet-sub-group-header={`${group.key}:${sub.key}`}
+                                    className="border-b border-border-hairline bg-wash"
+                                  >
+                                    <td
+                                      colSpan={
+                                        COLUMNS.length +
+                                        visibleCfFields.length
+                                      }
+                                      className="py-2 pl-8 pr-3 align-middle text-[13px] font-medium text-ink"
+                                    >
+                                      {sub.title}{" "}
+                                      <span className="font-normal text-ink-muted">
+                                        ({sub.issues.length})
+                                      </span>
+                                    </td>
+                                  </tr>
+                                  {sub.issues.map((issue) =>
+                                    renderTopLevelRow(issue),
+                                  )}
+                                </Fragment>
+                              ))}
                         </Fragment>
                       ))}
                 </tbody>
