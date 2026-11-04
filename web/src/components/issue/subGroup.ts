@@ -129,7 +129,9 @@ export const UNGROUPED_STATE_KEY = "state:ungrouped";
  *  except it never equals the active primary dimension (same value
  *  renders as "none"), and a "none" primary group means flat layout.
  *  Unknown/absent stored values also render as "none". */
-export function effectiveSubGroupBy(settings: DisplaySettings): SubGroupBy {
+export function effectiveSubGroupBy(
+  settings: Pick<DisplaySettings, "groupBy" | "subGroupBy">,
+): SubGroupBy {
   const stored = SUB_GROUP_BYS.includes(settings.subGroupBy)
     ? settings.subGroupBy
     : "none";
