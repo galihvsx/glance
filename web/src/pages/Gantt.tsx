@@ -56,6 +56,7 @@ import {
   startLinkDraw,
   useGanttLinkMutations,
 } from "../components/gantt/ganttLinks";
+import { computeCascade } from "../components/gantt/ganttCascade";
 import { cn } from "../lib/utils";
 
 /** State-group order for the row grouping (same vocabulary as cycles). */
@@ -98,6 +99,39 @@ async function fetchAllIssues(path: string): Promise<{
     cursor = res.next_cursor;
   } while (cursor);
   return { issues, links };
+}
+
+/** Drag state (C109 move + C144 resize), shared by the commit path
+ *  and the cascade ghost preview so both compute the prospective span
+ *  from exactly the same math. */
+type DragState = {
+  id: string;
+  startX: number;
+  origStart: string;
+  origEnd: string;
+  dx: number;
+  mode: "move" | "resize-start" | "resize-end";
+};
+
+/** Prospective span for a drag at the given whole-day delta — the
+ *  same math `onPointerUp` commits (C144T1: resize moves only the
+ *  dragged edge, min-1-day clamp in both directions). The ghost
+ *  preview and the commit path both call this, so the preview never
+ *  promises a cascade the commit would not make. */
+function prospectiveSpan(
+  drag: DragState,
+  dayDelta: number,
+): { start: string; end: string } {
+  let start = addDays(drag.origStart, dayDelta);
+  let end = addDays(drag.origEnd, dayDelta);
+  if (drag.mode === "resize-start") {
+    end = drag.origEnd;
+    if (start > end) start = end;
+  } else if (drag.mode === "resize-end") {
+    start = drag.origStart;
+    if (end < start) end = start;
+  }
+  return { start, end };
 }
 
 type Row =
@@ -405,6 +439,36 @@ export default function Gantt() {
     return m;
   }, [rows]);
 
+  // C146T2: row geometry for cascade ghosts, covering top-level
+  // bars AND nested child bars (children can be dependents even
+  // though they are never drag sources). Kept separate from rowY
+  // so arrow drawing keeps its exact current behavior.
+  const ghostRows = useMemo(() => {
+    const m = new Map<
+      string,
+      { y: number; stateId: string | null; displayId: string; name: string }
+    >();
+    rows.forEach((r, idx) => {
+      const y = HEADER_H + idx * ROW_H;
+      if (r.kind === "issue" || r.kind === "issue-undated") {
+        m.set(r.issue.id, {
+          y,
+          stateId: r.issue.state_id,
+          displayId: r.issue.display_id,
+          name: r.issue.name,
+        });
+      } else if (r.kind === "issue-child") {
+        m.set(r.row.id, {
+          y,
+          stateId: r.row.state_id,
+          displayId: r.row.display_id,
+          name: r.row.title,
+        });
+      }
+    });
+    return m;
+  }, [rows]);
+
   // Dependency arrows: A blocks B (issue_id → target_issue_id) draws from
   // the blocker's bar right edge to the blocked issue's bar left edge.
   // Rendered over visLinks (server + optimistic), each carrying its link
@@ -454,16 +518,21 @@ export default function Gantt() {
   // mode "move" shifts both dates; "resize-start"/"resize-end"
   // move only the dragged edge, the other date passing through
   // unchanged. Move behavior is byte-identical to C109.
-  const [drag, setDrag] = useState<{
-    id: string;
-    startX: number;
-    origStart: string;
-    origEnd: string;
-    dx: number;
-    mode: "move" | "resize-start" | "resize-end";
-  } | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const suppressClick = useRef(false);
+
+  // C146T2: live cascade ghost preview. During a drag, the same
+  // engine the commit path uses runs over the prospective span, so
+  // the ghosts show exactly what committing would shift. Pure
+  // rendering: no PATCH, no cache writes. Empty whenever the drag
+  // would not cascade (delta 0, move-earlier, resize-start, or no
+  // violating dependent), so a no-cascade drag previews nothing.
+  const previewCascade = useMemo(() => {
+    if (!drag) return [];
+    const span = prospectiveSpan(drag, Math.round(drag.dx / DAY_W));
+    return computeCascade(issues, links, drag.id, span.start, span.end, drag.mode);
+  }, [drag, issues, links]);
 
   const patchMutation = useMutation({
     mutationFn: ({ id, start, end }: { id: string; start: string; end: string }) =>
@@ -576,27 +645,72 @@ export default function Gantt() {
     // past the target clamps to the target; target dragged before
     // the start clamps to the start. A clamped resize that lands
     // back on the original dates sends no PATCH (same as zero
-    // delta: no suppressClick either).
-    let start = addDays(drag.origStart, dayDelta);
-    let end = addDays(drag.origEnd, dayDelta);
-    if (drag.mode === "resize-start") {
-      end = drag.origEnd;
-      if (start > end) start = end;
-    } else if (drag.mode === "resize-end") {
-      start = drag.origStart;
-      if (end < start) end = start;
-    }
+    // delta: no suppressClick either). Shared with the ghost
+    // preview via prospectiveSpan so preview and commit agree.
+    const { start, end } = prospectiveSpan(drag, dayDelta);
     if (start === drag.origStart && end === drag.origEnd) return;
     // Suppress the click that follows a real drag (it would open peek).
     suppressClick.current = true;
     setTimeout(() => {
       suppressClick.current = false;
     }, 0);
-    patchMutation.mutate({
-      id: drag.id,
-      start,
-      end,
+    // C146T2: dependency cascade. The engine runs over the fetched
+    // issues + links with the prospective span; resize-start yields
+    // [] by construction but is still called uniformly (no
+    // special-casing). Empty cascade ⇒ today's single PATCH,
+    // byte-identical. Otherwise the dragged PATCH and one
+    // presence-preserving PATCH per shift fire together; full
+    // success toasts the count, any failure toasts an error, and
+    // either way ["gantt"] invalidates to resync (rule 8).
+    const shifts = computeCascade(issues, links, drag.id, start, end, drag.mode);
+    if (shifts.length === 0) {
+      patchMutation.mutate({
+        id: drag.id,
+        start,
+        end,
+      });
+      return;
+    }
+    // Rule 7: a shift PATCH sends start_date only if the issue
+    // originally had one, target_date only if it originally had
+    // one — a single-date dependent stays single-date. The engine
+    // only returns ids from `issues`, so a missing original is
+    // unreachable; it is skipped defensively rather than patched
+    // with a guessed shape.
+    const cascadePatches = shifts.flatMap((shift) => {
+      const original = issueById.get(shift.id);
+      if (!original) return [];
+      const body: { start_date?: string; target_date?: string } = {};
+      if (original.start_date) body.start_date = shift.start_date;
+      if (original.target_date) body.target_date = shift.target_date;
+      return [{ id: shift.id, body }];
     });
+    const draggedId = drag.id;
+    void (async () => {
+      const results = await Promise.allSettled([
+        api.patch<Issue>(`${base}/issues/${draggedId}`, {
+          start_date: start,
+          target_date: end,
+        }),
+        ...cascadePatches.map((p) =>
+          api.patch<Issue>(`${base}/issues/${p.id}`, p.body),
+        ),
+      ]);
+      const failed = results.some((r) => r.status === "rejected");
+      if (!failed) {
+        toast.add({
+          title: `Shifted ${cascadePatches.length} dependent ${cascadePatches.length === 1 ? "issue" : "issues"}`,
+          type: "success",
+        });
+      } else {
+        toast.add({
+          title:
+            "Some dependent issues failed to shift — the timeline was refreshed.",
+          type: "error",
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["gantt"] });
+    })();
   };
 
   const loading =
@@ -1236,6 +1350,57 @@ export default function Gantt() {
                           pointerEvents="none"
                         />
                       )}
+                    </g>
+                  );
+                })}
+                {/* C146T2: cascade ghost preview — each would-shift
+                    dependent renders as a translucent, dashed ghost
+                    at its shifted position, ALONGSIDE its real bar
+                    (which stays at its current dates; the dragged
+                    bar's own preview above is the only bar that
+                    moves). Same geometry, same state color, same
+                    window clamp as a real bar — the existing
+                    drag-preview treatment, only translucent and
+                    dashed, so no new visual language is introduced.
+                    pointerEvents="none": ghosts never intercept a
+                    drag. Renders for top-level and nested child
+                    bars alike via ghostRows. */}
+                {previewCascade.map((shift) => {
+                  const row = ghostRows.get(shift.id);
+                  if (!row) return null;
+                  const visStart =
+                    shift.start_date < windowStart
+                      ? windowStart
+                      : shift.start_date;
+                  const visEnd =
+                    shift.target_date >= windowEnd
+                      ? days[days.length - 1]
+                      : shift.target_date;
+                  if (visStart > visEnd) return null;
+                  const gx = dayToX(visStart, windowStart, DAY_W);
+                  const gw =
+                    (daysBetween(visStart, visEnd) + 1) * DAY_W - 4;
+                  const color =
+                    statesById.get(row.stateId ?? "")?.color ?? "#6366f1";
+                  return (
+                    <g key={`cascade-ghost-${shift.id}`}>
+                      <rect
+                        x={gx + 2}
+                        y={row.y + 9}
+                        width={Math.max(gw, 8)}
+                        height={16}
+                        rx={4}
+                        fill={color}
+                        fillOpacity={0.35}
+                        stroke={color}
+                        strokeWidth={1}
+                        strokeDasharray="4 3"
+                        pointerEvents="none"
+                        data-cascade-ghost="true"
+                        aria-label={`Cascade preview for ${row.displayId}`}
+                      >
+                        <title>{`${row.displayId}: ${row.name} (would shift to ${shift.start_date} – ${shift.target_date})`}</title>
+                      </rect>
                     </g>
                   );
                 })}
