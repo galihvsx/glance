@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // C145T3: "Show sub-work items" on the Gantt view — nested child rows
 // under their parent row, each with its own bar from the child's own
-// dates (C145T1 fields), display + click-to-peek only (no move drag,
-// no edge-resize drag on child bars). Follows the GanttPql test
-// harness (mocked api.get, same window, same auth stub).
+// dates (C145T1 fields). C150T1: child bars move-drag like parents;
+// edge-resize drag on child bars stays parent-only until C150T2.
+// Follows the GanttPql test harness (mocked api.get, same window,
+// same auth stub).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -318,11 +319,12 @@ describe("Gantt sub-work items (C145T3)", () => {
     ).toBe(true);
   });
 
-  it("child bars have no resize handles and no move drag", async () => {
+  it("child bars have no resize handles but DO move-drag (C150T1 rule change)", async () => {
     const { patch, container } = renderPage();
     await waitForFullSet();
     // Only the two parent bars (parent + orphan) carry resize
-    // handles — the child bar adds none.
+    // handles — the child bar adds none (resize stays
+    // parent-only until C150T2).
     expect(
       container.querySelectorAll(
         'rect[aria-label="Drag to change start date"]',
@@ -333,7 +335,8 @@ describe("Gantt sub-work items (C145T3)", () => {
         'rect[aria-label="Drag to change due date"]',
       ).length,
     ).toBe(2);
-    // Pressing + dragging the child bar issues no PATCH.
+    // Pressing + dragging the child bar PATCHes the CHILD id with
+    // the shifted dates (Nov 15–17 → Nov 16–18).
     const childBar = Array.from(
       container.querySelectorAll('rect[fill="#6366f1"]'),
     ).find((r) => r.getAttribute("x") === "1262");
@@ -343,7 +346,12 @@ describe("Gantt sub-work items (C145T3)", () => {
     fireEvent.pointerDown(childBar!, { button: 0, clientX: 100, clientY: 100 });
     fireEvent.pointerMove(svg!, { clientX: 128, clientY: 100 });
     fireEvent.pointerUp(svg!, { clientX: 128, clientY: 100 });
-    expect(patch).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-c1`, {
+        start_date: "2026-11-16",
+        target_date: "2026-11-18",
+      });
+    });
   });
 
   it("toggle off omits the flag and renders today's flat rows", async () => {

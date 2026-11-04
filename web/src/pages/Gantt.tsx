@@ -56,7 +56,10 @@ import {
   startLinkDraw,
   useGanttLinkMutations,
 } from "../components/gantt/ganttLinks";
-import { computeCascade } from "../components/gantt/ganttCascade";
+import {
+  computeCascade,
+  type CascadeIssue,
+} from "../components/gantt/ganttCascade";
 import { cn } from "../lib/utils";
 
 /** State-group order for the row grouping (same vocabulary as cycles). */
@@ -120,6 +123,12 @@ type DragState = {
   hasTarget: boolean;
 };
 
+/** Minimal issue shape the drag handlers read: id + stored dates.
+ *  A full Issue satisfies this; a child bar passes its bridged
+ *  barIssue (id + the SubtaskRow's own dates), never fabricated
+ *  fields — the handlers never touch anything else on the Issue. */
+type DragIssue = Pick<Issue, "id" | "start_date" | "target_date">;
+
 /** Prospective span for a drag at the given whole-day delta — the
  *  same math `onPointerUp` commits (C144T1: resize moves only the
  *  dragged edge, min-1-day clamp in both directions). The ghost
@@ -149,8 +158,9 @@ type Row =
   // C145T3: a direct child nested under its parent row (one level,
   // sort_order ASC via splitNestedIssues). The row carries the
   // SubtaskRow, not a full Issue: its own bar comes from the row's
-  // start_date/target_date (C145T1), and it never hosts drag,
-  // resize, or link-draw handlers — display + click-to-peek only.
+  // start_date/target_date (C145T1). C150T1: child bars host the
+  // move drag (same handlers as parents); resize handles and the
+  // link-draw handle stay parent-only (C150T2 / out of scope).
   | { kind: "issue-child"; parentId: string; row: SubtaskRow };
 
 export default function Gantt() {
@@ -372,6 +382,42 @@ export default function Gantt() {
     issues,
   ]);
 
+  // C150T1: cascade input = the fetched top-level set PLUS one
+  // CascadeIssue per subtask row. Subtasks ride inside
+  // parent.subtasks, never in `issues`, so without this flattening
+  // computeCascade would miss a child drag source entirely (its
+  // byId.get miss returns []) and a child dependent would be
+  // skipped as outside the fetched set (rule 6) — even though the
+  // child IS visible as a nested row. A child that is ALSO a
+  // top-level row (its own dates in the window) is deduped: the
+  // top-level entry wins, same id, same stored dates. Used by
+  // BOTH the ghost preview and the commit path so they agree.
+  const cascadeIssues = useMemo<CascadeIssue[]>(() => {
+    const seen = new Set(issues.map((i) => i.id));
+    const out: CascadeIssue[] = [...issues];
+    for (const i of issues) {
+      for (const s of i.subtasks ?? []) {
+        if (seen.has(s.id)) continue;
+        seen.add(s.id);
+        out.push({
+          id: s.id,
+          start_date: s.start_date ?? null,
+          target_date: s.target_date ?? null,
+        });
+      }
+    }
+    return out;
+  }, [issues]);
+
+  // C150T1: presence lookup for rule-7 shift PATCHes, over the
+  // same flattened input: a shifted child dependent keeps its
+  // single-date shape, resolved from its SubtaskRow dates — the
+  // top-level-only issueById.get would miss and silently drop it.
+  const cascadeIssueById = useMemo(
+    () => new Map(cascadeIssues.map((i) => [i.id, i])),
+    [cascadeIssues],
+  );
+
   const statesById = useMemo(() => {
     const m = new Map<string, IssueState>();
     for (const s of statesQuery.data ?? []) m.set(s.id, s);
@@ -538,8 +584,15 @@ export default function Gantt() {
   const previewCascade = useMemo(() => {
     if (!drag) return [];
     const span = prospectiveSpan(drag, Math.round(drag.dx / DAY_W));
-    return computeCascade(issues, links, drag.id, span.start, span.end, drag.mode);
-  }, [drag, issues, links]);
+    return computeCascade(
+      cascadeIssues,
+      links,
+      drag.id,
+      span.start,
+      span.end,
+      drag.mode,
+    );
+  }, [drag, cascadeIssues, links]);
 
   const patchMutation = useMutation({
     // C149T1: start/end are optional — the mutation sends exactly
@@ -581,7 +634,7 @@ export default function Gantt() {
 
   const onBarPointerDown = (
     e: React.PointerEvent,
-    issue: Issue,
+    issue: DragIssue,
     b: { start: string; end: string },
   ) => {
     if (!canEdit || e.button !== 0) return;
@@ -614,7 +667,7 @@ export default function Gantt() {
   // edge draw exactly as today.
   const onResizePointerDown = (
     e: React.PointerEvent,
-    issue: Issue,
+    issue: DragIssue,
     b: { start: string; end: string },
     mode: "resize-start" | "resize-end",
   ) => {
@@ -708,7 +761,14 @@ export default function Gantt() {
             ...(drag.hasTarget ? { end } : {}),
           }
         : { start, end };
-    const shifts = computeCascade(issues, links, drag.id, start, end, drag.mode);
+    const shifts = computeCascade(
+      cascadeIssues,
+      links,
+      drag.id,
+      start,
+      end,
+      drag.mode,
+    );
     if (shifts.length === 0) {
       patchMutation.mutate({
         id: drag.id,
@@ -719,11 +779,13 @@ export default function Gantt() {
     // Rule 7: a shift PATCH sends start_date only if the issue
     // originally had one, target_date only if it originally had
     // one — a single-date dependent stays single-date. The engine
-    // only returns ids from `issues`, so a missing original is
-    // unreachable; it is skipped defensively rather than patched
-    // with a guessed shape.
+    // returns ids from the flattened `cascadeIssues`, so a child
+    // dependent resolves via its SubtaskRow dates (C150T1); a
+    // missing original is unreachable and is skipped defensively
+    // rather than patched with a guessed shape.
     const cascadePatches = shifts.flatMap((shift) => {
-      const original = issueById.get(shift.id);
+      const original =
+        issueById.get(shift.id) ?? cascadeIssueById.get(shift.id);
       if (!original) return [];
       const body: { start_date?: string; target_date?: string } = {};
       if (original.start_date) body.start_date = shift.start_date;
@@ -1241,13 +1303,16 @@ export default function Gantt() {
                   // C145T3: a child bar uses the child's own dates
                   // via the same barSpan math as a parent bar — a
                   // dateless child yields no bar, exactly as a
-                  // dateless parent. Child bars are display +
-                  // click-to-peek ONLY: no move drag, no resize
-                  // handles, no link-draw handle (C109/C144
-                  // handlers stay parent-only).
+                  // dateless parent. C150T1: child bars move-drag
+                  // exactly like parents (same handler, presence
+                  // from the child's own stored dates); resize
+                  // handles and the link-draw handle stay
+                  // parent-only (C150T2 / out of scope).
                   const isChild = r.kind === "issue-child";
-                  // Narrowed parent for the C109/C144 handlers, which
-                  // take a full Issue and never run on child bars.
+                  // Narrowed parent for the parent-only handlers
+                  // (resize, link-draw); the move handler takes the
+                  // bridged barIssue below, so it runs on children
+                  // too (C150T1).
                   const parentIssue = r.kind === "issue" ? r.issue : null;
                   const barIssue = isChild
                     ? {
@@ -1279,7 +1344,7 @@ export default function Gantt() {
                   // resize-start shifts x and grows/shrinks from
                   // the left, a resize-end keeps x and changes
                   // the width. Both clamp to a min-1-day bar.
-                  if (!isChild && drag?.id === barIssue.id) {
+                  if (drag?.id === barIssue.id) {
                     const delta = Math.round(drag.dx / DAY_W);
                     if (drag.mode === "resize-start") {
                       let newStart = addDays(b.start!, delta);
@@ -1317,8 +1382,7 @@ export default function Gantt() {
                         stroke="rgba(0,0,0,0.3)"
                         strokeWidth={1}
                         className={cn(
-                          !isChild &&
-                            canEdit &&
+                          canEdit &&
                             !linkUi.linkMode &&
                             "cursor-grab",
                           !isChild &&
@@ -1327,17 +1391,41 @@ export default function Gantt() {
                             "cursor-crosshair",
                         )}
                         onPointerDown={
-                          isChild || !parentIssue
-                            ? undefined
-                            : (e) =>
-                                onBarPointerDown(e, parentIssue, {
-                                  start: b.start!,
-                                  end: b.end!,
-                                })
+                          // C150T1: a child-bar press starts a move
+                          // drag exactly like a parent press — but
+                          // NEVER an edge draw: in link mode a
+                          // child press does nothing (link-draw
+                          // stays parent-only), and canEdit gates
+                          // both (the handler re-checks canEdit).
+                          isChild
+                            ? !canEdit || linkUi.linkMode
+                              ? undefined
+                              : (e) =>
+                                  onBarPointerDown(e, barIssue, {
+                                    start: b.start!,
+                                    end: b.end!,
+                                  })
+                            : !parentIssue
+                              ? undefined
+                              : (e) =>
+                                  onBarPointerDown(e, parentIssue, {
+                                    start: b.start!,
+                                    end: b.end!,
+                                  })
                         }
                         onClick={() => {
+                          // C150T1: the child path carries the
+                          // parent's suppressClick check, so a real
+                          // drag does not open peek on pointer-up;
+                          // a zero-delta press still opens peek
+                          // exactly as before.
                           if (isChild) {
-                            if (!linkUi.linkMode) openPeek(barIssue.id);
+                            if (
+                              !drag &&
+                              !suppressClick.current &&
+                              !linkUi.linkMode
+                            )
+                              openPeek(barIssue.id);
                             return;
                           }
                           if (!drag && !suppressClick.current && !linkUi.linkMode)
