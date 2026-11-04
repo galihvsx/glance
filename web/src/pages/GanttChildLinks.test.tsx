@@ -659,6 +659,36 @@ describe("Gantt child link-drop (C151T2)", () => {
     expect(nums[7]).toBe(107);
   });
 
+  it("pre-existing child→child edge renders an arrow with parent geometry", async () => {
+    const { container } = renderPage({
+      links: [
+        {
+          id: "l-cc",
+          issue_id: "i-c1",
+          target_issue_id: "i-c2",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    const nums = arrowNumbers(hit!);
+    const fromBar = barByTitle(container, "ENG-11: Child task");
+    const toBar = barByTitle(container, "ENG-12: Second child");
+    // Same parent geometry, both endpoints child rows: c1
+    // mid-row 141 → c2 mid-row 175 (row idx 3, y 158).
+    expect(nums[0]).toBe(
+      Number(fromBar.getAttribute("x")) +
+        Number(fromBar.getAttribute("width")) +
+        2,
+    );
+    expect(nums[1]).toBe(141);
+    expect(nums[6]).toBe(Number(toBar.getAttribute("x")) - 4);
+    expect(nums[7]).toBe(175);
+  });
+
   it("clicking a child-touching arrow opens the delete confirm and Remove deletes it", async () => {
     const { del, container } = renderPage({
       links: [
