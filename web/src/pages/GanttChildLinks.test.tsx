@@ -14,14 +14,19 @@
 // Row layout for this fixture (HEADER_H 56, ROW_H 34, all issues
 // in the "started" group): group header idx 0 (y 56), parent idx 1
 // (y 90), child c1 idx 2 (y 124), child c2 idx 3 (y 158),
-// dependent idx 4 (y 192). Drop targets therefore hit at
-// clientY 100 (parent), 140 (c1), 200 (dependent); clientY 1000
-// is below every row (empty space).
+// dateless child idx 4 (y 192), dependent idx 5 (y 226). Drop
+// targets therefore hit at clientY 100 (parent), 140 (c1),
+// 170 (c2), 200 (dateless child), 240 (dependent); clientY 70
+// lands on the group-header row (a visible row with no drop
+// target — the only in-chart gap, since issue/child drop rows
+// are contiguous and exact row boundaries resolve half-open to
+// the row below, as the ganttLinks pure tests prove);
+// clientY 1000 is below every row (empty space).
 //
-// SCOPE NOTE: the arrows memo still resolves via rowY + issues.find
-// (parent rows only) in T1 — child-touching arrows render in T2,
-// which swaps the memo onto the T1 unified lookup. So this suite
-// asserts the child→parent POST, not an optimistic arrow for it.
+// C151T2 extends this suite: drop-onto-child creates
+// (parent→child, child→child, onto a dateless child row) and
+// child-touching arrows through the T1 unified lookup, plus
+// edge-click delete confirm for a child-touching arrow.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -42,7 +47,7 @@ vi.mock("../components/ui/toast", () => ({
 }));
 import Gantt from "./Gantt";
 import { api } from "../lib/api";
-import type { Issue, IssueState, SubtaskRow } from "../lib/types";
+import type { Issue, IssueLink, IssueState, SubtaskRow } from "../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -131,6 +136,21 @@ const childSecond: SubtaskRow = {
   start_date: "2026-11-19T00:00:00Z",
   target_date: "2026-11-21T00:00:00Z",
 };
+// Dateless child: no bar, so nothing to draw FROM — but its row
+// is still a drop target (mirroring the undated-parent rule), and
+// an edge touching it renders no arrow (no bar, no edge).
+const childDateless: SubtaskRow = {
+  id: "i-c0",
+  display_id: "ENG-10",
+  title: "Dateless child",
+  state_id: "s-1",
+  priority: 3,
+  assignee_ids: [],
+  // sort_order 3 keeps it after c1/c2 (rows nest sort_order ASC).
+  sort_order: 3,
+  start_date: null,
+  target_date: null,
+};
 const parent = makeIssue(
   "i-p",
   "ENG-1",
@@ -138,7 +158,7 @@ const parent = makeIssue(
   "2026-11-10T00:00:00Z",
   "2026-11-12T00:00:00Z",
   1,
-  [childRanged, childSecond],
+  [childRanged, childSecond, childDateless],
 );
 const dependent = makeIssue(
   "i-d",
@@ -153,6 +173,7 @@ const dependent = makeIssue(
 const byId: Record<string, Issue> = {
   "i-p": parent,
   "i-d": dependent,
+  "i-c0": makeIssue("i-c0", "ENG-10", "Dateless child", null, null, 0),
   "i-c1": makeIssue(
     "i-c1",
     "ENG-11",
@@ -171,7 +192,9 @@ const byId: Record<string, Issue> = {
   ),
 };
 
-function renderPage(opts: { role?: number } = {}) {
+function renderPage(
+  opts: { role?: number; links?: IssueLink[] } = {},
+) {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
     if (path === "/api/v1/workspaces")
       return Promise.resolve({
@@ -204,7 +227,7 @@ function renderPage(opts: { role?: number } = {}) {
         return Promise.resolve({ results: [], links: [], next_cursor: null });
       return Promise.resolve({
         results: [parent, dependent],
-        links: [],
+        links: opts.links ?? [],
         next_cursor: null,
       });
     }
@@ -212,6 +235,9 @@ function renderPage(opts: { role?: number } = {}) {
   });
   const patch = vi.spyOn(api, "patch").mockImplementation(() =>
     Promise.resolve({ ...parent }),
+  );
+  const del = vi.spyOn(api, "del").mockImplementation(() =>
+    Promise.resolve({} as never),
   );
   const post = vi.spyOn(api, "post").mockImplementation(() =>
     Promise.resolve({
@@ -232,7 +258,7 @@ function renderPage(opts: { role?: number } = {}) {
       </QueryClientProvider>
     </MemoryRouter>,
   );
-  return { get, patch, post, container };
+  return { get, patch, post, del, container };
 }
 
 async function waitForBars() {
@@ -498,5 +524,256 @@ describe("Gantt child link-draw (C151T1)", () => {
     const childGroup = barGroup(barByTitle(container, "ENG-11: Child task"));
     expect(drawHandle(childGroup)).toBeNull();
     expect(post).not.toHaveBeenCalled();
+  });
+});
+
+/** The fat invisible hit path of an arrow, if one renders. The
+    visible path carries pointerEvents="none", so the hit path is
+    the clickable edge; its <title> marks it as a dependency edge. */
+function arrowHitPath(container: HTMLElement): Element | null {
+  return (
+    Array.from(container.querySelectorAll('path[stroke="transparent"]')).find(
+      (p) => p.querySelector("title")?.textContent?.includes("click to remove"),
+    ) ?? null
+  );
+}
+
+/** The numbers of an arrow path's `d`, in order:
+    [x1, y1, midX, y1, midX, y2, x2 - 2, y2]. */
+function arrowNumbers(path: Element): number[] {
+  return (path.getAttribute("d")!.match(/-?\d+/g) ?? []).map(Number);
+}
+
+describe("Gantt child link-drop (C151T2)", () => {
+  it("draw from a parent released over a child row POSTs parent→child", async () => {
+    const { patch, post, container } = renderPage();
+    await waitForBars();
+    await enterLinkMode(container);
+    const svg = startDraw(barByTitle(container, "ENG-1: Parent feature"));
+    // Child c1 row y 124..158 → clientY 140 lands on c1.
+    fireEvent.pointerUp(svg, { clientX: 300, clientY: 140 });
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(`${BASE}/issues/i-p/links`, {
+        target_issue_id: "i-c1",
+        kind: "blocks",
+      });
+    });
+    expect(patch).not.toHaveBeenCalled();
+    expect(previewPath(container)).toBeNull();
+  });
+
+  it("draw from a child released over another child row POSTs child→child", async () => {
+    const { patch, post, container } = renderPage();
+    await waitForBars();
+    await enterLinkMode(container);
+    const svg = startDraw(barByTitle(container, "ENG-11: Child task"));
+    // Child c2 row y 158..192 → clientY 170 lands on c2.
+    fireEvent.pointerUp(svg, { clientX: 300, clientY: 170 });
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(`${BASE}/issues/i-c1/links`, {
+        target_issue_id: "i-c2",
+        kind: "blocks",
+      });
+    });
+    expect(patch).not.toHaveBeenCalled();
+    expect(previewPath(container)).toBeNull();
+  });
+
+  it("draw released over a dateless child row POSTs to that child", async () => {
+    const { post, container } = renderPage();
+    await waitForBars();
+    await enterLinkMode(container);
+    const svg = startDraw(barByTitle(container, "ENG-1: Parent feature"));
+    // Dateless child row y 192..226 → clientY 200 lands on it:
+    // drop targets include child rows regardless of the child's
+    // own dates, mirroring the undated-parent rule.
+    fireEvent.pointerUp(svg, { clientX: 300, clientY: 200 });
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(`${BASE}/issues/i-p/links`, {
+        target_issue_id: "i-c0",
+        kind: "blocks",
+      });
+    });
+    expect(previewPath(container)).toBeNull();
+  });
+
+  it("pre-existing parent→child edge renders an arrow with parent geometry", async () => {
+    const { container } = renderPage({
+      links: [
+        {
+          id: "l-pc",
+          issue_id: "i-p",
+          target_issue_id: "i-c1",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    const nums = arrowNumbers(hit!);
+    const parentBar = barByTitle(container, "ENG-1: Parent feature");
+    const childBar = barByTitle(container, "ENG-11: Child task");
+    // Bar rects are inset 2px (x = dayToX + 2, width =
+    // duration * DAY_W - 4), so the blocker arrow x1
+    // (dayToX(end) + DAY_W) sits 2px past the bar's right edge,
+    // and the path ends 2px before the blocked bar's left edge
+    // (dayToX(start)), i.e. 4px before the rect's x. Ys are the
+    // parent (107) and child (141) mid-rows.
+    expect(nums[0]).toBe(
+      Number(parentBar.getAttribute("x")) +
+        Number(parentBar.getAttribute("width")) +
+        2,
+    );
+    expect(nums[1]).toBe(107);
+    expect(nums[6]).toBe(Number(childBar.getAttribute("x")) - 4);
+    expect(nums[7]).toBe(141);
+  });
+
+  it("pre-existing child→parent edge renders an arrow with parent geometry", async () => {
+    const { container } = renderPage({
+      links: [
+        {
+          id: "l-cp",
+          issue_id: "i-c1",
+          target_issue_id: "i-p",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    const nums = arrowNumbers(hit!);
+    const childBar = barByTitle(container, "ENG-11: Child task");
+    const parentBar = barByTitle(container, "ENG-1: Parent feature");
+    expect(nums[0]).toBe(
+      Number(childBar.getAttribute("x")) +
+        Number(childBar.getAttribute("width")) +
+        2,
+    );
+    expect(nums[1]).toBe(141);
+    expect(nums[6]).toBe(Number(parentBar.getAttribute("x")) - 4);
+    expect(nums[7]).toBe(107);
+  });
+
+  it("pre-existing child→child edge renders an arrow with parent geometry", async () => {
+    const { container } = renderPage({
+      links: [
+        {
+          id: "l-cc",
+          issue_id: "i-c1",
+          target_issue_id: "i-c2",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    const nums = arrowNumbers(hit!);
+    const fromBar = barByTitle(container, "ENG-11: Child task");
+    const toBar = barByTitle(container, "ENG-12: Second child");
+    // Same parent geometry, both endpoints child rows: c1
+    // mid-row 141 → c2 mid-row 175 (row idx 3, y 158).
+    expect(nums[0]).toBe(
+      Number(fromBar.getAttribute("x")) +
+        Number(fromBar.getAttribute("width")) +
+        2,
+    );
+    expect(nums[1]).toBe(141);
+    expect(nums[6]).toBe(Number(toBar.getAttribute("x")) - 4);
+    expect(nums[7]).toBe(175);
+  });
+
+  it("clicking a child-touching arrow opens the delete confirm and Remove deletes it", async () => {
+    const { del, container } = renderPage({
+      links: [
+        {
+          id: "l-pc",
+          issue_id: "i-p",
+          target_issue_id: "i-c1",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    fireEvent.click(hit!);
+    await waitFor(() => {
+      expect(
+        screen.getByText("Remove this dependency?"),
+      ).not.toBeNull();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove dependency" }),
+    );
+    await waitFor(() => {
+      expect(del).toHaveBeenCalledWith(`${BASE}/issues/i-p/links/l-pc`);
+    });
+  });
+
+  it("draw released over the group-header gap cancels with no POST and no toast", async () => {
+    const { post, container } = renderPage();
+    await waitForBars();
+    await enterLinkMode(container);
+    const svg = startDraw(barByTitle(container, "ENG-1: Parent feature"));
+    // Group-header row y 56..90 is a visible row with no drop
+    // target: clientY 70 hits no issue/child row, so the draw
+    // cancels exactly like a release over empty space.
+    fireEvent.pointerUp(svg, { clientX: 300, clientY: 70 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(post).not.toHaveBeenCalled();
+    expect(toastAdd).not.toHaveBeenCalled();
+    expect(previewPath(container)).toBeNull();
+  });
+
+  it("an edge touching a dateless child renders no arrow", async () => {
+    const { container } = renderPage({
+      links: [
+        {
+          id: "l-p0",
+          issue_id: "i-p",
+          target_issue_id: "i-c0",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    // The edge is in the payload, but the dateless endpoint has
+    // no bar, so no arrow renders — exactly as for dateless
+    // parents.
+    expect(arrowHitPath(container)).toBeNull();
+  });
+
+  it("canEdit=false: child-touching arrow renders but its click opens no confirm", async () => {
+    const { del, container } = renderPage({
+      role: 0,
+      links: [
+        {
+          id: "l-pc",
+          issue_id: "i-p",
+          target_issue_id: "i-c1",
+          kind: "blocks",
+          created_at: "",
+        },
+      ],
+    });
+    await waitForBars();
+    expect(
+      screen.queryByRole("button", { name: "Add dependencies" }),
+    ).toBeNull();
+    const hit = arrowHitPath(container);
+    expect(hit).not.toBeNull();
+    fireEvent.click(hit!);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("Remove this dependency?")).toBeNull();
+    expect(del).not.toHaveBeenCalled();
   });
 });
