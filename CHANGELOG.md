@@ -5,6 +5,35 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Show sub-work items in Calendar, Gantt, and Roadmap views (cycle 145)**
+
+- Plane's "Show sub-work items" display option was honored in the
+  list view (C124), the board view (C122), and the Spreadsheet
+  (C143) but entirely missing from the three date-based views,
+  so a parent with subtasks looked childless in Calendar,
+  Gantt, and Roadmap. All three views now nest sub-issue rows
+  under their parent: a "Show sub-work items" switch in each
+  view (own per-view localStorage key, default ON — deliberately
+  not the shared per-project display settings, which would flip
+  list/board rendering from another view). The child travels
+  with its parent: it nests in the parent's day cell (Calendar),
+  state-group row section or unscheduled lane (Gantt, with its
+  own bar from the child's own dates), or month bucket
+  (Roadmap, showing the child's own target date) — never also
+  as a flat row, and an orphan child whose parent is outside
+  the fetched set stays flat and never vanishes. The one
+  backend change: `SubtaskRow` now carries the child's own
+  `start_date`/`target_date` (the columns already existed on
+  issues, so no migration). Child rows/bars are display +
+  click-to-peek only: no drag, no Gantt edge-resize, no link
+  draw on child bars; dates are edited via the existing issue
+  page, as today. One Calendar integration fix along the way:
+  the drag-reschedule mutation's optimistic cache keys now
+  carry the toggle, after the toggle's addition to the query
+  keys silently broke optimistic moves (caught by an existing
+  test). No dependency cascade on Gantt move/resize, and no
+  single-date edge affordance — both remain carried candidates.
+
 **Drag-to-resize Gantt bars (cycle 144)**
 
 - Plane's timeline lets you "drag an edge to change its start
