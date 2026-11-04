@@ -409,13 +409,17 @@ export default function Gantt() {
     return out;
   }, [rows]);
 
-  // Drag-to-reschedule.
+  // Drag-to-reschedule (C109T2) + drag-to-resize (C144T1).
+  // mode "move" shifts both dates; "resize-start"/"resize-end"
+  // move only the dragged edge, the other date passing through
+  // unchanged. Move behavior is byte-identical to C109.
   const [drag, setDrag] = useState<{
     id: string;
     startX: number;
     origStart: string;
     origEnd: string;
     dx: number;
+    mode: "move" | "resize-start" | "resize-end";
   } | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const suppressClick = useRef(false);
@@ -464,6 +468,30 @@ export default function Gantt() {
       origStart: b.start,
       origEnd: b.end,
       dx: 0,
+      mode: "move",
+    });
+  };
+
+  // C144T1: edge-handle press starts a resize drag. Handles are
+  // siblings of the bar rect (never ancestors), so a handle press
+  // cannot reach onBarPointerDown; handles render only when
+  // canEdit && !linkMode, so in link mode a press still starts an
+  // edge draw exactly as today.
+  const onResizePointerDown = (
+    e: React.PointerEvent,
+    issue: Issue,
+    b: { start: string; end: string },
+    mode: "resize-start" | "resize-end",
+  ) => {
+    if (!canEdit || linkUi.linkMode || e.button !== 0) return;
+    e.preventDefault();
+    setDrag({
+      id: issue.id,
+      startX: svgX(e.clientX),
+      origStart: b.start,
+      origEnd: b.end,
+      dx: 0,
+      mode,
     });
   };
 
@@ -501,18 +529,33 @@ export default function Gantt() {
     if (!drag) return;
     const dayDelta = Math.round(drag.dx / DAY_W);
     setDrag(null);
-    if (dayDelta !== 0) {
-      // Suppress the click that follows a real drag (it would open peek).
-      suppressClick.current = true;
-      setTimeout(() => {
-        suppressClick.current = false;
-      }, 0);
-      patchMutation.mutate({
-        id: drag.id,
-        start: addDays(drag.origStart, dayDelta),
-        end: addDays(drag.origEnd, dayDelta),
-      });
+    if (dayDelta === 0) return;
+    // C144T1: resize moves only the dragged edge; whole-day steps
+    // and a min-1-day bar (Plane's rule, binding). Start dragged
+    // past the target clamps to the target; target dragged before
+    // the start clamps to the start. A clamped resize that lands
+    // back on the original dates sends no PATCH (same as zero
+    // delta: no suppressClick either).
+    let start = addDays(drag.origStart, dayDelta);
+    let end = addDays(drag.origEnd, dayDelta);
+    if (drag.mode === "resize-start") {
+      end = drag.origEnd;
+      if (start > end) start = end;
+    } else if (drag.mode === "resize-end") {
+      start = drag.origStart;
+      if (end < start) end = start;
     }
+    if (start === drag.origStart && end === drag.origEnd) return;
+    // Suppress the click that follows a real drag (it would open peek).
+    suppressClick.current = true;
+    setTimeout(() => {
+      suppressClick.current = false;
+    }, 0);
+    patchMutation.mutate({
+      id: drag.id,
+      start,
+      end,
+    });
   };
 
   const loading =
@@ -967,10 +1010,32 @@ export default function Gantt() {
                   if (visStart > visEnd) return null;
                   let x = dayToX(visStart, windowStart, DAY_W);
                   let w = (daysBetween(visStart, visEnd) + 1) * DAY_W - 4;
-                  // Live drag offset.
+                  // Live drag preview. Move is byte-identical to
+                  // C109 (shift the window-clamped start). Resize
+                  // previews from the TRUE span (b.start/b.end),
+                  // never the window-clamped span, then clamps the
+                  // preview span to the window for display: a
+                  // resize-start shifts x and grows/shrinks from
+                  // the left, a resize-end keeps x and changes
+                  // the width. Both clamp to a min-1-day bar.
                   if (drag?.id === r.issue.id) {
                     const delta = Math.round(drag.dx / DAY_W);
-                    x = dayToX(addDays(visStart, delta), windowStart, DAY_W);
+                    if (drag.mode === "resize-start") {
+                      let newStart = addDays(b.start!, delta);
+                      if (newStart > b.end!) newStart = b.end!;
+                      const pVisStart =
+                        newStart < windowStart ? windowStart : newStart;
+                      x = dayToX(pVisStart, windowStart, DAY_W);
+                      w = (daysBetween(pVisStart, visEnd) + 1) * DAY_W - 4;
+                    } else if (drag.mode === "resize-end") {
+                      let newEnd = addDays(b.end!, delta);
+                      if (newEnd < b.start!) newEnd = b.start!;
+                      const pVisEnd =
+                        newEnd >= windowEnd ? days[days.length - 1] : newEnd;
+                      w = (daysBetween(visStart, pVisEnd) + 1) * DAY_W - 4;
+                    } else {
+                      x = dayToX(addDays(visStart, delta), windowStart, DAY_W);
+                    }
                   }
                   const color =
                     statesById.get(r.issue.state_id)?.color ?? "#6366f1";
@@ -1003,6 +1068,56 @@ export default function Gantt() {
                       >
                         <title>{`${r.issue.display_id}: ${r.issue.name}`}</title>
                       </rect>
+                      {/* C144T1: resize handles, siblings of the bar
+                          rect (so a handle press never reaches the
+                          bar's move handler). Only when canEdit &&
+                          !linkMode; in link mode the right edge
+                          already hosts the draw handle. Window-
+                          clamp rule (binding): a handle is omitted
+                          when its true edge lies outside the
+                          visible window — the drawn edge there is
+                          not the true date, so grabbing it must
+                          not move that date. */}
+                      {canEdit && !linkUi.linkMode && b.start! >= windowStart && (
+                        <rect
+                          x={x + 2}
+                          y={y + 9}
+                          width={6}
+                          height={16}
+                          fill="#ffffff"
+                          fillOpacity={0.4}
+                          className="cursor-ew-resize"
+                          aria-label="Drag to change start date"
+                          onPointerDown={(e) =>
+                            onResizePointerDown(e, r.issue, {
+                              start: b.start!,
+                              end: b.end!,
+                            }, "resize-start")
+                          }
+                        >
+                          <title>Drag to change start date</title>
+                        </rect>
+                      )}
+                      {canEdit && !linkUi.linkMode && b.end! < windowEnd && (
+                        <rect
+                          x={x + 2 + Math.max(w, 8) - 6}
+                          y={y + 9}
+                          width={6}
+                          height={16}
+                          fill="#ffffff"
+                          fillOpacity={0.4}
+                          className="cursor-ew-resize"
+                          aria-label="Drag to change due date"
+                          onPointerDown={(e) =>
+                            onResizePointerDown(e, r.issue, {
+                              start: b.start!,
+                              end: b.end!,
+                            }, "resize-end")
+                          }
+                        >
+                          <title>Drag to change due date</title>
+                        </rect>
+                      )}
                       {/* Link-mode draw handle at the bar's right edge. */}
                       {linkUi.linkMode && canEdit && (
                         <circle
