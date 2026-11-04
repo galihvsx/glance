@@ -8,7 +8,7 @@ import {
   DragOverlay,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
-import type { Issue } from "../../lib/types";
+import type { Issue, IssueState, SubtaskRow } from "../../lib/types";
 
 /**
  * C127T0: the list view's single dnd-kit context. C126 owned one
@@ -27,7 +27,9 @@ import type { Issue } from "../../lib/types";
  * context), so drag-disabled lists are byte-identical to today. The
  * overlay renders the dragged IssueRow face — which also means the
  * mouseup click after a drag lands on the overlay, not the row, so a
- * drag never opens the peek drawer (C126 precedent). Sensors are the
+ * drag never opens the peek drawer (C126 precedent). C141T1: a nested
+ * active id renders the NestedListSubtaskRow face instead, via the
+ * optional nested overlay props. Sensors are the
  * C126 pair: 6px pointer activation (a plain click is never a drag)
  * + keyboard dragging via sortableKeyboardCoordinates (keyboard drag
  * to a HEADER is out of scope this cycle — see the plan — keyboard
@@ -40,6 +42,8 @@ export default function ListDragRoot({
   onDragEnd,
   overlayIssueForId,
   renderOverlayRow,
+  overlayNestedForId,
+  renderOverlayNestedRow,
   children,
 }: {
   enabled: boolean;
@@ -49,6 +53,21 @@ export default function ListDragRoot({
   overlayIssueForId: (sortableId: string) => Issue | undefined;
   /** Plain (non-sortable) IssueRow face for the drag overlay. */
   renderOverlayRow: (issue: Issue) => ReactNode;
+  /**
+   * C141T1: nested-face resolution for a nested active id — the
+   * dragged nested row plus its state, or undefined when the active
+   * id is not a registered nested id. Absent, a nested drag shows
+   * no overlay (the pre-C141 shape, kept only for non-page users).
+   */
+  overlayNestedForId?: (sortableId: string) => {
+    row: SubtaskRow;
+    state: IssueState | undefined;
+  } | undefined;
+  /** Plain (non-sortable) NestedListSubtaskRow face for the overlay. */
+  renderOverlayNestedRow?: (
+    row: SubtaskRow,
+    state: IssueState | undefined,
+  ) => ReactNode;
   children: ReactNode;
 }) {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -63,6 +82,8 @@ export default function ListDragRoot({
   if (!enabled) return <>{children}</>;
 
   const activeIssue = activeId ? overlayIssueForId(activeId) : undefined;
+  const activeNested =
+    !activeIssue && activeId ? overlayNestedForId?.(activeId) : undefined;
   return (
     <DndContext
       sensors={sensors}
@@ -78,7 +99,11 @@ export default function ListDragRoot({
     >
       {children}
       <DragOverlay>
-        {activeIssue ? renderOverlayRow(activeIssue) : null}
+        {activeIssue
+          ? renderOverlayRow(activeIssue)
+          : activeNested && renderOverlayNestedRow
+            ? renderOverlayNestedRow(activeNested.row, activeNested.state)
+            : null}
       </DragOverlay>
     </DndContext>
   );

@@ -12,11 +12,15 @@ import type { DisplayFields } from "./useDisplaySettings";
  * sortable node is a wrapper div carrying the transform/transition/
  * drag opacity, while the drag listeners live on the grip handle only
  * — so nested subtask rows (passed as `children`, rendered below the
- * row inside the wrapper) travel with a dragged parent but can never
- * start a drag themselves, and a drag never opens the peek drawer or
- * toggles selection: the grip stops propagation exactly like the
- * checkbox and row-menu triggers, and dnd-kit's own handlers are
- * still invoked after the stop.
+ * row inside the wrapper) travel with a dragged parent, and a drag
+ * never opens the peek drawer or toggles selection: the grip stops
+ * propagation exactly like the checkbox and row-menu triggers, and
+ * dnd-kit's own handlers are still invoked after the stop.
+ *
+ * C141T1: nested rows CAN start a drag themselves now, via their
+ * own SortableNestedSubtaskRow inside the `children` nested block —
+ * an independent sortable with its own grip activator, so a nested
+ * drag never starts a parent drag either.
  *
  * C127T0: `sortableId` overrides the dnd-kit id with the stack-scoped
  * id from listHeaderDrop.listSortableId (a row multi-appears across
@@ -45,7 +49,8 @@ export default function SortableIssueRow({
   onToggleSelect?: (checked: boolean) => void;
   /** Stack-scoped dnd-kit id (C127T0); defaults to the row id. */
   sortableId?: string;
-  /** Nested subtask rows under this parent (C124) — never draggable. */
+  /** Nested subtask rows under this parent (C124, draggable
+   *  themselves since C141T1 via SortableNestedSubtaskRow). */
   children?: ReactNode;
 }) {
   const {

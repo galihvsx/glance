@@ -19,6 +19,7 @@ import type {
   Member,
   Module,
   Project,
+  SubtaskRow,
 } from "../lib/types";
 import { Button } from "../components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -45,19 +46,28 @@ import {
   isListDragEnabled,
 } from "../components/issue/listReorder";
 import {
+  applyNestedListDrop,
+  isNestedDragEnabled,
+} from "../components/issue/listNestedReorder";
+import {
   dispatchListDragEnd,
   executeListHeaderDrop,
   headerDropId,
   isListReassignEnabled,
   listSortableId,
+  nestedSortableId,
   resolveListHeaderDrop,
   toHeaderTarget,
   type HeaderTargetFields,
   type ListDragRowRef,
   type ListDragStackRef,
   type ListHeaderDropInfo,
+  type NestedDragRowRef,
+  type NestedDragStackRef,
 } from "../components/issue/listHeaderDrop";
-import NestedListSubtaskRow from "../components/issue/NestedListSubtaskRow";
+import NestedListSubtaskRow, {
+  SortableNestedSubtaskRow,
+} from "../components/issue/NestedListSubtaskRow";
 import DuplicateSuggestions from "../components/issue/DuplicateSuggestions";
 import PeekDrawer from "../components/issue/PeekDrawer";
 import { usePeekParam } from "../components/issue/usePeek";
@@ -1778,9 +1788,11 @@ export default function Issues() {
   // (dispatch keeps row drops stack-local) and headers are not
   // drop targets at all (a group holds several states, so a
   // cross-group drop has no single target state).
-  // Nested subtask rows are NOT draggable (C124/C126
-  // precedent, unchanged — they render via NestedListSubtaskRow
-  // outside any SortableIssueRow).
+  // C141T1: nested subtask rows ARE draggable within their own
+  // parent's stack (listNestedReorder gate: showSubWorkItems +
+  // >= 2 rows, nothing else — nestedByParent always sorts by
+  // sort_order ASC, so the C126 orderBy/PQL/grouping gate does not
+  // apply). The nested mode is the third drag mode below.
   // The drop pipeline lives in
   // listReorder.ts (board's applyDrop precedent); this only wires it
   // to api/queryClient. PATCH carries ONLY {sort_order} — a list
@@ -1854,6 +1866,48 @@ export default function Issues() {
     });
   }
 
+  // C141T1: one nested drop — the listNestedReorder pipeline wired
+  // to api/queryClient exactly like handleListDrop, but against one
+  // parent appearance's sibling stack. PATCH carries ONLY
+  // {sort_order}: the child's state_id is unchanged (never a
+  // reassignment) and its parent is unchanged (never a re-parent);
+  // the refetch re-derives the stack through nestedByParent's
+  // sort_order ASC order, so the displayed order is the server's.
+  async function handleNestedDrop(
+    stack: NestedDragStackRef,
+    activeChildId: string,
+    overChildId: string,
+  ) {
+    setReorderError(null);
+    await applyNestedListDrop(stack.rows, activeChildId, overChildId, {
+      parentId: stack.parentId,
+      getData: () =>
+        queryClient.getQueryData<InfiniteData<IssueListResult>>(
+          issuesExactKey,
+        ),
+      setData: (d) => queryClient.setQueryData(issuesExactKey, d),
+      patch: (id, body) => api.patch(`${base}/issues/${id}`, body),
+      rebalance: (body) => api.post(`${base}/issues/rebalance`, body),
+      refetchStack: async () => {
+        await queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        });
+        const r = await issuesQuery.refetch();
+        const parent = r.data?.pages
+          .flatMap((p) => p.results)
+          .find((i) => i.id === stack.parentId);
+        return [...(parent?.subtasks ?? [])].sort(
+          (a, b) => a.sort_order - b.sort_order,
+        );
+      },
+      invalidate: () =>
+        queryClient.invalidateQueries({
+          queryKey: ["issues", slug, identifier],
+        }),
+      onError: (m) => setReorderError(m),
+    });
+  }
+
   // C127T0: reassign drag — a SECOND drag mode, independent of C126's
   // reorder gate: enabled whenever grouping is active and not PQL
   // mode, under ANY orderBy (a reassignment persists regardless of
@@ -1864,12 +1918,28 @@ export default function Issues() {
   // One DndContext owns the whole list
   // (ListDragRoot) — per-stack contexts could not receive cross-group
   // header drops — and dispatch, not context isolation, keeps row
-  // drops stack-local. A drag is active when either mode holds.
+  // drops stack-local. A drag is active when any mode holds (C141T1
+  // adds the nested mode to the two above).
   const reassignEnabled = isListReassignEnabled({
     pqlMode,
     groupingActive,
   });
-  const dndActive = dragEnabled || reassignEnabled;
+  // C141T1: the parent row's own draggability is the OLD dndActive
+  // (C126 reorder and/or C127 reassign) — kept separate so a
+  // nested-only list never makes parent rows sortable (renderListRow
+  // renders the parent plain and the nested block sortable instead).
+  const parentDraggable = dragEnabled || reassignEnabled;
+  // C141T1: nested drag mode — page-level liveness for the list-wide
+  // context when ONLY nested drag holds. Per-appearance gating lives
+  // in renderListRow (isNestedDragEnabled) and in the nested map
+  // registration below (enabled stacks only); listSplit covers every
+  // rendered parent, since groups render visibleIssues only.
+  const nestedDragEnabled =
+    settings.showSubWorkItems &&
+    [...listSplit.nestedByParent.values()].some(
+      (rows) => rows.length >= 2,
+    );
+  const dndActive = parentDraggable || nestedDragEnabled;
 
   // C127T0: stack-scoped sortable ids + section-scoped header
   // droppable ids, built once per render from the same group/section
@@ -1926,6 +1996,7 @@ export default function Issues() {
   const listDragMaps = useMemo(() => {
     const sortableMap = new Map<string, ListDragRowRef>();
     const headerMap = new Map<string, ListHeaderDropInfo>();
+    const nestedMap = new Map<string, NestedDragRowRef>();
     const registerStack = (
       stackKey: string,
       rows: Issue[],
@@ -1968,8 +2039,33 @@ export default function Issues() {
         });
       }
     };
+    // C141T1: nested-stack registration — the gate enforced here,
+    // not in dispatch: only enabled appearances (showSubWorkItems +
+    // >= 2 rows) get nested ids, so dispatch can never route a
+    // disabled stack's drop to onNestedDrop. One stack per parent
+    // appearance: the same parent under epic grouping registers once
+    // per appearance, each with its own stack-scoped nested ids.
+    const registerNestedStack = (stackKey: string, parent: Issue) => {
+      const rows = listSplit.nestedByParent.get(parent.id) ?? [];
+      if (!isNestedDragEnabled(settings.showSubWorkItems, rows.length)) {
+        return;
+      }
+      const stack: NestedDragStackRef = {
+        stackKey,
+        parentId: parent.id,
+        rows,
+      };
+      for (const row of rows) {
+        nestedMap.set(nestedSortableId(stackKey, parent.id, row.id), {
+          rowId: row.id,
+          row,
+          stack,
+        });
+      }
+    };
     if (!groupingActive) {
       registerStack("flat", issues, null);
+      for (const issue of issues) registerNestedStack("flat", issue);
     } else {
       for (const g of groups) {
         const primaryEpicId = groupByEpic
@@ -2064,6 +2160,9 @@ export default function Issues() {
               primaryReleaseId,
             );
             registerHeader(subKey, sub, sub.issues);
+            for (const issue of sub.issues) {
+              registerNestedStack(subKey, issue);
+            }
           }
         } else {
           registerStack(
@@ -2077,15 +2176,20 @@ export default function Issues() {
             primaryReleaseId,
           );
           registerHeader(g.key, g, g.issues);
+          for (const issue of g.issues) {
+            registerNestedStack(g.key, issue);
+          }
         }
       }
     }
-    return { sortableMap, headerMap };
+    return { sortableMap, headerMap, nestedMap };
   }, [
     groupingActive,
     groups,
     subSectionsByGroup,
     issues,
+    listSplit,
+    settings.showSubWorkItems,
     groupByEpic,
     groupByAssignees,
     groupByLabels,
@@ -2205,7 +2309,9 @@ export default function Issues() {
   // C127T0: one drag-end for the whole list — header ids route to
   // the reassignment pipeline, same-stack row ids to the C126 reorder
   // pipeline (only when its gate holds), everything else is a silent
-  // no-op. See listHeaderDrop.dispatchListDragEnd.
+  // no-op. See listHeaderDrop.dispatchListDragEnd. C141T1: nested
+  // active ids route to the nested pipeline ONLY — never to the row
+  // or header pipelines — and only within the same parent appearance.
   function handleListDragEnd(
     activeSortableId: string,
     overId: string | null,
@@ -2219,32 +2325,66 @@ export default function Issues() {
       onRowDrop: (stack, activeRowId, overRowId) =>
         void handleListDrop(stack, activeRowId, overRowId),
       onHeaderDrop: (ref, info) => void handleHeaderDrop(ref, info),
+      nestedMap: listDragMaps.nestedMap,
+      onNestedDrop: (stack, activeChildId, overChildId) =>
+        void handleNestedDrop(stack, activeChildId, overChildId),
     });
   }
 
   /**
    * One list row + its nested subtask rows (C124), draggable when
-   * either drag mode holds (C126 reorder and/or C127 reassign),
-   * otherwise today's rendering exactly (a bare fragment adds no
-   * DOM). Shared by all three render sites so the row props cannot
-   * drift between flat/grouped/sub-grouped paths. `stackKey` is the
-   * stack this appearance belongs to — it scopes the row's sortable
-   * id, so a multi-appearance row never collides with itself.
+   * either parent drag mode holds (C126 reorder and/or C127
+   * reassign), otherwise today's rendering exactly (a bare fragment
+   * adds no DOM). Shared by all three render sites so the row props
+   * cannot drift between flat/grouped/sub-grouped paths. `stackKey`
+   * is the stack this appearance belongs to — it scopes the row's
+   * sortable id, so a multi-appearance row never collides with
+   * itself.
+   *
+   * C141T1: the nested block has its OWN draggability, independent
+   * of the parent's: one ListRowStack per parent appearance with
+   * stack-scoped nested ids, sortable nested rows only when the
+   * nested gate holds (showSubWorkItems + >= 2 rows). When the gate
+   * fails, ListRowStack renders a bare fragment and the rows render
+   * plain — the nested block is byte-identical to today. When only
+   * nested drag holds, the parent renders plain (no parent grip)
+   * and the nested block still sorts, inside the fragment below.
    */
   function renderListRow(issue: Issue, kbd: boolean, stackKey: string) {
     const nestedRows = listSplit.nestedByParent.get(issue.id) ?? [];
+    const nestedDraggable = isNestedDragEnabled(
+      settings.showSubWorkItems,
+      nestedRows.length,
+    );
     const nested =
       nestedRows.length > 0 ? (
-        <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
-          {nestedRows.map((row) => (
-            <NestedListSubtaskRow
-              key={row.id}
-              row={row}
-              state={stateById.get(row.state_id ?? "")}
-              onOpen={(id) => openPeek(id)}
-            />
-          ))}
-        </div>
+        <ListRowStack
+          items={nestedRows.map((row) =>
+            nestedSortableId(stackKey, issue.id, row.id),
+          )}
+          draggable={nestedDraggable}
+        >
+          <div className="ml-7 flex flex-col border-l-2 border-border pl-3">
+            {nestedRows.map((row) =>
+              nestedDraggable ? (
+                <SortableNestedSubtaskRow
+                  key={row.id}
+                  row={row}
+                  state={stateById.get(row.state_id ?? "")}
+                  onOpen={(id) => openPeek(id)}
+                  sortableId={nestedSortableId(stackKey, issue.id, row.id)}
+                />
+              ) : (
+                <NestedListSubtaskRow
+                  key={row.id}
+                  row={row}
+                  state={stateById.get(row.state_id ?? "")}
+                  onOpen={(id) => openPeek(id)}
+                />
+              ),
+            )}
+          </div>
+        </ListRowStack>
       ) : null;
     const rowProps = {
       issue,
@@ -2256,7 +2396,7 @@ export default function Issues() {
       bulkActive: bulk.count > 0,
       onToggleSelect: () => bulk.toggle(issue.id),
     };
-    if (!dndActive) {
+    if (!parentDraggable) {
       return (
         <>
           <IssueRow {...rowProps} />
@@ -2271,6 +2411,23 @@ export default function Issues() {
       >
         {nested}
       </SortableIssueRow>
+    );
+  }
+
+  /** Plain NestedListSubtaskRow face for a nested drag overlay
+   *  (C141T1): a nested active id is a SubtaskRow, not an Issue, so
+   *  the Issue overlay cannot resolve it — without this a nested
+   *  drag would show no overlay at all. */
+  function renderOverlayNestedRow(
+    row: SubtaskRow,
+    state: IssueState | undefined,
+  ) {
+    return (
+      <NestedListSubtaskRow
+        row={row}
+        state={state}
+        onOpen={(id) => openPeek(id)}
+      />
     );
   }
 
@@ -2746,6 +2903,15 @@ export default function Issues() {
               listDragMaps.sortableMap.get(id)?.issue
             }
             renderOverlayRow={renderOverlayRow}
+            overlayNestedForId={(id) => {
+              const ref = listDragMaps.nestedMap.get(id);
+              if (!ref) return undefined;
+              return {
+                row: ref.row,
+                state: stateById.get(ref.row.state_id ?? ""),
+              };
+            }}
+            renderOverlayNestedRow={renderOverlayNestedRow}
           >
           {groupingActive ? (
             <div>
@@ -2870,7 +3036,11 @@ export default function Issues() {
                             items={sub.issues.map((i) =>
                               listSortableId(subKey, i.id),
                             )}
-                            draggable={dndActive}
+                            // C141T1: parent stacks keep the OLD
+                            // liveness (parent modes only) — a
+                            // nested-only list must not register
+                            // parent sortables that render plain.
+                            draggable={parentDraggable}
                           >
                             <div>
                               {sub.issues.map((issue) => (
@@ -2893,7 +3063,10 @@ export default function Issues() {
                       items={g.issues.map((i) =>
                         listSortableId(g.key, i.id),
                       )}
-                      draggable={dndActive}
+                      // C141T1: parent stacks keep the OLD liveness
+                      // (parent modes only); see the sub-section
+                      // stack above.
+                      draggable={parentDraggable}
                     >
                       <div>
                         {g.issues.map((issue) => (
@@ -2961,7 +3134,9 @@ export default function Issues() {
           ) : (
             <ListRowStack
               items={issues.map((i) => listSortableId("flat", i.id))}
-              draggable={dndActive}
+              // C141T1: parent stacks keep the OLD liveness (parent
+              // modes only); see the sub-section stack above.
+              draggable={parentDraggable}
             >
               <div>
                 {issues.map((issue, i) => (

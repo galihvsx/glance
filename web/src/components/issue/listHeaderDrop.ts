@@ -1,5 +1,5 @@
 import { SORT_ORDER_STEP } from "../../lib/sortOrder";
-import type { Issue } from "../../lib/types";
+import type { Issue, SubtaskRow } from "../../lib/types";
 import { assigneesOf } from "./groupByAssignee";
 import { cycleOf } from "./groupByCycle";
 import { liveEpics } from "./groupByEpic";
@@ -165,6 +165,47 @@ export function headerDropId(
  */
 export function listSortableId(stackKey: string, rowId: string): string {
   return `row:${stackKey}:${rowId}`;
+}
+
+/**
+ * C141T1: dnd-kit sortable id for a nested subtask row inside one
+ * parent appearance. Stack-scoped like listSortableId, plus the
+ * parent id: a parent multi-appearing under epic grouping shows the
+ * same nested row under several appearances, so the bare child id —
+ * or even stackKey + child id without the parent — would collide in
+ * the list-wide context. The `nested:` prefix keeps nested ids
+ * disjoint from row ids (`row:`) and header ids (`header:`) by
+ * construction. Stack keys may themselves contain colons (a
+ * sub-section key is `${groupKey}::${subKey}`), so parsing takes the
+ * LAST two colon-separated segments as parent/child ids (both are
+ * UUIDs, colon-free) and rejoins the rest as the stack key — the
+ * round-trip holds for flat, grouped, and sub-grouped keys alike.
+ * This parser is the ONLY place a nested id is ever parsed; dispatch
+ * resolves stacks through the page's nested map, never by re-splitting
+ * an id string elsewhere.
+ */
+export function nestedSortableId(
+  stackKey: string,
+  parentId: string,
+  childId: string,
+): string {
+  return `nested:${stackKey}:${parentId}:${childId}`;
+}
+
+/** Inverse of nestedSortableId; null for any non-nested id. */
+export function parseNestedSortableId(id: string): {
+  stackKey: string;
+  parentId: string;
+  childId: string;
+} | null {
+  if (!id.startsWith("nested:")) return null;
+  const parts = id.slice("nested:".length).split(":");
+  if (parts.length < 3) return null;
+  const childId = parts.pop() as string;
+  const parentId = parts.pop() as string;
+  const stackKey = parts.join(":");
+  if (!stackKey || !parentId || !childId) return null;
+  return { stackKey, parentId, childId };
 }
 
 /**
@@ -642,6 +683,25 @@ export interface ListDragRowRef {
   stack: ListDragStackRef;
 }
 
+/**
+ * C141T1: one parent appearance's nested stack — the sibling rows a
+ * nested drag may reorder within. Keyed by appearance (stackKey) AND
+ * parent: the same parent under epic grouping registers one stack
+ * per appearance, each with its own stack-scoped nested ids.
+ */
+export interface NestedDragStackRef {
+  stackKey: string;
+  parentId: string;
+  rows: SubtaskRow[];
+}
+
+/** One draggable nested-row appearance, as the page's drop maps record it. */
+export interface NestedDragRowRef {
+  rowId: string;
+  row: SubtaskRow;
+  stack: NestedDragStackRef;
+}
+
 /** One droppable header, as the page's drop maps record it. */
 export interface ListHeaderDropInfo {
   target: HeaderTarget;
@@ -659,6 +719,18 @@ export interface ListHeaderDropInfo {
  *   order or PQL mode: a row drop is a silent no-op);
  * - over a row id in another stack → silent no-op (never a reorder);
  * - no over, same-id, or unknown ids → silent no-op.
+ *
+ * C141T1: a nested active id routes to the nested pipeline ONLY —
+ * never to onRowDrop or onHeaderDrop — and only when the over id is
+ * a nested id in the SAME parent appearance's stack. A nested drop
+ * onto a parent row, a header, another parent's stack, or an unknown
+ * id is a silent no-op. The nested gate (showSubWorkItems + ≥2 rows)
+ * is enforced at registration: the page registers nested stacks only
+ * for enabled appearances, so an unregistered nested id can never
+ * reach onNestedDrop. Nested drops carry no reorder gate of their
+ * own: the nested visual order is always a sort_order sequence
+ * (nestedByParent sorts by sort_order ASC under every orderBy and
+ * in PQL mode), so a nested drop is always exact.
  */
 export function dispatchListDragEnd(args: {
   activeSortableId: string;
@@ -676,9 +748,33 @@ export function dispatchListDragEnd(args: {
     dragged: ListDragRowRef,
     info: ListHeaderDropInfo,
   ) => void;
+  /** C141T1: nested-stack map; when present, nested active ids route here only. */
+  nestedMap?: Map<string, NestedDragRowRef>;
+  onNestedDrop?: (
+    stack: NestedDragStackRef,
+    activeRowId: string,
+    overRowId: string,
+  ) => void;
 }): void {
   const { activeSortableId, overId } = args;
   if (overId === null || overId === activeSortableId) return;
+  // Nested branch first, and terminal: a nested active id must NEVER
+  // fall through to the row or header pipelines below.
+  if (parseNestedSortableId(activeSortableId) !== null) {
+    if (!args.nestedMap || !args.onNestedDrop) return;
+    const active = args.nestedMap.get(activeSortableId);
+    if (!active) return;
+    const over = args.nestedMap.get(overId);
+    if (!over) return;
+    if (
+      over.stack.stackKey !== active.stack.stackKey ||
+      over.stack.parentId !== active.stack.parentId
+    ) {
+      return;
+    }
+    args.onNestedDrop(active.stack, active.rowId, over.rowId);
+    return;
+  }
   const active = args.sortableMap.get(activeSortableId);
   if (!active) return;
   const header = args.headerMap.get(overId);
