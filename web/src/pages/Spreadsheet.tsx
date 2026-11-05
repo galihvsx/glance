@@ -27,12 +27,16 @@ import { stateTransitionConflictMessage, useWorkflow } from "../lib/workflow";
 import { toast } from "../components/ui/toast";
 import {
   planSpreadsheetDrop,
+  planSpreadsheetReorder,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
   spreadsheetGroupDroppableId,
   spreadsheetOverGroupKey,
+  spreadsheetRowDropIssueId,
   spreadsheetRowDroppableId,
+  SPREADSHEET_ROW_DROPPABLE_PREFIX,
+  SPREADSHEET_STATE_UNGROUPED_KEY,
   type SpreadsheetAttachDimension,
 } from "../components/issue/spreadsheetDrag";
 import { executeCycleMove } from "../components/issue/boardCycle";
@@ -1041,6 +1045,13 @@ export default function Spreadsheet() {
       ...(body.priority !== undefined
         ? { priority: body.priority as number }
         : {}),
+      // C152T1: the reorder PATCH stamps sort_order optimistically
+      // (cell edits never send it, so their behavior is unchanged);
+      // the state-group sort_order sort below re-renders the group
+      // in the new order immediately, before the settle refetch.
+      ...(body.sort_order !== undefined
+        ? { sort_order: body.sort_order as number }
+        : {}),
       ...(body.start_date !== undefined
         ? { start_date: body.start_date as string | null }
         : {}),
@@ -1099,6 +1110,17 @@ export default function Spreadsheet() {
     onSettled: () => {
       invalidateDisplayedIssues();
     },
+  });
+
+  /** C152T1: Board's rebalanceMutation, spreadsheet-shaped — POST
+   *  .../issues/rebalance {state_id} re-spaces one state's column
+   *  to even 1024-steps. Used only by the collapsed-gap retry in
+   *  applySpreadsheetReorder, never on its own. */
+  const rebalanceMutation = useMutation({
+    mutationFn: (stateId: string) =>
+      api.post<{ rebalanced: number }>(`${base}/issues/rebalance`, {
+        state_id: stateId,
+      }),
   });
 
   /** C148T2: Board's attach-mutation shape, one mutation for all four
@@ -1553,6 +1575,19 @@ export default function Spreadsheet() {
         const sections: SpreadsheetGroupSection[] = [];
         for (const s of ordered) {
           const rows = sortedIssues.filter((i) => i.state_id === s.id);
+          // C152T1: the visual fetch carries no order_by (the
+          // backend default is -updated_at), so without a column
+          // sort the state-group display order would NOT be
+          // sort_order order — yet a state group maps 1:1 to a
+          // Board column, whose order IS sort_order ASC. Sort the
+          // group's rows by sort_order ASC here, visual-filter
+          // mode only: PQL ordering is query-owned, and a column
+          // sort owns the order while active. The Ungrouped
+          // section below keeps fetch order — it has no Board
+          // column, and no reorder ever targets it.
+          if (sortKey === null && !pqlActive) {
+            rows.sort((a, b) => a.sort_order - b.sort_order);
+          }
           if (rows.length > 0) {
             sections.push({ key: s.id, title: s.name, issues: rows });
           }
@@ -1656,6 +1691,8 @@ export default function Spreadsheet() {
     stateById,
     stateGroupById,
     membersById,
+    sortKey,
+    pqlActive,
   ]);
 
   // C147T2: sub-group sections inside each primary group, via the
@@ -1734,6 +1771,73 @@ export default function Spreadsheet() {
     setDragOverGroupKey(overId ? spreadsheetOverGroupKey(overId) : null);
   }
 
+  /**
+   * C152T1: within-state-group reorder (Board's applyDrop pipeline,
+   * spreadsheet-shaped). The planner input is the group's
+   * sort_order-ordered top-level rows; a null midpoint means the
+   * gap collapsed, so the column is rebalanced, refetched, and the
+   * drop retried once — never a silent second write without a
+   * refetch. The PATCH reuses patchMutation (optimistic
+   * sort_order stamp, rollback on error, invalidate on settle),
+   * exactly like a C148 state move. Only ever called from the
+   * reorder-eligible branch of handleSpreadsheetDragEnd.
+   */
+  async function applySpreadsheetReorder(
+    issueId: string,
+    stateId: string,
+    groupRows: Issue[],
+    targetRowId: string,
+  ) {
+    const ordered = [...groupRows].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    const plan0 = planSpreadsheetReorder({
+      rows: ordered,
+      sourceId: issueId,
+      targetRowId,
+      stateId,
+    });
+    if (plan0.kind === "noop") return;
+    if (plan0.sort_order !== null) {
+      setEditError(null);
+      patchMutation.mutate({
+        id: issueId,
+        body: { sort_order: plan0.sort_order },
+      });
+      return;
+    }
+    // Gap collapsed: rebalance, refetch, retry once (Board verbatim).
+    try {
+      await rebalanceMutation.mutateAsync(stateId);
+    } catch (e) {
+      setEditError(
+        e instanceof ApiError ? e.message : "Failed to rebalance column",
+      );
+      return;
+    }
+    invalidateDisplayedIssues();
+    const refetched = await issuesQuery.refetch();
+    const fresh = refetched.data?.pages.flatMap((p) => p.results) ?? [];
+    const freshGroup = splitNestedIssues(fresh, showSubWorkItems)
+      .visibleIssues.filter((i) => i.state_id === stateId)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    const plan1 = planSpreadsheetReorder({
+      rows: freshGroup,
+      sourceId: issueId,
+      targetRowId,
+      stateId,
+    });
+    if (plan1.kind === "noop" || plan1.sort_order === null) {
+      setEditError("Couldn't place the row even after rebalancing.");
+      return;
+    }
+    setEditError(null);
+    patchMutation.mutate({
+      id: issueId,
+      body: { sort_order: plan1.sort_order },
+    });
+  }
+
   function handleSpreadsheetDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     setDragOverGroupKey(null);
@@ -1746,6 +1850,42 @@ export default function Spreadsheet() {
     const issueId = spreadsheetDragIssueId(String(active.id));
     const issue = sortedIssues.find((i) => i.id === issueId);
     if (!issue) return;
+    // C152T1: same-group row drop in the ONE reorder-eligible
+    // configuration — grouped by state, no column sort, no
+    // sub-group, visual-filter mode, a real state group (never the
+    // Ungrouped section, which has no Board column), and a row
+    // droppable in the source's own group. Reorder availability is
+    // a DROP-time rule: the handle stays enabled exactly as today
+    // (grouped && canEdit), and every other configuration falls
+    // through to the C148 path below unchanged (same-group
+    // non-state drops, column-sort-active drops, sub-grouped
+    // drops, PQL-mode drops, nested-row drops all remain no-ops;
+    // cross-group drops are untouched).
+    const overId = String(over.id);
+    if (overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)) {
+      const rowGroupKey = spreadsheetOverGroupKey(overId);
+      const targetRowId = spreadsheetRowDropIssueId(overId);
+      if (
+        rowGroupKey === sourceGroupKey &&
+        targetRowId !== null &&
+        groupBy === "state" &&
+        sortKey === null &&
+        effectiveSubGroup === "none" &&
+        !pqlActive &&
+        sourceGroupKey !== SPREADSHEET_STATE_UNGROUPED_KEY
+      ) {
+        const group = groupSections.find((g) => g.key === sourceGroupKey);
+        if (group) {
+          void applySpreadsheetReorder(
+            issue.id,
+            sourceGroupKey,
+            group.issues,
+            targetRowId,
+          );
+          return;
+        }
+      }
+    }
     const plan = planSpreadsheetDrop({
       groupBy,
       sourceGroupKey,

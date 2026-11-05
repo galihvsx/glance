@@ -18,6 +18,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -31,6 +32,7 @@ import Spreadsheet from "./Spreadsheet";
 import { toast } from "../components/ui/toast";
 import {
   planSpreadsheetDrop,
+  planSpreadsheetReorder,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
@@ -386,6 +388,8 @@ function applyPatchToFixture(body: Record<string, unknown>, id: string) {
   if (!issue) return null;
   if (body.state_id !== undefined) issue.state_id = body.state_id as string;
   if (body.priority !== undefined) issue.priority = body.priority as number;
+  if (body.sort_order !== undefined)
+    issue.sort_order = body.sort_order as number;
   return { ...issue };
 }
 
@@ -1065,11 +1069,10 @@ describe("Spreadsheet drag moves (page wiring)", () => {
     });
   });
 
-  it("same-group drop PATCHes nothing (header or foreign row)", async () => {
+  it("same-group header drop PATCHes nothing (C152T1: row drops reorder, see below)", async () => {
     await renderGrouped("state");
     const patch = await patchMock();
     drop("spreadsheet-drag:s:i1", "spreadsheet-group:s");
-    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i3");
     expect(patch).not.toHaveBeenCalled();
     expect(groupHeaders()).toEqual([
       "Backlog (2)",
@@ -1752,5 +1755,379 @@ describe("Spreadsheet drag membership moves (T2)", () => {
     });
     expect(del).not.toHaveBeenCalled();
     expect(await screen.findByText("cycle boom")).toBeInTheDocument();
+  });
+});
+
+describe("planSpreadsheetReorder", () => {
+  const rows = [
+    { id: "a1", state_id: "s", sort_order: 1024 },
+    { id: "a2", state_id: "s", sort_order: 2048 },
+    { id: "a3", state_id: "s", sort_order: 3072 },
+  ];
+
+  it("drag down onto a lower row takes the midpoint after removing the source", () => {
+    // a1 onto a2: without=[a2,a3], insert at 1 → [a2,a1,a3].
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a1",
+        targetRowId: "a2",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: 2560 });
+  });
+
+  it("drag up onto a higher row takes the midpoint before it", () => {
+    // a3 onto a2: without=[a1,a2], insert at 1 → [a1,a3,a2].
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a3",
+        targetRowId: "a2",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: 1536 });
+  });
+
+  it("drag onto the last row takes prev + step", () => {
+    // a1 onto a3: without=[a2,a3], insert at 2 → [a2,a3,a1].
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a1",
+        targetRowId: "a3",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: 4096 });
+  });
+
+  it("drag up onto the first row takes next - step", () => {
+    // a3 onto a1: without=[a1,a2], insert at 0 → [a3,a1,a2].
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a3",
+        targetRowId: "a1",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: 0 });
+  });
+
+  it("collapsed gap returns a null midpoint for the rebalance path", () => {
+    const tight = [
+      { id: "a1", state_id: "s", sort_order: 1024 },
+      { id: "a2", state_id: "s", sort_order: 1024 + 5e-10 },
+      { id: "a3", state_id: "s", sort_order: 2048 },
+    ];
+    // a3 onto a2: without=[a1,a2], insert at 1 → [a1,a3,a2];
+    // the a1/a2 gap (5e-10) is below REBALANCE_GAP.
+    expect(
+      planSpreadsheetReorder({
+        rows: tight,
+        sourceId: "a3",
+        targetRowId: "a2",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: null });
+  });
+
+  it("source-row drop is a same-position no-op", () => {
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a2",
+        targetRowId: "a2",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "same-position" });
+  });
+
+  it("rows missing from the group are an unknown-target no-op", () => {
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "a1",
+        targetRowId: "zz",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "unknown-target" });
+    expect(
+      planSpreadsheetReorder({
+        rows,
+        sourceId: "zz",
+        targetRowId: "a2",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "unknown-target" });
+  });
+});
+
+describe("Spreadsheet state-group reorder (C152T1)", () => {
+  /** Three rows in Backlog (s) at even 1024-steps, one in In Progress. */
+  function reorderIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "b1",
+        sequence_id: 4,
+        display_id: "ENG-4",
+        name: "Delta",
+        state_id: "s2",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  const ALL = [
+    "Open issue ENG-1: Alpha",
+    "Open issue ENG-2: Beta",
+    "Open issue ENG-3: Gamma",
+    "Open issue ENG-4: Delta",
+  ];
+
+  it("drag onto a lower row PATCHes the midpoint and re-renders in the new order", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    expect(rowLabels()).toEqual(ALL);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { sort_order: 2560 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
+  });
+
+  it("drag onto a higher row PATCHes the midpoint and re-renders in the new order", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a3", "spreadsheet-row-drop:s:a2");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a3"),
+        { sort_order: 1536 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
+  });
+
+  it("drag onto the last row PATCHes prev + step", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a3");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { sort_order: 4096 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
+  });
+
+  it("drag onto the source row itself PATCHes nothing", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a1");
+    expect(patch).not.toHaveBeenCalled();
+    expect(rowLabels()).toEqual(ALL);
+  });
+
+  it("drag within a priority group PATCHes nothing (C148 noop preserved)", async () => {
+    await renderGrouped("priority");
+    expect(groupHeaders()).toEqual([
+      "Urgent (1)",
+      "Medium (2)",
+      "None (1)",
+    ]);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:priority:2:i1", "spreadsheet-row-drop:priority:2:i3");
+    expect(patch).not.toHaveBeenCalled();
+    expect(groupHeaders()).toEqual([
+      "Urgent (1)",
+      "Medium (2)",
+      "None (1)",
+    ]);
+  });
+
+  it("drag within a state group while a column sort is active PATCHes nothing", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const sortButton = screen.getByRole("button", {
+      name: "Sort by Title",
+    });
+    fireEvent.click(sortButton);
+    await waitFor(() => {
+      expect(
+        screen
+          .getByRole("button", { name: "Sort by Title" })
+          .getAttribute("aria-sort"),
+      ).toBe("ascending");
+    });
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("drag within a state group with a sub-group active PATCHes nothing", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state", "priority");
+    const table = screen.getByRole("table");
+    // One priority sub-section per primary group (all rows are
+    // priority 0) — the sub-group is genuinely active, not "none".
+    expect(
+      table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
+    ).toHaveLength(2);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("PQL-mode same-group row drop PATCHes nothing", async () => {
+    mockData.issues = reorderIssues();
+    setGrouping({ groupBy: "state", subGroupBy: "none" });
+    renderSpreadsheet("/w/acme/p/ENG/spreadsheet?pql=priority+%3E%3D+0");
+    await screen.findByRole("button", { name: "Sort by Title" });
+    await waitFor(() => expect(handles().length).toBeGreaterThan(0));
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("collapsed-gap drop rebalances, refetches, and retries once with the post-rebalance midpoint", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 1024 + 5e-10,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+    ];
+    await renderGrouped("state");
+    const post = await postMock();
+    const patch = await patchMock();
+    post.mockImplementation((path: string) => {
+      if (path.includes("/issues/rebalance")) {
+        // Server-side re-space: even 1024-steps in current order.
+        const rows = mockData.issues
+          .filter((i) => i.state_id === "s")
+          .sort((a, b) => a.sort_order - b.sort_order);
+        rows.forEach((r, idx) => {
+          r.sort_order = (idx + 1) * 1024;
+        });
+        return Promise.resolve({ rebalanced: rows.length });
+      }
+      return Promise.resolve({});
+    });
+    drop("spreadsheet-drag:s:a3", "spreadsheet-row-drop:s:a2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/rebalance"),
+        { state_id: "s" },
+      );
+    });
+    // Retry once against the re-spaced column: midpoint(1024, 2048).
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a3"),
+        { sort_order: 1536 },
+      );
+    });
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(
+      post.mock.calls.filter(
+        ([p]) =>
+          typeof p === "string" && p.includes("/issues/rebalance"),
+      ),
+    ).toHaveLength(1);
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-2: Beta",
+      ]);
+    });
+  });
+
+  it("guest row drop is refused: no PATCH", async () => {
+    mockData.role = 0;
+    mockData.issues = reorderIssues();
+    await renderGrouped("state", "none", false);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
   });
 });
