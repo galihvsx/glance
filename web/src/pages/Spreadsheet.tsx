@@ -1037,9 +1037,9 @@ export default function Spreadsheet() {
   // (the full over id is not kept: the group key is recoverable
   // from the drag id for same-group resolution, and cross-group
   // header hovers resolve through dragOverGroupKey instead).
-  // T1 needs no highlight from it; T2 reads it — so the value is
-  // elided here (noUnusedLocals) and T2 destructures it.
-  const [, setDragOverSubGroupKey] = useState<string | null>(null);
+  // C155T2 reads it for the sub-section move-target highlight.
+  const [dragOverSubGroupKey, setDragOverSubGroupKey] =
+    useState<string | null>(null);
   // C148T2: active spreadsheet drag id (compound id of the dragged
   // appearance, or null) — the single dim source: the dragged row
   // renders opacity-40 while its drag is active, cleared on end and
@@ -1957,15 +1957,20 @@ export default function Spreadsheet() {
    * suppressed exactly when this is non-null (the
    * `reorderIndicator === null` pattern, extended), so a
    * cross-section hover highlights exactly the target section,
-   * never the group header. No new state beyond the existing
-   * dragOver* values; the reorder-only gates (state grouping,
+   * never the group header. C155T2: a header hover resolves the
+   * same way, with the target section key straight from the
+   * header droppable id (planSpreadsheetSubSectionHeaderDrop) —
+   * header and row overs are mutually exclusive (one `over` id),
+   * so the header branch runs only when no row is hovered.
+   * No new state beyond the existing dragOver* values; the
+   * reorder-only gates (state grouping,
    * no column sort, visual-filter mode) are deliberately NOT
    * mirrored — a move changes membership, not position, so
    * column-sort-active and PQL-mode hovers highlight exactly
    * like C148 primary-group moves do.
    */
   const subSectionMoveTarget = useMemo(() => {
-    if (activeSpreadsheetDragId === null || dragOverRowIssueId === null) {
+    if (activeSpreadsheetDragId === null) {
       return null;
     }
     if (reorderIndicator !== null) return null;
@@ -1979,6 +1984,27 @@ export default function Spreadsheet() {
     const sourceId = spreadsheetDragIssueId(activeSpreadsheetDragId);
     const issue = sortedIssues.find((i) => i.id === sourceId);
     if (!issue) return null;
+    // C155T2: header hover — no row under the pointer, the target
+    // section key straight from the header droppable id. A
+    // blocked plan counts as a target (same C154T2 precedent as
+    // the row branch: it surfaces the toast on drop).
+    if (dragOverSubGroupKey !== null && dragOverRowIssueId === null) {
+      const resolved = planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: effectiveSubGroup,
+        sections: subSectionsByGroup.get(sourceGroupKey) ?? [],
+        sourceId: issue.id,
+        targetSectionKey: dragOverSubGroupKey,
+        issue,
+        workflow,
+        stateNames: stateNamesById,
+      });
+      if (resolved === null || resolved.plan.kind === "noop") return null;
+      return {
+        groupKey: sourceGroupKey,
+        sectionKey: resolved.targetSection.key,
+      };
+    }
+    if (dragOverRowIssueId === null) return null;
     const resolved = planSpreadsheetSubSectionDrop({
       subGroupBy: effectiveSubGroup,
       sections: subSectionsByGroup.get(sourceGroupKey) ?? [],
@@ -1993,6 +2019,7 @@ export default function Spreadsheet() {
   }, [
     activeSpreadsheetDragId,
     dragOverRowIssueId,
+    dragOverSubGroupKey,
     dragOverGroupKey,
     reorderIndicator,
     effectiveSubGroup,
