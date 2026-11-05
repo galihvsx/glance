@@ -3181,14 +3181,26 @@ describe("Spreadsheet subgroup reorder indicator (C153T2)", () => {
     );
   });
 
-  it("cross-section hover shows no line (highlight only)", async () => {
+  it("cross-section hover shows no line (C154T2: section highlight, not the primary header)", async () => {
     mockData.issues = subgroupIssues();
     await renderGrouped("state", "priority");
     // a1 (priority 0) and a2 (priority 2) are different runs of
-    // the same primary group — no run resolves, no line.
+    // the same primary group — no run resolves, no line. C154T2
+    // retires the C153 rule (primary header highlighted): the
+    // cross-section hover is a move, so the TARGET sub-header
+    // highlights and the primary header does not.
     hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
     expect(indicatorRow()).toBeNull();
-    expect(headerRow("s").className).toContain("bg-accent-blue/10");
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+    const table = screen.getByRole("table");
+    const target = table.querySelector(
+      'tr[data-spreadsheet-sub-group-header="s:priority:2"]',
+    ) as HTMLElement;
+    expect(target.className).toContain("bg-accent-blue/10");
+    const source = table.querySelector(
+      'tr[data-spreadsheet-sub-group-header="s:priority:0"]',
+    ) as HTMLElement;
+    expect(source.className).not.toContain("bg-accent-blue/10");
   });
 
   it("multi-appearance hover shows no line", async () => {
@@ -3255,5 +3267,184 @@ describe("Spreadsheet subgroup reorder indicator (C153T2)", () => {
     // sequence, so it is already last in the group.
     drop("spreadsheet-drag:s:a3", "spreadsheet-group:s");
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Spreadsheet subsection move highlight (C154T2)", () => {
+  /** Backlog (s) rows split across priority sub-sections. */
+  function subgroupIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 0,
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        priority: 0,
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  function indicatorRow(): HTMLElement | null {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      "tr[data-spreadsheet-reorder-indicator]",
+    ) as HTMLElement | null;
+  }
+
+  function headerRow(key: string): HTMLElement {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      `tr[data-spreadsheet-group-header="${key}"]`,
+    ) as HTMLElement;
+  }
+
+  /** Every rendered sub-group header row in the grid. */
+  function subHeaderRows(): HTMLElement[] {
+    const table = screen.getByRole("table");
+    return Array.from(
+      table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
+    ) as HTMLElement[];
+  }
+
+  function hoverRow(sourceDragId: string, overRowId: string) {
+    dragStart(sourceDragId);
+    dragOver(overRowId);
+  }
+
+  it("cross-section hover highlights the target sub-header and NOT the primary header", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    // a1 (priority 0) → a2 (priority 2): a move, so the target
+    // section highlights with the primary-header token verbatim
+    // and the primary header stays unhighlighted.
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+    const table = screen.getByRole("table");
+    const target = table.querySelector(
+      'tr[data-spreadsheet-sub-group-header="s:priority:2"]',
+    ) as HTMLElement;
+    expect(target.className).toContain("bg-accent-blue/10");
+    const source = table.querySelector(
+      'tr[data-spreadsheet-sub-group-header="s:priority:0"]',
+    ) as HTMLElement;
+    expect(source.className).not.toContain("bg-accent-blue/10");
+  });
+
+  it("same-section hover highlights neither sub-header (reorder line per the existing rules)", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    // a1 and a3 share the priority-0 run: reorder-eligible, so
+    // the line shows, the move memo returns null, and no
+    // sub-header highlights.
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a3");
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "below",
+    );
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+    for (const row of subHeaderRows()) {
+      expect(row.className).not.toContain("bg-accent-blue/10");
+    }
+  });
+
+  it("multi-appearance hover highlights neither sub-header", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+        assignees: [
+          { id: "u2", name: "Ada" },
+          { id: "u3", name: "Bob" },
+        ],
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+    ];
+    await renderGrouped("state", "assignees");
+    // a1 appears under both Ada and Bob, so no unique target
+    // section resolves: no line, no section highlight. The
+    // primary header keeps today's behavior (highlighted).
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("s").className).toContain("bg-accent-blue/10");
+    for (const row of subHeaderRows()) {
+      expect(row.className).not.toContain("bg-accent-blue/10");
+    }
+  });
+
+  it("non-move hover (createdBy sub-group) highlights neither sub-header beyond today's primary-header behavior", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 2,
+        state_id: "s",
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s2",
+        created_by: "u9",
+      }),
+    ];
+    await renderGrouped("priority", "createdBy");
+    // createdBy is a deliberate no-op dimension, so the delegated
+    // plan is a noop and no section highlights; the primary
+    // header keeps today's behavior (highlighted).
+    hoverRow(
+      "spreadsheet-drag:priority:2:i1",
+      "spreadsheet-row-drop:priority:2:i2",
+    );
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("priority:2").className).toContain(
+      "bg-accent-blue/10",
+    );
+    for (const row of subHeaderRows()) {
+      expect(row.className).not.toContain("bg-accent-blue/10");
+    }
   });
 });
