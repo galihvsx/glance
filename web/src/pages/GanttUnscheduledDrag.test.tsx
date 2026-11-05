@@ -2,9 +2,12 @@
 // Unscheduled-lane drag to schedule (C156T1 + C156T2): dragging a
 // top-level unscheduled label row — or a nested undated child row —
 // onto the timeline PATCHes both dates to the drop day (a 1-day
-// bar). Harness follows GanttSingleDateDrag.test.tsx /
-// GanttChildDrag.test.tsx (mocked api, jsdom PointerEvent polyfill,
-// makeIssue with nullable dates).
+// bar). C157T2: scheduling a dateless blocker whose dated
+// dependent violates cascades the dependent (rule 9) — same ghost
+// preview and commit behavior as a move — via a links-serving
+// harness in the C157T2 describe block below. Harness follows
+// GanttSingleDateDrag.test.tsx / GanttChildDrag.test.tsx (mocked
+// api, jsdom PointerEvent polyfill, makeIssue with nullable dates).
 //
 // jsdom note: getBoundingClientRect returns zeros, so svgX(clientX)
 // === clientX. The window is Nov-2026-centered (2026-10-01 ..
@@ -24,9 +27,17 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 vi.mock("../lib/auth", () => ({
   useAuth: () => ({ user: { id: "u-1", email: "u@x.com" }, loading: false }),
 }));
+// C157T2: the cascade commit toasts (success count / failure
+// error) via the shared helper — mocked here like
+// GanttCascadeWiring.test.tsx so the schedule path asserts the
+// same toasts as the move path.
+const toastAdd = vi.hoisted(() => vi.fn());
+vi.mock("../components/ui/toast", () => ({
+  toast: { add: toastAdd },
+}));
 import Gantt from "./Gantt";
 import { api } from "../lib/api";
-import type { Issue, IssueState, SubtaskRow } from "../lib/types";
+import type { Issue, IssueLink, IssueState, SubtaskRow } from "../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -344,6 +355,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  toastAdd.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -693,5 +705,284 @@ describe("Gantt unscheduled child drag (C156T2)", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(patch).not.toHaveBeenCalled();
     expect(screen.queryByText("Dated child")).not.toBeNull();
+  });
+});
+
+describe("Gantt schedule cascade (C157T2)", () => {
+  function makeLink(id: string, from: string, to: string): IssueLink {
+    return {
+      id,
+      issue_id: from,
+      target_issue_id: to,
+      kind: "blocks",
+      created_at: "",
+    };
+  }
+
+  // Like renderPage, but the issue queries serve `blocks` links so
+  // the schedule commit has a cascade to compute. Default fixture:
+  // the dateless lane issue i-u (ENG-9) blocks the dated issue i-d
+  // (ENG-1, 2026-11-10–12). Scheduling i-u onto 2026-11-10 leaves
+  // i-d violating (its start 11-10 < blocker end + 1 = 11-11), so
+  // rule 9 shifts it by the minimum 1 day, to 2026-11-11–13.
+  function renderCascadePage(opts: {
+    dated?: Issue[];
+    undated?: Issue[];
+    links?: IssueLink[];
+    role?: number;
+  } = {}) {
+    const datedIssues = opts.dated ?? [dated];
+    const undatedIssues = opts.undated ?? [undated];
+    const links = opts.links ?? [makeLink("l-1", "i-u", "i-d")];
+    const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+      if (path === "/api/v1/workspaces")
+        return Promise.resolve({
+          workspaces: [{ slug: "acme", name: "Acme" }],
+        });
+      if (path === "/api/v1/workspaces/acme")
+        return Promise.resolve({ role: opts.role ?? 15 });
+      if (path === `${BASE}/states`)
+        return Promise.resolve({ states: [stateStarted] });
+      if (path.includes("/subscribers"))
+        return Promise.resolve({ subscribers: [] });
+      if (path === `${BASE}/labels`) return Promise.resolve({ labels: [] });
+      if (path === "/api/v1/workspaces/acme/members")
+        return Promise.resolve({ members: [] });
+      if (path.startsWith(`${BASE}/issues/`)) {
+        const id = path.slice(`${BASE}/issues/`.length);
+        const issue = byId[id];
+        if (issue) return Promise.resolve(issue);
+      }
+      if (path.includes("/issues")) {
+        const qs = new URLSearchParams(path.split("?")[1] ?? "");
+        if (qs.get("undated") !== null)
+          return Promise.resolve({
+            results: undatedIssues,
+            links,
+            next_cursor: null,
+          });
+        return Promise.resolve({
+          results: datedIssues,
+          links,
+          next_cursor: null,
+        });
+      }
+      return Promise.reject(new Error(`unexpected GET ${path}`));
+    });
+    const patch = vi.spyOn(api, "patch").mockImplementation(() =>
+      Promise.resolve({ ...undated }),
+    );
+    const post = vi.spyOn(api, "post").mockImplementation(() =>
+      Promise.resolve({ id: "l-1", kind: "blocks" }),
+    );
+    const qc = makeQueryClient();
+    const { container } = render(
+      <MemoryRouter initialEntries={["/w/acme/p/ENG/gantt"]}>
+        <QueryClientProvider client={qc}>
+          <Routes>
+            <Route path="/w/:slug/p/:identifier/gantt" element={<Gantt />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    return { get, patch, post, container };
+  }
+
+  function cascadeGhosts(container: HTMLElement) {
+    return container.querySelectorAll('rect[data-cascade-ghost="true"]');
+  }
+
+  it("schedule a dateless blocker onto a day its dependent occupies PATCHes both (dependent shifted by the minimum)", async () => {
+    const { patch, container } = renderCascadePage();
+    await waitForLane();
+    dragTo(container, laneButton(), 1120);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-u`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-10",
+      });
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-d`, {
+        start_date: "2026-11-11",
+        target_date: "2026-11-13",
+      });
+    });
+    expect(patch).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(
+        toastAdd.mock.calls.some(
+          (c) =>
+            c[0]?.title === "Shifted 1 dependent issue" &&
+            c[0]?.type === "success",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("schedule with a non-violating dependent sends the single dragged PATCH only (no dependent PATCH, no toast)", async () => {
+    const farDependent = makeIssue(
+      "i-d",
+      "ENG-1",
+      "Dated task",
+      "2026-11-20T00:00:00Z",
+      "2026-11-22T00:00:00Z",
+      2,
+    );
+    const { patch, container } = renderCascadePage({
+      dated: [farDependent],
+    });
+    await waitForLane();
+    dragTo(container, laneButton(), 1120);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-u`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-10",
+      });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).not.toHaveBeenCalledWith(
+      `${BASE}/issues/i-d`,
+      expect.anything(),
+    );
+    expect(toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("mid-drag cascade ghost renders for the violating dependent at its shifted span", async () => {
+    const { patch, container } = renderCascadePage();
+    await waitForLane();
+    const button = laneButton();
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    await waitFor(() => {
+      expect(cascadeGhosts(container).length).toBe(1);
+    });
+    // Dependent shifts 11-10–12 → 11-11–13: 2026-11-11 is 41 days
+    // after 2026-10-01, so x = 41*28 + 2 = 1150; the dated row is
+    // idx 1, so y = 56 + 34 + 9 = 99; width = 3*28 - 4 = 80.
+    const ghost = cascadeGhosts(container)[0];
+    expect(ghost.getAttribute("x")).toBe("1150");
+    expect(ghost.getAttribute("y")).toBe("99");
+    expect(ghost.getAttribute("width")).toBe("80");
+    expect(ghost.getAttribute("fill-opacity")).toBe("0.35");
+    expect(ghost.getAttribute("stroke-dasharray")).toBe("4 3");
+    expect(ghost.getAttribute("aria-label")).toBe("Cascade preview for ENG-1");
+    // The 1-day schedule ghost still renders alongside it, at the
+    // drop day on the dragged row's track.
+    const sched = scheduleGhost(container);
+    expect(sched).not.toBeNull();
+    expect(sched!.getAttribute("x")).toBe("1122");
+    expect(sched!.getAttribute("y")).toBe("167");
+    // Preview is pure rendering: nothing PATCHed mid-drag.
+    expect(patch).not.toHaveBeenCalled();
+    fireEvent.pointerUp(svg, { clientX: 1120, clientY: 100 });
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-d`, {
+        start_date: "2026-11-11",
+        target_date: "2026-11-13",
+      });
+    });
+  });
+
+  it("rejected dependent PATCH surfaces the move-commit error toast and invalidates", async () => {
+    const { get, patch, container } = renderCascadePage();
+    await waitForLane();
+    patch.mockImplementation((path: string) =>
+      path.endsWith("/i-d")
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve({ ...undated }),
+    );
+    const issueCallsBefore = get.mock.calls.filter((c) =>
+      (c[0] as string).includes("/issues"),
+    ).length;
+    dragTo(container, laneButton(), 1120);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-u`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-10",
+      });
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-d`, {
+        start_date: "2026-11-11",
+        target_date: "2026-11-13",
+      });
+    });
+    await waitFor(() => {
+      expect(
+        toastAdd.mock.calls.some(
+          (c) =>
+            c[0]?.title ===
+              "Some dependent issues failed to shift — the timeline was refreshed." &&
+            c[0]?.type === "error",
+        ),
+      ).toBe(true);
+    });
+    // Resync: ["gantt"] invalidation refetches the window queries.
+    await waitFor(() => {
+      const now = get.mock.calls.filter((c) =>
+        (c[0] as string).includes("/issues"),
+      ).length;
+      expect(now).toBeGreaterThan(issueCallsBefore);
+    });
+  });
+
+  it("single-date dependent stays single-date: its shift PATCH carries start_date only", async () => {
+    const singleDependent = makeIssue(
+      "i-d",
+      "ENG-1",
+      "Dated task",
+      "2026-11-10T00:00:00Z",
+      null,
+      2,
+    );
+    const { patch, container } = renderCascadePage({
+      dated: [singleDependent],
+    });
+    await waitForLane();
+    dragTo(container, laneButton(), 1120);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-d`, {
+        start_date: "2026-11-11",
+      });
+    });
+    // Exactly one key: a target_date here would break single-date shape.
+    const dCall = patch.mock.calls.find(
+      (c) => c[0] === `${BASE}/issues/i-d`,
+    )!;
+    expect(Object.keys(dCall[1] as object).sort()).toEqual(["start_date"]);
+  });
+
+  it("label-column drop with a violating dependent still PATCHes nothing", async () => {
+    const { patch, container } = renderCascadePage();
+    await waitForLane();
+    const button = laneButton();
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // A negative clientX is left of the svg = over the label column.
+    fireEvent.pointerUp(svg, { clientX: -20, clientY: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    expect(toastAdd).not.toHaveBeenCalled();
+    expect(cascadeGhosts(container).length).toBe(0);
+    expect(scheduleGhost(container)).toBeNull();
+  });
+
+  it("Escape mid-drag with a violating dependent still PATCHes nothing", async () => {
+    const { patch, container } = renderCascadePage();
+    await waitForLane();
+    const button = laneButton();
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // The cascade ghost shows while the drag is live…
+    await waitFor(() => {
+      expect(cascadeGhosts(container).length).toBe(1);
+    });
+    fireEvent.keyDown(svg, { key: "Escape" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    expect(toastAdd).not.toHaveBeenCalled();
+    expect(cascadeGhosts(container).length).toBe(0);
+    expect(scheduleGhost(container)).toBeNull();
   });
 });
