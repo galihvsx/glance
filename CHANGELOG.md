@@ -5,6 +5,34 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Cascade dependents when dragging on the Calendar (cycle 158)**
+
+- Dragging on the Calendar now cascades violating dependents
+  (cycle 158), closing the asymmetry cycles 146–157 carried:
+  the Gantt cascaded on move and on lane-schedule, the Calendar
+  on neither. Wave 1 wires the strip schedule: the Calendar's
+  `fetchAllIssues` gains `include_links=1` (the Gantt pattern
+  verbatim) and the merged visible set (due ∪ start ∪ undated,
+  links deduped across the six window queries, PQL variants
+  included) feeds `computeCascade` in `"schedule"` mode, so
+  scheduling a dateless strip blocker shifts its violating
+  dependents by the rule-9 minimum, with the dragged PATCH
+  (`{ target_date: dropDay }` only) plus one
+  presence-preserving PATCH per shift through a shared
+  `commitWithCascade` block (Gantt cascade toasts, calendar
+  invalidation). The `useScheduleMutation` optimistic cache
+  update moves to the `{ issues, links }` cache shape. Wave 2
+  wires the dated-chip move through the same block: the move
+  calls `computeCascade` in `"move"` mode with the
+  delta-shifted span, so moving a blocker later shifts its
+  dependents by exactly k (transitive, cycle-safe), while
+  moving earlier or dropping same-day keeps the single PATCH
+  byte-identical. No mid-drag cascade preview this cycle — the
+  Calendar has no ghost layer (dnd-kit overlay only) — so the
+  "Shifted N dependent issues" toast is the signal; ghost
+  chips on the affected days are a later cycle's UI build.
+  Frontend-only: no backend change, no new endpoint.
+
 **Spreadsheet within-group positional reorder (cycle 152)**
 
 - Spreadsheet rows can now be reordered by dragging within a state
