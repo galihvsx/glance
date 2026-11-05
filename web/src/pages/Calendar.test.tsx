@@ -95,13 +95,17 @@ const dueNextWeek = mkIssue({
   target_date: `${dayKey(new Date(monday.getTime() + 7 * 86_400_000))}T00:00:00Z`,
 });
 // C26T1: spans Monday→Wednesday (start + target) to exercise
-// duration-preserving drops.
+// duration-preserving drops. C159T2: carries live epic-a so the
+// grouped in-lane ghost test has a dragged issue whose epic has a
+// grid lane (epic mode is unused by every other test in this file,
+// so the membership changes nothing outside that test).
 const spanning = mkIssue({
   id: "spanning",
   display_id: "ENG-4",
   name: "Spanning sprint work",
   start_date: `${mondayKey}T00:00:00Z`,
   target_date: `${dayKey(new Date(monday.getTime() + 2 * 86_400_000))}T00:00:00Z`,
+  epics: [{ id: "epic-a", name: "Epic A", archived_at: null }],
 });
 // C158T1: dateless strip blocker + its dated dependents. The
 // blocker lives in the undated (strip) set under test; the
@@ -169,6 +173,25 @@ const singleDateLink: IssueLink = {
   id: "link-5",
   issue_id: "spanning",
   target_issue_id: "start-monday",
+  kind: "blocks",
+  created_at: "2026-01-01T00:00:00Z",
+};
+// C159T2: dateless strip blocker carrying an epic no grid issue has
+// — for the grouped-mode fallback (M1) test: its ghost has no grid
+// lane, so it must render outside the bands, while its dependent
+// (cascade-dep, epic-less) still lands in the Ungrouped band.
+const epicStripBlocker = mkIssue({
+  id: "epic-strip-blocker",
+  display_id: "ENG-8",
+  name: "Epic blocker from strip",
+  start_date: null,
+  target_date: null,
+  epics: [{ id: "epic-x", name: "Epic X", archived_at: null }],
+});
+const epicBlockerLink: IssueLink = {
+  id: "link-6",
+  issue_id: "epic-strip-blocker",
+  target_issue_id: "cascade-dep",
   kind: "blocks",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -1260,6 +1283,23 @@ function ghostIn(dayKey: string): HTMLElement | null {
   return dayTarget(dayKey).querySelector('[data-schedule-ghost="true"]');
 }
 
+// C159T2: cascade-ghost counterparts of ghostIn / anyGhost.
+function cascadeGhostIn(dayKey: string): HTMLElement | null {
+  return dayTarget(dayKey).querySelector('[data-cascade-ghost="true"]');
+}
+
+function cascadeGhostsIn(dayKey: string): HTMLElement[] {
+  return Array.from(
+    dayTarget(dayKey).querySelectorAll('[data-cascade-ghost="true"]'),
+  );
+}
+
+function allCascadeGhosts(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll('[data-cascade-ghost="true"]'),
+  );
+}
+
 function anyGhost(): HTMLElement | null {
   return document.querySelector('[data-schedule-ghost="true"]');
 }
@@ -1493,5 +1533,383 @@ describe("Calendar landing ghost preview", () => {
       ),
     );
     expect(mockState.patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C159T2: live cascade ghosts. Same mid-flight style as the landing
+// ghost suite — assertions run BETWEEN beginDrag and drop()/cancel(),
+// over the same preview memo the commit uses, so preview and commit
+// can never disagree. The ghost is render-only: no PATCH fires until
+// the drop.
+// ---------------------------------------------------------------------------
+
+describe("Calendar live cascade ghosts", () => {
+  it("strip blocker over Wednesday shows the cascade ghost on the dependent's shifted day; drop commits both PATCHes", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      // Landing ghost on Wednesday; the dependent's shifted span is
+      // Thu–Sat (rule-9 minimum +3), so its ghost sits on its placing
+      // day, Saturday.
+      const landing = ghostIn(keys[2]);
+      expect(landing).not.toBeNull();
+      expect(landing!.getAttribute("aria-label")).toBe(
+        `Schedule preview for ENG-5 on ${keys[2]}`,
+      );
+      const cascade = cascadeGhostIn(keys[5]);
+      expect(cascade).not.toBeNull();
+      expect(cascade!.getAttribute("aria-label")).toBe(
+        `Cascade preview for ENG-6 on ${keys[5]}`,
+      );
+      expect(allCascadeGhosts()).toHaveLength(1);
+      // The real dependent chip stays on its current day (Wednesday)
+      // and the real blocker chip stays in the strip.
+      expect(
+        within(dayTarget(keys[2])).getByText("Dependent on blocker"),
+      ).toBeInTheDocument();
+      expect(
+        within(stripEl()).getByText("Blocker from strip"),
+      ).toBeInTheDocument();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+
+    expect(anyGhost()).toBeNull();
+    expect(allCascadeGhosts()).toHaveLength(0);
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: keys[2] },
+      ),
+    );
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/cascade-dep",
+        { start_date: keys[3], target_date: keys[5] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mockState.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Shifted 1 dependent issue",
+          type: "success",
+        }),
+      ),
+    );
+  });
+
+  it("non-violating dependent shows the landing ghost only, no cascade ghosts", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [farLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      expect(ghostIn(keys[2])).not.toBeNull();
+      expect(allCascadeGhosts()).toHaveLength(0);
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+
+    expect(anyGhost()).toBeNull();
+    expect(allCascadeGhosts()).toHaveLength(0);
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: keys[2] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("dated blocker moved later shows the cascade ghost at exactly k", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.links = [spanningLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    // spanning Wed→Fri is k = +2; its dependent shifts by exactly k
+    // (Mon–Wed → Wed–Fri), so the cascade ghost lands on Friday —
+    // the same column as the landing ghost.
+    const drag = await beginDrag(/ENG-4.*Spanning sprint work/, keys[4]);
+    try {
+      expect(ghostIn(keys[4])).not.toBeNull();
+      const cascade = cascadeGhostsIn(keys[4]);
+      expect(cascade).toHaveLength(1);
+      expect(cascade[0].getAttribute("aria-label")).toBe(
+        `Cascade preview for ENG-6 on ${keys[4]}`,
+      );
+      expect(allCascadeGhosts()).toHaveLength(1);
+      expect(
+        within(dayTarget(keys[2])).getByText("Spanning sprint work"),
+      ).toBeInTheDocument();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+
+    expect(anyGhost()).toBeNull();
+    expect(allCascadeGhosts()).toHaveLength(0);
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/spanning",
+        { start_date: keys[2], target_date: keys[4] },
+      ),
+    );
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/cascade-dep",
+        { start_date: keys[2], target_date: keys[4] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mockState.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Shifted 1 dependent issue",
+          type: "success",
+        }),
+      ),
+    );
+  });
+
+  it("dated blocker moved earlier shows the landing ghost only, no cascade ghosts", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.links = [spanningLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    // Wednesday → Monday is k = −2 ≤ 0: moving earlier only grows
+    // gaps, so the engine returns an empty cascade.
+    const drag = await beginDrag(/ENG-4.*Spanning sprint work/, keys[0]);
+    try {
+      expect(ghostIn(keys[0])).not.toBeNull();
+      expect(allCascadeGhosts()).toHaveLength(0);
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+
+    const saturdayBefore = dayKey(
+      new Date(monday.getTime() - 2 * 86_400_000),
+    );
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/spanning",
+        { start_date: saturdayBefore, target_date: keys[0] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("chain: dragging A shows ghosts for B and C (transitive) in the month view", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.links = [spanningLink, chainLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    // Month view (default) — C's shifted day (next Monday) has no
+    // week-view column, so the transitive ghost is only visible here.
+    await screen.findByRole("button", { name: /ENG-4.*Spanning sprint work/ });
+    const keys = weekDayKeys();
+    const nextMonday = dayKey(new Date(monday.getTime() + 7 * 86_400_000));
+    expect(screen.getByTestId(`day-cell-${nextMonday}`)).toBeInTheDocument();
+
+    const drag = await beginDrag(/ENG-4.*Spanning sprint work/, keys[4]);
+    try {
+      expect(ghostIn(keys[4])).not.toBeNull();
+      // B shifts +2 (Wed–Fri), placing Friday; C shifts +2 as well
+      // (Fri–Sat → Sun–next Mon), placing next Monday.
+      const bGhosts = cascadeGhostsIn(keys[4]);
+      expect(bGhosts).toHaveLength(1);
+      expect(bGhosts[0].getAttribute("aria-label")).toBe(
+        `Cascade preview for ENG-6 on ${keys[4]}`,
+      );
+      const cGhost = cascadeGhostIn(nextMonday);
+      expect(cGhost).not.toBeNull();
+      expect(cGhost!.getAttribute("aria-label")).toBe(
+        `Cascade preview for ENG-7 on ${nextMonday}`,
+      );
+      expect(allCascadeGhosts()).toHaveLength(2);
+      expect(
+        within(dayTarget(keys[5])).getByText("Far dependent"),
+      ).toBeInTheDocument();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+
+    expect(anyGhost()).toBeNull();
+    expect(allCascadeGhosts()).toHaveLength(0);
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/spanning",
+        { start_date: keys[2], target_date: keys[4] },
+      ),
+    );
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/cascade-dep",
+        { start_date: keys[2], target_date: keys[4] },
+      ),
+    );
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/far-dep",
+        { start_date: keys[6], target_date: nextMonday },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(3);
+    await waitFor(() =>
+      expect(mockState.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Shifted 2 dependent issues",
+          type: "success",
+        }),
+      ),
+    );
+  });
+
+  it("cancel clears the landing and cascade ghosts and PATCHes nothing", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    expect(ghostIn(keys[2])).not.toBeNull();
+    expect(cascadeGhostIn(keys[5])).not.toBeNull();
+    await drag.cancel();
+
+    expect(anyGhost()).toBeNull();
+    expect(allCascadeGhosts()).toHaveLength(0);
+    await waitFor(() =>
+      expect(screen.getByTestId(`week-column-${keys[2]}`)).toBeInTheDocument(),
+    );
+    expect(mockState.patch).not.toHaveBeenCalled();
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("cascade ghost follows the pointer and hides when its shifted day leaves the window", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      expect(cascadeGhostIn(keys[5])).not.toBeNull();
+      // Friday: the dependent would shift +5 (Sat–next Mon), whose
+      // placing day is next Monday — outside the week window, so the
+      // cascade ghost hides while the landing ghost follows.
+      await drag.moveTo(keys[4]);
+      expect(ghostIn(keys[4])).not.toBeNull();
+      expect(allCascadeGhosts()).toHaveLength(0);
+      // Back to Wednesday: the cascade ghost returns.
+      await drag.moveTo(keys[2]);
+      expect(ghostIn(keys[2])).not.toBeNull();
+      expect(cascadeGhostIn(keys[5])).not.toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("grouped mode: a ghost with no grid lane renders outside the bands (M1)", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [epicStripBlocker];
+    mockState.links = [epicBlockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    const user = await switchToWeek();
+    await user.click(screen.getByRole("tab", { name: "Epic" }));
+    await screen.findByRole("button", {
+      name: /ENG-8.*Epic blocker from strip/,
+    });
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-8.*Epic blocker from strip/, keys[2]);
+    try {
+      // The blocker's epic has no grid lane, so the landing ghost
+      // renders outside the bands — a direct child of the column,
+      // never misattributed to the wrong epic's band.
+      const landing = ghostIn(keys[2]);
+      expect(landing).not.toBeNull();
+      expect(landing!.parentElement).toBe(dayTarget(keys[2]));
+      expect(landing!.closest(".min-h-10")).toBeNull();
+      // The dependent is epic-less, so its cascade ghost still lands
+      // in the Ungrouped band.
+      const cascade = cascadeGhostIn(keys[5]);
+      expect(cascade).not.toBeNull();
+      expect(cascade!.closest(".min-h-10")).not.toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("grouped mode: a ghost whose epic has a grid lane renders in that lane's band", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.links = [spanningLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    const user = await switchToWeek();
+    await user.click(screen.getByRole("tab", { name: "Epic" }));
+    await screen.findByRole("button", { name: /ENG-4.*Spanning sprint work/ });
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-4.*Spanning sprint work/, keys[4]);
+    try {
+      // Lanes are [epic-a, Ungrouped] (spanning is the only epic-a
+      // grid issue); the landing ghost belongs in the first band.
+      const column = dayTarget(keys[4]);
+      const wrapper = column.querySelector("div.divide-y");
+      expect(wrapper).not.toBeNull();
+      const bands = wrapper!.children;
+      expect(
+        bands[0].querySelector('[data-schedule-ghost="true"]'),
+      ).not.toBeNull();
+      expect(
+        bands[bands.length - 1].querySelector(
+          '[data-schedule-ghost="true"]',
+        ),
+      ).toBeNull();
+      // The cascade ghost for the epic-less dependent sits in the
+      // Ungrouped band, same column.
+      expect(
+        bands[bands.length - 1].querySelector(
+          '[data-cascade-ghost="true"]',
+        ),
+      ).not.toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
   });
 });
