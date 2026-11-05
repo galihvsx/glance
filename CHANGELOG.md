@@ -5,6 +5,30 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Spreadsheet within-group positional reorder (cycle 152)**
+
+- Spreadsheet rows can now be reordered by dragging within a state
+  group (cycle 152, wave 1): the drop writes `sort_order` via the
+  existing partial PATCH, with the Board's midpoint math and its
+  rebalance → refetch → retry-once path for collapsed gaps, so the
+  new order shows in both the spreadsheet and the matching Board
+  column. This settles the design decision carried since cycle 148:
+  reorder is offered ONLY where `sort_order` is the display order
+  — grouped by state, no column sort active, no sub-group,
+  visual-filter mode, top-level rows — because a state group maps
+  1:1 to a Board column and `sort_order` is per-state. Every other
+  configuration keeps the cycle-148 no-op behavior, and cross-group
+  drops are untouched. A side effect worth knowing: with no column
+  sort active, state-grouped rows now display in `sort_order` ASC
+  (Board column order) instead of the previous updated_at-DESC
+  fetch order, since the fetch carries no `order_by`. Wave 2 adds
+  the drag affordances: a hairline insertion line at the exact drop
+  boundary (below on drag-down, above on drag-up, derived from row
+  indices so it always agrees with the planner, replacing the
+  over-row highlight only for reorder-eligible hovers), and a
+  same-group drop on the group header moves the row to the end of
+  the group. Frontend-only: no backend change, no new endpoint.
+
 **Gantt link-draw from/to child (sub-issue) bars (cycle 151)**
 
 - Sub-issue bars are now first-class dependency nodes on the Gantt
