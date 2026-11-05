@@ -35,7 +35,7 @@ function emptyViews() {
 }
 import { dayKey, startOfWeek, weekGrid } from "../lib/calendar";
 import { formatDropDay } from "../lib/calendar-dnd";
-import type { Issue } from "../lib/types";
+import type { Issue, IssueLink } from "../lib/types";
 
 // jsdom has no PointerEvent — the dnd-kit sensors need isPrimary/clientX.
 if (typeof window.PointerEvent === "undefined") {
@@ -103,19 +103,67 @@ const spanning = mkIssue({
   start_date: `${mondayKey}T00:00:00Z`,
   target_date: `${dayKey(new Date(monday.getTime() + 2 * 86_400_000))}T00:00:00Z`,
 });
-const allIssues = [dueToday, startMonday, dueNextWeek, spanning];
+// C158T1: dateless strip blocker + its dated dependents. The
+// blocker lives in the undated (strip) set under test; the
+// dependents ride the window sets (allIssues) so the cascade
+// covers them. cascadeDependent starts Monday / ends Wednesday:
+// scheduling the blocker onto Wednesday violates finish-to-start
+// and shifts it by the rule-9 minimum of 3 days (Thu–Sat).
+// farDependent starts Friday: scheduling onto Wednesday does not
+// reach it, so no cascade fires.
+const stripBlocker = mkIssue({
+  id: "strip-blocker",
+  display_id: "ENG-5",
+  name: "Blocker from strip",
+  start_date: null,
+  target_date: null,
+});
+const cascadeDependent = mkIssue({
+  id: "cascade-dep",
+  display_id: "ENG-6",
+  name: "Dependent on blocker",
+  start_date: `${mondayKey}T00:00:00Z`,
+  target_date: `${dayKey(new Date(monday.getTime() + 2 * 86_400_000))}T00:00:00Z`,
+});
+const farDependent = mkIssue({
+  id: "far-dep",
+  display_id: "ENG-7",
+  name: "Far dependent",
+  start_date: `${dayKey(new Date(monday.getTime() + 4 * 86_400_000))}T00:00:00Z`,
+  target_date: `${dayKey(new Date(monday.getTime() + 5 * 86_400_000))}T00:00:00Z`,
+});
+const allIssues = [dueToday, startMonday, dueNextWeek, spanning, cascadeDependent, farDependent];
+const blockerLink: IssueLink = {
+  id: "link-1",
+  issue_id: "strip-blocker",
+  target_issue_id: "cascade-dep",
+  kind: "blocks",
+  created_at: "2026-01-01T00:00:00Z",
+};
+const farLink: IssueLink = {
+  id: "link-2",
+  issue_id: "strip-blocker",
+  target_issue_id: "far-dep",
+  kind: "blocks",
+  created_at: "2026-01-01T00:00:00Z",
+};
 
-// C26T1: hoisted knobs for the week-view drag tests — workspace role
-// (drag gate), the PATCH mock, and the toast mock.
+// C158T1: hoisted knobs for the strip-schedule cascade tests — the
+// undated (strip) set, the dependency links riding the window
+// fetches, and the recorded GET paths (include_links assertion).
 const mockState = vi.hoisted(() => ({
   role: 15,
   patch: vi.fn(),
   toastAdd: vi.fn(),
+  undated: [] as Issue[],
+  links: [] as IssueLink[],
+  gets: [] as string[],
 }));
 
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((path: string) => {
+      mockState.gets.push(path);
       if (path === "/api/v1/workspaces") {
         return Promise.resolve({
           workspaces: [{ slug: "acme", name: "Acme" }],
@@ -139,10 +187,18 @@ vi.mock("../lib/api", () => ({
         return Promise.resolve({ states: [] });
       }
       if (path.includes("undated=1")) {
-        return Promise.resolve({ results: [], next_cursor: undefined });
+        return Promise.resolve({
+          results: mockState.undated,
+          links: mockState.links,
+          next_cursor: undefined,
+        });
       }
       if (path.includes("/issues")) {
-        return Promise.resolve({ results: allIssues, next_cursor: undefined });
+        return Promise.resolve({
+          results: allIssues,
+          links: mockState.links,
+          next_cursor: undefined,
+        });
       }
       return Promise.reject(new Error("unexpected path: " + path));
     }),
@@ -194,6 +250,9 @@ beforeEach(() => {
   mockState.role = 15;
   mockState.patch.mockReset();
   mockState.toastAdd.mockReset();
+  mockState.undated = [];
+  mockState.links = [];
+  mockState.gets = [];
 });
 
 afterEach(() => {
@@ -393,6 +452,7 @@ function pointerInit(x: number, y: number): Record<string, unknown> {
 interface ActiveDrag {
   target: HTMLElement;
   drop: () => Promise<void>;
+  cancel: () => Promise<void>;
 }
 
 /** pointerdown on the chip + two moves (activate, then travel to the target). */
@@ -433,6 +493,18 @@ async function beginDrag(
         await act(async () => {
           document.dispatchEvent(
             new Ctor("pointerup", pointerInit(endX, endY)),
+          );
+        });
+      } finally {
+        restore();
+        activeRestore = null;
+      }
+    },
+    cancel: async () => {
+      try {
+        await act(async () => {
+          document.dispatchEvent(
+            new Ctor("pointercancel", pointerInit(endX, endY)),
           );
         });
       } finally {
@@ -728,5 +800,178 @@ describe("Calendar day-cell quick-add", () => {
     expect(
       screen.queryByRole("button", { name: /Add issue on/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C158T1: strip-schedule cascade. Scheduling a dateless strip chip
+// onto a day cascades per rule 9 (schedule mode) — a violating
+// dependent shifts by the minimum that clears finish-to-start,
+// through the same shared commit block T2 will reuse for the
+// dated-chip move. Drags use the same beginDrag / dragChipToDay
+// pointer helpers as the week-view suite above.
+// ---------------------------------------------------------------------------
+
+describe("Calendar strip-schedule cascade", () => {
+  it("fetches dependency links with every window query", async () => {
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const issueGets = mockState.gets.filter((p) => p.includes("/issues"));
+    expect(issueGets.length).toBeGreaterThan(0);
+    for (const p of issueGets) {
+      expect(new URLSearchParams(p.split("?")[1]).get("include_links")).toBe(
+        "1",
+      );
+    }
+  });
+
+  it("schedules a strip chip and shifts its violating dependent by the minimum (rule 9)", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    await dragChipToDay(/ENG-5.*Blocker from strip/, keys[2]);
+
+    // The dragged chip is PATCHed to { target_date: dropDay } only.
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: keys[2] },
+      ),
+    );
+    // Blocker ends Wednesday; the dependent starts Monday, so it
+    // violates finish-to-start and shifts by the minimum that
+    // clears it: (Wed + 1) − Mon = 3 days, both dates, duration kept.
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/cascade-dep",
+        { start_date: keys[3], target_date: keys[5] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(mockState.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Shifted 1 dependent issue",
+          type: "success",
+        }),
+      ),
+    );
+  });
+
+  it("schedules with a non-violating dependent: single PATCH only, no toast", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [farLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    await dragChipToDay(/ENG-5.*Blocker from strip/, keys[2]);
+
+    // The far dependent starts Friday — Wednesday's blocker end
+    // never reaches it, so the cascade is empty and the commit
+    // stays today's single PATCH, byte-identical.
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: keys[2] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("a rejected dependent PATCH surfaces the error toast", async () => {
+    mockState.patch.mockImplementation((path: string) =>
+      path.includes("cascade-dep")
+        ? Promise.reject(new ApiError(400, "cannot move dependent"))
+        : Promise.resolve({}),
+    );
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    await dragChipToDay(/ENG-5.*Blocker from strip/, keys[2]);
+
+    await waitFor(() =>
+      expect(mockState.toastAdd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: expect.stringContaining("failed to shift"),
+          type: "error",
+        }),
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(2);
+    // The dragged chip's own PATCH still succeeded.
+    expect(mockState.patch).toHaveBeenCalledWith(
+      "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+      { target_date: keys[2] },
+    );
+  });
+
+  it("cancelling a strip drag PATCHes nothing", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    await drag.cancel();
+
+    // Let any stray mutation flush.
+    await waitFor(() =>
+      expect(screen.getByTestId(`week-column-${keys[2]}`)).toBeInTheDocument(),
+    );
+    expect(mockState.patch).not.toHaveBeenCalled();
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("a dated-chip move still PATCHes only the chip (T2 changes this next)", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    // cascade-dep is a dependent, not a blocker: moving it later
+    // cascades nothing, and T1 leaves the dated-move path alone.
+    await dragChipToDay(/ENG-6.*Dependent on blocker/, keys[4]);
+
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/cascade-dep",
+        { start_date: keys[2], target_date: keys[4] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("strip chips are not draggable for guests (role < 15)", async () => {
+    mockState.role = 5;
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const chip = screen.getByRole("button", {
+      name: /ENG-5.*Blocker from strip/,
+    });
+    expect(chip.className).not.toContain("cursor-grab");
+    expect(chip).not.toHaveAttribute("aria-roledescription");
   });
 });

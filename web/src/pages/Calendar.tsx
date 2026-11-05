@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
@@ -23,6 +23,8 @@ import {
   UNSCHEDULED_STRIP_ID,
 } from "../components/calendar/DroppableUnscheduledStrip";
 import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
+import { computeCascade, type CascadeShift } from "../components/gantt/ganttCascade";
+import { toast } from "../components/ui/toast";
 import { api, ApiError } from "../lib/api";
 import { EMPTY_FILTERS } from "../lib/filters";
 import { formatPqlError } from "../lib/pql";
@@ -31,8 +33,19 @@ import {
   fetchFeedTokenStatus,
   projectFeedURL,
 } from "../lib/calendarFeed";
-import { resolveScheduleDrop, resolveUnscheduleDrop } from "../lib/calendar-dnd";
-import type { Issue, IssueListResult, IssueState, Project, Workspace } from "../lib/types";
+import {
+  resolveScheduleDrop,
+  resolveUnscheduleDrop,
+  type ResolvedScheduleDrop,
+} from "../lib/calendar-dnd";
+import type {
+  Issue,
+  IssueLink,
+  IssueListResult,
+  IssueState,
+  Project,
+  Workspace,
+} from "../lib/types";
 import {
   bucketIssuesByDay,
   dayKey,
@@ -106,19 +119,30 @@ function loadSubWorkItems(slug: string, identifier: string): boolean {
 const calControlClass =
   "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2 text-[11px] font-medium text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50";
 
-/** Fetch every page of a bounded list query (per_page=100, cursor loop). */
-async function fetchAllIssues(path: string): Promise<Issue[]> {
-  const out: Issue[] = [];
+interface ListResultWithLinks extends IssueListResult {
+  links?: IssueLink[];
+}
+
+/** Fetch every page of a bounded list query (per_page=100, cursor loop).
+ *  C158T1: ?include_links=1 per page (Gantt pattern verbatim) so
+ *  dependency edges arrive in one shot — no N+1. */
+async function fetchAllIssues(path: string): Promise<{
+  issues: Issue[];
+  links: IssueLink[];
+}> {
+  const issues: Issue[] = [];
+  const links: IssueLink[] = [];
   let cursor: string | undefined;
   do {
     const sep = path.includes("?") ? "&" : "?";
-    const page = new URLSearchParams({ per_page: "100" });
+    const page = new URLSearchParams({ per_page: "100", include_links: "1" });
     if (cursor) page.set("cursor", cursor);
-    const res = await api.get<IssueListResult>(`${path}${sep}${page}`);
-    out.push(...res.results);
+    const res = await api.get<ListResultWithLinks>(`${path}${sep}${page}`);
+    issues.push(...res.results);
+    if (res.links) links.push(...res.links);
     cursor = res.next_cursor;
   } while (cursor);
-  return out;
+  return { issues, links };
 }
 
 export default function Calendar() {
@@ -369,14 +393,71 @@ export default function Calendar() {
   // unfiltered window sets rather than blanking — the filtered sets
   // replace them as soon as they arrive (Cycles precedent).
   const displayedDue = pqlActive
-    ? (pqlDueQuery.data ?? dueQuery.data ?? [])
-    : (dueQuery.data ?? []);
+    ? (pqlDueQuery.data?.issues ?? dueQuery.data?.issues ?? [])
+    : (dueQuery.data?.issues ?? []);
   const displayedStart = pqlActive
-    ? (pqlStartQuery.data ?? startQuery.data ?? [])
-    : (startQuery.data ?? []);
+    ? (pqlStartQuery.data?.issues ?? startQuery.data?.issues ?? [])
+    : (startQuery.data?.issues ?? []);
   const displayedUndated = pqlActive
-    ? (pqlUndatedQuery.data ?? undatedQuery.data ?? [])
-    : (undatedQuery.data ?? []);
+    ? (pqlUndatedQuery.data?.issues ?? undatedQuery.data?.issues ?? [])
+    : (undatedQuery.data?.issues ?? []);
+
+  // C158T1: cascade input — merged visible issues (due ∪ start ∪
+  // undated, dedup by id; the displayed sets above already carry
+  // the PQL variants when PQL is active) + merged links, deduped
+  // by link id (the same edge can arrive via both the due and the
+  // start window — dedup is required, not optional). Dependents
+  // outside the fetched set are skipped per rule 6 — the cascade
+  // covers the visible set only, same as Gantt. PQL mode reads
+  // the PQL queries' links (falling back to the base queries'
+  // while they load, matching the displayed-set fallback above);
+  // the probe-first apply stays link-free (it only validates).
+  const { cascadeIssues, cascadeLinks } = useMemo(() => {
+    const seen = new Set<string>();
+    const issues: Issue[] = [];
+    for (const issue of [
+      ...displayedDue,
+      ...displayedStart,
+      ...displayedUndated,
+    ]) {
+      if (seen.has(issue.id)) continue;
+      seen.add(issue.id);
+      issues.push(issue);
+    }
+    const linkSeen = new Set<string>();
+    const links: IssueLink[] = [];
+    const linkSources =
+      pqlActive &&
+      (pqlDueQuery.data ?? pqlStartQuery.data ?? pqlUndatedQuery.data)
+        ? [pqlDueQuery.data, pqlStartQuery.data, pqlUndatedQuery.data]
+        : [dueQuery.data, startQuery.data, undatedQuery.data];
+    for (const q of linkSources) {
+      if (!q) continue;
+      for (const l of q.links) {
+        if (linkSeen.has(l.id)) continue;
+        linkSeen.add(l.id);
+        links.push(l);
+      }
+    }
+    return { cascadeIssues: issues, cascadeLinks: links };
+  }, [
+    displayedDue,
+    displayedStart,
+    displayedUndated,
+    pqlActive,
+    pqlDueQuery.data,
+    pqlStartQuery.data,
+    pqlUndatedQuery.data,
+    dueQuery.data,
+    startQuery.data,
+    undatedQuery.data,
+  ]);
+  // C158T1: presence lookup for rule-7 shift PATCHes, over the
+  // same merged set the engine ran on.
+  const cascadeIssueById = useMemo(
+    () => new Map(cascadeIssues.map((i) => [i.id, i])),
+    [cascadeIssues],
+  );
 
   // Workflow states drive the state-dot colors on the event chips
   // (C19 state-dot system — same vocabulary as the board cards).
@@ -592,8 +673,69 @@ export default function Calendar() {
   // the calendar caches; a failed PATCH rolls back and toasts the server
   // message. No toast on success — the chip visibly moves.
   const scheduleMutation = useScheduleMutation(slug, identifier, { start, end, showSubWorkItems });
+  const queryClient = useQueryClient();
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
   const [announcement, setAnnouncement] = useState("");
+
+  // C158T1: shared cascade commit (cycle 158 plan, decision 6) —
+  // built for the strip-schedule path; the dated-chip move path
+  // (T2) reuses it unchanged. The dragged PATCH goes through the
+  // existing scheduleMutation (keeping its optimistic update); one
+  // presence-preserving PATCH per shift fires alongside it
+  // (Promise.allSettled), with the Gantt cascade success/failure
+  // toasts and calendar-prefix invalidation (rule 8 semantics,
+  // calendar cache keys). A dragged-PATCH failure is already
+  // toasted by the mutation's onError, so this block only toasts
+  // for shift failures — never a double toast.
+  const commitWithCascade = (
+    resolved: ResolvedScheduleDrop,
+    shifts: CascadeShift[],
+  ) => {
+    // Rule 7: a shift PATCH sends start_date only if the issue
+    // originally had one, target_date only if it originally had
+    // one — a single-date dependent stays single-date. A missing
+    // original is unreachable (shifts come from cascadeIssues)
+    // and is skipped defensively rather than patched with a
+    // guessed shape.
+    const cascadePatches = shifts.flatMap((shift) => {
+      const original = cascadeIssueById.get(shift.id);
+      if (!original) return [];
+      const body: { start_date?: string; target_date?: string } = {};
+      if (original.start_date) body.start_date = shift.start_date;
+      if (original.target_date) body.target_date = shift.target_date;
+      return [{ id: shift.id, body }];
+    });
+    void (async () => {
+      const results = await Promise.allSettled([
+        scheduleMutation.mutateAsync(
+          { uuid: resolved.uuid, dates: resolved.dates },
+          { onSuccess: () => setAnnouncement(resolved.announcement) },
+        ),
+        ...cascadePatches.map((p) =>
+          api.patch<Issue>(`${base}/issues/${p.id}`, p.body),
+        ),
+      ]);
+      const draggedFailed = results[0].status === "rejected";
+      const shiftFailed = results
+        .slice(1)
+        .some((r) => r.status === "rejected");
+      if (!draggedFailed && !shiftFailed) {
+        toast.add({
+          title: `Shifted ${cascadePatches.length} dependent ${cascadePatches.length === 1 ? "issue" : "issues"}`,
+          type: "success",
+        });
+      } else if (!draggedFailed && shiftFailed) {
+        toast.add({
+          title:
+            "Some dependent issues failed to shift — the calendar was refreshed.",
+          type: "error",
+        });
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["calendar", slug, identifier],
+      });
+    })();
+  };
 
   function handleDragStart(e: DragStartEvent) {
     const issue = e.active.data.current?.issue as Issue | undefined;
@@ -608,15 +750,45 @@ export default function Calendar() {
     const overId = e.over != null ? String(e.over.id) : null;
     // C26T2: strip drops unschedule (PATCH clears the placing date);
     // strip chips carry `fromStrip` so day drops schedule them.
+    const fromStrip = e.active.data.current?.fromStrip === true;
     const resolved =
       overId === UNSCHEDULED_STRIP_ID
         ? resolveUnscheduleDrop(issue)
         : resolveScheduleDrop(
             issue,
             overId,
-            e.active.data.current?.fromStrip === true,
+            fromStrip,
           );
     if (resolved == null) return; // no-op drop → no PATCH
+    // C158T1: strip-schedule cascade (rule 9) — the dragged chip
+    // is dateless, so its final span is the 1-day span [d, d]
+    // (d = the drop day, the same day the dragged PATCH targets).
+    // Empty cascade ⇒ today's single PATCH, byte-identical.
+    // Otherwise the dragged PATCH + one presence-preserving PATCH
+    // per shift fire through the shared cascade-commit block.
+    // The dated-chip move path below is T2's work — untouched.
+    // The unschedule path above never cascades (clearing a date
+    // can only grow gaps).
+    if (fromStrip && overId !== UNSCHEDULED_STRIP_ID) {
+      const dropDay =
+        typeof resolved.dates.target_date === "string"
+          ? resolved.dates.target_date
+          : null;
+      if (dropDay) {
+        const shifts = computeCascade(
+          cascadeIssues,
+          cascadeLinks,
+          issue.id,
+          dropDay,
+          dropDay,
+          "schedule",
+        );
+        if (shifts.length > 0) {
+          commitWithCascade(resolved, shifts);
+          return;
+        }
+      }
+    }
     scheduleMutation.mutate(
       { uuid: resolved.uuid, dates: resolved.dates },
       { onSuccess: () => setAnnouncement(resolved.announcement) },

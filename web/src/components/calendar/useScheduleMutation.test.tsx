@@ -3,7 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import { useScheduleMutation } from "./useScheduleMutation";
+import { useScheduleMutation, type CalendarQueryData } from "./useScheduleMutation";
 import { api, ApiError } from "../../lib/api";
 import { toast } from "../ui/toast";
 import type { Issue } from "../../lib/types";
@@ -84,7 +84,7 @@ describe("useScheduleMutation", () => {
   it("PATCHes the resolved dates and optimistically moves the chip", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(dueKey, [issue]);
+    client.setQueryData(dueKey, { issues: [issue], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -102,15 +102,15 @@ describe("useScheduleMutation", () => {
       "/api/v1/workspaces/acme/projects/ENG/issues/i1",
       { target_date: "2026-10-14" },
     );
-    const cached = client.getQueryData<Issue[]>(dueKey);
-    expect(cached?.[0].target_date).toBe("2026-10-14T00:00:00Z");
+    const cached = client.getQueryData<CalendarQueryData>(dueKey);
+    expect(cached?.issues[0].target_date).toBe("2026-10-14T00:00:00Z");
     expect(mockToastAdd).not.toHaveBeenCalled();
   });
 
   it("rolls back the cache and toasts the server message on PATCH failure", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(dueKey, [issue]);
+    client.setQueryData(dueKey, { issues: [issue], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -129,9 +129,9 @@ describe("useScheduleMutation", () => {
     });
 
     // Cache rolled back to the pre-drop dates.
-    const cached = client.getQueryData<Issue[]>(dueKey);
-    expect(cached).toHaveLength(1);
-    expect(cached?.[0].target_date).toBe("2026-10-10T00:00:00Z");
+    const cached = client.getQueryData<CalendarQueryData>(dueKey);
+    expect(cached?.issues).toHaveLength(1);
+    expect(cached?.issues[0].target_date).toBe("2026-10-10T00:00:00Z");
     // Error toast carries the server message.
     expect(mockToastAdd).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -144,7 +144,7 @@ describe("useScheduleMutation", () => {
   it("drops the chip from the due cache when moved outside the visible range", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", target_date: "2026-10-31T00:00:00Z" });
-    client.setQueryData(dueKey, [issue]);
+    client.setQueryData(dueKey, { issues: [issue], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -158,13 +158,13 @@ describe("useScheduleMutation", () => {
       });
     });
 
-    expect(client.getQueryData<Issue[]>(dueKey)).toHaveLength(0);
+    expect(client.getQueryData<CalendarQueryData>(dueKey)?.issues).toHaveLength(0);
   });
 
   it("leaves the start cache untouched for issues without a target date", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", start_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(startKey, [issue]);
+    client.setQueryData(startKey, { issues: [issue], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -178,17 +178,17 @@ describe("useScheduleMutation", () => {
       });
     });
 
-    const cached = client.getQueryData<Issue[]>(startKey);
-    expect(cached?.[0].start_date).toBe("2026-10-14T00:00:00Z");
-    expect(cached?.[0].target_date).toBeNull();
+    const cached = client.getQueryData<CalendarQueryData>(startKey);
+    expect(cached?.issues[0].start_date).toBe("2026-10-14T00:00:00Z");
+    expect(cached?.issues[0].target_date).toBeNull();
     expect(client.getQueryData(dueKey)).toBeUndefined();
   });
 
   it("PATCHes a null target_date to unschedule and optimistically lands the chip in the undated cache", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(dueKey, [issue]);
-    client.setQueryData(undatedKey, []);
+    client.setQueryData(dueKey, { issues: [issue], links: [] });
+    client.setQueryData(undatedKey, { issues: [], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -208,19 +208,19 @@ describe("useScheduleMutation", () => {
       { target_date: null },
     );
     // Chip leaves the dated caches…
-    expect(client.getQueryData<Issue[]>(dueKey)).toHaveLength(0);
+    expect(client.getQueryData<CalendarQueryData>(dueKey)?.issues).toHaveLength(0);
     // …and appears in the undated cache with the date cleared.
-    const undated = client.getQueryData<Issue[]>(undatedKey);
-    expect(undated).toHaveLength(1);
-    expect(undated?.[0].target_date).toBeNull();
+    const undated = client.getQueryData<CalendarQueryData>(undatedKey);
+    expect(undated?.issues).toHaveLength(1);
+    expect(undated?.issues[0].target_date).toBeNull();
     expect(mockToastAdd).not.toHaveBeenCalled();
   });
 
   it("PATCHes a null start_date to unschedule a start-placed chip", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", start_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(startKey, [issue]);
-    client.setQueryData(undatedKey, []);
+    client.setQueryData(startKey, { issues: [issue], links: [] });
+    client.setQueryData(undatedKey, { issues: [], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -238,15 +238,15 @@ describe("useScheduleMutation", () => {
       "/api/v1/workspaces/acme/projects/ENG/issues/i1",
       { start_date: null },
     );
-    expect(client.getQueryData<Issue[]>(startKey)).toHaveLength(0);
-    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(1);
+    expect(client.getQueryData<CalendarQueryData>(startKey)?.issues).toHaveLength(0);
+    expect(client.getQueryData<CalendarQueryData>(undatedKey)?.issues).toHaveLength(1);
   });
 
   it("rolls back the undated optimistic add when the unschedule PATCH fails", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1", target_date: "2026-10-10T00:00:00Z" });
-    client.setQueryData(dueKey, [issue]);
-    client.setQueryData(undatedKey, []);
+    client.setQueryData(dueKey, { issues: [issue], links: [] });
+    client.setQueryData(undatedKey, { issues: [], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -263,10 +263,10 @@ describe("useScheduleMutation", () => {
     });
 
     // Dated cache restored, optimistic undated add reverted.
-    const due = client.getQueryData<Issue[]>(dueKey);
-    expect(due).toHaveLength(1);
-    expect(due?.[0].target_date).toBe("2026-10-10T00:00:00Z");
-    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(0);
+    const due = client.getQueryData<CalendarQueryData>(dueKey);
+    expect(due?.issues).toHaveLength(1);
+    expect(due?.issues[0].target_date).toBe("2026-10-10T00:00:00Z");
+    expect(client.getQueryData<CalendarQueryData>(undatedKey)?.issues).toHaveLength(0);
     expect(mockToastAdd).toHaveBeenCalledWith(
       expect.objectContaining({ type: "error", description: "forbidden" }),
     );
@@ -275,7 +275,7 @@ describe("useScheduleMutation", () => {
   it("PATCHes a target_date when a strip chip is scheduled onto a day", async () => {
     const client = freshClient();
     const issue = mkIssue({ id: "i1" });
-    client.setQueryData(undatedKey, [issue]);
+    client.setQueryData(undatedKey, { issues: [issue], links: [] });
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
       { wrapper: wrapper(client) },
@@ -297,7 +297,7 @@ describe("useScheduleMutation", () => {
       { target_date: "2026-10-14" },
     );
     // Chip leaves the undated cache (it reappears in the day cell on refetch).
-    expect(client.getQueryData<Issue[]>(undatedKey)).toHaveLength(0);
+    expect(client.getQueryData<CalendarQueryData>(undatedKey)?.issues).toHaveLength(0);
   });
 
   it("invalidates the PQL window sets on settle so a drag in PQL mode refetches", async () => {
@@ -308,9 +308,9 @@ describe("useScheduleMutation", () => {
     const pqlDueKey = ["calendar", "acme", "ENG", "due-pql", RANGE.start, "state:open"];
     const pqlStartKey = ["calendar", "acme", "ENG", "start-pql", RANGE.start, "state:open"];
     const pqlUndatedKey = ["calendar", "acme", "ENG", "undated-pql", "state:open"];
-    client.setQueryData(pqlDueKey, [issue]);
-    client.setQueryData(pqlStartKey, []);
-    client.setQueryData(pqlUndatedKey, []);
+    client.setQueryData(pqlDueKey, { issues: [issue], links: [] });
+    client.setQueryData(pqlStartKey, { issues: [], links: [] });
+    client.setQueryData(pqlUndatedKey, { issues: [], links: [] });
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const { result } = renderHook(
       () => useScheduleMutation("acme", "ENG", RANGE),
