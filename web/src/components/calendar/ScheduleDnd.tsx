@@ -7,7 +7,12 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import type {
+  DragCancelEvent,
+  DragEndEvent,
+  DragOverEvent,
+  DragStartEvent,
+} from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import type { ReactNode } from "react";
 
@@ -22,12 +27,25 @@ export function ScheduleDnd({
   children,
   overlay,
   onDragStart,
+  onDragOver,
   onDragEnd,
+  onDragCancel,
 }: {
   children: ReactNode;
   overlay?: ReactNode;
   onDragStart: (e: DragStartEvent) => void;
+  /**
+   * C159T1: fires whenever the droppable under the pointer changes
+   * mid-drag (pointer and keyboard drags alike) — the page tracks
+   * the hovered day for the ghost preview. Optional, default no-op.
+   */
+  onDragOver?: (e: DragOverEvent) => void;
   onDragEnd: (e: DragEndEvent) => void;
+  /**
+   * C159T1: pointer-cancel / Escape — the page clears the ghost
+   * preview alongside the drag state. Optional, default no-op.
+   */
+  onDragCancel?: (e: DragCancelEvent) => void;
 }) {
   const pointerSensor = useSensor(PointerSensor, {
     activationConstraint: { distance: 6 },
@@ -44,7 +62,9 @@ export function ScheduleDnd({
       sensors={sensors}
       collisionDetection={rectIntersection}
       onDragStart={onDragStart}
+      onDragOver={onDragOver ?? (() => {})}
       onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel ?? (() => {})}
     >
       {children}
       <DragOverlay>{overlay}</DragOverlay>

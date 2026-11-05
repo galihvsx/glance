@@ -1,7 +1,12 @@
 import { Fragment, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
+import type {
+  DragCancelEvent,
+  DragEndEvent,
+  DragOverEvent,
+  DragStartEvent,
+} from "@dnd-kit/core";
 import { CalendarPlus, ChevronLeft, ChevronRight } from "lucide-react";
 import PageHeader from "../components/shell/PageHeader";
 import PeekDrawer from "../components/issue/PeekDrawer";
@@ -9,10 +14,11 @@ import PqlEditor from "../components/issue/PqlEditor";
 import SavedViewsMenu from "../components/issue/SavedViewsMenu";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { usePeekParam } from "../components/issue/usePeek";
-import { groupIssuesByEpic } from "../components/issue/groupByEpic";
+import { groupIssuesByEpic, liveEpics, UNGROUPED_EPIC_KEY } from "../components/issue/groupByEpic";
 import { splitNestedIssues } from "../components/issue/splitNestedIssues";
 import { IssueChip } from "../components/calendar/IssueChip";
 import { SubtaskChip } from "../components/calendar/SubtaskChip";
+import { GhostIssueChip } from "../components/calendar/GhostIssueChip";
 import { DraggableIssueChip } from "../components/calendar/DraggableIssueChip";
 import { DroppableDayCell } from "../components/calendar/DroppableDayCell";
 import { DroppableWeekColumn } from "../components/calendar/DroppableWeekColumn";
@@ -35,6 +41,7 @@ import {
   projectFeedURL,
 } from "../lib/calendarFeed";
 import {
+  resolveDropDates,
   resolveScheduleDrop,
   resolveUnscheduleDrop,
   type ResolvedScheduleDrop,
@@ -460,6 +467,44 @@ export default function Calendar() {
     [cascadeIssues],
   );
 
+  // C159T1: drag-preview state — the active drag (for the
+  // DragOverlay) plus the live hover day and whether the chip came
+  // from the strip. overDayKey is set on drag-over and cleared on
+  // drag end / cancel; the single dragPreview memo below derives
+  // the landing ghost from activeIssue + overDayKey (+ dragFromStrip).
+  const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
+  const [overDayKey, setOverDayKey] = useState<string | null>(null);
+  const [dragFromStrip, setDragFromStrip] = useState(false);
+
+  // C159T1: the single drag-preview memo (cycle 159 plan,
+  // decision 5) — the prospective landing day for the dragged chip,
+  // resolved the SAME way handleDragEnd resolves the drop
+  // (resolveScheduleDrop for strip chips, resolveDropDates + the
+  // placing-date rule for dated chips). T2 extends this SAME memo
+  // with cascade shifts — keep it one memo, not two. Null whenever
+  // there is nothing to preview: no active drag, pointer off-grid
+  // (over null), over the unscheduled strip (no landing day), or a
+  // same-day hover (resolveDropDates returns null — the ghost would
+  // sit exactly on top of the real chip).
+  const dragPreview = useMemo(() => {
+    if (activeIssue == null || overDayKey == null) return null;
+    if (overDayKey === UNSCHEDULED_STRIP_ID) return null;
+    if (dragFromStrip) {
+      const resolved = resolveScheduleDrop(activeIssue, overDayKey, true);
+      const landingDay =
+        typeof resolved?.dates.target_date === "string"
+          ? resolved.dates.target_date
+          : null;
+      if (!landingDay) return null;
+      return { issue: activeIssue, landingDay };
+    }
+    const dates = resolveDropDates(activeIssue, overDayKey);
+    if (!dates) return null;
+    const landingDay = dates.target_date ?? dates.start_date;
+    if (!landingDay) return null;
+    return { issue: activeIssue, landingDay };
+  }, [activeIssue, overDayKey, dragFromStrip]);
+
   // Workflow states drive the state-dot colors on the event chips
   // (C19 state-dot system — same vocabulary as the board cards).
   const statesQuery = useQuery({
@@ -608,6 +653,44 @@ export default function Calendar() {
     if (!ids) return [];
     return (byDay.get(key) ?? []).filter((i) => ids.has(i.id));
   };
+
+  // C159T1: the dragged issue's lane keys, for the grouped ghost
+  // placement — its live epic ids, or Ungrouped when it has none
+  // (same membership rule as groupIssuesByEpic, over the dragged
+  // issue alone so a strip chip — absent from the grid lanes —
+  // still resolves its band).
+  const dragPreviewLaneKeys = useMemo(() => {
+    if (dragPreview == null) return null;
+    const live = liveEpics(dragPreview.issue);
+    if (live.length === 0) return new Set([UNGROUPED_EPIC_KEY]);
+    return new Set(live.map((e) => e.id));
+  }, [dragPreview]);
+
+  // C159T1: the landing ghost for one day cell — the dragged issue's
+  // chip on the prospective day. In grouped mode it renders in the
+  // dragged issue's lane band(s); a strip chip whose epic has no grid
+  // lane (or an ungrouped chip with no Ungrouped band) falls back to
+  // the day's last band — the ghost still lands on the right day.
+  // Ungrouped (no laneKey) it renders once in the day's chip list.
+  const scheduleGhostFor = (key: string, laneKey?: string) => {
+    if (dragPreview == null || dragPreview.landingDay !== key) return null;
+    if (laneKey !== undefined) {
+      const keys = dragPreviewLaneKeys;
+      if (keys == null) return null;
+      const inLane = keys.has(laneKey);
+      const noLaneMatches = !lanes.some((l) => keys.has(l.key));
+      const isLastBand =
+        lanes.length > 0 && lanes[lanes.length - 1].key === laneKey;
+      if (!inLane && !(noLaneMatches && isLastBand)) return null;
+    }
+    return (
+      <GhostIssueChip
+        issue={dragPreview.issue}
+        state={statesById.get(dragPreview.issue.state_id)}
+        dayKey={dragPreview.landingDay}
+      />
+    );
+  };
   // C72T2: the unscheduled strip gets the same lane clusters (live epics
   // + Ungrouped last); the strip stays ONE droppable — the grouping is
   // render-only.
@@ -654,6 +737,7 @@ export default function Calendar() {
               {parentStack(issue, `${issue.id}:${lane.key}`)}
             </Fragment>
           ))}
+          {scheduleGhostFor(key, lane.key)}
         </div>
       ))}
     </div>
@@ -675,7 +759,6 @@ export default function Calendar() {
   // message. No toast on success — the chip visibly moves.
   const scheduleMutation = useScheduleMutation(slug, identifier, { start, end, showSubWorkItems });
   const queryClient = useQueryClient();
-  const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
   const [announcement, setAnnouncement] = useState("");
 
   // C158T1: shared cascade commit (cycle 158 plan, decision 6) —
@@ -741,10 +824,28 @@ export default function Calendar() {
   function handleDragStart(e: DragStartEvent) {
     const issue = e.active.data.current?.issue as Issue | undefined;
     setActiveIssue(issue ?? null);
+    setDragFromStrip(e.active.data.current?.fromStrip === true);
+  }
+
+  // C159T1: the live hover day drives the ghost preview — null while
+  // the pointer is off-grid (dnd-kit fires onDragOver with over null
+  // when no droppable is under the pointer).
+  function handleDragOver(e: DragOverEvent) {
+    setOverDayKey(e.over != null ? String(e.over.id) : null);
+  }
+
+  // C159T1: pointer-cancel / Escape clears the preview alongside the
+  // drag state — no ghost survives a cancelled drag, and no PATCH.
+  function handleDragCancel(_e: DragCancelEvent) {
+    setActiveIssue(null);
+    setOverDayKey(null);
+    setDragFromStrip(false);
   }
 
   function handleDragEnd(e: DragEndEvent) {
     setActiveIssue(null);
+    setOverDayKey(null);
+    setDragFromStrip(false);
     if (!canEdit) return;
     const issue = e.active.data.current?.issue as Issue | undefined;
     if (issue == null) return;
@@ -1116,7 +1217,9 @@ export default function Calendar() {
               // the whole column is the drop target.
               <ScheduleDnd
                 onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
                 onDragEnd={handleDragEnd}
+                onDragCancel={handleDragCancel}
                 overlay={scheduleOverlay}
               >
               {groupBy === "epic" ? (
@@ -1229,6 +1332,7 @@ export default function Calendar() {
                               {parentStack(issue)}
                             </Fragment>
                           ))}
+                          {scheduleGhostFor(key)}
                         </div>
                       </DroppableWeekColumn>
                     );
@@ -1253,7 +1357,9 @@ export default function Calendar() {
               // droppables, chips are draggables (disabled for guests).
               <ScheduleDnd
                 onDragStart={handleDragStart}
+                onDragOver={handleDragOver}
                 onDragEnd={handleDragEnd}
+                onDragCancel={handleDragCancel}
                 overlay={scheduleOverlay}
               >
               {groupBy === "epic" ? (
@@ -1347,6 +1453,7 @@ export default function Calendar() {
                             {parentStack(issue)}
                           </Fragment>
                         ))}
+                        {scheduleGhostFor(key)}
                       </div>
                     </DroppableDayCell>
                   );
