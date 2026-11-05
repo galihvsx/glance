@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import { issueDay } from "../../lib/calendar";
 import type { ScheduleDates } from "../../lib/calendar-dnd";
-import type { Issue } from "../../lib/types";
+import type { Issue, IssueLink } from "../../lib/types";
 import { toast } from "../ui/toast";
 
 /** Visible range as day keys ("YYYY-MM-DD"), matching the calendar queries. */
@@ -22,6 +22,19 @@ export interface ScheduleRange {
 
 function issuePath(slug: string, identifier: string, uuid: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(slug)}/projects/${encodeURIComponent(identifier)}/issues/${encodeURIComponent(uuid)}`;
+}
+
+/**
+ * C158T1: the calendar window queries return `{ issues, links }`
+ * (fetchAllIssues, Gantt pattern verbatim), so the cached value
+ * the optimistic update reads/writes is that object — not a bare
+ * Issue[]. The links ride along untouched: a date PATCH never
+ * changes an edge, so the optimistic pass maps `issues` only and
+ * spreads the rest through.
+ */
+export interface CalendarQueryData {
+  issues: Issue[];
+  links: IssueLink[];
 }
 
 /**
@@ -50,7 +63,7 @@ export function useScheduleMutation(
         keys.map((key) => queryClient.cancelQueries({ queryKey: key })),
       );
       const prev = keys.map(
-        (key) => [key, queryClient.getQueryData<Issue[]>(key)] as const,
+        (key) => [key, queryClient.getQueryData<CalendarQueryData>(key)] as const,
       );
       const applyDates = (issue: Issue): Issue => ({
         ...issue,
@@ -81,10 +94,15 @@ export function useScheduleMutation(
         return day !== null && day >= range.start && day < range.end;
       };
       for (const key of keys) {
-        queryClient.setQueryData<Issue[]>(key, (old) =>
+        queryClient.setQueryData<CalendarQueryData>(key, (old) =>
           old
-            ?.map((i) => (i.id === uuid ? applyDates(i) : i))
-            .filter((i) => keep(key, i)),
+            ? {
+                ...old,
+                issues: old.issues
+                  .map((i) => (i.id === uuid ? applyDates(i) : i))
+                  .filter((i) => keep(key, i)),
+              }
+            : old,
         );
       }
       // C26T2: an unscheduled chip optimistically joins the undated cache
@@ -92,15 +110,18 @@ export function useScheduleMutation(
       // so the map/filter loop above can't move it. `prev` still holds the
       // snapshots for rollback.
       const source = prev
-        .flatMap(([, data]) => data ?? [])
+        .flatMap(([, data]) => data?.issues ?? [])
         .find((i) => i.id === uuid);
       if (source && issueDay(applyDates(source)) === null) {
         const applied = applyDates(source);
-        queryClient.setQueryData<Issue[]>(undatedKey, (old) => {
-          if (!old) return [applied];
-          return old.some((i) => i.id === uuid)
-            ? old.map((i) => (i.id === uuid ? applied : i))
-            : [...old, applied];
+        queryClient.setQueryData<CalendarQueryData>(undatedKey, (old) => {
+          if (!old) return { issues: [applied], links: [] };
+          return {
+            ...old,
+            issues: old.issues.some((i) => i.id === uuid)
+              ? old.issues.map((i) => (i.id === uuid ? applied : i))
+              : [...old.issues, applied],
+          };
         });
       }
       return { prev };
