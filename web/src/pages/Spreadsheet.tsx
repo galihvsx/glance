@@ -28,13 +28,16 @@ import { toast } from "../components/ui/toast";
 import {
   planSpreadsheetDrop,
   planSpreadsheetReorder,
+  planSpreadsheetReorderToEnd,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
   spreadsheetGroupDroppableId,
   spreadsheetOverGroupKey,
+  spreadsheetReorderIndicatorSide,
   spreadsheetRowDropIssueId,
   spreadsheetRowDroppableId,
+  SPREADSHEET_GROUP_DROPPABLE_PREFIX,
   SPREADSHEET_ROW_DROPPABLE_PREFIX,
   SPREADSHEET_STATE_UNGROUPED_KEY,
   type SpreadsheetAttachDimension,
@@ -967,6 +970,14 @@ export default function Spreadsheet() {
   const [dragOverGroupKey, setDragOverGroupKey] = useState<string | null>(
     null,
   );
+  // C152T2: the top-level row id under the pointer, or null over a
+  // header / outside any row target — the second half of the
+  // insertion-indicator input (the first half is
+  // activeSpreadsheetDragId). Row droppables exist only on
+  // top-level rows, so this can never be a nested child id.
+  const [dragOverRowIssueId, setDragOverRowIssueId] = useState<string | null>(
+    null,
+  );
   // C148T2: active spreadsheet drag id (compound id of the dragged
   // appearance, or null) — the single dim source: the dragged row
   // renders opacity-40 while its drag is active, cleared on end and
@@ -1769,7 +1780,70 @@ export default function Spreadsheet() {
   function handleSpreadsheetDragOver(e: DragOverEvent) {
     const overId = e.over ? String(e.over.id) : null;
     setDragOverGroupKey(overId ? spreadsheetOverGroupKey(overId) : null);
+    setDragOverRowIssueId(overId ? spreadsheetRowDropIssueId(overId) : null);
   }
+
+  /**
+   * C152T2: the insertion indicator — group key, hovered row id,
+   * and side ("above" | "below") — or null when no line renders.
+   * The eligibility gate is the T1 drop gate verbatim (state
+   * grouping, no column sort, no sub-group, visual-filter mode, a
+   * real state group, canEdit, and the hovered row in the source's
+   * own group); the side itself comes from
+   * spreadsheetReorderIndicatorSide, indices alone, so the line
+   * always agrees with the T1 planner. Null covers every
+   * non-reorder hover: cross-group, non-state grouping, column
+   * sort active, sub-group, PQL mode, nested rows (no row
+   * droppable exists for them), and the source row itself. The
+   * header highlight is suppressed exactly when this is non-null
+   * (the line REPLACES the C148 over-row highlight for
+   * reorder-eligible hovers; cross-group hovers keep it).
+   */
+  const reorderIndicator = useMemo(() => {
+    if (activeSpreadsheetDragId === null || dragOverRowIssueId === null) {
+      return null;
+    }
+    if (
+      groupBy !== "state" ||
+      sortKey !== null ||
+      effectiveSubGroup !== "none" ||
+      pqlActive ||
+      !canEdit ||
+      groupSections === null
+    ) {
+      return null;
+    }
+    const sourceGroupKey = spreadsheetDragGroupKey(activeSpreadsheetDragId);
+    if (
+      sourceGroupKey === null ||
+      sourceGroupKey === SPREADSHEET_STATE_UNGROUPED_KEY ||
+      dragOverGroupKey !== sourceGroupKey
+    ) {
+      return null;
+    }
+    const group = groupSections.find((g) => g.key === sourceGroupKey);
+    if (!group) return null;
+    const ordered = [...group.issues].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    const side = spreadsheetReorderIndicatorSide({
+      rows: ordered,
+      sourceId: spreadsheetDragIssueId(activeSpreadsheetDragId),
+      hoveredId: dragOverRowIssueId,
+    });
+    if (side === null) return null;
+    return { groupKey: sourceGroupKey, issueId: dragOverRowIssueId, side };
+  }, [
+    activeSpreadsheetDragId,
+    dragOverRowIssueId,
+    dragOverGroupKey,
+    groupBy,
+    sortKey,
+    effectiveSubGroup,
+    pqlActive,
+    canEdit,
+    groupSections,
+  ]);
 
   /**
    * C152T1: within-state-group reorder (Board's applyDrop pipeline,
@@ -1780,23 +1854,30 @@ export default function Spreadsheet() {
    * refetch. The PATCH reuses patchMutation (optimistic
    * sort_order stamp, rollback on error, invalidate on settle),
    * exactly like a C148 state move. Only ever called from the
-   * reorder-eligible branch of handleSpreadsheetDragEnd.
+   * reorder-eligible branches of handleSpreadsheetDragEnd.
+   * C152T2: a null targetRowId is the group-header drop — move to
+   * the END of the group's sort_order sequence via
+   * planSpreadsheetReorderToEnd, same rebalance-retry path.
    */
   async function applySpreadsheetReorder(
     issueId: string,
     stateId: string,
     groupRows: Issue[],
-    targetRowId: string,
+    targetRowId: string | null,
   ) {
     const ordered = [...groupRows].sort(
       (a, b) => a.sort_order - b.sort_order,
     );
-    const plan0 = planSpreadsheetReorder({
-      rows: ordered,
-      sourceId: issueId,
-      targetRowId,
-      stateId,
-    });
+    const planFor = (rows: Issue[]) =>
+      targetRowId === null
+        ? planSpreadsheetReorderToEnd({ rows, sourceId: issueId, stateId })
+        : planSpreadsheetReorder({
+            rows,
+            sourceId: issueId,
+            targetRowId,
+            stateId,
+          });
+    const plan0 = planFor(ordered);
     if (plan0.kind === "noop") return;
     if (plan0.sort_order !== null) {
       setEditError(null);
@@ -1821,12 +1902,7 @@ export default function Spreadsheet() {
     const freshGroup = splitNestedIssues(fresh, showSubWorkItems)
       .visibleIssues.filter((i) => i.state_id === stateId)
       .sort((a, b) => a.sort_order - b.sort_order);
-    const plan1 = planSpreadsheetReorder({
-      rows: freshGroup,
-      sourceId: issueId,
-      targetRowId,
-      stateId,
-    });
+    const plan1 = planFor(freshGroup);
     if (plan1.kind === "noop" || plan1.sort_order === null) {
       setEditError("Couldn't place the row even after rebalancing.");
       return;
@@ -1841,6 +1917,7 @@ export default function Spreadsheet() {
   function handleSpreadsheetDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     setDragOverGroupKey(null);
+    setDragOverRowIssueId(null);
     setActiveSpreadsheetDragId(null);
     if (!over || !canEdit) return;
     if (groupSections === null) return;
@@ -1881,6 +1958,35 @@ export default function Spreadsheet() {
             sourceGroupKey,
             group.issues,
             targetRowId,
+          );
+          return;
+        }
+      }
+    }
+    // C152T2: same-group drop onto the state group's header — the
+    // C148 no-op — moves the row to the END of that group's
+    // sort_order sequence (destIndex = group length, same
+    // rebalance-retry path as the row drop). The eligibility gate
+    // is the T1 gate verbatim; any failure falls through to the
+    // C148 path below unchanged, and a header of a DIFFERENT
+    // group keeps its C148 cross-group meaning (state move, not
+    // reorder) via planSpreadsheetDrop.
+    if (overId.startsWith(SPREADSHEET_GROUP_DROPPABLE_PREFIX)) {
+      if (
+        targetGroupKey === sourceGroupKey &&
+        groupBy === "state" &&
+        sortKey === null &&
+        effectiveSubGroup === "none" &&
+        !pqlActive &&
+        sourceGroupKey !== SPREADSHEET_STATE_UNGROUPED_KEY
+      ) {
+        const group = groupSections.find((g) => g.key === sourceGroupKey);
+        if (group) {
+          void applySpreadsheetReorder(
+            issue.id,
+            sourceGroupKey,
+            group.issues,
+            null,
           );
           return;
         }
@@ -2089,6 +2195,50 @@ export default function Spreadsheet() {
    * row is the same editable row (same click-to-open, same cell
    * editors) as the flat row — grouping only partitions rows.
    */
+  /**
+   * C152T2: one grouped top-level row + the insertion line, when
+   * this row is the reorder-eligible hover target. The line is a
+   * hairline at the row boundary — the existing row-border token
+   * (border-border-hairline), no new color, no new component
+   * family — rendered as its own <tr> so it never conflicts with
+   * the row's own hairline border: ABOVE means the line sits
+   * before the row's fragment, BELOW after it (after any nested
+   * children, since the drop boundary is in the top-level
+   * sequence). The sub-group branch never calls this: the
+   * indicator gate already excludes sub-grouped drags.
+   */
+  function renderGroupedRow(issue: Issue, groupKey: string) {
+    const side =
+      reorderIndicator !== null &&
+      reorderIndicator.groupKey === groupKey &&
+      reorderIndicator.issueId === issue.id
+        ? reorderIndicator.side
+        : null;
+    if (side === null) return renderTopLevelRow(issue, groupKey);
+    const line = (
+      <tr
+        key={`reorder-indicator-${issue.id}`}
+        data-spreadsheet-reorder-indicator={issue.id}
+        data-spreadsheet-reorder-side={side}
+        aria-hidden="true"
+      >
+        <td
+          colSpan={COLUMNS.length + visibleCfFields.length + 1}
+          className="p-0"
+        >
+          <div className="border-t border-border-hairline" />
+        </td>
+      </tr>
+    );
+    return (
+      <Fragment key={issue.id}>
+        {side === "above" ? line : null}
+        {renderTopLevelRow(issue, groupKey)}
+        {side === "below" ? line : null}
+      </Fragment>
+    );
+  }
+
   /**
    * C148T1: one top-level row + its nested children from
    * nestedByParent, unchanged from the pre-grouping grid — the row
@@ -2366,6 +2516,7 @@ export default function Spreadsheet() {
               onDragEnd={handleSpreadsheetDragEnd}
               onDragCancel={() => {
                 setDragOverGroupKey(null);
+                setDragOverRowIssueId(null);
                 setActiveSpreadsheetDragId(null);
               }}
             >
@@ -2478,11 +2629,14 @@ export default function Spreadsheet() {
                             colSpan={
                               COLUMNS.length + visibleCfFields.length + 1
                             }
-                            highlighted={dragOverGroupKey === group.key}
+                            highlighted={
+                              dragOverGroupKey === group.key &&
+                              reorderIndicator === null
+                            }
                           />
                           {subSectionsByGroup === null
                             ? group.issues.map((issue) =>
-                                renderTopLevelRow(issue, group.key),
+                                renderGroupedRow(issue, group.key),
                               )
                             : (
                                 subSectionsByGroup.get(group.key) ?? []

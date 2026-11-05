@@ -352,6 +352,55 @@ export type SpreadsheetReorderPlan =
       sort_order: number | null;
     };
 
+/** C152T2: insertion-indicator side for a reorder-eligible hover,
+ *  derived from indices alone — never from pointer coordinates — so
+ *  the line always agrees with the T1 planner. `rows` is the group's
+ *  sort_order-ordered top-level sequence (same input the planner
+ *  sees). BELOW the hovered row when the source sits above it
+ *  (sortable convention: dragging down lands after), ABOVE it when
+ *  the source sits below it; null when the hover is not a move at
+ *  all (source row itself, or either row missing from the sequence)
+ *  — a no-op drop gets no line. */
+export function spreadsheetReorderIndicatorSide(args: {
+  rows: SortableRow[];
+  sourceId: string;
+  hoveredId: string;
+}): "above" | "below" | null {
+  const { rows, sourceId, hoveredId } = args;
+  const sourceIdx = rows.findIndex((r) => r.id === sourceId);
+  const hoverIdx = rows.findIndex((r) => r.id === hoveredId);
+  if (sourceIdx === -1 || hoverIdx === -1) return null;
+  if (sourceIdx === hoverIdx) return null;
+  return sourceIdx < hoverIdx ? "below" : "above";
+}
+
+/** C152T2: move-to-end plan for a same-group header drop — the
+ *  row-drop planner's destIndex = group length case, with no target
+ *  row. The source already last is a same-position no-op; otherwise
+ *  dropSortOrder's same-state clamp lands the row after the
+ *  group's last row, i.e. prev + SORT_ORDER_STEP (or null on a
+ *  collapsed gap, same rebalance-retry contract as
+ *  planSpreadsheetReorder). */
+export function planSpreadsheetReorderToEnd(args: {
+  rows: SortableRow[];
+  sourceId: string;
+  stateId: string;
+}): SpreadsheetReorderPlan {
+  const { rows, sourceId, stateId } = args;
+  const col = rows.filter((r) => r.state_id === stateId);
+  const sourceIdx = col.findIndex((r) => r.id === sourceId);
+  if (sourceIdx === -1) {
+    return { kind: "noop", reason: "unknown-target" };
+  }
+  if (sourceIdx === col.length - 1) {
+    return { kind: "noop", reason: "same-position" };
+  }
+  return {
+    kind: "reorder",
+    sort_order: dropSortOrder(col, sourceId, stateId, stateId, col.length),
+  };
+}
+
 export function planSpreadsheetReorder(args: {
   rows: SortableRow[];
   sourceId: string;

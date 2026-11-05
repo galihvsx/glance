@@ -33,10 +33,12 @@ import { toast } from "../components/ui/toast";
 import {
   planSpreadsheetDrop,
   planSpreadsheetReorder,
+  planSpreadsheetReorderToEnd,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
   spreadsheetOverGroupKey,
+  spreadsheetReorderIndicatorSide,
 } from "../components/issue/spreadsheetDrag";
 import type { Issue, IssueState, SubtaskRow } from "../lib/types";
 import type { Workflow } from "../lib/workflow";
@@ -1069,16 +1071,25 @@ describe("Spreadsheet drag moves (page wiring)", () => {
     });
   });
 
-  it("same-group header drop PATCHes nothing (C152T1: row drops reorder, see below)", async () => {
+  it("same-group header drop moves the row to the end (C152T2: the C148 no-op is retired)", async () => {
     await renderGrouped("state");
     const patch = await patchMock();
     drop("spreadsheet-drag:s:i1", "spreadsheet-group:s");
-    expect(patch).not.toHaveBeenCalled();
-    expect(groupHeaders()).toEqual([
-      "Backlog (2)",
-      "In Progress (1)",
-      "Ungrouped (1)",
-    ]);
+    // Backlog is i1 (0), i3 (0): move-to-end PATCHes prev + 1024.
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/i1"),
+        { sort_order: 1024 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
   });
 
   it("createdBy/stateGroups cross-group drops PATCH nothing and show no error", async () => {
@@ -2128,6 +2139,324 @@ describe("Spreadsheet state-group reorder (C152T1)", () => {
     await renderGrouped("state", "none", false);
     const patch = await patchMock();
     drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("spreadsheetReorderIndicatorSide", () => {
+  const rows = [
+    { id: "a1", state_id: "s", sort_order: 1024 },
+    { id: "a2", state_id: "s", sort_order: 2048 },
+    { id: "a3", state_id: "s", sort_order: 3072 },
+  ];
+
+  it("source above the hovered row puts the line below it", () => {
+    expect(
+      spreadsheetReorderIndicatorSide({
+        rows,
+        sourceId: "a1",
+        hoveredId: "a2",
+      }),
+    ).toBe("below");
+  });
+
+  it("source below the hovered row puts the line above it", () => {
+    expect(
+      spreadsheetReorderIndicatorSide({
+        rows,
+        sourceId: "a3",
+        hoveredId: "a2",
+      }),
+    ).toBe("above");
+  });
+
+  it("hovering the source row itself shows no line (no-op drop)", () => {
+    expect(
+      spreadsheetReorderIndicatorSide({
+        rows,
+        sourceId: "a2",
+        hoveredId: "a2",
+      }),
+    ).toBeNull();
+  });
+
+  it("rows missing from the sequence show no line", () => {
+    expect(
+      spreadsheetReorderIndicatorSide({
+        rows,
+        sourceId: "a1",
+        hoveredId: "zz",
+      }),
+    ).toBeNull();
+    expect(
+      spreadsheetReorderIndicatorSide({
+        rows,
+        sourceId: "zz",
+        hoveredId: "a2",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("planSpreadsheetReorderToEnd", () => {
+  const rows = [
+    { id: "a1", state_id: "s", sort_order: 1024 },
+    { id: "a2", state_id: "s", sort_order: 2048 },
+    { id: "a3", state_id: "s", sort_order: 3072 },
+  ];
+
+  it("mid-group source takes prev + step (last row's sort_order + 1024)", () => {
+    expect(
+      planSpreadsheetReorderToEnd({
+        rows,
+        sourceId: "a1",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "reorder", sort_order: 4096 });
+  });
+
+  it("source already last is a same-position no-op", () => {
+    expect(
+      planSpreadsheetReorderToEnd({
+        rows,
+        sourceId: "a3",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "same-position" });
+  });
+
+  it("source missing from the group is an unknown-target no-op", () => {
+    expect(
+      planSpreadsheetReorderToEnd({
+        rows,
+        sourceId: "zz",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "unknown-target" });
+  });
+
+  it("single-row group: the only row is already last", () => {
+    expect(
+      planSpreadsheetReorderToEnd({
+        rows: [{ id: "only", state_id: "s", sort_order: 1024 }],
+        sourceId: "only",
+        stateId: "s",
+      }),
+    ).toEqual({ kind: "noop", reason: "same-position" });
+  });
+});
+
+describe("Spreadsheet reorder indicator (C152T2)", () => {
+  /** Three rows in Backlog (s) at even 1024-steps, one in In Progress. */
+  function reorderIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "b1",
+        sequence_id: 4,
+        display_id: "ENG-4",
+        name: "Delta",
+        state_id: "s2",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  /** The indicator <tr>, or null when no line renders. */
+  function indicatorRow(): HTMLElement | null {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      "tr[data-spreadsheet-reorder-indicator]",
+    ) as HTMLElement | null;
+  }
+
+  function headerRow(key: string): HTMLElement {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      `tr[data-spreadsheet-group-header="${key}"]`,
+    ) as HTMLElement;
+  }
+
+  /** Start a drag, then hover a row — the dragOver helper's active
+   *  id is ignored by the handler; the dragStart id is what the
+   *  indicator reads as the source. */
+  function hoverRow(sourceDragId: string, overRowId: string) {
+    dragStart(sourceDragId);
+    dragOver(overRowId);
+  }
+
+  it("hovering a lower row shows the line below it and replaces the header highlight", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "below",
+    );
+    expect(line!.getAttribute("data-spreadsheet-reorder-indicator")).toBe(
+      "a2",
+    );
+    // The line sits immediately after the hovered row.
+    expect(
+      line!.previousElementSibling?.getAttribute("aria-label"),
+    ).toBe("Open issue ENG-2: Beta");
+    // C148 header highlight is replaced, not stacked, for
+    // reorder-eligible hovers.
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+  });
+
+  it("hovering a higher row shows the line above it", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    hoverRow("spreadsheet-drag:s:a3", "spreadsheet-row-drop:s:a2");
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "above",
+    );
+    // The line sits immediately before the hovered row.
+    expect(line!.nextElementSibling?.getAttribute("aria-label")).toBe(
+      "Open issue ENG-2: Beta",
+    );
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+  });
+
+  it("hovering the source row itself shows no line", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a1");
+    expect(indicatorRow()).toBeNull();
+    // No reorder hover → the C148 header highlight still applies.
+    expect(headerRow("s").className).toContain("bg-accent-blue/10");
+  });
+
+  it("hovering a row in a priority group shows no line (highlight only)", async () => {
+    mockData.issues = defaultIssues();
+    await renderGrouped("priority");
+    hoverRow(
+      "spreadsheet-drag:priority:2:i1",
+      "spreadsheet-row-drop:priority:2:i3",
+    );
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("priority:2").className).toContain(
+      "bg-accent-blue/10",
+    );
+  });
+
+  it("hovering with a column sort active shows no line", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by Title" }));
+    await waitFor(() => {
+      expect(
+        screen
+          .getByRole("button", { name: "Sort by Title" })
+          .getAttribute("aria-sort"),
+      ).toBe("ascending");
+    });
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+  });
+
+  it("hovering with a sub-group active shows no line", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state", "priority");
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+  });
+
+  it("PQL-mode hover shows no line", async () => {
+    mockData.issues = reorderIssues();
+    setGrouping({ groupBy: "state", subGroupBy: "none" });
+    renderSpreadsheet("/w/acme/p/ENG/spreadsheet?pql=priority+%3E%3D+0");
+    await screen.findByRole("button", { name: "Sort by Title" });
+    await waitFor(() => expect(handles().length).toBeGreaterThan(0));
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+  });
+
+  it("cross-group hover shows no line (highlight only)", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s2:b1");
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("s2").className).toContain("bg-accent-blue/10");
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+  });
+
+  it("dropping on the group header PATCHes end-of-group sort_order (prev + 1024)", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-group:s");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { sort_order: 4096 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
+  });
+
+  it("dropping on the header of a different state group keeps C148 cross-group semantics (state move, not reorder)", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-group:s2");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { state_id: "s2" },
+      );
+    });
+    await waitFor(() => {
+      expect(groupHeaders()).toEqual([
+        "Backlog (2)",
+        "In Progress (2)",
+      ]);
+    });
+  });
+
+  it("header drop when already last PATCHes nothing", async () => {
+    mockData.issues = reorderIssues();
+    await renderGrouped("state");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a3", "spreadsheet-group:s");
     expect(patch).not.toHaveBeenCalled();
   });
 });
