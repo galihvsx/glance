@@ -8,11 +8,20 @@
 //   drag source:  `spreadsheet-drag:<groupKey>:<issueId>`
 //   group header: `spreadsheet-group:<groupKey>` (droppable)
 //   row:          `spreadsheet-row-drop:<groupKey>:<issueId>` (droppable)
+//   sub-group header: `spreadsheet-sub-group:<groupKey>|<sectionKey>` (droppable, C155T1)
 // Issue ids are UUIDs (no colons), so the LAST colon always separates
 // the issue id — group keys that themselves contain a colon
 // (`priority:4`, `state:ungrouped`) survive the split. Sub-group
-// headers get no droppable id at all (C147 rule 7 preserved): a drop
-// over one resolves to no target, never to the sub-dimension.
+// header ids use `|` instead: BOTH keys can contain colons, so a
+// colon split is ambiguous there, while `|` provably never appears
+// in a group/section key (groupBy* builders emit a dimension prefix
+// + a UUID / number / canonical name / `*:ungrouped` — verified by
+// read of groupByAssignee/Cycle/Epic/Label/Module/Release/CreatedBy/
+// StateGroup and subGroup.ts; no builder emits `|`). C147 rule 7
+// is retired for sub-group headers as drop targets (C155T1): they
+// are droppable now. The "never clickable / never bulk-selectable /
+// never counted by the empty state" parts of rule 7 stay true and
+// stay in the render comment.
 
 import { dropSortOrder, type SortableRow } from "../../lib/sortOrder";
 import {
@@ -34,6 +43,9 @@ export const SPREADSHEET_DRAG_PREFIX = "spreadsheet-drag:";
 export const SPREADSHEET_GROUP_DROPPABLE_PREFIX = "spreadsheet-group:";
 /** Droppable id prefix for top-level rows (over targets). */
 export const SPREADSHEET_ROW_DROPPABLE_PREFIX = "spreadsheet-row-drop:";
+/** Droppable id prefix for sub-group headers (C155T1). */
+export const SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX =
+  "spreadsheet-sub-group:";
 /** State-group key for issues whose state_id resolves to no loaded state. */
 export const SPREADSHEET_STATE_UNGROUPED_KEY = "state:ungrouped";
 
@@ -56,6 +68,33 @@ export function spreadsheetRowDroppableId(
   issueId: string,
 ): string {
   return `${SPREADSHEET_ROW_DROPPABLE_PREFIX}${groupKey}:${issueId}`;
+}
+
+/** C155T1: droppable id for a sub-group header. The `|` separator
+ *  is unambiguous because neither key can contain it (see the
+ *  id-scheme comment above); both keys may contain colons. */
+export function spreadsheetSubGroupDroppableId(
+  groupKey: string,
+  sectionKey: string,
+): string {
+  return `${SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX}${groupKey}|${sectionKey}`;
+}
+
+/** C155T1: the group + section keys behind a sub-group header
+ *  droppable id, or null for non-matching ids, malformed ids
+ *  (no `|`, or more than one), or an empty side. */
+export function spreadsheetSubGroupDropTarget(
+  overId: string,
+): { groupKey: string; sectionKey: string } | null {
+  if (!overId.startsWith(SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX)) {
+    return null;
+  }
+  const rest = overId.slice(SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX.length);
+  const parts = rest.split("|");
+  if (parts.length !== 2 || parts[0] === "" || parts[1] === "") {
+    return null;
+  }
+  return { groupKey: parts[0], sectionKey: parts[1] };
 }
 
 /** Issue id behind a spreadsheet drag id. Identity for non-spreadsheet
@@ -88,12 +127,17 @@ export function spreadsheetRowDropIssueId(overId: string): string | null {
 }
 
 /** Primary-group key a drop target resolves to: a primary group header
- *  id, or a row id (the row's primary group — Board over=card
- *  precedent). Null for anything else: sub-group headers carry no
- *  droppable id, so a drop over one never resolves here. */
+ *  id, a sub-group header id (its primary group — C155T1, so a
+ *  cross-primary-group sub-header drop keeps the C148 meaning of a
+ *  move to that primary group, exactly like dropping on the primary
+ *  header), or a row id (the row's primary group — Board over=card
+ *  precedent). Null for anything else. */
 export function spreadsheetOverGroupKey(overId: string): string | null {
   if (overId.startsWith(SPREADSHEET_GROUP_DROPPABLE_PREFIX)) {
     return overId.slice(SPREADSHEET_GROUP_DROPPABLE_PREFIX.length);
+  }
+  if (overId.startsWith(SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX)) {
+    return spreadsheetSubGroupDropTarget(overId)?.groupKey ?? null;
   }
   if (overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)) {
     const rest = overId.slice(SPREADSHEET_ROW_DROPPABLE_PREFIX.length);
@@ -372,6 +416,64 @@ export function planSpreadsheetSubSectionDrop<T extends { id: string }>(args: {
   );
   if (targetSections.length !== 1) return null;
   const targetSection = targetSections[0];
+  if (targetSection.issues.some((i) => i.id === sourceId)) return null;
+  const sourceSections = sections.filter((s) =>
+    s.issues.some((i) => i.id === sourceId),
+  );
+  const sourceGroupKey =
+    sourceSections.length === 1
+      ? sourceSections[0].key
+      : SPREADSHEET_SUBSECTION_NO_SOURCE_KEY;
+  const plan = planSpreadsheetDrop({
+    groupBy: subGroupBy,
+    sourceGroupKey,
+    targetGroupKey: targetSection.key,
+    issue: args.issue,
+    workflow: args.workflow,
+    stateNames: args.stateNames,
+  });
+  return {
+    plan,
+    targetSection: {
+      key: targetSection.key,
+      title: targetSection.title,
+      issues: targetSection.issues,
+    },
+  };
+}
+
+/** C155T1: sub-group HEADER-drop resolution for one primary
+ *  group — the C154T1 row-drop helper minus the singleton
+ *  resolution: the target section key comes straight from the
+ *  header's droppable id, so the target section is found by key
+ *  (null if missing) and the source row must NOT already be in
+ *  it — else null, and the caller falls through to the C148 path
+ *  byte-for-byte. A delegated noop plan is returned as-is (the
+ *  caller falls through on it too, same outcome); the helper
+ *  itself never issues writes. Delegation is verbatim
+ *  planSpreadsheetDrop with groupBy = the sub-dimension and the
+ *  SECTION keys — which works because sub-section keys ARE
+ *  groupBy keys, including the `*:ungrouped` keys the plan
+ *  already treats as deliberate no-ops. A same-group header drop
+ *  is a sub-dimension MOVE, never a reorder: a section is not a
+ *  position, so the reorder gates do not apply. */
+export function planSpreadsheetSubSectionHeaderDrop<
+  T extends { id: string },
+>(args: {
+  subGroupBy: string;
+  sections: { key: string; title: string; issues: T[] }[];
+  sourceId: string;
+  targetSectionKey: string;
+  issue: Issue;
+  workflow: Workflow | null;
+  stateNames: Map<string, string>;
+}): {
+  plan: SpreadsheetDropPlan;
+  targetSection: { key: string; title: string; issues: T[] };
+} | null {
+  const { subGroupBy, sections, sourceId, targetSectionKey } = args;
+  const targetSection = sections.find((s) => s.key === targetSectionKey);
+  if (!targetSection) return null;
   if (targetSection.issues.some((i) => i.id === sourceId)) return null;
   const sourceSections = sections.filter((s) =>
     s.issues.some((i) => i.id === sourceId),
