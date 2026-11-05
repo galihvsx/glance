@@ -2553,11 +2553,21 @@ describe("Spreadsheet reorder indicator (C152T2)", () => {
     expect(indicatorRow()).toBeNull();
   });
 
-  it("hovering with a sub-group active shows no line", async () => {
+  it("hovering within a sub-group run shows the line (C153T2: retires the C152 no-line rule)", async () => {
     mockData.issues = reorderIssues();
     await renderGrouped("state", "priority");
+    // All fixture rows share priority 0, so they are one run of
+    // the Backlog group: a1 above a2 → the line sits below a2.
     hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
-    expect(indicatorRow()).toBeNull();
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "below",
+    );
+    expect(line!.getAttribute("data-spreadsheet-reorder-indicator")).toBe(
+      "a2",
+    );
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
   });
 
   it("PQL-mode hover shows no line", async () => {
@@ -2623,6 +2633,185 @@ describe("Spreadsheet reorder indicator (C152T2)", () => {
     mockData.issues = reorderIssues();
     await renderGrouped("state");
     const patch = await patchMock();
+    drop("spreadsheet-drag:s:a3", "spreadsheet-group:s");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Spreadsheet subgroup reorder indicator (C153T2)", () => {
+  /** Backlog (s) rows split across priority sub-sections. */
+  function subgroupIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 0,
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        priority: 0,
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "b1",
+        sequence_id: 4,
+        display_id: "ENG-4",
+        name: "Delta",
+        priority: 0,
+        state_id: "s2",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  function indicatorRow(): HTMLElement | null {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      "tr[data-spreadsheet-reorder-indicator]",
+    ) as HTMLElement | null;
+  }
+
+  function headerRow(key: string): HTMLElement {
+    const table = screen.getByRole("table");
+    return table.querySelector(
+      `tr[data-spreadsheet-group-header="${key}"]`,
+    ) as HTMLElement;
+  }
+
+  function hoverRow(sourceDragId: string, overRowId: string) {
+    dragStart(sourceDragId);
+    dragOver(overRowId);
+  }
+
+  it("hovering a lower row within the run shows the line below it", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    // a1 and a3 share the priority-0 run; a1 above a3 → below.
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a3");
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "below",
+    );
+    expect(line!.getAttribute("data-spreadsheet-reorder-indicator")).toBe(
+      "a3",
+    );
+    // The line sits immediately after the hovered row.
+    expect(
+      line!.previousElementSibling?.getAttribute("aria-label"),
+    ).toBe("Open issue ENG-3: Gamma");
+    expect(headerRow("s").className).not.toContain("bg-accent-blue/10");
+  });
+
+  it("hovering a higher row within the run shows the line above it", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    // a3 below a1 in the priority-0 run → above.
+    hoverRow("spreadsheet-drag:s:a3", "spreadsheet-row-drop:s:a1");
+    const line = indicatorRow();
+    expect(line).not.toBeNull();
+    expect(line!.getAttribute("data-spreadsheet-reorder-side")).toBe(
+      "above",
+    );
+    // The line sits immediately before the hovered row.
+    expect(line!.nextElementSibling?.getAttribute("aria-label")).toBe(
+      "Open issue ENG-1: Alpha",
+    );
+  });
+
+  it("cross-section hover shows no line (highlight only)", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    // a1 (priority 0) and a2 (priority 2) are different runs of
+    // the same primary group — no run resolves, no line.
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("s").className).toContain("bg-accent-blue/10");
+  });
+
+  it("multi-appearance hover shows no line", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+        assignees: [
+          { id: "u2", name: "Ada" },
+          { id: "u3", name: "Bob" },
+        ],
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+    ];
+    await renderGrouped("state", "assignees");
+    // a1 appears under both Ada and Bob — no run resolves.
+    hoverRow("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(indicatorRow()).toBeNull();
+    expect(headerRow("s").className).toContain("bg-accent-blue/10");
+  });
+
+  it("sub-grouped header drop PATCHes end-of-group sort_order (prev + 1024)", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-group:s");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { sort_order: 4096 },
+      );
+    });
+  });
+
+  it("sub-grouped header drop when already last PATCHes nothing", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    const patch = await patchMock();
+    // a3 holds the max sort_order (3072) of the full Backlog
+    // sequence, so it is already last in the group.
     drop("spreadsheet-drag:s:a3", "spreadsheet-group:s");
     expect(patch).not.toHaveBeenCalled();
   });

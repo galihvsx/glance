@@ -1788,17 +1788,22 @@ export default function Spreadsheet() {
    * C152T2: the insertion indicator — group key, hovered row id,
    * and side ("above" | "below") — or null when no line renders.
    * The eligibility gate is the T1 drop gate verbatim (state
-   * grouping, no column sort, no sub-group, visual-filter mode, a
-   * real state group, canEdit, and the hovered row in the source's
-   * own group); the side itself comes from
-   * spreadsheetReorderIndicatorSide, indices alone, so the line
-   * always agrees with the T1 planner. Null covers every
-   * non-reorder hover: cross-group, non-state grouping, column
-   * sort active, sub-group, PQL mode, nested rows (no row
-   * droppable exists for them), and the source row itself. The
-   * header highlight is suppressed exactly when this is non-null
-   * (the line REPLACES the C148 over-row highlight for
-   * reorder-eligible hovers; cross-group hovers keep it).
+   * grouping, no column sort, visual-filter mode, a real state
+   * group, canEdit, and the hovered row in the source's own
+   * group); C153T2 drops the C152 sub-group exclusion: with a
+   * sub-group active the run resolves via spreadsheetReorderRun
+   * over the rendered sub-sections (sub-group none → the full
+   * group sequence as today), and the side itself comes from
+   * spreadsheetReorderIndicatorSide on the run rows, indices
+   * alone, so the line always agrees with the T1 planner. Null
+   * covers every non-reorder hover: cross-group, non-state
+   * grouping, column sort active, PQL mode, nested rows (no row
+   * droppable exists for them), the source row itself, and
+   * cross-section / multi-appearance sub-group hovers (no run
+   * resolves). The header highlight is suppressed exactly when
+   * this is non-null (the line REPLACES the C148 over-row
+   * highlight for reorder-eligible hovers; cross-group hovers
+   * keep it).
    */
   const reorderIndicator = useMemo(() => {
     if (activeSpreadsheetDragId === null || dragOverRowIssueId === null) {
@@ -1807,7 +1812,6 @@ export default function Spreadsheet() {
     if (
       groupBy !== "state" ||
       sortKey !== null ||
-      effectiveSubGroup !== "none" ||
       pqlActive ||
       !canEdit ||
       groupSections === null
@@ -1824,9 +1828,19 @@ export default function Spreadsheet() {
     }
     const group = groupSections.find((g) => g.key === sourceGroupKey);
     if (!group) return null;
-    const ordered = [...group.issues].sort(
-      (a, b) => a.sort_order - b.sort_order,
-    );
+    // Sub-group none → the full group sequence, byte-for-byte
+    // the C152T2 behavior. Sub-group active → the resolved run,
+    // or null → no line (cross-section / multi-appearance).
+    const run =
+      effectiveSubGroup === "none"
+        ? group.issues
+        : spreadsheetReorderRun(
+            subSectionsByGroup?.get(sourceGroupKey) ?? [],
+            spreadsheetDragIssueId(activeSpreadsheetDragId),
+            dragOverRowIssueId,
+          );
+    if (run === null) return null;
+    const ordered = [...run].sort((a, b) => a.sort_order - b.sort_order);
     const side = spreadsheetReorderIndicatorSide({
       rows: ordered,
       sourceId: spreadsheetDragIssueId(activeSpreadsheetDragId),
@@ -1841,6 +1855,7 @@ export default function Spreadsheet() {
     groupBy,
     sortKey,
     effectiveSubGroup,
+    subSectionsByGroup,
     pqlActive,
     canEdit,
     groupSections,
@@ -1986,16 +2001,18 @@ export default function Spreadsheet() {
     // C148 no-op — moves the row to the END of that group's
     // sort_order sequence (destIndex = group length, same
     // rebalance-retry path as the row drop). The eligibility gate
-    // is the T1 gate verbatim; any failure falls through to the
-    // C148 path below unchanged, and a header of a DIFFERENT
-    // group keeps its C148 cross-group meaning (state move, not
-    // reorder) via planSpreadsheetDrop.
+    // is the T1 gate verbatim; C153T2 extends it to sub-grouped
+    // views (same other conditions): the header meaning ("to the
+    // end") is the full group sequence, not the source's run, so
+    // the drop passes group.issues + null target. Any failure
+    // falls through to the C148 path below unchanged, and a header
+    // of a DIFFERENT group keeps its C148 cross-group meaning
+    // (state move, not reorder) via planSpreadsheetDrop.
     if (overId.startsWith(SPREADSHEET_GROUP_DROPPABLE_PREFIX)) {
       if (
         targetGroupKey === sourceGroupKey &&
         groupBy === "state" &&
         sortKey === null &&
-        effectiveSubGroup === "none" &&
         !pqlActive &&
         sourceGroupKey !== SPREADSHEET_STATE_UNGROUPED_KEY
       ) {
@@ -2223,8 +2240,12 @@ export default function Spreadsheet() {
    * the row's own hairline border: ABOVE means the line sits
    * before the row's fragment, BELOW after it (after any nested
    * children, since the drop boundary is in the top-level
-   * sequence). The sub-group branch never calls this: the
-   * indicator gate already excludes sub-grouped drags.
+   * sequence). C153T2: the sub-group branch routes a row through
+   * this only when the indicator targets that row (see the branch
+   * below); otherwise rows render via renderTopLevelRow exactly
+   * as before. With no indicator target this returns
+   * renderTopLevelRow unchanged, so the routing is a no-op for
+   * every non-target row.
    */
   function renderGroupedRow(issue: Issue, groupKey: string) {
     const side =
@@ -2691,7 +2712,20 @@ export default function Spreadsheet() {
                                     </td>
                                   </tr>
                                   {sub.issues.map((issue) =>
-                                    renderTopLevelRow(issue, group.key),
+                                    // C153T2: route ONLY the
+                                    // indicator-target row through
+                                    // renderGroupedRow (the line
+                                    // renders there); every other
+                                    // row renders via
+                                    // renderTopLevelRow exactly as
+                                    // before.
+                                    reorderIndicator !== null &&
+                                    reorderIndicator.groupKey ===
+                                      group.key &&
+                                    reorderIndicator.issueId ===
+                                      issue.id
+                                      ? renderGroupedRow(issue, group.key)
+                                      : renderTopLevelRow(issue, group.key),
                                   )}
                                 </Fragment>
                               ))}
