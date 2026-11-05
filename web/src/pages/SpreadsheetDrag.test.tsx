@@ -34,6 +34,7 @@ import {
   planSpreadsheetDrop,
   planSpreadsheetReorder,
   planSpreadsheetReorderToEnd,
+  planSpreadsheetSubSectionDrop,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
@@ -1914,6 +1915,163 @@ describe("spreadsheetReorderRun", () => {
   });
 });
 
+describe("planSpreadsheetSubSectionDrop", () => {
+  const stateNames = new Map([
+    ["s", "Backlog"],
+    ["s2", "In Progress"],
+  ]);
+
+  it("unique target section delegates to planSpreadsheetDrop with the section keys", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const tgt = mkIssue({ id: "tgt", state_id: "s", priority: 2 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src] },
+      { key: "priority:2", title: "Medium", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetRowId: "tgt",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "patch", body: { priority: 2 } },
+      targetSection: { key: "priority:2", title: "Medium", issues: [tgt] },
+    });
+  });
+
+  it("multi-appearance target resolves to null, never to a guessed section", () => {
+    const src = mkIssue({ id: "src", state_id: "s" });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    const sections = [
+      { key: "lb1", title: "Red", issues: [src, tgt] },
+      { key: "lb2", title: "Blue", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "labels",
+        sections,
+        sourceId: "src",
+        targetRowId: "tgt",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toBeNull();
+  });
+
+  it("source already in the target section resolves to null", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const other = mkIssue({ id: "other", state_id: "s", priority: 0 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src, other] },
+      { key: "priority:2", title: "Medium", issues: [] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetRowId: "other",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toBeNull();
+  });
+
+  it("missing target row resolves to null", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetRowId: "zz",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toBeNull();
+  });
+
+  it("ungrouped target section delegates to the plan's Ungrouped no-op", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      project_structure: {
+        modules: [],
+        cycle: { id: "cy1", name: "Sprint 1" },
+      },
+    });
+    const tgt = mkIssue({
+      id: "tgt",
+      state_id: "s",
+      project_structure: { modules: [] },
+    });
+    const sections = [
+      { key: "cy1", title: "Sprint 1", issues: [src] },
+      { key: "cycle:ungrouped", title: "Ungrouped", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "cycles",
+        sections,
+        sourceId: "src",
+        targetRowId: "tgt",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "noop", reason: "ungrouped" },
+      targetSection: {
+        key: "cycle:ungrouped",
+        title: "Ungrouped",
+        issues: [tgt],
+      },
+    });
+  });
+
+  it("multi-appearance source with a unique target delegates via the sentinel source key", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      labels: [
+        { id: "lb1", name: "Red", color: "#f00" },
+        { id: "lb3", name: "Green", color: "#0f0" },
+      ],
+    });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    const sections = [
+      { key: "lb1", title: "Red", issues: [src] },
+      { key: "lb3", title: "Green", issues: [src] },
+      { key: "lb2", title: "Blue", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionDrop({
+        subGroupBy: "labels",
+        sections,
+        sourceId: "src",
+        targetRowId: "tgt",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "attach", dimension: "labels", memberId: "lb2" },
+      targetSection: { key: "lb2", title: "Blue", issues: [tgt] },
+    });
+  });
+});
+
 describe("Spreadsheet state-group reorder (C152T1)", () => {
   /** Three rows in Backlog (s) at even 1024-steps, one in In Progress. */
   function reorderIssues(): Issue[] {
@@ -2246,19 +2404,25 @@ describe("Spreadsheet within-sub-group reorder (C153T1)", () => {
     ];
   }
 
-  it("cross-section row drop PATCHes nothing", async () => {
+  it("cross-section row drop PATCHes the target priority (C154T1: retires the C153 no-op)", async () => {
     mockData.issues = subgroupIssues();
     await renderGrouped("state", "priority");
     const table = screen.getByRole("table");
     // Backlog splits into priority 2 + priority 0 sections, In
     // Progress has one — a1 (priority 0) and a2 (priority 2) are in
-    // different runs of the same primary group.
+    // different sections of the same primary group, so the drop is
+    // now a sub-dimension MOVE, not a reorder and not a no-op.
     expect(
       table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
     ).toHaveLength(3);
     const patch = await patchMock();
     drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
-    expect(patch).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { priority: 2 },
+      );
+    });
   });
 
   it("multi-appearance row drop PATCHes nothing", async () => {
@@ -2307,6 +2471,283 @@ describe("Spreadsheet within-sub-group reorder (C153T1)", () => {
     const patch = await patchMock();
     drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Spreadsheet cross-sub-section move (C154T1)", () => {
+  /** Both rows in Backlog (s), split across every sub-dimension. */
+  function subsectionIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 0,
+        state_id: "s",
+        created_by: "u2",
+        labels: [{ id: "lb1", name: "Red", color: "#f00" }],
+        project_structure: {
+          modules: [],
+          cycle: { id: "cy1", name: "Sprint 1" },
+          release: { id: "r1", name: "v1" },
+        },
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s",
+        created_by: "u9",
+        labels: [{ id: "lb2", name: "Blue", color: "#00f" }],
+        project_structure: {
+          modules: [],
+          cycle: { id: "cy2", name: "Sprint 2" },
+          release: { id: "r2", name: "v2" },
+        },
+      }),
+    ];
+  }
+
+  it("cross-section cycle drop runs the move pipeline (add then remove)", async () => {
+    mockData.issues = subsectionIssues();
+    await renderGrouped("state", "cycles");
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/cycles/cy2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    await waitFor(() => {
+      expect(del).toHaveBeenCalledWith(
+        expect.stringContaining("/cycles/cy1/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+  });
+
+  it("cross-section release drop assigns, never DELETEs", async () => {
+    mockData.issues = subsectionIssues();
+    await renderGrouped("state", "releases");
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i2");
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining("/releases/r2/issues"),
+        { issue_ids: ["i1"] },
+      );
+    });
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("cross-section label drop attaches to the target section's label", async () => {
+    mockData.issues = subsectionIssues();
+    await renderGrouped("state", "labels");
+    const post = await postMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i2");
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([p]) =>
+            typeof p === "string" && p.includes("/issues/i1/labels/lb2"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("same-section drop does NOT move (source already in the target section)", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 2,
+        state_id: "s",
+        project_structure: {
+          modules: [],
+          cycle: { id: "cy1", name: "Sprint 1" },
+        },
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s2",
+        project_structure: {
+          modules: [],
+          cycle: { id: "cy1", name: "Sprint 1" },
+        },
+      }),
+    ];
+    await renderGrouped("priority", "cycles");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:priority:2:i1", "spreadsheet-row-drop:priority:2:i2");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("multi-appearance target drop PATCHes nothing", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        assignees: [
+          { id: "u2", name: "Ada" },
+          { id: "u3", name: "Bob" },
+        ],
+      }),
+    ];
+    await renderGrouped("state", "assignees");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i2");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it("ungrouped-section drop PATCHes nothing (detach-from-all stays out of scope)", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        project_structure: {
+          modules: [],
+          cycle: { id: "cy1", name: "Sprint 1" },
+        },
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        project_structure: { modules: [] },
+      }),
+    ];
+    await renderGrouped("state", "cycles");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s:i2");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("createdBy sub-group drop PATCHes nothing", async () => {
+    // Both rows under one priority primary group, split across
+    // createdBy sub-sections (u2 vs unknown u9).
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 2,
+        state_id: "s",
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s2",
+        created_by: "u9",
+      }),
+    ];
+    await renderGrouped("priority", "createdBy");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:priority:2:i1", "spreadsheet-row-drop:priority:2:i2");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("stateGroups sub-group drop PATCHes nothing", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "i1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 2,
+        state_id: "s",
+      }),
+      mkIssue({
+        id: "i2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s2",
+      }),
+    ];
+    await renderGrouped("priority", "stateGroups");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    drop("spreadsheet-drag:priority:2:i1", "spreadsheet-row-drop:priority:2:i2");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("cross-primary-group drop keeps its C148 meaning with a sub-group active", async () => {
+    mockData.issues = [
+      ...subsectionIssues(),
+      mkIssue({
+        id: "i3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        priority: 0,
+        state_id: "s2",
+      }),
+    ];
+    await renderGrouped("state", "priority");
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:i1", "spreadsheet-row-drop:s2:i3");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/i1"),
+        { state_id: "s2" },
+      );
+    });
   });
 });
 
