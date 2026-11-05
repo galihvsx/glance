@@ -14,6 +14,7 @@
 // headers get no droppable id at all (C147 rule 7 preserved): a drop
 // over one resolves to no target, never to the sub-dimension.
 
+import { dropSortOrder, type SortableRow } from "../../lib/sortOrder";
 import {
   allowedNextStateIds,
   isTransitionAllowed,
@@ -73,6 +74,17 @@ export function spreadsheetDragGroupKey(activeId: string): string | null {
   const rest = activeId.slice(SPREADSHEET_DRAG_PREFIX.length);
   const sep = rest.lastIndexOf(":");
   return sep === -1 ? null : rest.slice(0, sep);
+}
+
+/** Issue id behind a spreadsheet row droppable id, or null for
+ *  non-row ids. Same LAST-colon split as the drag/group helpers, so
+ *  colon-bearing group keys (`priority:4`, `state:ungrouped`)
+ *  survive. */
+export function spreadsheetRowDropIssueId(overId: string): string | null {
+  if (!overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)) return null;
+  const rest = overId.slice(SPREADSHEET_ROW_DROPPABLE_PREFIX.length);
+  const sep = rest.lastIndexOf(":");
+  return sep === -1 ? null : rest.slice(sep + 1);
 }
 
 /** Primary-group key a drop target resolves to: a primary group header
@@ -139,8 +151,13 @@ export type SpreadsheetDropPlan =
     };
 
 /** Cross-group drop semantics, mirroring Board's onDragEnd verbatim
- *  per dimension (cycle plan rule 6). Same-group is always a no-op,
- *  never a reorder (rule 4). State moves run under the C68 transition
+ *  per dimension (cycle plan rule 6). Same-group is a no-op here
+ *  (C148 rule 4) — the one C152T1 exception, a same-group row drop
+ *  in the reorder-eligible configuration (state grouping, no column
+ *  sort, no sub-group, visual-filter mode), never reaches this
+ *  function: the handler routes it through planSpreadsheetReorder
+ *  first, so every non-eligible path keeps this no-op byte-for-byte.
+ *  State moves run under the C68 transition
  *  guard via Board's own isTransitionAllowed helper — a blocked move
  *  PATCHes nothing and the caller surfaces Board's error path (the
  *  "Move blocked" toast naming permitted next states). A null workflow
@@ -306,4 +323,58 @@ export function planSpreadsheetDrop(args: {
     default:
       return { kind: "noop", reason: "unknown-dimension" };
   }
+}
+
+/** C152T1: within-state-group reorder plan. The caller guarantees
+ *  the eligibility conditions (grouped by state, no column sort, no
+ *  sub-group, visual-filter mode, top-level rows in one real state
+ *  group, canEdit) — this planner only computes the write, so it
+ *  stays framework-free and unit-testable like planSpreadsheetDrop.
+ *  `rows` is the group's sort_order-ordered top-level sequence
+ *  (filtered to the state defensively: a wider list still plans
+ *  against the state column, never a foreign row). destIndex follows
+ *  the dnd-kit sortable convention via dropSortOrder: the hovered
+ *  row's index in the group's sequence is the position the dragged
+ *  row occupies AFTER the move, i.e. dragging down onto a row lands
+ *  after it, dragging up onto a row lands before it. A null
+ *  sort_order is NOT a value to write: the gap collapsed below
+ *  REBALANCE_GAP, so the caller rebalances the column, refetches,
+ *  and retries once (Board pattern verbatim, never a silent second
+ *  write without a refetch). */
+export type SpreadsheetReorderPlan =
+  | {
+      kind: "noop";
+      reason: "same-position" | "unknown-target";
+    }
+  | {
+      kind: "reorder";
+      /** Null = collapsed gap: rebalance + refetch + retry once. */
+      sort_order: number | null;
+    };
+
+export function planSpreadsheetReorder(args: {
+  rows: SortableRow[];
+  sourceId: string;
+  targetRowId: string;
+  stateId: string;
+}): SpreadsheetReorderPlan {
+  const { rows, sourceId, targetRowId, stateId } = args;
+  const col = rows.filter((r) => r.state_id === stateId);
+  const sourceIdx = col.findIndex((r) => r.id === sourceId);
+  const destIndex = col.findIndex((r) => r.id === targetRowId);
+  if (sourceIdx === -1 || destIndex === -1) {
+    return { kind: "noop", reason: "unknown-target" };
+  }
+  // arrayMove-after-removal (dropSortOrder's same-state branch)
+  // lands the dragged row at exactly destIndex (clamped), so a
+  // final position equal to the source index is a no-move — which,
+  // under this convention, is exactly the source-row drop.
+  const finalPos = Math.max(0, Math.min(destIndex, col.length - 1));
+  if (finalPos === sourceIdx) {
+    return { kind: "noop", reason: "same-position" };
+  }
+  return {
+    kind: "reorder",
+    sort_order: dropSortOrder(col, sourceId, stateId, stateId, destIndex),
+  };
 }
