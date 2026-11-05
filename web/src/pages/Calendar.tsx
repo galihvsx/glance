@@ -24,6 +24,7 @@ import {
 } from "../components/calendar/DroppableUnscheduledStrip";
 import { useScheduleMutation } from "../components/calendar/useScheduleMutation";
 import { computeCascade, type CascadeShift } from "../components/gantt/ganttCascade";
+import { barSpan } from "../lib/gantt";
 import { toast } from "../components/ui/toast";
 import { api, ApiError } from "../lib/api";
 import { EMPTY_FILTERS } from "../lib/filters";
@@ -766,7 +767,6 @@ export default function Calendar() {
     // Empty cascade ⇒ today's single PATCH, byte-identical.
     // Otherwise the dragged PATCH + one presence-preserving PATCH
     // per shift fire through the shared cascade-commit block.
-    // The dated-chip move path below is T2's work — untouched.
     // The unschedule path above never cascades (clearing a date
     // can only grow gaps).
     if (fromStrip && overId !== UNSCHEDULED_STRIP_ID) {
@@ -782,6 +782,36 @@ export default function Calendar() {
           dropDay,
           dropDay,
           "schedule",
+        );
+        if (shifts.length > 0) {
+          commitWithCascade(resolved, shifts);
+          return;
+        }
+      }
+    }
+    // C158T2: dated-chip move cascade ("move" mode, rules 3–4) —
+    // k is the drop delta and the new span is the delta-shifted
+    // dates resolveDropDates produced (barSpan resolves a
+    // single-date chip to its 1-day span, the engine's contract).
+    // Moving earlier (k ≤ 0) ⇒ the engine returns an empty
+    // cascade, so the commit stays today's single PATCH,
+    // byte-identical. Otherwise the dragged PATCH + one
+    // presence-preserving PATCH per shift fire through the SAME
+    // shared cascade-commit block as the strip-schedule path
+    // (decision 6), with the same toasts and invalidation.
+    if (!fromStrip && overId !== UNSCHEDULED_STRIP_ID) {
+      const newSpan = barSpan(
+        resolved.dates.start_date,
+        resolved.dates.target_date,
+      );
+      if (newSpan.start !== null && newSpan.end !== null) {
+        const shifts = computeCascade(
+          cascadeIssues,
+          cascadeLinks,
+          issue.id,
+          newSpan.start,
+          newSpan.end,
+          "move",
         );
         if (shifts.length > 0) {
           commitWithCascade(resolved, shifts);
