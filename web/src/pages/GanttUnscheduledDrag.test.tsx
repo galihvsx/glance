@@ -258,6 +258,30 @@ describe("Gantt unscheduled drag (C156T1)", () => {
     expect(screen.queryByText("Undated task")).not.toBeNull();
   });
 
+  it("release over the PageHeader (outside the page container) leaves no stale drag to schedule on a later timeline click", async () => {
+    const { patch, container } = renderPage();
+    await waitForLane();
+    const button = laneButton();
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // The ghost shows while the drag is live.
+    expect(scheduleGhost(container)).not.toBeNull();
+    // Release over document.body: outside the page-container div
+    // (like the PageHeader above it), so no React handler sees the
+    // release — only the window listener can clear the drag.
+    fireEvent.pointerUp(document.body, { clientX: 100, clientY: 10 });
+    // The drag is cleared at once (ghost gone, no PATCH).
+    expect(scheduleGhost(container)).toBeNull();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    // A later unrelated pointerup over the timeline svg — no fresh
+    // pointerdown — must NOT schedule the stale issue.
+    fireEvent.pointerUp(svg, { clientX: 1120, clientY: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("release back on the label button after dragging PATCHes nothing and does not open peek", async () => {
     const { patch, container } = renderPage();
     await waitForLane();

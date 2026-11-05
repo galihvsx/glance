@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Link2 } from "lucide-react";
@@ -625,6 +625,38 @@ export default function Gantt() {
   const [drag, setDrag] = useState<DragState | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const suppressClick = useRef(false);
+
+  // C156T1 (fix loop): a schedule drag released over an element
+  // OUTSIDE the page container (the PageHeader sits outside the
+  // div carrying onPagePointerUp) never reaches any React handler,
+  // so the drag would stay in state and commit on a LATER unrelated
+  // svg pointerup. This window-level listener clears the stale
+  // drag — it never commits. The svg's own onPointerUp owns the
+  // commit and fires first in bubble order (target → React root →
+  // window), so a timeline release has already committed and
+  // cleared by the time this runs; the re-clear here is a no-op
+  // (and the suppressClick re-set is the same one the svg handler
+  // already did). Active only while a schedule drag is live, so
+  // bar move/resize drags keep today's behavior.
+  useEffect(() => {
+    if (drag?.mode !== "schedule") return;
+    const clearStaleScheduleDrag = () => {
+      const moved = drag.dx !== 0;
+      setDrag(null);
+      if (moved) {
+        suppressClick.current = true;
+        setTimeout(() => {
+          suppressClick.current = false;
+        }, 0);
+      }
+    };
+    window.addEventListener("pointerup", clearStaleScheduleDrag);
+    window.addEventListener("pointercancel", clearStaleScheduleDrag);
+    return () => {
+      window.removeEventListener("pointerup", clearStaleScheduleDrag);
+      window.removeEventListener("pointercancel", clearStaleScheduleDrag);
+    };
+  }, [drag]);
 
   // C146T2: live cascade ghost preview. During a drag, the same
   // engine the commit path uses runs over the prospective span, so
