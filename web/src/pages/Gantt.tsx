@@ -43,6 +43,7 @@ import {
   dayToX,
   ganttDays,
   ganttMonths,
+  xToDay,
 } from "../lib/gantt";
 import {
   cancelLinkDraw,
@@ -112,7 +113,7 @@ async function fetchAllIssues(path: string): Promise<{
  *  barSpan, which fills the missing date, so presence cannot be
  *  recovered from them. The move commit uses presence to PATCH
  *  only the originally-present date(s). */
-type DragState = {
+type BarDragState = {
   id: string;
   startX: number;
   origStart: string;
@@ -122,6 +123,19 @@ type DragState = {
   hasStart: boolean;
   hasTarget: boolean;
 };
+
+/** C156T1: a schedule drag has no orig dates — the dragged issue
+ *  is undated, so there is nothing to shift from. The drop day
+ *  (the pointer's day, via xToDay) IS the new 1-day span; the
+ *  commit PATCHes both dates to it. */
+type ScheduleDragState = {
+  id: string;
+  startX: number;
+  dx: number;
+  mode: "schedule";
+};
+
+type DragState = BarDragState | ScheduleDragState;
 
 /** Minimal issue shape the drag handlers read: id + stored dates.
  *  A full Issue satisfies this; a child bar passes its bridged
@@ -135,7 +149,7 @@ type DragIssue = Pick<Issue, "id" | "start_date" | "target_date">;
  *  preview and the commit path both call this, so the preview never
  *  promises a cascade the commit would not make. */
 function prospectiveSpan(
-  drag: DragState,
+  drag: BarDragState,
   dayDelta: number,
 ): { start: string; end: string } {
   let start = addDays(drag.origStart, dayDelta);
@@ -620,6 +634,12 @@ export default function Gantt() {
   // violating dependent), so a no-cascade drag previews nothing.
   const previewCascade = useMemo(() => {
     if (!drag) return [];
+    // C156T1: a schedule drag has no cascade ghosts — computeCascade
+    // early-returns [] for a dateless dragged issue (no old end to
+    // compute k from), so the ghost is the 1-day bar only.
+    // Cascade-on-schedule is a carried follow-up (cycle 156 plan,
+    // decision 5), not bolted on here.
+    if (drag.mode === "schedule") return [];
     const span = prospectiveSpan(drag, Math.round(drag.dx / DAY_W));
     return computeCascade(
       cascadeIssues,
@@ -697,6 +717,23 @@ export default function Gantt() {
     });
   };
 
+  // C156T1: press on a top-level unscheduled label button starts a
+  // schedule drag (left button + canEdit only). No orig dates: the
+  // issue is undated. Link mode never competes — the row has no bar
+  // to draw from — so no linkMode gate. Child rows (T2) do not get
+  // this source yet; the handler is wired only to issue-undated
+  // label buttons below.
+  const onUnscheduledPointerDown = (e: React.PointerEvent, issue: DragIssue) => {
+    if (!canEdit || e.button !== 0) return;
+    e.preventDefault();
+    setDrag({
+      id: issue.id,
+      startX: svgX(e.clientX),
+      dx: 0,
+      mode: "schedule",
+    });
+  };
+
   // C144T1: edge-handle press starts a resize drag. Handles are
   // siblings of the bar rect (never ancestors), so a handle press
   // cannot reach onBarPointerDown; handles render only when
@@ -757,6 +794,33 @@ export default function Gantt() {
       return;
     }
     if (!drag) return;
+    // C156T1: schedule drag — the drop day is the pointer's day
+    // (xToDay clamps into the window). A release outside the
+    // timeline svg (label column, toolbar, …) is a no-op: only a
+    // release over the svg schedules. The commit PATCHes the single
+    // issue with both dates = the drop day. Cascade-on-schedule is
+    // NOT wired here: computeCascade early-returns [] for a dateless
+    // dragged issue (no old end to compute k from), so the move
+    // cascade path is move-only — the gap is carried (cycle 156
+    // plan, decision 5), not re-implemented.
+    if (drag.mode === "schedule") {
+      const x = svgX(e.clientX);
+      const overTimeline = svgRef.current?.contains(e.target as Node) ?? false;
+      const moved = drag.dx !== 0;
+      setDrag(null);
+      if (moved) {
+        // Suppress the click that follows a real drag (it would
+        // open the peek) — same as the bar commit path below.
+        suppressClick.current = true;
+        setTimeout(() => {
+          suppressClick.current = false;
+        }, 0);
+      }
+      if (!overTimeline || x < 0) return;
+      const day = xToDay(x, windowStart, DAY_W, days.length);
+      patchMutation.mutate({ id: drag.id, start: day, end: day });
+      return;
+    }
     const dayDelta = Math.round(drag.dx / DAY_W);
     setDrag(null);
     if (dayDelta === 0) return;
@@ -865,6 +929,34 @@ export default function Gantt() {
     })();
   };
 
+  // C156T1: a schedule drag released anywhere outside the timeline
+  // svg (label column, toolbar, …) is a no-op — clear it here so it
+  // can never commit on a later svg pointerup. This runs on pointerup
+  // bubbling to the page container; the svg's own onPointerUp commits
+  // first for timeline releases, and this handler is a no-op for
+  // those (target inside the svg) and for non-schedule drags. It
+  // never commits — the svg handler owns the commit — so the stale
+  // closure on the bubbled event cannot double-PATCH.
+  const onPagePointerUp = (e: React.PointerEvent) => {
+    if (drag?.mode !== "schedule") return;
+    if (svgRef.current?.contains(e.target as Node)) return;
+    const moved = drag.dx !== 0;
+    setDrag(null);
+    if (moved) {
+      suppressClick.current = true;
+      setTimeout(() => {
+        suppressClick.current = false;
+      }, 0);
+    }
+  };
+
+  // C156T1: pointer-cancel aborts a schedule drag with no PATCH
+  // (same handler covers the svg via bubbling; bar drags keep
+  // today's behavior).
+  const onPagePointerCancel = () => {
+    if (drag?.mode === "schedule") setDrag(null);
+  };
+
   const loading =
     dueQuery.isLoading || startQuery.isLoading || undatedQuery.isLoading;
   const error = dueQuery.error ?? startQuery.error ?? undatedQuery.error;
@@ -887,6 +979,8 @@ export default function Gantt() {
       <PageHeader viewName="Timeline" showViews />
       <div
       className="flex h-full flex-col gap-3 p-4"
+      onPointerUp={onPagePointerUp}
+      onPointerCancel={onPagePointerCancel}
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         if (linkUi.drawingFrom) {
@@ -894,6 +988,9 @@ export default function Gantt() {
           setDrawPos(null);
         } else if (linkUi.linkMode) {
           setLinkUi(exitLinkMode(linkUi));
+        } else if (drag?.mode === "schedule") {
+          // C156T1: Escape aborts a schedule drag with no PATCH.
+          setDrag(null);
         }
       }}
     >
@@ -1134,7 +1231,21 @@ export default function Gantt() {
                     <button
                       key={r.issue.id}
                       type="button"
-                      onClick={() => openPeek(r.issue.id)}
+                      onClick={() => {
+                        // C156T1: a real schedule drag must not open
+                        // the peek on release — same guard the bar
+                        // rects carry. A plain click (no movement)
+                        // still opens it.
+                        if (!suppressClick.current) openPeek(r.issue.id);
+                      }}
+                      onPointerDown={
+                        // C156T1: top-level unscheduled rows only
+                        // (T2 wires the nested child rows). Dated
+                        // rows keep today's press behavior.
+                        r.kind === "issue-undated"
+                          ? (e) => onUnscheduledPointerDown(e, r.issue)
+                          : undefined
+                      }
                       className="flex w-full items-center gap-1.5 border-b border-border-hairline px-3 text-left text-[13px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
                       style={{ height: ROW_H }}
                       title={`${r.issue.display_id}: ${r.issue.name}`}
@@ -1666,6 +1777,51 @@ export default function Gantt() {
                     </g>
                   );
                 })}
+                {/* C156T1: schedule ghost — a 1-day bar at the
+                    pointer's day on the dragged row's track, reusing
+                    the C146 cascade-ghost token/opacity VERBATIM
+                    (fillOpacity 0.35, dashed stroke, same geometry
+                    as a 1-day bar) — no new visual language. Hidden
+                    while the pointer is over the label column
+                    (pointerX < 0: no day to show). pointerEvents
+                    "none": the ghost never intercepts a drag. */}
+                {drag?.mode === "schedule" &&
+                  (() => {
+                    const row = ghostRows.get(drag.id);
+                    if (!row) return null;
+                    const pointerX = drag.startX + drag.dx;
+                    if (pointerX < 0) return null;
+                    const day = xToDay(
+                      pointerX,
+                      windowStart,
+                      DAY_W,
+                      days.length,
+                    );
+                    const gx = dayToX(day, windowStart, DAY_W);
+                    const color =
+                      statesById.get(row.stateId ?? "")?.color ?? "#6366f1";
+                    return (
+                      <g key={`schedule-ghost-${drag.id}`}>
+                        <rect
+                          x={gx + 2}
+                          y={row.y + 9}
+                          width={Math.max(DAY_W - 4, 8)}
+                          height={16}
+                          rx={4}
+                          fill={color}
+                          fillOpacity={0.35}
+                          stroke={color}
+                          strokeWidth={1}
+                          strokeDasharray="4 3"
+                          pointerEvents="none"
+                          data-schedule-ghost="true"
+                          aria-label={`Schedule preview for ${row.displayId}`}
+                        >
+                          <title>{`${row.displayId}: ${row.name} (would schedule on ${day})`}</title>
+                        </rect>
+                      </g>
+                    );
+                  })()}
               </svg>
             </div>
           </div>
