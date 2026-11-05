@@ -3124,6 +3124,30 @@ All notable changes to glance are documented here. The format follows
   PATCHes the single issue for now. Frontend-only: no backend
   change, no new endpoint.
 
+**Cascade dependents when scheduling a blocker from the Gantt unscheduled lane (cycle 157)**
+
+- Scheduling an undated blocker from the Gantt unscheduled lane
+  now cascades its violating dependents (cycle 157), closing the
+  asymmetry cycle 156 carried: the cascade engine gains a
+  `"schedule"` mode (rule 9) in which the dragged issue has no
+  old end and no uniform k — each dependent shifts by the minimum
+  that restores finish-to-start (`blockerFinalEnd + 1 − dependent
+  start`, duration preserved), with a growing-shift fixpoint so a
+  deeper blocker in a diamond can raise an earlier shift, and a
+  cycle guard so a back-edge never feeds a shift back forever.
+  Wave 1 is the engine (9 new unit tests, including the diamond
+  regression and two cycle-termination tests); wave 2 wires it
+  in: the schedule drag's ghost preview now shows cascade ghosts
+  for the dependents the commit would shift (same C146 token, no
+  new visual language), and the schedule commit fires the dragged
+  PATCH plus one presence-preserving PATCH per shift through a
+  helper shared with the move commit, so both paths share the same
+  toasts and `["gantt"]` invalidation. An empty cascade keeps the
+  single-PATCH schedule byte-identical; dateless dependents stay
+  dateless, non-violating dependents do not move, and a failed
+  dependent PATCH surfaces the move-commit error toast with a
+  resync. Frontend-only: no backend change, no new endpoint.
+
 ## [v0.3.0] - 2026-10-17
 
 "Depth" milestone: the next tier of the Plane parity backlog — modules,
