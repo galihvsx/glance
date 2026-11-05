@@ -35,12 +35,18 @@ import {
   planSpreadsheetReorder,
   planSpreadsheetReorderToEnd,
   planSpreadsheetSubSectionDrop,
+  planSpreadsheetSubSectionHeaderDrop,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
   spreadsheetOverGroupKey,
   spreadsheetReorderIndicatorSide,
   spreadsheetReorderRun,
+  spreadsheetSubGroupDroppableId,
+  spreadsheetSubGroupDropTarget,
+  SPREADSHEET_GROUP_DROPPABLE_PREFIX,
+  SPREADSHEET_ROW_DROPPABLE_PREFIX,
+  SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX,
 } from "../components/issue/spreadsheetDrag";
 import type { Issue, IssueState, SubtaskRow } from "../lib/types";
 import type { Workflow } from "../lib/workflow";
@@ -459,6 +465,78 @@ describe("spreadsheetDrag id helpers", () => {
     ).toBe("stategroup:started");
     expect(spreadsheetOverGroupKey("some-other-id")).toBeNull();
     expect(spreadsheetOverGroupKey("spreadsheet-group:")).toBe("");
+  });
+
+  it("sub-group header ids round-trip, including colon-bearing keys", () => {
+    // Both keys can contain colons, so the `|` split — not a colon
+    // split — is what separates them.
+    expect(spreadsheetSubGroupDroppableId("s", "priority:4")).toBe(
+      "spreadsheet-sub-group:s|priority:4",
+    );
+    expect(
+      spreadsheetSubGroupDropTarget(
+        spreadsheetSubGroupDroppableId("priority:4", "state:ungrouped"),
+      ),
+    ).toEqual({ groupKey: "priority:4", sectionKey: "state:ungrouped" });
+    expect(
+      spreadsheetSubGroupDropTarget(
+        spreadsheetSubGroupDroppableId("s", "cycle:ungrouped"),
+      ),
+    ).toEqual({ groupKey: "s", sectionKey: "cycle:ungrouped" });
+    expect(
+      spreadsheetSubGroupDropTarget(
+        spreadsheetSubGroupDroppableId("stategroup:started", "lb1"),
+      ),
+    ).toEqual({ groupKey: "stategroup:started", sectionKey: "lb1" });
+  });
+
+  it("sub-group header parse returns null for non-matching / malformed ids", () => {
+    expect(spreadsheetSubGroupDropTarget("spreadsheet-group:s")).toBeNull();
+    expect(
+      spreadsheetSubGroupDropTarget("spreadsheet-row-drop:s:i2"),
+    ).toBeNull();
+    expect(spreadsheetSubGroupDropTarget("spreadsheet-drag:s:i1")).toBeNull();
+    expect(spreadsheetSubGroupDropTarget("spreadsheet-sub-group:s")).toBeNull();
+    expect(
+      spreadsheetSubGroupDropTarget("spreadsheet-sub-group:|priority:2"),
+    ).toBeNull();
+    expect(
+      spreadsheetSubGroupDropTarget("spreadsheet-sub-group:s|"),
+    ).toBeNull();
+    expect(
+      spreadsheetSubGroupDropTarget("spreadsheet-sub-group:s|a|b"),
+    ).toBeNull();
+    expect(spreadsheetSubGroupDropTarget("other")).toBeNull();
+    expect(spreadsheetSubGroupDropTarget("")).toBeNull();
+  });
+
+  it("over ids resolve to the primary group for sub-group header ids", () => {
+    expect(
+      spreadsheetOverGroupKey("spreadsheet-sub-group:s|priority:4"),
+    ).toBe("s");
+    expect(
+      spreadsheetOverGroupKey(
+        "spreadsheet-sub-group:priority:4|state:ungrouped",
+      ),
+    ).toBe("priority:4");
+    expect(spreadsheetOverGroupKey("spreadsheet-sub-group:s")).toBeNull();
+    expect(
+      spreadsheetOverGroupKey("spreadsheet-sub-group:|priority:2"),
+    ).toBeNull();
+  });
+
+  it("the sub-group prefix collides with neither the group nor the row prefix", () => {
+    const subId = spreadsheetSubGroupDroppableId("s", "priority:2");
+    expect(subId.startsWith(SPREADSHEET_GROUP_DROPPABLE_PREFIX)).toBe(false);
+    expect(subId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)).toBe(false);
+    expect(
+      "spreadsheet-group:s".startsWith(SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX),
+    ).toBe(false);
+    expect(
+      "spreadsheet-row-drop:s:i2".startsWith(
+        SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1225,7 +1303,7 @@ describe("Spreadsheet drag moves (page wiring)", () => {
     expect(await screen.findByText("boom")).toBeInTheDocument();
   });
 
-  it("sub-group headers are not drop targets: drop over nothing is a no-op", async () => {
+  it("drop over nothing is a no-op (C155T1: headers are droppable now, but no droppable is under the pointer)", async () => {
     await renderGrouped("priority", "state");
     const patch = await patchMock();
     const table = screen.getByRole("table");
@@ -1236,7 +1314,10 @@ describe("Spreadsheet drag moves (page wiring)", () => {
     for (const h of Array.from(subHeaders)) {
       expect(h.querySelector("button")).toBeNull();
     }
-    // Real dnd-kit reports over === null above a non-droppable header.
+    // C155T1: sub-group headers ARE droppable now, so a real
+    // dnd-kit drop over one carries the header id (see the C155T1
+    // describe); over === null here means the pointer is above no
+    // droppable at all, and the handler still returns.
     drop("spreadsheet-drag:priority:2:i1", null);
     expect(patch).not.toHaveBeenCalled();
   });
@@ -1682,7 +1763,7 @@ describe("Spreadsheet drag membership moves (T2)", () => {
     expect(alphaRows[0].className).not.toContain("opacity-40");
   });
 
-  it("sub-group headers are not drop targets under a membership dimension", async () => {
+  it("drop over nothing under a membership dimension issues no membership call", async () => {
     mockData.issues = membershipIssues();
     await renderGrouped("labels", "state");
     const post = await postMock();
@@ -1694,7 +1775,10 @@ describe("Spreadsheet drag membership moves (T2)", () => {
     for (const h of Array.from(subHeaders)) {
       expect(h.querySelector("button")).toBeNull();
     }
-    // Real dnd-kit reports over === null above a non-droppable header.
+    // C155T1: sub-group headers ARE droppable now, so a real
+    // dnd-kit drop over one carries the header id (see the C155T1
+    // describe); over === null here means the pointer is above no
+    // droppable at all.
     drop("spreadsheet-drag:lb1:i1", null);
     expect(post).not.toHaveBeenCalled();
   });
@@ -2069,6 +2153,371 @@ describe("planSpreadsheetSubSectionDrop", () => {
       plan: { kind: "attach", dimension: "labels", memberId: "lb2" },
       targetSection: { key: "lb2", title: "Blue", issues: [tgt] },
     });
+  });
+});
+
+describe("planSpreadsheetSubSectionHeaderDrop", () => {
+  const stateNames = new Map([
+    ["s", "Backlog"],
+    ["s2", "In Progress"],
+    ["s3", "Done"],
+  ]);
+
+  it("header drop PATCHes the target priority", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const tgt = mkIssue({ id: "tgt", state_id: "s", priority: 2 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src] },
+      { key: "priority:2", title: "Medium", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "priority:2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "patch", body: { priority: 2 } },
+      targetSection: { key: "priority:2", title: "Medium", issues: [tgt] },
+    });
+  });
+
+  it("header drop PATCHes the target state", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const tgt = mkIssue({ id: "tgt", state_id: "s2", priority: 0 });
+    const sections = [
+      { key: "s", title: "Backlog", issues: [src] },
+      { key: "s2", title: "In Progress", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "state",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "s2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "patch", body: { state_id: "s2" } },
+      targetSection: { key: "s2", title: "In Progress", issues: [tgt] },
+    });
+  });
+
+  it("header drop attaches epic / assignee / label / module", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      labels: [{ id: "lb1", name: "Red", color: "#f00" }],
+      project_structure: {
+        modules: [],
+        cycle: { id: "cy1", name: "Sprint 1" },
+        release: { id: "r1", name: "v1" },
+      },
+    });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    const labelSections = [
+      { key: "lb1", title: "Red", issues: [src] },
+      { key: "lb2", title: "Blue", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "labels",
+        sections: labelSections,
+        sourceId: "src",
+        targetSectionKey: "lb2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "attach", dimension: "labels", memberId: "lb2" });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "epic",
+        sections: [
+          { key: "ep1", title: "Epic One", issues: [src] },
+          { key: "ep2", title: "Epic Two", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "ep2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "attach", dimension: "epic", memberId: "ep2" });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "assignees",
+        sections: [
+          { key: "u2", title: "Ada", issues: [src] },
+          { key: "u3", title: "Bob", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "u3",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "attach", dimension: "assignees", memberId: "u3" });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "modules",
+        sections: [
+          { key: "m1", title: "Core", issues: [src] },
+          { key: "m2", title: "Shell", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "m2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "attach", dimension: "modules", memberId: "m2" });
+  });
+
+  it("header drop moves cycle add-then-remove and release via single assign", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      project_structure: {
+        modules: [],
+        cycle: { id: "cy1", name: "Sprint 1" },
+        release: { id: "r1", name: "v1" },
+      },
+    });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "cycles",
+        sections: [
+          { key: "cy1", title: "Sprint 1", issues: [src] },
+          { key: "cy2", title: "Sprint 2", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "cy2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({
+      kind: "move-cycle",
+      cycleId: "cy2",
+      sourceCycleId: "cy1",
+    });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "releases",
+        sections: [
+          { key: "r1", title: "v1", issues: [src] },
+          { key: "r2", title: "v2", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "r2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "move-release", releaseId: "r2" });
+  });
+
+  it("Ungrouped target section delegates to the plan's Ungrouped no-op", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      project_structure: {
+        modules: [],
+        cycle: { id: "cy1", name: "Sprint 1" },
+      },
+    });
+    const tgt = mkIssue({
+      id: "tgt",
+      state_id: "s",
+      project_structure: { modules: [] },
+    });
+    const sections = [
+      { key: "cy1", title: "Sprint 1", issues: [src] },
+      { key: "cycle:ungrouped", title: "Ungrouped", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "cycles",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "cycle:ungrouped",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "noop", reason: "ungrouped" },
+      targetSection: {
+        key: "cycle:ungrouped",
+        title: "Ungrouped",
+        issues: [tgt],
+      },
+    });
+  });
+
+  it("already-member header drop is a no-op", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      labels: [
+        { id: "lb1", name: "Red", color: "#f00" },
+        { id: "lb2", name: "Blue", color: "#00f" },
+      ],
+    });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    const sections = [
+      { key: "lb1", title: "Red", issues: [src] },
+      { key: "lb2", title: "Blue", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "labels",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "lb2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "noop", reason: "already-member" });
+  });
+
+  it("createdBy / stateGroups sub-group header drops are no-ops", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 2 });
+    const tgt = mkIssue({ id: "tgt", state_id: "s2", priority: 2 });
+    const createdBySections = [
+      { key: "u2", title: "Ada", issues: [src] },
+      { key: "createdby:unknown", title: "Unknown", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "createdBy",
+        sections: createdBySections,
+        sourceId: "src",
+        targetSectionKey: "createdby:unknown",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "noop", reason: "created-by" });
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "stateGroups",
+        sections: [
+          { key: "stategroup:backlog", title: "Backlog", issues: [src] },
+          { key: "stategroup:started", title: "Started", issues: [tgt] },
+        ],
+        sourceId: "src",
+        targetSectionKey: "stategroup:started",
+        issue: src,
+        workflow: null,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "noop", reason: "state-group" });
+  });
+
+  it("blocked state transition returns a blocked plan", () => {
+    const workflow: Workflow = {
+      states,
+      transitions: [
+        { from_state_id: "s2", to_state_id: "s" },
+        { from_state_id: "s", to_state_id: "s3" },
+      ],
+    };
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const tgt = mkIssue({ id: "tgt", state_id: "s2", priority: 0 });
+    const sections = [
+      { key: "s", title: "Backlog", issues: [src] },
+      { key: "s2", title: "In Progress", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "state",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "s2",
+        issue: src,
+        workflow,
+        stateNames,
+      })?.plan,
+    ).toEqual({ kind: "blocked", permittedNames: ["Done"] });
+  });
+
+  it("multi-appearance source delegates via the sentinel source key", () => {
+    const src = mkIssue({
+      id: "src",
+      state_id: "s",
+      labels: [
+        { id: "lb1", name: "Red", color: "#f00" },
+        { id: "lb3", name: "Green", color: "#0f0" },
+      ],
+    });
+    const tgt = mkIssue({ id: "tgt", state_id: "s" });
+    const sections = [
+      { key: "lb1", title: "Red", issues: [src] },
+      { key: "lb3", title: "Green", issues: [src] },
+      { key: "lb2", title: "Blue", issues: [tgt] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "labels",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "lb2",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toEqual({
+      plan: { kind: "attach", dimension: "labels", memberId: "lb2" },
+      targetSection: { key: "lb2", title: "Blue", issues: [tgt] },
+    });
+  });
+
+  it("missing section key resolves to null", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "priority:9",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toBeNull();
+  });
+
+  it("source already in the target section resolves to null", () => {
+    const src = mkIssue({ id: "src", state_id: "s", priority: 0 });
+    const other = mkIssue({ id: "other", state_id: "s", priority: 0 });
+    const sections = [
+      { key: "priority:0", title: "None", issues: [src, other] },
+      { key: "priority:2", title: "Medium", issues: [] },
+    ];
+    expect(
+      planSpreadsheetSubSectionHeaderDrop({
+        subGroupBy: "priority",
+        sections,
+        sourceId: "src",
+        targetSectionKey: "priority:0",
+        issue: src,
+        workflow: null,
+        stateNames,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -2748,6 +3197,95 @@ describe("Spreadsheet cross-sub-section move (C154T1)", () => {
         { state_id: "s2" },
       );
     });
+  });
+});
+
+describe("Spreadsheet sub-group header drop (C155T1)", () => {
+  /** Backlog (s) rows split across priority sub-sections, one in In Progress. */
+  function headerDropIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 0,
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "b1",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        priority: 0,
+        state_id: "s2",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  it("header drop PATCHes the target priority and surfaces nothing extra", async () => {
+    mockData.issues = headerDropIssues();
+    await renderGrouped("state", "priority");
+    const table = screen.getByRole("table");
+    expect(
+      table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
+    ).toHaveLength(3);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-sub-group:s|priority:2");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { priority: 2 },
+      );
+    });
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("same-section header drop PATCHes nothing", async () => {
+    mockData.issues = headerDropIssues();
+    await renderGrouped("state", "priority");
+    const patch = await patchMock();
+    const post = await postMock();
+    const del = await delMock();
+    // a1 already sits in the priority:0 section of Backlog.
+    drop("spreadsheet-drag:s:a1", "spreadsheet-sub-group:s|priority:0");
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("cross-group sub-header drop keeps the C148 primary-group meaning", async () => {
+    mockData.issues = headerDropIssues();
+    await renderGrouped("state", "priority");
+    const patch = await patchMock();
+    // The over id names In Progress's priority:0 header — the
+    // primary-group meaning wins (state move), not a priority move.
+    drop("spreadsheet-drag:s:a1", "spreadsheet-sub-group:s2|priority:0");
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { state_id: "s2" },
+      );
+    });
+    expect(patch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/issues/a1"),
+      { priority: 0 },
+    );
   });
 });
 

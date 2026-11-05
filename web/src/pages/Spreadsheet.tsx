@@ -30,6 +30,7 @@ import {
   planSpreadsheetReorder,
   planSpreadsheetReorderToEnd,
   planSpreadsheetSubSectionDrop,
+  planSpreadsheetSubSectionHeaderDrop,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
@@ -39,9 +40,12 @@ import {
   spreadsheetReorderRun,
   spreadsheetRowDropIssueId,
   spreadsheetRowDroppableId,
+  spreadsheetSubGroupDroppableId,
+  spreadsheetSubGroupDropTarget,
   SPREADSHEET_GROUP_DROPPABLE_PREFIX,
   SPREADSHEET_ROW_DROPPABLE_PREFIX,
   SPREADSHEET_STATE_UNGROUPED_KEY,
+  SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX,
   type SpreadsheetAttachDimension,
 } from "../components/issue/spreadsheetDrag";
 import { executeCycleMove } from "../components/issue/boardCycle";
@@ -652,8 +656,9 @@ function SpreadsheetTopLevelRow({
  * drag-over state, not this header's own isOver — one mechanism
  * covers both header-overs and row-overs (a row under the pointer
  * highlights its group's header, T2's over-row polish included).
- * Sub-group headers are NOT this component: they stay plain rows
- * with no droppable, preserving C147 rule 7.
+ * Sub-group headers are their own component below
+ * (SpreadsheetSubGroupHeaderRow, C155T1) with their own
+ * droppable; C147 rule 7's no-droppable part is retired.
  */
 function SpreadsheetGroupHeaderRow({
   groupKey,
@@ -680,6 +685,52 @@ function SpreadsheetGroupHeaderRow({
       <td
         colSpan={colSpan}
         className="px-3 py-2 align-middle text-[13px] font-medium text-ink"
+      >
+        {title}{" "}
+        <span className="font-normal text-ink-muted">({count})</span>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * C155T1: a sub-group header as a dnd-kit drop target, shaped
+ * like SpreadsheetGroupHeaderRow. Dropping a row onto it moves
+ * the issue to that section (the C154T1 row-drop move, with the
+ * target section key straight from the header's droppable id).
+ * Render is the extracted inline sub-header row byte-for-byte:
+ * same classes, same data attribute, same highlight expression
+ * (T2 owns the highlight change). Still never clickable, never
+ * bulk-selectable, never counted by the empty state — only the
+ * no-droppable part of C147 rule 7 is retired.
+ */
+function SpreadsheetSubGroupHeaderRow({
+  groupKey,
+  sectionKey,
+  title,
+  count,
+  colSpan,
+  highlighted,
+}: {
+  groupKey: string;
+  sectionKey: string;
+  title: string;
+  count: number;
+  colSpan: number;
+  highlighted: boolean;
+}) {
+  const { setNodeRef } = useDroppable({
+    id: spreadsheetSubGroupDroppableId(groupKey, sectionKey),
+  });
+  return (
+    <tr
+      ref={setNodeRef}
+      data-spreadsheet-sub-group-header={`${groupKey}:${sectionKey}`}
+      className={`border-b border-border-hairline ${highlighted ? "bg-accent-blue/10" : "bg-wash"}`}
+    >
+      <td
+        colSpan={colSpan}
+        className="py-2 pl-8 pr-3 align-middle text-[13px] font-medium text-ink"
       >
         {title}{" "}
         <span className="font-normal text-ink-muted">({count})</span>
@@ -980,6 +1031,15 @@ export default function Spreadsheet() {
   const [dragOverRowIssueId, setDragOverRowIssueId] = useState<string | null>(
     null,
   );
+  // C155T1: the sub-section key under the pointer, or null over a
+  // row / primary header / outside any sub-header target — the
+  // parsed section key from the sub-group header droppable id
+  // (the full over id is not kept: the group key is recoverable
+  // from the drag id for same-group resolution, and cross-group
+  // header hovers resolve through dragOverGroupKey instead).
+  // T1 needs no highlight from it; T2 reads it — so the value is
+  // elided here (noUnusedLocals) and T2 destructures it.
+  const [, setDragOverSubGroupKey] = useState<string | null>(null);
   // C148T2: active spreadsheet drag id (compound id of the dragged
   // appearance, or null) — the single dim source: the dragged row
   // renders opacity-40 while its drag is active, cleared on end and
@@ -1719,9 +1779,11 @@ export default function Spreadsheet() {
   // are still resolving — the T1 no-Unknown-flash gate, applied to
   // the sub-dimension too). Sections are the rendered truth for the
   // C154T1 row-drop move (planSpreadsheetSubSectionDrop resolves the
-  // target section from these); sub-group HEADERS stay visual-only
-  // (no droppable), exactly as Board does for epic/assignee/label
-  // sub-sections — this cycle moves the ROW drop, not the header.
+  // target section from these) and the C155T1 header-drop move
+  // (planSpreadsheetSubSectionHeaderDrop resolves the target section
+  // by key from these). Sub-group headers are drop targets now
+  // (C155T1) — only the "never clickable / never bulk-selectable /
+  // never counted by the empty state" parts of C147 rule 7 survive.
   // Empty sections are dropped (state/priority/stateGroups
   // synthesize empties; the spreadsheet has no showEmptyGroups,
   // and T1 omits zero-row primary groups the same way).
@@ -1762,8 +1824,10 @@ export default function Spreadsheet() {
    * C148T1: cross-group drop handling (Board onDragEnd semantics, per
    * dimension, via planSpreadsheetDrop). Resolves the source group
    * from the compound drag id and the target group from the header
-   * id or the over-row's group; sub-group headers carry no droppable,
-   * so a drop over one yields over === null and returns here. Moves
+   * id or the over-row's group; a same-group sub-group header drop
+   * (C155T1) resolves via planSpreadsheetSubSectionHeaderDrop over
+   * the primary group's rendered sections, and a cross-group one
+   * keeps the C148 primary-group meaning. Moves
    * run through the existing patchMutation shape (optimistic
    * setQueryData on issuesKey, rollback on error, invalidate on
    * settle — the PQL key via invalidateDisplayedIssues, rule 9), so
@@ -1785,6 +1849,11 @@ export default function Spreadsheet() {
     const overId = e.over ? String(e.over.id) : null;
     setDragOverGroupKey(overId ? spreadsheetOverGroupKey(overId) : null);
     setDragOverRowIssueId(overId ? spreadsheetRowDropIssueId(overId) : null);
+    // C155T1: the sub-section key under the pointer (null over a
+    // row / primary header / outside any sub-header target).
+    setDragOverSubGroupKey(
+      overId ? (spreadsheetSubGroupDropTarget(overId)?.sectionKey ?? null) : null,
+    );
   }
 
   /**
@@ -2006,6 +2075,7 @@ export default function Spreadsheet() {
     const { active, over } = e;
     setDragOverGroupKey(null);
     setDragOverRowIssueId(null);
+    setDragOverSubGroupKey(null);
     setActiveSpreadsheetDragId(null);
     if (!over || !canEdit) return;
     if (groupSections === null) return;
@@ -2118,7 +2188,7 @@ export default function Spreadsheet() {
     const targetRowId = overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)
       ? spreadsheetRowDropIssueId(overId)
       : null;
-    const subSectionMove =
+    const rowSubSectionMove =
       targetRowId !== null &&
       targetGroupKey === sourceGroupKey &&
       effectiveSubGroup !== "none" &&
@@ -2133,6 +2203,40 @@ export default function Spreadsheet() {
             stateNames: stateNamesById,
           })
         : null;
+    // C155T1: same-group drop onto a sub-group header — after the
+    // C154T1 row-drop move above, before the C148 tail below. The
+    // target section key comes straight from the header's
+    // droppable id (no singleton resolution); the result feeds
+    // the SAME isSubSectionMove / displayTitle / displayIssues /
+    // plan computation as the row drop. A null result or a noop
+    // plan falls through to the C148 path byte-for-byte, and a
+    // cross-primary-group sub-header drop never enters here
+    // (targetGroupKey !== sourceGroupKey) — it reaches the C148
+    // path with the primary group key, the C148 cross-group
+    // meaning. Row and header ids are mutually exclusive
+    // prefixes, so exactly one of the two resolutions can be
+    // non-null.
+    const headerTarget = overId.startsWith(
+      SPREADSHEET_SUB_GROUP_DROPPABLE_PREFIX,
+    )
+      ? spreadsheetSubGroupDropTarget(overId)
+      : null;
+    const headerSubSectionMove =
+      headerTarget !== null &&
+      targetGroupKey === sourceGroupKey &&
+      effectiveSubGroup !== "none" &&
+      subSectionsByGroup !== null
+        ? planSpreadsheetSubSectionHeaderDrop({
+            subGroupBy: effectiveSubGroup,
+            sections: subSectionsByGroup.get(sourceGroupKey) ?? [],
+            sourceId: issue.id,
+            targetSectionKey: headerTarget.sectionKey,
+            issue,
+            workflow,
+            stateNames: stateNamesById,
+          })
+        : null;
+    const subSectionMove = rowSubSectionMove ?? headerSubSectionMove;
     const isSubSectionMove =
       subSectionMove !== null && subSectionMove.plan.kind !== "noop";
     // Display target for the tail: the section for a sub-section
@@ -2677,6 +2781,7 @@ export default function Spreadsheet() {
               onDragCancel={() => {
                 setDragOverGroupKey(null);
                 setDragOverRowIssueId(null);
+                setDragOverSubGroupKey(null);
                 setActiveSpreadsheetDragId(null);
               }}
             >
@@ -2773,9 +2878,10 @@ export default function Spreadsheet() {
                     : groupSections.map((group) => (
                         <Fragment key={group.key}>
                           {/* C148T1: primary group headers are drop
-                              targets now (C147's visual-only rule
-                              survives only for SUB-group headers
-                              below). Still never clickable to open
+                              targets now (C155T1: sub-group headers
+                              are drop targets too, via
+                              SpreadsheetSubGroupHeaderRow below).
+                              Still never clickable to open
                               an issue, never bulk-selectable, never
                               counted by the empty state (the empty
                               branch above gates on
@@ -2803,41 +2909,37 @@ export default function Spreadsheet() {
                                 subSectionsByGroup.get(group.key) ?? []
                               ).map((sub) => (
                                 <Fragment key={sub.key}>
-                                  {/* C147T2: visual-only sub-group
-                                      header — indented under the
-                                      primary header, same treatment
-                                      as primary headers: never a
-                                      drop target, never clickable,
+                                  {/* C147T2: sub-group header —
+                                      indented under the primary
+                                      header, same treatment as
+                                      primary headers: a drop target
+                                      since C155T1 (dropping a row
+                                      onto it moves the issue to
+                                      that section), never clickable,
                                       never bulk-selectable, never
                                       counted by the empty state.
                                       Title + TOP-LEVEL count only;
                                       target fields ignored. Colspan
                                       grows by 1 for the handle
                                       column, matching the rows. */}
-                                  <tr
-                                    data-spreadsheet-sub-group-header={`${group.key}:${sub.key}`}
-                                    className={`border-b border-border-hairline ${subSectionMoveTarget !== null &&
-                                    subSectionMoveTarget.groupKey ===
-                                      group.key &&
-                                    subSectionMoveTarget.sectionKey ===
-                                      sub.key
-                                      ? "bg-accent-blue/10"
-                                      : "bg-wash"}`}
-                                  >
-                                    <td
-                                      colSpan={
-                                        COLUMNS.length +
-                                        visibleCfFields.length +
-                                        1
-                                      }
-                                      className="py-2 pl-8 pr-3 align-middle text-[13px] font-medium text-ink"
-                                    >
-                                      {sub.title}{" "}
-                                      <span className="font-normal text-ink-muted">
-                                        ({sub.issues.length})
-                                      </span>
-                                    </td>
-                                  </tr>
+                                  <SpreadsheetSubGroupHeaderRow
+                                    groupKey={group.key}
+                                    sectionKey={sub.key}
+                                    title={sub.title}
+                                    count={sub.issues.length}
+                                    colSpan={
+                                      COLUMNS.length +
+                                      visibleCfFields.length +
+                                      1
+                                    }
+                                    highlighted={
+                                      subSectionMoveTarget !== null &&
+                                      subSectionMoveTarget.groupKey ===
+                                        group.key &&
+                                      subSectionMoveTarget.sectionKey ===
+                                        sub.key
+                                    }
+                                  />
                                   {sub.issues.map((issue) =>
                                     // C153T2: route ONLY the
                                     // indicator-target row through
