@@ -29,6 +29,7 @@ import {
   planSpreadsheetDrop,
   planSpreadsheetReorder,
   planSpreadsheetReorderToEnd,
+  planSpreadsheetSubSectionDrop,
   spreadsheetDragGroupKey,
   spreadsheetDragId,
   spreadsheetDragIssueId,
@@ -1716,9 +1717,11 @@ export default function Spreadsheet() {
   // Null = T1's rendering runs untouched (effective sub-group
   // "none", no primary groups, or createdBy sub-group while members
   // are still resolving — the T1 no-Unknown-flash gate, applied to
-  // the sub-dimension too). Sections are VISUAL ONLY: target fields
-  // are ignored — the spreadsheet has no move pipeline to wire,
-  // exactly as Board does for epic/assignee/label sub-sections.
+  // the sub-dimension too). Sections are the rendered truth for the
+  // C154T1 row-drop move (planSpreadsheetSubSectionDrop resolves the
+  // target section from these); sub-group HEADERS stay visual-only
+  // (no droppable), exactly as Board does for epic/assignee/label
+  // sub-sections — this cycle moves the ROW drop, not the header.
   // Empty sections are dropped (state/priority/stateGroups
   // synthesize empties; the spreadsheet has no showEmptyGroups,
   // and T1 omits zero-row primary groups the same way).
@@ -1951,15 +1954,18 @@ export default function Spreadsheet() {
     // sub-group active the reorder run is the source's own
     // sub-section (spreadsheetReorderRun over the rendered
     // sub-sections); a null run — cross-section or
-    // multi-appearance source/target — falls through to the C148
-    // path below unchanged, never to a guessed run. Reorder
+    // multi-appearance source/target — falls through to the C154T1
+    // move branch below, never to a guessed run: a cross-section
+    // single-appearance drop resolves to a sub-dimension move there,
+    // and only a multi-appearance / no-target / noop-plan drop
+    // reaches the C148 path. Reorder
     // availability is a DROP-time rule: the handle stays enabled
     // exactly as today (grouped && canEdit), and every other
-    // configuration falls through to the C148 path below
-    // unchanged (same-group non-state drops,
-    // column-sort-active drops, unresolved sub-grouped drops,
-    // PQL-mode drops, nested-row drops all remain no-ops;
-    // cross-group drops are untouched).
+    // configuration falls through below unchanged (same-group
+    // non-state drops, column-sort-active drops,
+    // multi-appearance sub-grouped drops, PQL-mode drops,
+    // nested-row drops all remain no-ops; cross-group drops are
+    // untouched).
     const overId = String(over.id);
     if (overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)) {
       const rowGroupKey = spreadsheetOverGroupKey(overId);
@@ -1976,7 +1982,8 @@ export default function Spreadsheet() {
         if (group) {
           // Sub-group none → the full group sequence, byte-for-byte
           // the C152T1 behavior. Sub-group active → the resolved
-          // run, or null → fall through to the C148 path.
+          // run, or null → fall through to the C154T1 move branch
+          // (then the C148 path).
           const run =
             effectiveSubGroup === "none"
               ? group.issues
@@ -2028,14 +2035,59 @@ export default function Spreadsheet() {
         }
       }
     }
-    const plan = planSpreadsheetDrop({
-      groupBy,
-      sourceGroupKey,
-      targetGroupKey,
-      issue,
-      workflow,
-      stateNames: stateNamesById,
-    });
+    // C154T1: cross-sub-section row drop within one primary group —
+    // after the reorder branches above, before the C148 path. A row
+    // droppable in the source's own group with a sub-group active
+    // resolves via planSpreadsheetSubSectionDrop over the primary
+    // group's rendered sections; a non-null result with a non-noop
+    // plan executes through the C148 tail below with the display
+    // target overridden to the section (title + rows), never the
+    // primary group. A null result or a noop plan falls through to
+    // the C148 path byte-for-byte. canEdit is already gated at the
+    // handler top; cross-primary-group drops never reach here
+    // (targetGroupKey === sourceGroupKey).
+    const targetRowId = overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)
+      ? spreadsheetRowDropIssueId(overId)
+      : null;
+    const subSectionMove =
+      targetRowId !== null &&
+      targetGroupKey === sourceGroupKey &&
+      effectiveSubGroup !== "none" &&
+      subSectionsByGroup !== null
+        ? planSpreadsheetSubSectionDrop({
+            subGroupBy: effectiveSubGroup,
+            sections: subSectionsByGroup.get(sourceGroupKey) ?? [],
+            sourceId: issue.id,
+            targetRowId,
+            issue,
+            workflow,
+            stateNames: stateNamesById,
+          })
+        : null;
+    const isSubSectionMove =
+      subSectionMove !== null && subSectionMove.plan.kind !== "noop";
+    // Display target for the tail: the section for a sub-section
+    // move, the primary group for a C148 move. The group must exist
+    // — it rendered the drop target — so the fallback is defensive.
+    const targetGroup = groupSections.find(
+      (g) => g.key === targetGroupKey,
+    );
+    const displayTitle = isSubSectionMove
+      ? subSectionMove.targetSection.title
+      : targetGroup?.title;
+    const displayIssues = isSubSectionMove
+      ? subSectionMove.targetSection.issues
+      : targetGroup?.issues;
+    const plan = isSubSectionMove
+      ? subSectionMove.plan
+      : planSpreadsheetDrop({
+          groupBy,
+          sourceGroupKey,
+          targetGroupKey,
+          issue,
+          workflow,
+          stateNames: stateNamesById,
+        });
     if (plan.kind === "noop") return;
     if (plan.kind === "blocked") {
       // Board's error path for a denied move (its patchMutation
@@ -2057,28 +2109,27 @@ export default function Spreadsheet() {
       patchMutation.mutate({ id: issue.id, body: plan.body });
       return;
     }
-    // Target group title feeds the optimistic membership append
-    // (Board's attachTo* title argument); the group must exist —
-    // it rendered the drop target — so the fallback is defensive.
-    const targetGroup = groupSections.find(
-      (g) => g.key === targetGroupKey,
-    );
+    // Display target title feeds the optimistic membership append
+    // (Board's attachTo* title argument); for a sub-section move it
+    // is the section title, for a C148 move the group title.
     if (plan.kind === "attach") {
       // Board passes the column's label color for labels; the
       // spreadsheet's groups carry no color, so it is read off a
       // sibling row already carrying that label (a target group is
-      // never empty — groups derive from loaded rows).
+      // never empty — groups derive from loaded rows; a section is
+      // a subset of its group's rows, so the color result is
+      // identical, only the title is the section's).
       const color =
         plan.dimension === "labels"
-          ? (targetGroup?.issues
-              .flatMap((i) => i.labels ?? [])
+          ? (displayIssues
+              ?.flatMap((i) => i.labels ?? [])
               .find((l) => l.id === plan.memberId)?.color ?? "")
           : undefined;
       attachMutation.mutate({
         dimension: plan.dimension,
         issueId: issue.id,
         memberId: plan.memberId,
-        title: targetGroup?.title ?? plan.memberId,
+        title: displayTitle ?? plan.memberId,
         color,
       });
       return;
@@ -2087,7 +2138,7 @@ export default function Spreadsheet() {
       void moveSpreadsheetToCycle(
         issue.id,
         plan.cycleId,
-        targetGroup?.title ?? plan.cycleId,
+        displayTitle ?? plan.cycleId,
         plan.sourceCycleId,
       );
       return;
@@ -2095,7 +2146,7 @@ export default function Spreadsheet() {
     void moveSpreadsheetToRelease(
       issue.id,
       plan.releaseId,
-      targetGroup?.title ?? plan.releaseId,
+      displayTitle ?? plan.releaseId,
     );
   }
 

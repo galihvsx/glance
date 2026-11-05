@@ -158,9 +158,13 @@ export type SpreadsheetDropPlan =
  *  function: the handler routes it through planSpreadsheetReorder
  *  first, so every non-eligible path keeps this no-op byte-for-byte.
  *  C153T1 extends the eligible configuration to sub-grouped views
- *  when spreadsheetReorderRun resolves a run; an unresolved
- *  sub-grouped drop (cross-section, multi-appearance) still reaches
- *  this function and stays a no-op.
+ *  when spreadsheetReorderRun resolves a run. C154T1: a cross-section
+ *  single-appearance drop no longer reaches this function as a
+ *  same-group no-op — the handler resolves it first via
+ *  planSpreadsheetSubSectionDrop and delegates back here with the
+ *  section keys. Only multi-appearance / no-target / noop-plan
+ *  unresolved sub-grouped drops still reach this function and stay
+ *  no-ops.
  *  State moves run under the C68 transition
  *  guard via Board's own isTransitionAllowed helper — a blocked move
  *  PATCHes nothing and the caller surfaces Board's error path (the
@@ -329,6 +333,71 @@ export function planSpreadsheetDrop(args: {
   }
 }
 
+/** Sentinel source section key for a source row with no unique
+ *  section (missing from every section, or multi-appearance): it is
+ *  never a section key, so it never equals the target key and the
+ *  delegated same-group check stays safe. The source-not-in-target
+ *  rule was already established before delegating, so the sentinel
+ *  cannot mask a same-section drop. */
+const SPREADSHEET_SUBSECTION_NO_SOURCE_KEY =
+  "spreadsheet-subsection:no-source";
+
+/** C154T1: cross-sub-section row-drop resolution for one primary
+ *  group. The rendered sub-sections are taken as truth (never
+ *  re-derived from issues), exactly like spreadsheetReorderRun:
+ *  the target row must appear in exactly ONE section, and the
+ *  source row must NOT already be in that section — else null, and
+ *  the caller falls through to the C148 path byte-for-byte. A
+ *  delegated noop plan is returned as-is (the caller falls through
+ *  on it too, same outcome); the helper itself never issues writes.
+ *  Delegation is verbatim planSpreadsheetDrop with groupBy = the
+ *  sub-dimension and the SECTION keys — which works because
+ *  sub-section keys ARE groupBy keys, including the `*:ungrouped`
+ *  keys the plan already treats as deliberate no-ops. */
+export function planSpreadsheetSubSectionDrop<T extends { id: string }>(args: {
+  subGroupBy: string;
+  sections: { key: string; title: string; issues: T[] }[];
+  sourceId: string;
+  targetRowId: string;
+  issue: Issue;
+  workflow: Workflow | null;
+  stateNames: Map<string, string>;
+}): {
+  plan: SpreadsheetDropPlan;
+  targetSection: { key: string; title: string; issues: T[] };
+} | null {
+  const { subGroupBy, sections, sourceId, targetRowId } = args;
+  const targetSections = sections.filter((s) =>
+    s.issues.some((i) => i.id === targetRowId),
+  );
+  if (targetSections.length !== 1) return null;
+  const targetSection = targetSections[0];
+  if (targetSection.issues.some((i) => i.id === sourceId)) return null;
+  const sourceSections = sections.filter((s) =>
+    s.issues.some((i) => i.id === sourceId),
+  );
+  const sourceGroupKey =
+    sourceSections.length === 1
+      ? sourceSections[0].key
+      : SPREADSHEET_SUBSECTION_NO_SOURCE_KEY;
+  const plan = planSpreadsheetDrop({
+    groupBy: subGroupBy,
+    sourceGroupKey,
+    targetGroupKey: targetSection.key,
+    issue: args.issue,
+    workflow: args.workflow,
+    stateNames: args.stateNames,
+  });
+  return {
+    plan,
+    targetSection: {
+      key: targetSection.key,
+      title: targetSection.title,
+      issues: targetSection.issues,
+    },
+  };
+}
+
 /** C152T1: within-state-group reorder plan. The caller guarantees
  *  the eligibility conditions (grouped by state, no column sort,
  *  visual-filter mode, top-level rows in one real state
@@ -417,9 +486,11 @@ export function planSpreadsheetReorderToEnd(args: {
  *  epic/module sections of one primary group) the drop-time code
  *  cannot know which appearance was grabbed, and a guessed run
  *  could write a wrong-section order. A null run is not an error:
- *  the caller falls through to the C148 path (same-group no-op).
+ *  the caller tries the C154T1 sub-section move next (a cross-section
+ *  single-appearance drop resolves there), and only then falls through
+ *  to the C148 path (same-group no-op for multi-appearance drops).
  *  Cross-section drops resolve to null the same way: sections are
- *  different runs, and there is no sub-dimension move pipeline. */
+ *  different runs. */
 export function spreadsheetReorderRun<T extends { id: string }>(
   sections: { key: string; issues: T[] }[],
   sourceId: string,
