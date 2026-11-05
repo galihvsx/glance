@@ -35,6 +35,7 @@ export function DroppableDayCell({
   return (
     <div
       ref={setNodeRef}
+      data-testid={`day-cell-${dayKey}`}
       className={cn(
         "relative min-h-24 border-b border-border-hairline p-1",
         columns === 8

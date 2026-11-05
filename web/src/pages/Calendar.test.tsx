@@ -430,19 +430,56 @@ let pointerPos = { x: 0, y: 0 };
 let activeRestore: (() => void) | null = null;
 
 function installLayoutStub(): () => void {
-  const columns = Array.from(
-    document.querySelectorAll<HTMLElement>('[data-testid^="week-column-"]'),
+  // Drop zones in DOM order: week columns (week view) or month day
+  // cells (month view), plus the unscheduled strip (both views).
+  // C159T1: the strip zone lets a drag hover the strip (over =
+  // UNSCHEDULED_STRIP_ID → no ghost) and the day-cell zones let
+  // month-view drags run under the same stub.
+  const zones = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-testid^="week-column-"], [data-testid^="day-cell-"]',
+    ),
   );
+  const strip = document.querySelector<HTMLElement>(
+    '[data-droppable-id="unscheduled-strip"]',
+  );
+  const isMonth = zones.some((z) =>
+    z.dataset.testid?.startsWith("day-cell-"),
+  );
+  const zoneRect = (idx: number) => {
+    if (isMonth) {
+      const col = idx % 7;
+      const row = Math.floor(idx / 7);
+      return { x: col * COL_W, y: COL_Y + row * 120, w: COL_W, h: 110 };
+    }
+    return { x: idx * COL_W, y: COL_Y, w: COL_W, h: COL_H };
+  };
+  const stripRect = isMonth
+    ? { x: 0, y: COL_Y + 6 * 120 + 20, w: 7 * COL_W, h: 60 }
+    : { x: 0, y: COL_Y + COL_H + 40, w: 7 * COL_W, h: 60 };
   const orig = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (this: Element) {
     const el = this as HTMLElement;
-    const colIdx = columns.findIndex((c) => c === el || c.contains(el));
-    if (colIdx >= 0) {
-      if (columns[colIdx] === el) {
-        return makeRect(colIdx * COL_W, COL_Y, COL_W, COL_H);
+    const zoneIdx = zones.findIndex((c) => c === el || c.contains(el));
+    if (zoneIdx >= 0) {
+      const r = zoneRect(zoneIdx);
+      if (zones[zoneIdx] === el) {
+        return makeRect(r.x, r.y, r.w, r.h);
       }
-      // A chip inside the column.
-      return makeRect(colIdx * COL_W + 8, COL_Y + 10, COL_W - 16, 22);
+      // A chip inside the zone.
+      return makeRect(r.x + 8, r.y + 10, r.w - 16, 22);
+    }
+    if (strip && (strip === el || strip.contains(el))) {
+      if (strip === el) {
+        return makeRect(
+          stripRect.x,
+          stripRect.y,
+          stripRect.w,
+          stripRect.h,
+        );
+      }
+      // A chip inside the strip.
+      return makeRect(stripRect.x + 8, stripRect.y + 10, 200, 22);
     }
     // DragOverlay ghost (the w-56 wrapper) — follows the pointer.
     if (typeof el.className === "string" && el.className.includes("w-56")) {
@@ -478,6 +515,17 @@ interface ActiveDrag {
   target: HTMLElement;
   drop: () => Promise<void>;
   cancel: () => Promise<void>;
+  /** C159T1: dispatch a pointermove to another day's center mid-drag. */
+  moveTo: (dayKey: string) => Promise<void>;
+  /** C159T1: dispatch a pointermove to raw viewport coords mid-drag. */
+  moveToPoint: (x: number, y: number) => Promise<void>;
+}
+
+function dayTarget(dayKey: string): HTMLElement {
+  return (
+    screen.queryByTestId(`week-column-${dayKey}`) ??
+    screen.getByTestId(`day-cell-${dayKey}`)
+  );
 }
 
 /** pointerdown on the chip + two moves (activate, then travel to the target). */
@@ -486,7 +534,7 @@ async function beginDrag(
   targetDayKey: string,
 ): Promise<ActiveDrag> {
   const chip = screen.getByRole("button", { name: chipName });
-  const target = screen.getByTestId(`week-column-${targetDayKey}`);
+  const target = dayTarget(targetDayKey);
   const restore = installLayoutStub();
   activeRestore = restore;
   const chipRect = chip.getBoundingClientRect();
@@ -513,6 +561,22 @@ async function beginDrag(
   });
   return {
     target,
+    moveTo: async (dayKey: string) => {
+      const rect = dayTarget(dayKey).getBoundingClientRect();
+      await act(async () => {
+        document.dispatchEvent(
+          new Ctor(
+            "pointermove",
+            pointerInit(rect.x + rect.width / 2, rect.y + rect.height / 2),
+          ),
+        );
+      });
+    },
+    moveToPoint: async (x: number, y: number) => {
+      await act(async () => {
+        document.dispatchEvent(new Ctor("pointermove", pointerInit(x, y)));
+      });
+    },
     drop: async () => {
       try {
         await act(async () => {
@@ -1182,5 +1246,252 @@ describe("Calendar dated-chip move cascade", () => {
     );
     expect(mockState.patch).not.toHaveBeenCalled();
     expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C159T1: mid-drag landing ghost preview. Ghost assertions run BETWEEN
+// beginDrag and drop()/cancel() — the drag stays ACTIVE mid-flight,
+// exactly the window the ghost lives in. The ghost is render-only:
+// no PATCH fires until the drop.
+// ---------------------------------------------------------------------------
+
+function ghostIn(dayKey: string): HTMLElement | null {
+  return dayTarget(dayKey).querySelector('[data-schedule-ghost="true"]');
+}
+
+function anyGhost(): HTMLElement | null {
+  return document.querySelector('[data-schedule-ghost="true"]');
+}
+
+function stripEl(): HTMLElement {
+  const el = document.querySelector(
+    '[data-droppable-id="unscheduled-strip"]',
+  );
+  if (!el) throw new Error("unscheduled strip not rendered");
+  return el as HTMLElement;
+}
+
+describe("Calendar landing ghost preview", () => {
+  it("strip chip over a day shows the landing ghost there; real chip stays in the strip, no PATCH mid-drag", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      const ghost = ghostIn(keys[2]);
+      expect(ghost).not.toBeNull();
+      expect(ghost!.getAttribute("aria-label")).toBe(
+        `Schedule preview for ENG-5 on ${keys[2]}`,
+      );
+      // No ghost anywhere else.
+      expect(ghostIn(keys[4])).toBeNull();
+      // The real chip never leaves the strip mid-drag.
+      expect(
+        within(stripEl()).getByText("Blocker from strip"),
+      ).toBeInTheDocument();
+      // Render-only: nothing fires while the drag is in flight.
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+  });
+
+  it("ghost follows the pointer to another day", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      expect(ghostIn(keys[2])).not.toBeNull();
+      await drag.moveTo(keys[4]);
+      expect(ghostIn(keys[2])).toBeNull();
+      expect(ghostIn(keys[4])).not.toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("dated chip dragged later shows the landing ghost on the shifted day", async () => {
+    mockState.patch.mockResolvedValue({});
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    // spanning sits on its target day (Wednesday). Dragging to Friday
+    // shifts it +2 — the ghost lands on Friday, the real chip stays
+    // on Wednesday until the drop.
+    const drag = await beginDrag(/ENG-4.*Spanning sprint work/, keys[4]);
+    try {
+      const ghost = ghostIn(keys[4]);
+      expect(ghost).not.toBeNull();
+      expect(ghost!.getAttribute("aria-label")).toBe(
+        `Schedule preview for ENG-4 on ${keys[4]}`,
+      );
+      expect(
+        within(dayTarget(keys[2])).getByText("Spanning sprint work"),
+      ).toBeInTheDocument();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("same-day hover shows no landing ghost", async () => {
+    mockState.patch.mockResolvedValue({});
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-2.*Draft release notes/, keys[0]);
+    try {
+      expect(anyGhost()).toBeNull();
+    } finally {
+      await drag.drop();
+    }
+    // Same-day drop is a no-op — still no PATCH after the drop.
+    await waitFor(() =>
+      expect(screen.getByTestId(`week-column-${keys[0]}`)).toBeInTheDocument(),
+    );
+    expect(mockState.patch).not.toHaveBeenCalled();
+  });
+
+  it("pointer off-grid shows no ghost", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    try {
+      expect(ghostIn(keys[2])).not.toBeNull();
+      await drag.moveToPoint(2000, 2000);
+      expect(anyGhost()).toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("hovering the strip shows no ghost", async () => {
+    mockState.patch.mockResolvedValue({});
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-2.*Draft release notes/, keys[2]);
+    try {
+      expect(ghostIn(keys[2])).not.toBeNull();
+      const r = stripEl().getBoundingClientRect();
+      await drag.moveToPoint(r.x + r.width / 2, r.y + r.height / 2);
+      expect(anyGhost()).toBeNull();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.cancel();
+    }
+  });
+
+  it("cancel clears the ghost and PATCHes nothing", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    mockState.links = [blockerLink];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    expect(ghostIn(keys[2])).not.toBeNull();
+    await drag.cancel();
+
+    expect(anyGhost()).toBeNull();
+    // Let any stray mutation flush.
+    await waitFor(() =>
+      expect(screen.getByTestId(`week-column-${keys[2]}`)).toBeInTheDocument(),
+    );
+    expect(mockState.patch).not.toHaveBeenCalled();
+    expect(mockState.toastAdd).not.toHaveBeenCalled();
+  });
+
+  it("drop clears the ghost and fires a single PATCH", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    const keys = weekDayKeys();
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, keys[2]);
+    expect(ghostIn(keys[2])).not.toBeNull();
+    await drag.drop();
+
+    expect(anyGhost()).toBeNull();
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: keys[2] },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("guests never see a ghost (no drag source)", async () => {
+    mockState.role = 5;
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    await switchToWeek();
+    expect(anyGhost()).toBeNull();
+    const chip = screen.getByRole("button", {
+      name: /ENG-5.*Blocker from strip/,
+    });
+    expect(chip.className).not.toContain("cursor-grab");
+  });
+
+  it("month view shows the landing ghost in the prospective day cell", async () => {
+    mockState.patch.mockResolvedValue({});
+    mockState.undated = [stripBlocker];
+    renderCalendar();
+    await screen.findByRole("heading");
+    // Default view is month — no switchToWeek. Wait for the strip chip
+    // (undated query) before starting the drag.
+    await screen.findByRole("button", { name: /ENG-5.*Blocker from strip/ });
+    const targetKey = dayKey(new Date(Date.now() + 2 * 86_400_000));
+
+    const drag = await beginDrag(/ENG-5.*Blocker from strip/, targetKey);
+    try {
+      const ghost = ghostIn(targetKey);
+      expect(ghost).not.toBeNull();
+      expect(ghost!.getAttribute("aria-label")).toBe(
+        `Schedule preview for ENG-5 on ${targetKey}`,
+      );
+      expect(
+        within(stripEl()).getByText("Blocker from strip"),
+      ).toBeInTheDocument();
+      expect(mockState.patch).not.toHaveBeenCalled();
+    } finally {
+      await drag.drop();
+    }
+    await waitFor(() =>
+      expect(mockState.patch).toHaveBeenCalledWith(
+        "/api/v1/workspaces/acme/projects/ENG/issues/strip-blocker",
+        { target_date: targetKey },
+      ),
+    );
+    expect(mockState.patch).toHaveBeenCalledTimes(1);
   });
 });
