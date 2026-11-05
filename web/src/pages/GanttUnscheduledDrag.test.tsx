@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// Unscheduled-lane drag to schedule (C156T1): dragging a top-level
-// unscheduled label row onto the timeline PATCHes both dates to the
-// drop day (a 1-day bar). Harness follows GanttSingleDateDrag.test.tsx
-// / GanttChildDrag.test.tsx (mocked api, jsdom PointerEvent polyfill,
+// Unscheduled-lane drag to schedule (C156T1 + C156T2): dragging a
+// top-level unscheduled label row — or a nested undated child row —
+// onto the timeline PATCHes both dates to the drop day (a 1-day
+// bar). Harness follows GanttSingleDateDrag.test.tsx /
+// GanttChildDrag.test.tsx (mocked api, jsdom PointerEvent polyfill,
 // makeIssue with nullable dates).
 //
 // jsdom note: getBoundingClientRect returns zeros, so svgX(clientX)
@@ -25,7 +26,7 @@ vi.mock("../lib/auth", () => ({
 }));
 import Gantt from "./Gantt";
 import { api } from "../lib/api";
-import type { Issue, IssueState } from "../lib/types";
+import type { Issue, IssueState, SubtaskRow } from "../lib/types";
 import {
   makeQueryClient,
   stubMatchMedia,
@@ -66,6 +67,7 @@ function makeIssue(
   startDate: string | null,
   targetDate: string | null,
   sequenceId = 1,
+  subtasks?: SubtaskRow[],
 ): Issue {
   return {
     id,
@@ -84,6 +86,7 @@ function makeIssue(
     labels: [],
     start_date: startDate,
     target_date: targetDate,
+    subtasks,
   };
 }
 
@@ -101,9 +104,63 @@ const dated = makeIssue(
 );
 const undated = makeIssue("i-u", "ENG-9", "Undated task", null, null, 1);
 
+// C156T2 fixtures: an undated parent with one undated child and
+// one dated child. Children live ONLY in the parent's subtasks
+// array — never as top-level results — so every child assertion
+// below proves the subtask-row wiring, not top-level presence.
+const childUndated: SubtaskRow = {
+  id: "i-cu",
+  display_id: "ENG-10",
+  title: "Undated child",
+  state_id: "s-1",
+  priority: 3,
+  assignee_ids: [],
+  sort_order: 1,
+};
+const childDated: SubtaskRow = {
+  id: "i-cd",
+  display_id: "ENG-11",
+  title: "Dated child",
+  state_id: "s-1",
+  priority: 3,
+  assignee_ids: [],
+  sort_order: 2,
+  start_date: "2026-11-15T00:00:00Z",
+  target_date: "2026-11-17T00:00:00Z",
+};
+const parentUndated = makeIssue("i-pu", "ENG-9", "Undated parent", null, null, 1, [
+  childUndated,
+  childDated,
+]);
+// Dated mirror of the parent, served after its schedule PATCH flips
+// the fixture flag: the same children, still undated/dated as
+// before — a parent schedule must not touch them.
+const parentDated = makeIssue(
+  "i-pu",
+  "ENG-9",
+  "Undated parent",
+  "2026-11-10T00:00:00Z",
+  "2026-11-10T00:00:00Z",
+  1,
+  [childUndated, childDated],
+);
+
 // Full-Issue mirror of the undated issue, served ONLY on the peek
 // detail path (PeekDrawer fetches one issue by id).
-const byId: Record<string, Issue> = { "i-d": dated, "i-u": undated };
+const byId: Record<string, Issue> = {
+  "i-d": dated,
+  "i-u": undated,
+  "i-pu": parentUndated,
+  "i-cu": makeIssue("i-cu", "ENG-10", "Undated child", null, null, 2),
+  "i-cd": makeIssue(
+    "i-cd",
+    "ENG-11",
+    "Dated child",
+    "2026-11-15T00:00:00Z",
+    "2026-11-17T00:00:00Z",
+    3,
+  ),
+};
 
 function renderPage(opts: { role?: number } = {}) {
   const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
@@ -159,6 +216,89 @@ async function waitForLane() {
     expect(screen.queryByText("Undated task")).not.toBeNull();
     expect(screen.queryByText("Dated task")).not.toBeNull();
   });
+}
+
+// C156T2: same harness, but the lane holds an undated parent with
+// nested children. The fixture is stateful: PATCHing the parent
+// flips `scheduled`, so the post-commit refetch serves the parent
+// dated (same children, untouched) and an empty lane — the
+// parent-schedule test's re-render. PATCHing a child flips nothing,
+// so a child schedule leaves the lane exactly as it was.
+function renderChildPage(opts: { role?: number } = {}) {
+  let scheduled = false;
+  const get = vi.spyOn(api, "get").mockImplementation((path: string) => {
+    if (path === "/api/v1/workspaces")
+      return Promise.resolve({
+        workspaces: [{ slug: "acme", name: "Acme" }],
+      });
+    if (path === "/api/v1/workspaces/acme")
+      return Promise.resolve({ role: opts.role ?? 15 });
+    if (path === `${BASE}/states`)
+      return Promise.resolve({ states: [stateStarted] });
+    // Peek-drawer support paths (detail content fetches).
+    if (path.includes("/subscribers"))
+      return Promise.resolve({ subscribers: [] });
+    if (path === `${BASE}/labels`) return Promise.resolve({ labels: [] });
+    if (path === "/api/v1/workspaces/acme/members")
+      return Promise.resolve({ members: [] });
+    if (path.startsWith(`${BASE}/issues/`)) {
+      const id = path.slice(`${BASE}/issues/`.length);
+      const issue = byId[id];
+      if (issue) return Promise.resolve(issue);
+    }
+    if (path.includes("/issues")) {
+      const qs = new URLSearchParams(path.split("?")[1] ?? "");
+      if (qs.get("undated") !== null)
+        return Promise.resolve({
+          results: scheduled ? [] : [parentUndated],
+          links: [],
+          next_cursor: null,
+        });
+      return Promise.resolve({
+        results: scheduled ? [dated, parentDated] : [dated],
+        links: [],
+        next_cursor: null,
+      });
+    }
+    return Promise.reject(new Error(`unexpected GET ${path}`));
+  });
+  const patch = vi.spyOn(api, "patch").mockImplementation((path: string) => {
+    if (path === `${BASE}/issues/i-pu`) scheduled = true;
+    return Promise.resolve({ ...parentUndated });
+  });
+  const post = vi.spyOn(api, "post").mockImplementation(() =>
+    Promise.resolve({ id: "l-1", kind: "blocks" }),
+  );
+  const qc = makeQueryClient();
+  const { container } = render(
+    <MemoryRouter initialEntries={["/w/acme/p/ENG/gantt"]}>
+      <QueryClientProvider client={qc}>
+        <Routes>
+          <Route path="/w/:slug/p/:identifier/gantt" element={<Gantt />} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+  return { get, patch, post, container };
+}
+
+async function waitForChildLane() {
+  await waitFor(() => {
+    expect(screen.queryByText("Unscheduled")).not.toBeNull();
+    expect(screen.queryByText("Undated parent")).not.toBeNull();
+    expect(screen.queryByText("Undated child")).not.toBeNull();
+    expect(screen.queryByText("Dated child")).not.toBeNull();
+    expect(screen.queryByText("Dated task")).not.toBeNull();
+  });
+}
+
+/** A nested child label button, by its title attribute. (getByTitle
+    is ambiguous for a dated child: its bar rect carries a <title>
+    with the same text, so the button is selected directly.) */
+function childButton(container: HTMLElement, title: string): Element {
+  const button = container.querySelector(`button[title="${title}"]`);
+  expect(button).not.toBeNull();
+  return button!;
 }
 
 /** The top-level unscheduled label button (its title is unique: the
@@ -396,5 +536,162 @@ describe("Gantt unscheduled drag (C156T1)", () => {
         target_date: "2026-12-31",
       });
     });
+  });
+});
+
+describe("Gantt unscheduled child drag (C156T2)", () => {
+  // Lane rows: group (idx 0), dated ENG-1 (idx 1), lane header
+  // (idx 2), undated parent (idx 3), undated child (idx 4), dated
+  // child (idx 5). The undated child's ghost sits at y =
+  // 56 + 4*34 + 9 = 201, x = 1122 for the 2026-11-10 drop day.
+  it("child-row drag PATCHes only the child (parent untouched)", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = childButton(container, "ENG-10: Undated child");
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // Mid-drag the 1-day ghost sits at the pointer day on the
+    // CHILD's track — ghostRows covers issue-child rows, so no
+    // ghost change was needed for T2.
+    const ghost = scheduleGhost(container);
+    expect(ghost).not.toBeNull();
+    expect(ghost!.getAttribute("x")).toBe("1122");
+    expect(ghost!.getAttribute("y")).toBe("201");
+    expect(ghost!.getAttribute("width")).toBe("24");
+    expect(ghost!.getAttribute("fill-opacity")).toBe("0.35");
+    expect(ghost!.getAttribute("stroke-dasharray")).toBe("4 3");
+    expect(ghost!.getAttribute("aria-label")).toBe(
+      "Schedule preview for ENG-10",
+    );
+    fireEvent.pointerUp(svg, { clientX: 1120, clientY: 100 });
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-cu`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-10",
+      });
+    });
+    expect(scheduleGhost(container)).toBeNull();
+    expect(patch).not.toHaveBeenCalledWith(
+      `${BASE}/issues/i-pu`,
+      expect.anything(),
+    );
+    // The parent is still undated in the lane — the child schedule
+    // did not move it out (the refetch serves the same fixture).
+    expect(screen.queryByText("Undated parent")).not.toBeNull();
+  });
+
+  it("parent schedule leaves children undated (lane still lists them under the parent)", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = screen.getByTitle("ENG-9: Undated parent");
+    dragTo(container, button, 1120);
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(`${BASE}/issues/i-pu`, {
+        start_date: "2026-11-10",
+        target_date: "2026-11-10",
+      });
+    });
+    // Exactly one PATCH: the parent only — neither child was sent.
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).not.toHaveBeenCalledWith(
+      `${BASE}/issues/i-cu`,
+      expect.anything(),
+    );
+    expect(patch).not.toHaveBeenCalledWith(
+      `${BASE}/issues/i-cd`,
+      expect.anything(),
+    );
+    // After the success refetch the parent is dated, so the lane
+    // header is gone — but both children still render, nested
+    // under the parent's new dated row, undated child still dateless.
+    await waitFor(() => {
+      expect(screen.queryByText("Unscheduled")).toBeNull();
+      expect(screen.queryByText("Undated parent")).not.toBeNull();
+      expect(screen.queryByText("Undated child")).not.toBeNull();
+      expect(screen.queryByText("Dated child")).not.toBeNull();
+    });
+  });
+
+  it("child label-column drop is a no-op", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = childButton(container, "ENG-10: Undated child");
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // A negative clientX is left of the svg = over the label column.
+    fireEvent.pointerUp(svg, { clientX: -20, clientY: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    expect(scheduleGhost(container)).toBeNull();
+    expect(screen.queryByText("Undated child")).not.toBeNull();
+  });
+
+  it("drag-then-click on a child row does not open the peek", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = childButton(container, "ENG-10: Undated child");
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    fireEvent.pointerUp(button, { clientX: 100, clientY: 100 });
+    // Click SYNCHRONOUSLY after pointer-up, as a real browser
+    // does: suppressClick is cleared by a 0ms timer, so any await
+    // between pointer-up and click would let the timer fire and
+    // the click would legitimately open peek. The child button
+    // carries the same suppressClick guard as the top-level one.
+    fireEvent.click(button);
+    expect(peekDialog()).toBeNull();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("child plain click still opens the peek", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = childButton(container, "ENG-10: Undated child");
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(button, { clientX: 100, clientY: 100 });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(peekDialog()).not.toBeNull();
+    });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("canEdit=false child row has no drag source (click still opens peek)", async () => {
+    const { patch, container } = renderChildPage({ role: 0 });
+    await waitForChildLane();
+    const button = childButton(container, "ENG-10: Undated child");
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // No drag started, so no schedule ghost ever appears.
+    expect(scheduleGhost(container)).toBeNull();
+    fireEvent.pointerUp(svg, { clientX: 1120, clientY: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(peekDialog()).not.toBeNull();
+    });
+  });
+
+  it("dated child label has no schedule drag source (its bar owns its drag)", async () => {
+    const { patch, container } = renderChildPage();
+    await waitForChildLane();
+    const button = childButton(container, "ENG-11: Dated child");
+    const svg = timelineSvg(container);
+    fireEvent.pointerDown(button, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(svg, { clientX: 1120, clientY: 100 });
+    // No schedule ghost: the label press started nothing, so the
+    // dated child's Nov 15–17 range can never be clobbered to a
+    // 1-day span from its label.
+    expect(scheduleGhost(container)).toBeNull();
+    fireEvent.pointerUp(svg, { clientX: 1120, clientY: 100 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(patch).not.toHaveBeenCalled();
+    expect(screen.queryByText("Dated child")).not.toBeNull();
   });
 });
