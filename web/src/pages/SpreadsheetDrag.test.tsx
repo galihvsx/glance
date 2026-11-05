@@ -39,6 +39,7 @@ import {
   spreadsheetDragIssueId,
   spreadsheetOverGroupKey,
   spreadsheetReorderIndicatorSide,
+  spreadsheetReorderRun,
 } from "../components/issue/spreadsheetDrag";
 import type { Issue, IssueState, SubtaskRow } from "../lib/types";
 import type { Workflow } from "../lib/workflow";
@@ -1873,6 +1874,46 @@ describe("planSpreadsheetReorder", () => {
   });
 });
 
+describe("spreadsheetReorderRun", () => {
+  const a1 = { id: "a1" };
+  const a2 = { id: "a2" };
+  const a3 = { id: "a3" };
+  const sections = [
+    { key: "p0", issues: [a1, a2] },
+    { key: "p2", issues: [a3] },
+  ];
+
+  it("single-appearance same-section rows resolve to that section's rows", () => {
+    expect(spreadsheetReorderRun(sections, "a1", "a2")).toEqual([a1, a2]);
+  });
+
+  it("cross-section rows resolve to null", () => {
+    expect(spreadsheetReorderRun(sections, "a1", "a3")).toBeNull();
+  });
+
+  it("multi-appearance source resolves to null", () => {
+    const dup = [
+      { key: "u2", issues: [a1, a2] },
+      { key: "u3", issues: [a1] },
+    ];
+    expect(spreadsheetReorderRun(dup, "a1", "a2")).toBeNull();
+  });
+
+  it("multi-appearance target resolves to null", () => {
+    const dup = [
+      { key: "u2", issues: [a1, a2] },
+      { key: "u3", issues: [a2] },
+    ];
+    expect(spreadsheetReorderRun(dup, "a1", "a2")).toBeNull();
+  });
+
+  it("missing source or target row resolves to null", () => {
+    expect(spreadsheetReorderRun(sections, "zz", "a2")).toBeNull();
+    expect(spreadsheetReorderRun(sections, "a1", "zz")).toBeNull();
+    expect(spreadsheetReorderRun([], "a1", "a2")).toBeNull();
+  });
+});
+
 describe("Spreadsheet state-group reorder (C152T1)", () => {
   /** Three rows in Backlog (s) at even 1024-steps, one in In Progress. */
   function reorderIssues(): Issue[] {
@@ -2032,18 +2073,33 @@ describe("Spreadsheet state-group reorder (C152T1)", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("drag within a state group with a sub-group active PATCHes nothing", async () => {
+  it("drag within a state group with a sub-group active PATCHes the run midpoint (C153T1: retires the C152 no-op)", async () => {
     mockData.issues = reorderIssues();
     await renderGrouped("state", "priority");
     const table = screen.getByRole("table");
     // One priority sub-section per primary group (all rows are
-    // priority 0) — the sub-group is genuinely active, not "none".
+    // priority 0) — the sub-group is genuinely active, not "none",
+    // and every row is single-appearance in its own section, so the
+    // run is that section's rows and the drop reorders within it.
     expect(
       table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
     ).toHaveLength(2);
     const patch = await patchMock();
     drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
-    expect(patch).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith(
+        expect.stringContaining("/issues/a1"),
+        { sort_order: 2560 },
+      );
+    });
+    await waitFor(() => {
+      expect(rowLabels()).toEqual([
+        "Open issue ENG-2: Beta",
+        "Open issue ENG-1: Alpha",
+        "Open issue ENG-3: Gamma",
+        "Open issue ENG-4: Delta",
+      ]);
+    });
   });
 
   it("PQL-mode same-group row drop PATCHes nothing", async () => {
@@ -2137,6 +2193,117 @@ describe("Spreadsheet state-group reorder (C152T1)", () => {
     mockData.role = 0;
     mockData.issues = reorderIssues();
     await renderGrouped("state", "none", false);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Spreadsheet within-sub-group reorder (C153T1)", () => {
+  /** Backlog (s) rows split across priority sub-sections, one in In Progress. */
+  function subgroupIssues(): Issue[] {
+    return [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        priority: 0,
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        priority: 2,
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        priority: 0,
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+      }),
+      mkIssue({
+        id: "b1",
+        sequence_id: 4,
+        display_id: "ENG-4",
+        name: "Delta",
+        priority: 0,
+        state_id: "s2",
+        sort_order: 1024,
+        created_by: "u2",
+      }),
+    ];
+  }
+
+  it("cross-section row drop PATCHes nothing", async () => {
+    mockData.issues = subgroupIssues();
+    await renderGrouped("state", "priority");
+    const table = screen.getByRole("table");
+    // Backlog splits into priority 2 + priority 0 sections, In
+    // Progress has one — a1 (priority 0) and a2 (priority 2) are in
+    // different runs of the same primary group.
+    expect(
+      table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
+    ).toHaveLength(3);
+    const patch = await patchMock();
+    drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("multi-appearance row drop PATCHes nothing", async () => {
+    mockData.issues = [
+      mkIssue({
+        id: "a1",
+        sequence_id: 1,
+        display_id: "ENG-1",
+        name: "Alpha",
+        state_id: "s",
+        sort_order: 1024,
+        created_by: "u2",
+        assignees: [
+          { id: "u2", name: "Ada" },
+          { id: "u3", name: "Bob" },
+        ],
+      }),
+      mkIssue({
+        id: "a2",
+        sequence_id: 2,
+        display_id: "ENG-2",
+        name: "Beta",
+        state_id: "s",
+        sort_order: 2048,
+        created_by: "u2",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+      mkIssue({
+        id: "a3",
+        sequence_id: 3,
+        display_id: "ENG-3",
+        name: "Gamma",
+        state_id: "s",
+        sort_order: 3072,
+        created_by: "u2",
+        assignees: [{ id: "u2", name: "Ada" }],
+      }),
+    ];
+    await renderGrouped("state", "assignees");
+    const table = screen.getByRole("table");
+    // a1 appears under both Ada and Bob sections — the drag id
+    // cannot say which appearance was grabbed, so no run resolves.
+    expect(
+      table.querySelectorAll("tr[data-spreadsheet-sub-group-header]"),
+    ).toHaveLength(2);
     const patch = await patchMock();
     drop("spreadsheet-drag:s:a1", "spreadsheet-row-drop:s:a2");
     expect(patch).not.toHaveBeenCalled();

@@ -157,6 +157,10 @@ export type SpreadsheetDropPlan =
  *  sort, no sub-group, visual-filter mode), never reaches this
  *  function: the handler routes it through planSpreadsheetReorder
  *  first, so every non-eligible path keeps this no-op byte-for-byte.
+ *  C153T1 extends the eligible configuration to sub-grouped views
+ *  when spreadsheetReorderRun resolves a run; an unresolved
+ *  sub-grouped drop (cross-section, multi-appearance) still reaches
+ *  this function and stays a no-op.
  *  State moves run under the C68 transition
  *  guard via Board's own isTransitionAllowed helper — a blocked move
  *  PATCHes nothing and the caller surfaces Board's error path (the
@@ -326,9 +330,10 @@ export function planSpreadsheetDrop(args: {
 }
 
 /** C152T1: within-state-group reorder plan. The caller guarantees
- *  the eligibility conditions (grouped by state, no column sort, no
- *  sub-group, visual-filter mode, top-level rows in one real state
- *  group, canEdit) — this planner only computes the write, so it
+ *  the eligibility conditions (grouped by state, no column sort,
+ *  visual-filter mode, top-level rows in one real state
+ *  group, canEdit, and — C153T1 — a resolved reorder run when a
+ *  sub-group is active) — this planner only computes the write, so it
  *  stays framework-free and unit-testable like planSpreadsheetDrop.
  *  `rows` is the group's sort_order-ordered top-level sequence
  *  (filtered to the state defensively: a wider list still plans
@@ -399,6 +404,38 @@ export function planSpreadsheetReorderToEnd(args: {
     kind: "reorder",
     sort_order: dropSortOrder(col, sourceId, stateId, stateId, col.length),
   };
+}
+
+/** C153T1: reorder-run resolution for a sub-grouped state group.
+ *  The rendered sub-sections are taken as truth (never re-derived
+ *  from issues): the run is the section's rows when the source row
+ *  and the target row each appear in exactly ONE section and it is
+ *  the SAME section, else null. The singleton rule is what makes
+ *  the resolution deterministic from data alone — the drag id
+ *  carries only the primary group, never the sub-section, so for a
+ *  multi-appearance row (an issue under several assignee/label/
+ *  epic/module sections of one primary group) the drop-time code
+ *  cannot know which appearance was grabbed, and a guessed run
+ *  could write a wrong-section order. A null run is not an error:
+ *  the caller falls through to the C148 path (same-group no-op).
+ *  Cross-section drops resolve to null the same way: sections are
+ *  different runs, and there is no sub-dimension move pipeline. */
+export function spreadsheetReorderRun<T extends { id: string }>(
+  sections: { key: string; issues: T[] }[],
+  sourceId: string,
+  targetRowId: string,
+): T[] | null {
+  const sourceSections = sections.filter((s) =>
+    s.issues.some((i) => i.id === sourceId),
+  );
+  const targetSections = sections.filter((s) =>
+    s.issues.some((i) => i.id === targetRowId),
+  );
+  if (sourceSections.length !== 1 || targetSections.length !== 1) {
+    return null;
+  }
+  if (sourceSections[0] !== targetSections[0]) return null;
+  return sourceSections[0].issues;
 }
 
 export function planSpreadsheetReorder(args: {
