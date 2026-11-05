@@ -60,6 +60,7 @@ import {
 import {
   computeCascade,
   type CascadeIssue,
+  type CascadeShift,
 } from "../components/gantt/ganttCascade";
 import { cn } from "../lib/utils";
 
@@ -666,12 +667,25 @@ export default function Gantt() {
   // violating dependent), so a no-cascade drag previews nothing.
   const previewCascade = useMemo(() => {
     if (!drag) return [];
-    // C156T1: a schedule drag has no cascade ghosts — computeCascade
-    // early-returns [] for a dateless dragged issue (no old end to
-    // compute k from), so the ghost is the 1-day bar only.
-    // Cascade-on-schedule is a carried follow-up (cycle 156 plan,
-    // decision 5), not bolted on here.
-    if (drag.mode === "schedule") return [];
+    // C157T2: a schedule drag cascades per rule 9 — the prospective
+    // span is the 1-day span at the drop day, computed exactly the
+    // way the schedule ghost bar does (xToDay over the pointer x,
+    // hidden while the pointer is over the label column). The
+    // cascade ghosts render through the existing ghost path below,
+    // so the preview shows exactly what the commit would shift.
+    if (drag.mode === "schedule") {
+      const pointerX = drag.startX + drag.dx;
+      if (pointerX < 0) return [];
+      const day = xToDay(pointerX, windowStart, DAY_W, days.length);
+      return computeCascade(
+        cascadeIssues,
+        links,
+        drag.id,
+        day,
+        day,
+        "schedule",
+      );
+    }
     const span = prospectiveSpan(drag, Math.round(drag.dx / DAY_W));
     return computeCascade(
       cascadeIssues,
@@ -681,7 +695,7 @@ export default function Gantt() {
       span.end,
       drag.mode,
     );
-  }, [drag, cascadeIssues, links]);
+  }, [drag, cascadeIssues, links, windowStart, days]);
 
   const patchMutation = useMutation({
     // C149T1: start/end are optional — the mutation sends exactly
@@ -810,6 +824,63 @@ export default function Gantt() {
     setDrag({ ...drag, dx: svgX(e.clientX) - drag.startX });
   };
 
+  // C157T2: shared cascade commit (cycle 157 plan, decision 6).
+  // The move commit and the schedule commit both fire the dragged
+  // PATCH + one presence-preserving PATCH per shift together
+  // (Promise.allSettled), with the same success/failure toasts and
+  // ["gantt"] invalidation (rule 8) — one helper so the two paths
+  // cannot diverge. The caller passes the dragged PATCH body
+  // (move: presence-aware per C149T1; schedule: both dates = the
+  // drop day, which creates the range).
+  const commitWithCascade = (
+    draggedId: string,
+    draggedBody: { start_date?: string; target_date?: string },
+    shifts: CascadeShift[],
+  ) => {
+    // Rule 7: a shift PATCH sends start_date only if the issue
+    // originally had one, target_date only if it originally had
+    // one — a single-date dependent stays single-date. The engine
+    // returns ids from the flattened `cascadeIssues`, so a child
+    // dependent resolves via its SubtaskRow dates (C150T1); a
+    // missing original is unreachable and is skipped defensively
+    // rather than patched with a guessed shape.
+    const cascadePatches = shifts.flatMap((shift) => {
+      const original =
+        issueById.get(shift.id) ?? cascadeIssueById.get(shift.id);
+      if (!original) return [];
+      const body: { start_date?: string; target_date?: string } = {};
+      if (original.start_date) body.start_date = shift.start_date;
+      if (original.target_date) body.target_date = shift.target_date;
+      return [{ id: shift.id, body }];
+    });
+    void (async () => {
+      const results = await Promise.allSettled([
+        // C149T1: same presence rule as the single-PATCH path —
+        // a moved single-date blocker stays single-date even when
+        // it cascades its dependents (computeCascade still receives
+        // the filled span, unchanged).
+        api.patch<Issue>(`${base}/issues/${draggedId}`, draggedBody),
+        ...cascadePatches.map((p) =>
+          api.patch<Issue>(`${base}/issues/${p.id}`, p.body),
+        ),
+      ]);
+      const failed = results.some((r) => r.status === "rejected");
+      if (!failed) {
+        toast.add({
+          title: `Shifted ${cascadePatches.length} dependent ${cascadePatches.length === 1 ? "issue" : "issues"}`,
+          type: "success",
+        });
+      } else {
+        toast.add({
+          title:
+            "Some dependent issues failed to shift — the timeline was refreshed.",
+          type: "error",
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["gantt"] });
+    })();
+  };
+
   const onPointerUp = (e: React.PointerEvent) => {
     // Finish an edge draw: resolve the drop against the dated rows.
     if (linkUi.drawingFrom) {
@@ -836,12 +907,13 @@ export default function Gantt() {
     // C156T1: schedule drag — the drop day is the pointer's day
     // (xToDay clamps into the window). A release outside the
     // timeline svg (label column, toolbar, …) is a no-op: only a
-    // release over the svg schedules. The commit PATCHes the single
-    // issue with both dates = the drop day. Cascade-on-schedule is
-    // NOT wired here: computeCascade early-returns [] for a dateless
-    // dragged issue (no old end to compute k from), so the move
-    // cascade path is move-only — the gap is carried (cycle 156
-    // plan, decision 5), not re-implemented.
+    // release over the svg schedules. C157T2: cascade-on-schedule
+    // (rule 9) — the dragged issue's final span is the 1-day span
+    // [day, day]; a violating dependent shifts by the minimum that
+    // clears finish-to-start. Empty cascade ⇒ today's single
+    // PATCH, byte-identical. Otherwise the dragged PATCH + one
+    // presence-preserving PATCH per shift fire through the shared
+    // cascade-commit helper (same toasts + invalidation as a move).
     if (drag.mode === "schedule") {
       const x = svgX(e.clientX);
       const overTimeline = svgRef.current?.contains(e.target as Node) ?? false;
@@ -857,7 +929,23 @@ export default function Gantt() {
       }
       if (!overTimeline || x < 0) return;
       const day = xToDay(x, windowStart, DAY_W, days.length);
-      patchMutation.mutate({ id: drag.id, start: day, end: day });
+      const shifts = computeCascade(
+        cascadeIssues,
+        links,
+        drag.id,
+        day,
+        day,
+        "schedule",
+      );
+      if (shifts.length === 0) {
+        patchMutation.mutate({ id: drag.id, start: day, end: day });
+        return;
+      }
+      commitWithCascade(
+        drag.id,
+        { start_date: day, target_date: day },
+        shifts,
+      );
       return;
     }
     const dayDelta = Math.round(drag.dx / DAY_W);
@@ -916,56 +1004,21 @@ export default function Gantt() {
       });
       return;
     }
-    // Rule 7: a shift PATCH sends start_date only if the issue
-    // originally had one, target_date only if it originally had
-    // one — a single-date dependent stays single-date. The engine
-    // returns ids from the flattened `cascadeIssues`, so a child
-    // dependent resolves via its SubtaskRow dates (C150T1); a
-    // missing original is unreachable and is skipped defensively
-    // rather than patched with a guessed shape.
-    const cascadePatches = shifts.flatMap((shift) => {
-      const original =
-        issueById.get(shift.id) ?? cascadeIssueById.get(shift.id);
-      if (!original) return [];
-      const body: { start_date?: string; target_date?: string } = {};
-      if (original.start_date) body.start_date = shift.start_date;
-      if (original.target_date) body.target_date = shift.target_date;
-      return [{ id: shift.id, body }];
-    });
-    const draggedId = drag.id;
-    void (async () => {
-      const results = await Promise.allSettled([
-        // C149T1: same presence rule as the single-PATCH path above
-        // — a moved single-date blocker stays single-date even when
-        // it cascades its dependents (computeCascade still receives
-        // the filled span, unchanged).
-        api.patch<Issue>(`${base}/issues/${draggedId}`, {
-          ...(draggedDates.start !== undefined
-            ? { start_date: draggedDates.start }
-            : {}),
-          ...(draggedDates.end !== undefined
-            ? { target_date: draggedDates.end }
-            : {}),
-        }),
-        ...cascadePatches.map((p) =>
-          api.patch<Issue>(`${base}/issues/${p.id}`, p.body),
-        ),
-      ]);
-      const failed = results.some((r) => r.status === "rejected");
-      if (!failed) {
-        toast.add({
-          title: `Shifted ${cascadePatches.length} dependent ${cascadePatches.length === 1 ? "issue" : "issues"}`,
-          type: "success",
-        });
-      } else {
-        toast.add({
-          title:
-            "Some dependent issues failed to shift — the timeline was refreshed.",
-          type: "error",
-        });
-      }
-      void queryClient.invalidateQueries({ queryKey: ["gantt"] });
-    })();
+    // C157T2: the dragged PATCH + shift PATCHes fire through the
+    // shared cascade-commit helper (decision 6) — same toasts,
+    // invalidation, and presence rule as the schedule commit.
+    commitWithCascade(
+      drag.id,
+      {
+        ...(draggedDates.start !== undefined
+          ? { start_date: draggedDates.start }
+          : {}),
+        ...(draggedDates.end !== undefined
+          ? { target_date: draggedDates.end }
+          : {}),
+      },
+      shifts,
+    );
   };
 
   // C156T1: a schedule drag released anywhere outside the timeline
