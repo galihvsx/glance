@@ -131,6 +131,29 @@ interface ListResultWithLinks extends IssueListResult {
   links?: IssueLink[];
 }
 
+/**
+ * C159T2: the lane keys one issue's ghost belongs to — its live epic
+ * ids, or Ungrouped when it has none (same membership rule as
+ * groupIssuesByEpic, over the issue alone so a strip chip — absent
+ * from the grid lanes — still resolves its band). Shared by the
+ * landing + cascade ghosts so the M1 fallback applies to both kinds.
+ */
+function epicLaneKeys(issue: Issue): Set<string> {
+  const live = liveEpics(issue);
+  if (live.length === 0) return new Set([UNGROUPED_EPIC_KEY]);
+  return new Set(live.map((e) => e.id));
+}
+
+/** C159T2: one resolved cascade ghost — the dependent's shift, its
+ *  issue row, the day its chip would land on (placing rule:
+ *  target ?? start, same as issueDay), and its lane keys. */
+interface ResolvedCascadeGhost {
+  shift: CascadeShift;
+  issue: Issue;
+  day: string;
+  laneKeys: Set<string>;
+}
+
 /** Fetch every page of a bounded list query (per_page=100, cursor loop).
  *  C158T1: ?include_links=1 per page (Gantt pattern verbatim) so
  *  dependency edges arrive in one shot — no N+1. */
@@ -480,8 +503,12 @@ export default function Calendar() {
   // decision 5) — the prospective landing day for the dragged chip,
   // resolved the SAME way handleDragEnd resolves the drop
   // (resolveScheduleDrop for strip chips, resolveDropDates + the
-  // placing-date rule for dated chips). T2 extends this SAME memo
-  // with cascade shifts — keep it one memo, not two. Null whenever
+  // placing-date rule for dated chips). C159T2 extends this SAME memo
+  // with the cascade shifts: computeCascade over the prospective span
+  // with the SAME arguments handleDragEnd passes (strip → mode
+  // "schedule", 1-day span [d, d]; dated → mode "move", delta-shifted
+  // span via barSpan). Empty ⇒ landing ghost only. Preview and commit
+  // can never disagree because they share the call. Null whenever
   // there is nothing to preview: no active drag, pointer off-grid
   // (over null), over the unscheduled strip (no landing day), or a
   // same-day hover (resolveDropDates returns null — the ghost would
@@ -496,14 +523,34 @@ export default function Calendar() {
           ? resolved.dates.target_date
           : null;
       if (!landingDay) return null;
-      return { issue: activeIssue, landingDay };
+      const cascadeShifts = computeCascade(
+        cascadeIssues,
+        cascadeLinks,
+        activeIssue.id,
+        landingDay,
+        landingDay,
+        "schedule",
+      );
+      return { issue: activeIssue, landingDay, cascadeShifts };
     }
     const dates = resolveDropDates(activeIssue, overDayKey);
     if (!dates) return null;
     const landingDay = dates.target_date ?? dates.start_date;
     if (!landingDay) return null;
-    return { issue: activeIssue, landingDay };
-  }, [activeIssue, overDayKey, dragFromStrip]);
+    const newSpan = barSpan(dates.start_date, dates.target_date);
+    const cascadeShifts =
+      newSpan.start !== null && newSpan.end !== null
+        ? computeCascade(
+            cascadeIssues,
+            cascadeLinks,
+            activeIssue.id,
+            newSpan.start,
+            newSpan.end,
+            "move",
+          )
+        : [];
+    return { issue: activeIssue, landingDay, cascadeShifts };
+  }, [activeIssue, overDayKey, dragFromStrip, cascadeIssues, cascadeLinks]);
 
   // Workflow states drive the state-dot colors on the event chips
   // (C19 state-dot system — same vocabulary as the board cards).
@@ -655,34 +702,35 @@ export default function Calendar() {
   };
 
   // C159T1: the dragged issue's lane keys, for the grouped ghost
-  // placement — its live epic ids, or Ungrouped when it has none
-  // (same membership rule as groupIssuesByEpic, over the dragged
-  // issue alone so a strip chip — absent from the grid lanes —
-  // still resolves its band).
+  // placement (epicLaneKeys above, over the dragged issue alone so a
+  // strip chip — absent from the grid lanes — still resolves its band).
   const dragPreviewLaneKeys = useMemo(() => {
     if (dragPreview == null) return null;
-    const live = liveEpics(dragPreview.issue);
-    if (live.length === 0) return new Set([UNGROUPED_EPIC_KEY]);
-    return new Set(live.map((e) => e.id));
+    return epicLaneKeys(dragPreview.issue);
   }, [dragPreview]);
 
-  // C159T1: the landing ghost for one day cell — the dragged issue's
-  // chip on the prospective day. In grouped mode it renders in the
-  // dragged issue's lane band(s); a strip chip whose epic has no grid
-  // lane (or an ungrouped chip with no Ungrouped band) falls back to
-  // the day's last band — the ghost still lands on the right day.
-  // Ungrouped (no laneKey) it renders once in the day's chip list.
-  const scheduleGhostFor = (key: string, laneKey?: string) => {
-    if (dragPreview == null || dragPreview.landingDay !== key) return null;
-    if (laneKey !== undefined) {
-      const keys = dragPreviewLaneKeys;
-      if (keys == null) return null;
-      const inLane = keys.has(laneKey);
-      const noLaneMatches = !lanes.some((l) => keys.has(l.key));
-      const isLastBand =
-        lanes.length > 0 && lanes[lanes.length - 1].key === laneKey;
-      if (!inLane && !(noLaneMatches && isLastBand)) return null;
-    }
+  // C159T2: the resolved cascade ghosts for the current preview —
+  // one per shift, each with its dependent issue row, its shifted
+  // day, and its lane keys. Computed once per preview so the
+  // per-band renderers below stay cheap. A shift whose day is
+  // outside the rendered window never matches a cell and renders
+  // nothing (window clamp, same as the Gantt ghosts); a shift whose
+  // dependent is missing from the merged set is skipped defensively
+  // (the engine only ever returns shifts from that set).
+  const cascadeGhosts = useMemo((): ResolvedCascadeGhost[] => {
+    if (dragPreview == null) return [];
+    return dragPreview.cascadeShifts.flatMap((shift) => {
+      const issue = cascadeIssueById.get(shift.id);
+      if (!issue) return [];
+      const day = shift.target_date ?? shift.start_date;
+      if (!day) return [];
+      return [{ shift, issue, day, laneKeys: epicLaneKeys(issue) }];
+    });
+  }, [dragPreview, cascadeIssueById]);
+
+  // C159T1: the landing ghost element for the current preview.
+  const landingGhostEl = () => {
+    if (dragPreview == null) return null;
     return (
       <GhostIssueChip
         issue={dragPreview.issue}
@@ -690,6 +738,72 @@ export default function Calendar() {
         dayKey={dragPreview.landingDay}
       />
     );
+  };
+
+  // C159T1: the landing ghost for one day cell — the dragged issue's
+  // chip on the prospective day. In grouped mode it renders in the
+  // dragged issue's lane band(s). Ungrouped (no laneKey) it renders
+  // once in the day's chip list.
+  const scheduleGhostFor = (key: string, laneKey?: string) => {
+    if (dragPreview == null || dragPreview.landingDay !== key) return null;
+    if (laneKey !== undefined) {
+      const keys = dragPreviewLaneKeys;
+      if (keys == null || !keys.has(laneKey)) return null;
+    }
+    return landingGhostEl();
+  };
+
+  // C159T2 (M1 fix, deferred from T1): the landing ghost when
+  // grouped mode has NO band for the dragged issue's epic — rendered
+  // OUTSIDE the bands (the grouped call sites place it after
+  // laneBands) instead of in the day's last band, so the ghost is
+  // never misattributed to the wrong epic. Null whenever a band
+  // matches (the in-band ghost above covers it) or the day differs.
+  const scheduleGhostFallbackFor = (key: string) => {
+    if (dragPreview == null || dragPreview.landingDay !== key) return null;
+    const keys = dragPreviewLaneKeys;
+    if (keys == null) return null;
+    if (lanes.some((l) => keys.has(l.key))) return null;
+    return landingGhostEl();
+  };
+
+  // C159T2: one cascade ghost per shift on the dependent's shifted
+  // day, in the dependent's lane band(s), ALONGSIDE its real chip
+  // (which stays on its current day). Same token, same component as
+  // the landing ghost (kind="cascade" only changes the data
+  // attribute / aria-label). Grouped: in-lane only; the no-band
+  // fallback lives in cascadeGhostsFallbackFor below (M1).
+  // Ungrouped (no laneKey) each shift renders once in the day's
+  // chip list.
+  const cascadeGhostEl = (ghost: ResolvedCascadeGhost) => (
+    <GhostIssueChip
+      key={ghost.shift.id}
+      issue={ghost.issue}
+      state={statesById.get(ghost.issue.state_id)}
+      dayKey={ghost.day}
+      kind="cascade"
+    />
+  );
+  const cascadeGhostsFor = (key: string, laneKey?: string) => {
+    return cascadeGhosts
+      .filter((ghost) => {
+        if (ghost.day !== key) return false;
+        if (laneKey === undefined) return true;
+        return ghost.laneKeys.has(laneKey);
+      })
+      .map(cascadeGhostEl);
+  };
+
+  // C159T2 (M1 fix, same as the landing ghost): cascade ghosts
+  // whose dependent has no grid lane render outside the bands.
+  const cascadeGhostsFallbackFor = (key: string) => {
+    return cascadeGhosts
+      .filter(
+        (ghost) =>
+          ghost.day === key &&
+          !lanes.some((l) => ghost.laneKeys.has(l.key)),
+      )
+      .map(cascadeGhostEl);
   };
   // C72T2: the unscheduled strip gets the same lane clusters (live epics
   // + Ungrouped last); the strip stays ONE droppable — the grouping is
@@ -738,6 +852,7 @@ export default function Calendar() {
             </Fragment>
           ))}
           {scheduleGhostFor(key, lane.key)}
+          {cascadeGhostsFor(key, lane.key)}
         </div>
       ))}
     </div>
@@ -1276,6 +1391,8 @@ export default function Calendar() {
                           onQuickAdd={canEdit ? quickAdd : undefined}
                         >
                           {laneBands(key, "", "min-h-10")}
+                          {scheduleGhostFallbackFor(key)}
+                          {cascadeGhostsFallbackFor(key)}
                         </DroppableWeekColumn>
                       );
                     })}
@@ -1333,6 +1450,7 @@ export default function Calendar() {
                             </Fragment>
                           ))}
                           {scheduleGhostFor(key)}
+                          {cascadeGhostsFor(key)}
                         </div>
                       </DroppableWeekColumn>
                     );
@@ -1409,6 +1527,8 @@ export default function Calendar() {
                               {date.getDate()}
                             </div>
                             {laneBands(key, "max-h-20 overflow-y-auto", "min-h-8")}
+                            {scheduleGhostFallbackFor(key)}
+                            {cascadeGhostsFallbackFor(key)}
                           </DroppableDayCell>
                         );
                       })}
@@ -1454,6 +1574,7 @@ export default function Calendar() {
                           </Fragment>
                         ))}
                         {scheduleGhostFor(key)}
+                        {cascadeGhostsFor(key)}
                       </div>
                     </DroppableDayCell>
                   );
