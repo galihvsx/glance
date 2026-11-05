@@ -35,6 +35,7 @@ import {
   spreadsheetGroupDroppableId,
   spreadsheetOverGroupKey,
   spreadsheetReorderIndicatorSide,
+  spreadsheetReorderRun,
   spreadsheetRowDropIssueId,
   spreadsheetRowDroppableId,
   SPREADSHEET_GROUP_DROPPABLE_PREFIX,
@@ -1928,15 +1929,21 @@ export default function Spreadsheet() {
     const issue = sortedIssues.find((i) => i.id === issueId);
     if (!issue) return;
     // C152T1: same-group row drop in the ONE reorder-eligible
-    // configuration — grouped by state, no column sort, no
-    // sub-group, visual-filter mode, a real state group (never the
+    // configuration — grouped by state, no column sort,
+    // visual-filter mode, a real state group (never the
     // Ungrouped section, which has no Board column), and a row
-    // droppable in the source's own group. Reorder availability is
-    // a DROP-time rule: the handle stays enabled exactly as today
-    // (grouped && canEdit), and every other configuration falls
-    // through to the C148 path below unchanged (same-group
-    // non-state drops, column-sort-active drops, sub-grouped
-    // drops, PQL-mode drops, nested-row drops all remain no-ops;
+    // droppable in the source's own group. C153T1: with a
+    // sub-group active the reorder run is the source's own
+    // sub-section (spreadsheetReorderRun over the rendered
+    // sub-sections); a null run — cross-section or
+    // multi-appearance source/target — falls through to the C148
+    // path below unchanged, never to a guessed run. Reorder
+    // availability is a DROP-time rule: the handle stays enabled
+    // exactly as today (grouped && canEdit), and every other
+    // configuration falls through to the C148 path below
+    // unchanged (same-group non-state drops,
+    // column-sort-active drops, unresolved sub-grouped drops,
+    // PQL-mode drops, nested-row drops all remain no-ops;
     // cross-group drops are untouched).
     const overId = String(over.id);
     if (overId.startsWith(SPREADSHEET_ROW_DROPPABLE_PREFIX)) {
@@ -1947,19 +1954,31 @@ export default function Spreadsheet() {
         targetRowId !== null &&
         groupBy === "state" &&
         sortKey === null &&
-        effectiveSubGroup === "none" &&
         !pqlActive &&
         sourceGroupKey !== SPREADSHEET_STATE_UNGROUPED_KEY
       ) {
         const group = groupSections.find((g) => g.key === sourceGroupKey);
         if (group) {
-          void applySpreadsheetReorder(
-            issue.id,
-            sourceGroupKey,
-            group.issues,
-            targetRowId,
-          );
-          return;
+          // Sub-group none → the full group sequence, byte-for-byte
+          // the C152T1 behavior. Sub-group active → the resolved
+          // run, or null → fall through to the C148 path.
+          const run =
+            effectiveSubGroup === "none"
+              ? group.issues
+              : spreadsheetReorderRun(
+                  subSectionsByGroup?.get(sourceGroupKey) ?? [],
+                  issue.id,
+                  targetRowId,
+                );
+          if (run !== null) {
+            void applySpreadsheetReorder(
+              issue.id,
+              sourceGroupKey,
+              run,
+              targetRowId,
+            );
+            return;
+          }
         }
       }
     }
