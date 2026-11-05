@@ -3098,6 +3098,32 @@ All notable changes to glance are documented here. The format follows
   highlight, so the insertion line and the highlight never compete.
   Frontend-only: no backend change, no new endpoint.
 
+**Schedule undated issues from the Gantt unscheduled lane (cycle 156)**
+
+- Undated issues in the Gantt unscheduled lane can now be dragged
+  onto the timeline to schedule them (cycle 156): the row becomes
+  a pointer drag source, the drop day comes from the existing
+  `xToDay` helper (clamped to the window), and the commit reuses
+  the existing `patchMutation`, PATCHing both `start_date` and
+  `target_date` to the drop day so the issue lands as a 1-day bar.
+  Top-level rows (wave 1) and nested child rows (wave 2) both
+  drag; scheduling a child PATCHes only the child, and scheduling
+  a parent leaves its undated children in the lane nested under
+  the parent's new dated row. The drag ghost reuses the cycle-146
+  move-ghost token verbatim — no new visual language. Drops over
+  the label column, pointer-cancel, and Escape are no-ops, and
+  `suppressClick` keeps a plain click opening the peek;
+  `canEdit === false` renders no drag source. One real hole found
+  in review and fixed in-cycle: a schedule drag released outside
+  the timeline (e.g. over the PageHeader) previously stayed live,
+  so a later unrelated pointerup over the timeline could commit
+  the stale issue — a window-level pointerup/pointercancel
+  listener now clears a live schedule drag without committing.
+  Cascade-on-schedule is carried: the cascade engine
+  early-returns for dateless issues, so the schedule commit
+  PATCHes the single issue for now. Frontend-only: no backend
+  change, no new endpoint.
+
 ## [v0.3.0] - 2026-10-17
 
 "Depth" milestone: the next tier of the Plane parity backlog — modules,
