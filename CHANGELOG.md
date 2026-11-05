@@ -60,6 +60,29 @@ All notable changes to glance are documented here. The format follows
   unchanged, and PQL mode, nested rows, and non-state groupings
   stay no-ops. Frontend-only: no backend change, no new endpoint.
 
+**Spreadsheet cross-sub-section move via row drop (cycle 154)**
+
+- Dropping a spreadsheet row onto a row in a different sub-section
+  of the SAME primary group now moves the row to the target section
+  (cycle 154, wave 1): the target section is resolved from the
+  primary group's rendered sections by the singleton rule — the
+  target row must appear in exactly one section, and the source row
+  must not already be in it — then the existing cycle-148 move
+  pipeline runs with the section keys (state/priority PATCH,
+  epic/assignee/label/module attach, cycle/release move, workflow
+  guard and "Move blocked" toast included). This retires the
+  cycle-153 no-op for cross-section drops: a cross-section drop is
+  now a MOVE, not a reorder. Multi-appearance targets, same-section
+  drops, and createdBy/stateGroups sub-groups stay no-ops, and
+  Ungrouped-section targets stay no-ops (no detach-from-all);
+  cross-primary-group drops keep their cycle-148 meaning, and
+  reorder-eligible drops still reorder first. Wave 2 completes the
+  affordance: hovering a cross-section move target highlights
+  exactly the target sub-header with the existing primary-header
+  token, and suppresses the primary-header highlight, so the
+  insertion line and the highlight never compete. Frontend-only:
+  no backend change, no new endpoint.
+
 **Gantt link-draw from/to child (sub-issue) bars (cycle 151)**
 
 - Sub-issue bars are now first-class dependency nodes on the Gantt
