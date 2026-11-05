@@ -357,4 +357,221 @@ describe("computeCascade", () => {
       ),
     ).toEqual([]);
   });
+
+  it("schedule: dateless blocker shifts violating dependents by the minimum (rule 9)", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", "2026-11-06"),
+      issue("c", "2026-11-03", "2026-11-04"),
+    ];
+    const links = [link("a", "b"), link("a", "c")];
+    // A is scheduled onto 2026-11-05 (1-day span [11-05, 11-05]).
+    // B starts on the drop day: needs +1 (to 11-06–11-07).
+    // C starts 3 days before d + 1: needs +3 (to 11-06–11-07).
+    // Per-dependent shifts, not uniform — each is the minimum that
+    // clears finish-to-start, durations preserved (both 2 days).
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "b", start_date: "2026-11-06", target_date: "2026-11-07" },
+      { id: "c", start_date: "2026-11-06", target_date: "2026-11-07" },
+    ]);
+  });
+
+  it("schedule: non-violating dependent (starts ≥ d + 1) does not shift", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-06", "2026-11-07"),
+    ];
+    const links = [link("a", "b")];
+    // A scheduled onto 11-05; B starts 11-06 = d + 1, already clear.
+    expect(
+      computeCascade(
+        issues,
+        links,
+        "a",
+        "2026-11-05",
+        "2026-11-05",
+        "schedule",
+      ),
+    ).toEqual([]);
+  });
+
+  it("schedule: chain A blocks B blocks C, transitive per-dependent shifts", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", "2026-11-06"),
+      issue("c", "2026-11-06", "2026-11-07"),
+    ];
+    const links = [link("a", "b"), link("b", "c")];
+    // A scheduled onto 11-05. B shifts +1 (11-06–11-07); C violates
+    // against B's new end (11-07) and shifts +2 (11-08–11-09).
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "b", start_date: "2026-11-06", target_date: "2026-11-07" },
+      { id: "c", start_date: "2026-11-08", target_date: "2026-11-09" },
+    ]);
+  });
+
+  it("schedule: diamond with a growing shift — deeper blocker raises the first shift", () => {
+    // D is a direct dependent of A (BFS depth 1) but also depends on
+    // Y (depth 2). D first shifts +1 against A alone; once Y shifts,
+    // D must grow to +3. A single-pass loop would leave D at
+    // 11-06–11-07; the fixpoint must reach 11-08–11-09.
+    const issues = [
+      issue("a", null, null),
+      issue("x", "2026-11-05", "2026-11-05"),
+      issue("y", "2026-11-06", "2026-11-06"),
+      issue("d", "2026-11-05", "2026-11-06"),
+    ];
+    const links = [
+      link("a", "d"),
+      link("a", "x"),
+      link("x", "y"),
+      link("y", "d"),
+    ];
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "d", start_date: "2026-11-08", target_date: "2026-11-09" },
+      { id: "x", start_date: "2026-11-06", target_date: "2026-11-06" },
+      { id: "y", start_date: "2026-11-07", target_date: "2026-11-07" },
+    ]);
+  });
+
+  it("schedule: dateless dependent skipped; propagation stops on that path", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", null, null),
+      issue("c", "2026-11-05", "2026-11-06"),
+      issue("d", "2026-11-05", "2026-11-06"),
+    ];
+    const links = [link("a", "b"), link("b", "c"), link("a", "d")];
+    // B has nothing to shift, so C (reachable only through B) does
+    // not shift; D, blocked directly by A, does.
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "d", start_date: "2026-11-06", target_date: "2026-11-07" },
+    ]);
+  });
+
+  it("schedule: relates_to/duplicates edges are ignored", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", "2026-11-06"),
+      issue("c", "2026-11-05", "2026-11-06"),
+    ];
+    const links = [link("a", "b", "relates_to"), link("a", "c", "duplicates")];
+    expect(
+      computeCascade(
+        issues,
+        links,
+        "a",
+        "2026-11-05",
+        "2026-11-05",
+        "schedule",
+      ),
+    ).toEqual([]);
+  });
+
+  it("schedule: cycle input terminates, no duplicate shifts", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", "2026-11-06"),
+    ];
+    const links = [
+      link("a", "b"),
+      link("b", "a"), // Back edge: backend rejects this, engine tolerates it.
+    ];
+    // B's only shifted blocker is A (final end 11-05): +1. The
+    // dragged issue itself is never shifted.
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "b", start_date: "2026-11-06", target_date: "2026-11-07" },
+    ]);
+    expect(shifts.filter((s) => s.id === "b")).toHaveLength(1);
+  });
+
+  it("schedule: deeper B↔C cycle terminates with one minimal shift each", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", "2026-11-06"),
+      issue("c", "2026-11-07", "2026-11-08"),
+    ];
+    const links = [link("a", "b"), link("b", "c"), link("c", "b")];
+    // B shifts +1 against A; C shifts +1 against B's new end.
+    // Neither grows from the other: each is the other's transitive
+    // dependent (a cycle back-edge), so the feedback is ignored
+    // and the loop terminates instead of feeding back forever.
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "b", start_date: "2026-11-06", target_date: "2026-11-07" },
+      { id: "c", start_date: "2026-11-08", target_date: "2026-11-09" },
+    ]);
+  });
+
+  it("schedule: single-date dependent shifts as a 1-day span (rule 7 contract)", () => {
+    const issues = [
+      issue("a", null, null),
+      issue("b", "2026-11-05", null),
+      issue("c", null, "2026-11-05"),
+    ];
+    const links = [link("a", "b"), link("a", "c")];
+    // Both single-date dependents shift +1 as 1-day spans; the
+    // caller keeps them single-date via rule 7 presence-preserving
+    // PATCH payloads — no new engine behavior, the contract is
+    // that the engine returns span form either way.
+    const shifts = computeCascade(
+      issues,
+      links,
+      "a",
+      "2026-11-05",
+      "2026-11-05",
+      "schedule",
+    );
+    expect(shifts).toEqual([
+      { id: "b", start_date: "2026-11-06", target_date: "2026-11-06" },
+      { id: "c", start_date: "2026-11-06", target_date: "2026-11-06" },
+    ]);
+  });
 });

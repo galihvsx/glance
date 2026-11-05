@@ -1,7 +1,7 @@
 import { addDays, barSpan, daysBetween } from "../../lib/gantt";
 import type { IssueLink } from "../../lib/types";
 
-/** Dependency cascade on Gantt move/resize (C146T1).
+/** Dependency cascade on Gantt move/resize/schedule (C146T1, C157T1).
  *
  *  Pure functions, no React, no api, no query client — the same
  *  precedent as `ganttLinks.ts`'s pure helpers. The wiring task
@@ -9,7 +9,7 @@ import type { IssueLink } from "../../lib/types";
  *  ghost preview, during the drag) and PATCHes one
  *  presence-preserving payload per returned shift.
  *
- *  Binding semantics (cycle 146 plan, rules 1–6):
+ *  Binding semantics (cycle 146 plan, rules 1–6; cycle 157, rule 9):
  *  1. Only `blocks` edges cascade; `relates_to` / `duplicates`
  *     never move anything.
  *  2. Direction: source blocks target ⇒ target (and its transitive
@@ -41,7 +41,40 @@ import type { IssueLink } from "../../lib/types";
  *     shift); propagation through a skipped node stops on that path
  *     because its end did not move. Dependents outside the fetched
  *     set are skipped: only issues in `issues` can shift, so the
- *     cascade covers the visible set only. */
+ *     cascade covers the visible set only.
+ *  7. Presence-preserving shifts (caller-side): the engine returns
+ *     every shift in span form (both dates resolved via `barSpan`:
+ *     a single-date dependent shifts as a 1-day span). The caller
+ *     maps this to a presence-preserving PATCH payload: send
+ *     `start_date` only if the issue originally had one,
+ *     `target_date` only if it originally had one — a single-date
+ *     dependent stays single-date.
+ *  8. Commit (caller-side): the dragged PATCH and one PATCH per
+ *     shift fire together (`Promise.allSettled`), with the move
+ *     path's success/failure toasts and `["gantt"]` invalidation.
+ *  9. Schedule mode (C157): the dragged issue may be dateless —
+ *     there is no old end and no uniform k. Its final span is the
+ *     1-day span [d, d] (`newStart` == `newEnd` == d, the drop
+ *     day). A dependent B violates iff `B.start <
+ *     blockerFinalEnd + 1 day` (same predicate as rule 4) and
+ *     shifts by the MINIMUM that clears it: `s_B =
+ *     (blockerFinalEnd + 1) − B.start` days, applied to both
+ *     dates, duration preserved. Shifts are per-dependent, not
+ *     uniform, and transitive dependents use the same rule
+ *     against their shifted blockers' final ends. A dependent's
+ *     shift may GROW across passes — a second, deeper blocker
+ *     may shift later and demand more — so schedule mode
+ *     re-evaluates shifted nodes until no shift grows: a node's
+ *     shift is the max over its shifted blockers of
+ *     `(blockerFinalEnd + 1 − originalStart)`, its final end
+ *     recomputed from that shift each pass. Growth demanded by a
+ *     blocker that is itself a transitive dependent of the node
+ *     (a cycle back-edge) is ignored — otherwise a B↔C cycle
+ *     would feed its own shift back forever; each node in a cycle
+ *     still takes its FIRST shift from every shifted blocker, so
+ *     both sides of a cycle shift once by the minimum. A
+ *     defensive pass cap (`bfsOrder.length + 1`) bounds the loop
+ *     on any input; a DAG fixpoint converges within that bound. */
 
 /** Minimal issue shape the cascade needs: id + stored dates. The
  *  fetched `Issue` objects satisfy this structurally. */
@@ -65,18 +98,22 @@ export interface CascadeShift {
 
 /** Drag mode, mirroring the Gantt drag state (`Gantt.tsx`): "move"
  *  shifts both dates, "resize-end" moves only the end,
- *  "resize-start" moves only the start (end unchanged ⇒ no cascade). */
-export type CascadeMode = "move" | "resize-start" | "resize-end";
+ *  "resize-start" moves only the start (end unchanged ⇒ no cascade),
+ *  "schedule" places a dateless issue on one day (its final span is
+ *  the 1-day span [newStart, newEnd]) and cascades per rule 9. */
+export type CascadeMode = "move" | "resize-start" | "resize-end" | "schedule";
 
-/** Compute the cascade shifts caused by dragging/resizing one issue.
+/** Compute the cascade shifts caused by dragging/resizing/scheduling
+ *  one issue.
  *
  *  `issues` is the flat fetched Gantt set (dates as stored);
  *  `links` is the fetched link list. `newStart` / `newEnd` are the
  *  dragged issue's prospective span days ("YYYY-MM-DD", already
  *  resolved through `barSpan` by the caller, exactly as the drag
- *  code computes them). Returns the shifts in BFS order from the
- *  dragged issue, each carrying the dependent's new span. The
- *  dragged issue itself is never in the result. */
+ *  code computes them; in "schedule" mode both are the drop day).
+ *  Returns the shifts in BFS order from the dragged issue, each
+ *  carrying the dependent's new span. The dragged issue itself is
+ *  never in the result. */
 export function computeCascade(
   issues: readonly CascadeIssue[],
   links: readonly IssueLink[],
@@ -92,14 +129,22 @@ export function computeCascade(
   const dragged = byId.get(draggedId);
   if (!dragged) return [];
 
-  // The dragged issue's old end is its resolved span end (barSpan
-  // semantics: a single-date bar ends on its one date).
-  const draggedSpan = barSpan(dragged.start_date, dragged.target_date);
-  if (draggedSpan.start === null || draggedSpan.end === null) return [];
+  // Rule 9: in schedule mode the dragged issue may be dateless —
+  // skip the old-end early-return for this mode only. Its final
+  // span comes from newStart / newEnd (both the drop day).
+  // Move/resize keep the existing early-returns and loop untouched.
+  const isSchedule = mode === "schedule";
+  let k = 0;
+  if (!isSchedule) {
+    // The dragged issue's old end is its resolved span end (barSpan
+    // semantics: a single-date bar ends on its one date).
+    const draggedSpan = barSpan(dragged.start_date, dragged.target_date);
+    if (draggedSpan.start === null || draggedSpan.end === null) return [];
 
-  // Rule 3: k = end delta; k ≤ 0 ⇒ empty cascade.
-  const k = daysBetween(draggedSpan.end, newEnd);
-  if (k <= 0) return [];
+    // Rule 3: k = end delta; k ≤ 0 ⇒ empty cascade.
+    k = daysBetween(draggedSpan.end, newEnd);
+    if (k <= 0) return [];
+  }
   void newStart; // The shift amount depends only on the end delta.
 
   // Rule 1 + 2: blocks-only adjacency, blocker → dependents, over
@@ -142,37 +187,96 @@ export function computeCascade(
     }
   }
 
-  // Rule 4 + 5: shift a dependent by exactly k iff ANY of its
-  // shifted blockers violates finish-to-start against it
-  // (dependent.start < blockerFinalEnd + 1 day). Every shifted
-  // blocker moved by k, so its final end is its original end + k
-  // (the dragged issue's final end is newEnd = oldEnd + k). Repeat
-  // to a fixpoint so a dependent is judged against ALL of its
-  // shifted blockers, not just the ones shifted before its first
-  // check; a dateless node never enters `shifted`, so propagation
-  // through it stops (rule 6).
   const shifted = new Set<string>([draggedId]);
   const finalEnd = new Map<string, string>([[draggedId, newEnd]]);
   const newSpan = new Map<string, { start: string; end: string }>();
-  let changed = true;
-  while (changed) {
-    changed = false;
+
+  if (isSchedule) {
+    // Rule 9: per-dependent minimal shifts. A dependent's required
+    // shift is the max over its shifted blockers of
+    // (blockerFinalEnd + 1 − originalStart); a node's shift may
+    // GROW across passes when a deeper blocker shifts later, so
+    // re-evaluate shifted nodes until no shift grows. Growth
+    // demanded by a blocker that is itself a transitive dependent
+    // of the node (a cycle back-edge) is ignored — otherwise a
+    // B↔C cycle would feed its own shift back forever. The first
+    // shift still counts every shifted blocker, so both sides of
+    // a cycle shift once by the minimum. The pass cap is a
+    // defensive bound only: a DAG fixpoint converges within
+    // longest-path passes (≤ bfsOrder.length).
+    const reachable = new Map<string, Set<string>>();
     for (const id of bfsOrder) {
-      if (shifted.has(id)) continue;
-      const span = originalSpan.get(id);
-      if (!span) continue; // Dateless: skipped, never a shifted blocker.
-      const violates = (blockersOf.get(id) ?? []).some((blocker) => {
-        if (!shifted.has(blocker)) return false;
-        const blockerEnd = finalEnd.get(blocker)!;
-        return span.start < addDays(blockerEnd, 1);
-      });
-      if (!violates) continue;
-      shifted.add(id);
-      const start = addDays(span.start, k);
-      const end = addDays(span.end, k);
-      newSpan.set(id, { start, end });
-      finalEnd.set(id, end);
-      changed = true;
+      const seen = new Set<string>();
+      const pending = [...(dependentsOf.get(id) ?? [])];
+      while (pending.length > 0) {
+        const current = pending.shift()!;
+        if (seen.has(current)) continue;
+        seen.add(current);
+        for (const dep of dependentsOf.get(current) ?? []) {
+          if (!seen.has(dep)) pending.push(dep);
+        }
+      }
+      reachable.set(id, seen);
+    }
+    const shiftDays = new Map<string, number>();
+    let changed = true;
+    let passes = 0;
+    const maxPasses = bfsOrder.length + 1;
+    while (changed && passes < maxPasses) {
+      changed = false;
+      passes++;
+      for (const id of bfsOrder) {
+        const span = originalSpan.get(id);
+        if (!span) continue; // Dateless: skipped, never a shifted blocker.
+        const alreadyShifted = shifted.has(id);
+        let required = 0;
+        for (const blocker of blockersOf.get(id) ?? []) {
+          if (!shifted.has(blocker)) continue;
+          if (alreadyShifted && reachable.get(id)!.has(blocker)) continue;
+          const demand = daysBetween(span.start, addDays(finalEnd.get(blocker)!, 1));
+          if (demand > required) required = demand;
+        }
+        if (required <= 0) continue;
+        if (required <= (shiftDays.get(id) ?? 0)) continue;
+        shifted.add(id);
+        shiftDays.set(id, required);
+        const start = addDays(span.start, required);
+        const end = addDays(span.end, required);
+        newSpan.set(id, { start, end });
+        finalEnd.set(id, end);
+        changed = true;
+      }
+    }
+  } else {
+    // Rule 4 + 5: shift a dependent by exactly k iff ANY of its
+    // shifted blockers violates finish-to-start against it
+    // (dependent.start < blockerFinalEnd + 1 day). Every shifted
+    // blocker moved by k, so its final end is its original end + k
+    // (the dragged issue's final end is newEnd = oldEnd + k). Repeat
+    // to a fixpoint so a dependent is judged against ALL of its
+    // shifted blockers, not just the ones shifted before its first
+    // check; a dateless node never enters `shifted`, so propagation
+    // through it stops (rule 6).
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const id of bfsOrder) {
+        if (shifted.has(id)) continue;
+        const span = originalSpan.get(id);
+        if (!span) continue; // Dateless: skipped, never a shifted blocker.
+        const violates = (blockersOf.get(id) ?? []).some((blocker) => {
+          if (!shifted.has(blocker)) return false;
+          const blockerEnd = finalEnd.get(blocker)!;
+          return span.start < addDays(blockerEnd, 1);
+        });
+        if (!violates) continue;
+        shifted.add(id);
+        const start = addDays(span.start, k);
+        const end = addDays(span.end, k);
+        newSpan.set(id, { start, end });
+        finalEnd.set(id, end);
+        changed = true;
+      }
     }
   }
 
