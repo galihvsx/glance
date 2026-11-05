@@ -752,10 +752,17 @@ export default function Gantt() {
   // C156T1: press on a top-level unscheduled label button starts a
   // schedule drag (left button + canEdit only). No orig dates: the
   // issue is undated. Link mode never competes — the row has no bar
-  // to draw from — so no linkMode gate. Child rows (T2) do not get
-  // this source yet; the handler is wired only to issue-undated
-  // label buttons below.
-  const onUnscheduledPointerDown = (e: React.PointerEvent, issue: DragIssue) => {
+  // to draw from — so no linkMode gate. C156T2: the same source
+  // wires to undated nested child rows (their label buttons below);
+  // the handler reads only the id, so it takes Pick<Issue, "id">
+  // and a SubtaskRow is assignable (its dates are optional, unlike
+  // DragIssue's required ones). The commit PATCHes only that id —
+  // a child's drag never touches its parent, and a parent's drag
+  // never touches its children.
+  const onUnscheduledPointerDown = (
+    e: React.PointerEvent,
+    issue: Pick<Issue, "id">,
+  ) => {
     if (!canEdit || e.button !== 0) return;
     e.preventDefault();
     setDrag({
@@ -1242,12 +1249,32 @@ export default function Gantt() {
                   }
                   // C145T3: nested child row, indented under its
                   // parent; click opens the same peek as a parent row.
+                  // C156T2: an undated child gets the same schedule
+                  // drag source as a top-level lane row (same
+                  // handler, same commit path — the PATCH carries
+                  // only the child's id). A dated child already has
+                  // a bar with its own move drag, so its label gets
+                  // no schedule source: dragging it must never
+                  // reschedule it to a 1-day span. The click carries
+                  // the same suppressClick guard as the top-level
+                  // button, so a drag-then-click never opens the
+                  // peek. An undated child under a dated parent
+                  // gets the source too — it is an unscheduled row
+                  // with no bar to grab, wherever its parent sits.
                   if (r.kind === "issue-child") {
                     return (
                       <button
                         key={`child-${r.parentId}-${r.row.id}`}
                         type="button"
-                        onClick={() => openPeek(r.row.id)}
+                        onClick={() => {
+                          if (!suppressClick.current) openPeek(r.row.id);
+                        }}
+                        onPointerDown={
+                          barSpan(r.row.start_date, r.row.target_date)
+                            .start
+                            ? undefined
+                            : (e) => onUnscheduledPointerDown(e, r.row)
+                        }
                         className="flex w-full items-center gap-1.5 border-b border-border-hairline px-3 text-left text-[13px] text-ink-secondary hover:bg-wash-hover hover:text-ink"
                         style={{ height: ROW_H, paddingLeft: 28 }}
                         title={`${r.row.display_id}: ${r.row.title}`}
@@ -1271,9 +1298,9 @@ export default function Gantt() {
                         if (!suppressClick.current) openPeek(r.issue.id);
                       }}
                       onPointerDown={
-                        // C156T1: top-level unscheduled rows only
-                        // (T2 wires the nested child rows). Dated
-                        // rows keep today's press behavior.
+                        // C156T1: top-level unscheduled rows. Dated
+                        // rows keep today's press behavior; nested
+                        // child rows carry their own source (C156T2).
                         r.kind === "issue-undated"
                           ? (e) => onUnscheduledPointerDown(e, r.issue)
                           : undefined
