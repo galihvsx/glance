@@ -1806,7 +1806,10 @@ export default function Spreadsheet() {
    * resolves). The header highlight is suppressed exactly when
    * this is non-null (the line REPLACES the C148 over-row
    * highlight for reorder-eligible hovers; cross-group hovers
-   * keep it).
+   * keep it). C154T2: a cross-section hover shows the target
+   * section's highlight, not the line — the move-target memo
+   * returns null whenever this is non-null, so the two
+   * affordances never compete.
    */
   const reorderIndicator = useMemo(() => {
     if (activeSpreadsheetDragId === null || dragOverRowIssueId === null) {
@@ -1862,6 +1865,72 @@ export default function Spreadsheet() {
     pqlActive,
     canEdit,
     groupSections,
+  ]);
+
+  /**
+   * C154T2: the sub-section move target — group key + section key —
+   * or null when no section highlight renders. Same pattern as
+   * reorderIndicator: while a drag is active over a row in the
+   * source's own primary group with a sub-group active, resolve
+   * the T1 helper's target section + delegated plan over the
+   * primary group's rendered sections; non-null with a non-noop
+   * plan → the target, else null. Null covers every non-move
+   * hover: cross-group (keeps the C148 header highlight),
+   * sub-group none, no rendered sections, same-section (the
+   * source already occupies the target section — reorder line or
+   * nothing, per the existing rules), multi-appearance (no unique
+   * target section), and noop-plan dimensions (createdBy,
+   * stateGroups, Ungrouped targets, already-member). The memo
+   * itself returns null whenever the reorder indicator is
+   * non-null, so the line and the section highlight never
+   * compete: a reorder-eligible hover keeps its line with no
+   * header highlight. The primary header's highlight is
+   * suppressed exactly when this is non-null (the
+   * `reorderIndicator === null` pattern, extended), so a
+   * cross-section hover highlights exactly the target section,
+   * never the group header. No new state beyond the existing
+   * dragOver* values; the reorder-only gates (state grouping,
+   * no column sort, visual-filter mode) are deliberately NOT
+   * mirrored — a move changes membership, not position, so
+   * column-sort-active and PQL-mode hovers highlight exactly
+   * like C148 primary-group moves do.
+   */
+  const subSectionMoveTarget = useMemo(() => {
+    if (activeSpreadsheetDragId === null || dragOverRowIssueId === null) {
+      return null;
+    }
+    if (reorderIndicator !== null) return null;
+    if (effectiveSubGroup === "none" || subSectionsByGroup === null) {
+      return null;
+    }
+    const sourceGroupKey = spreadsheetDragGroupKey(activeSpreadsheetDragId);
+    if (sourceGroupKey === null || dragOverGroupKey !== sourceGroupKey) {
+      return null;
+    }
+    const sourceId = spreadsheetDragIssueId(activeSpreadsheetDragId);
+    const issue = sortedIssues.find((i) => i.id === sourceId);
+    if (!issue) return null;
+    const resolved = planSpreadsheetSubSectionDrop({
+      subGroupBy: effectiveSubGroup,
+      sections: subSectionsByGroup.get(sourceGroupKey) ?? [],
+      sourceId: issue.id,
+      targetRowId: dragOverRowIssueId,
+      issue,
+      workflow,
+      stateNames: stateNamesById,
+    });
+    if (resolved === null || resolved.plan.kind === "noop") return null;
+    return { groupKey: sourceGroupKey, sectionKey: resolved.targetSection.key };
+  }, [
+    activeSpreadsheetDragId,
+    dragOverRowIssueId,
+    dragOverGroupKey,
+    reorderIndicator,
+    effectiveSubGroup,
+    subSectionsByGroup,
+    sortedIssues,
+    workflow,
+    stateNamesById,
   ]);
 
   /**
@@ -2722,7 +2791,8 @@ export default function Spreadsheet() {
                             }
                             highlighted={
                               dragOverGroupKey === group.key &&
-                              reorderIndicator === null
+                              reorderIndicator === null &&
+                              subSectionMoveTarget === null
                             }
                           />
                           {subSectionsByGroup === null
@@ -2746,7 +2816,13 @@ export default function Spreadsheet() {
                                       column, matching the rows. */}
                                   <tr
                                     data-spreadsheet-sub-group-header={`${group.key}:${sub.key}`}
-                                    className="border-b border-border-hairline bg-wash"
+                                    className={`border-b border-border-hairline ${subSectionMoveTarget !== null &&
+                                    subSectionMoveTarget.groupKey ===
+                                      group.key &&
+                                    subSectionMoveTarget.sectionKey ===
+                                      sub.key
+                                      ? "bg-accent-blue/10"
+                                      : "bg-wash"}`}
                                   >
                                     <td
                                       colSpan={
