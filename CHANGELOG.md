@@ -3080,6 +3080,24 @@ All notable changes to glance are documented here. The format follows
   after a created-rule `set_state` move) — benign per the
   clients-refetch broadcast contract.
 
+**Spreadsheet sub-group header droppables (cycle 155)**
+
+- Spreadsheet sub-group headers are now drop targets (cycle 155,
+  wave 1): dropping a row onto a sub-section header moves the row to
+  that section — the target section key comes straight from the
+  header's droppable id (header resolution, no singleton inference),
+  then the existing `planSpreadsheetDrop` pipeline runs with the
+  section keys, exactly as the cycle-154 row drop delegates. This
+  closes the hole every cycle since C147 left open: headers were
+  visual-only, and a drop onto one yielded `over === null` and
+  returned. Cross-group header drops stay no-ops (same-group guard),
+  and detach-from-all via Ungrouped-section header drops stays
+  out of scope. Wave 2 completes the affordance: hovering a
+  sub-section header highlights exactly that header with the
+  existing primary-header token, and suppresses the primary-header
+  highlight, so the insertion line and the highlight never compete.
+  Frontend-only: no backend change, no new endpoint.
+
 ## [v0.3.0] - 2026-10-17
 
 "Depth" milestone: the next tier of the Plane parity backlog — modules,
