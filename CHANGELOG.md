@@ -29,6 +29,37 @@ All notable changes to glance are documented here. The format follows
   same-group drop on the group header moves the row to the end of
   the group. Frontend-only: no backend change, no new endpoint.
 
+**Spreadsheet within-sub-group positional reorder (cycle 153)**
+
+- The cycle-152 reorder now extends to state-grouped spreadsheets
+  WITH a sub-group active (cycle 153, wave 1): the reorder run is
+  one sub-section's rows, resolved by the same-section singleton
+  rule — source and target must each appear in exactly one section
+  of the primary group, and it must be the same section. A
+  cross-section drop stays a no-op (sections are different runs,
+  and the spreadsheet has no sub-dimension move pipeline), and a
+  multi-appearance row (an issue under several assignee, label,
+  epic, or module sections) resolves to no run at all, never to a
+  guessed one — the drag id carries only the primary group, so
+  drop-time code cannot know which appearance was grabbed.
+  Single-appearance sub-dimensions always resolve; multi-appearance
+  ones resolve exactly when both rows happen to be single-appearance
+  in practice. Midpoint math inside a run is sound because the run
+  is a subsequence of the state column: the written `sort_order`
+  lands between the run-neighbors' values, so within-section
+  display (sort_order ASC, filtered) shows the intended position.
+  Wave 2 completes the affordances: the hairline insertion line
+  now renders for within-run hovers (sub-group rows route through
+  the indicator path only when targeted; cross-section and
+  multi-appearance hovers get no line and keep the over-row
+  highlight), and a same-group drop on the primary group header
+  moves the row to the end of the full group sequence — which is
+  also the last position in its own section — under sub-grouping
+  too. All other cycle-152 gates (state grouping, no column sort,
+  visual-filter mode, real state group, top-level rows) are
+  unchanged, and PQL mode, nested rows, and non-state groupings
+  stay no-ops. Frontend-only: no backend change, no new endpoint.
+
 **Gantt link-draw from/to child (sub-issue) bars (cycle 151)**
 
 - Sub-issue bars are now first-class dependency nodes on the Gantt
