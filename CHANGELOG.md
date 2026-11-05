@@ -5,6 +5,23 @@ All notable changes to glance are documented here. The format follows
 
 ## [Unreleased]
 
+**Gantt link-draw from/to child (sub-issue) bars (cycle 151)**
+
+- Sub-issue bars are now first-class dependency nodes on the Gantt
+  timeline: in link mode a child bar shows the draw handle and
+  crosshair cursor, a child-bar press starts an edge draw (cycle 151,
+  wave 1), and a draw released over a child row resolves to that child
+  id and POSTs the edge via the existing mutation (wave 2). Arrows for
+  child-touching edges (parent→child, child→parent, child→child where
+  the fetched payload includes the edge) render with the exact parent
+  geometry through the unified endpoint lookup, and edge-click delete
+  confirm works for them. Same gates as parents (`canEdit && linkMode`
+  only); dateless endpoints render no arrow, exactly as dateless
+  parents render none. Frontend-only: no backend change, no new
+  endpoint. A child–child edge where neither endpoint is top-level is
+  absent from the fetched payload and cannot render (engine rule-6
+  behavior, carried — the fetch was deliberately not widened).
+
 **Gantt drag on child (sub-issue) bars (cycle 150)**
 
 - Sub-issue bars on the Gantt timeline are now first-class schedule
